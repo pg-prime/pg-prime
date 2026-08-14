@@ -1,4 +1,4 @@
-# pgorm
+# pgormjs
 
 A PostgreSQL-only, type-safe TypeScript ORM with first-class migrations and zero runtime dependencies.
 

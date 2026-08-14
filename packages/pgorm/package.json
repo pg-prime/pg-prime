@@ -1,5 +1,5 @@
 {
-  "name": "pgorm",
+  "name": "pgormjs",
   "version": "0.0.0",
   "description": "PostgreSQL-only, type-safe TypeScript ORM. Zero dependencies. Pre-alpha — not yet usable.",
   "license": "MPL-2.0",

@@ -14,10 +14,10 @@ Full research and design records: [`research/`](./research/) and [`design/`](./d
 
 | Package | Purpose |
 |---|---|
-| `pgorm` | Runtime: schema DSL, codecs, query builder, executor, migration applier. Zero deps, zero peer deps. |
+| `pgormjs` | Runtime: schema DSL, codecs, query builder, executor, migration applier. Zero deps, zero peer deps. |
 | `@pgorm/kit` | CLI: diff engine, migration generation, lint, verify. |
 | `@pgorm/testing` | Test helpers (PGlite tier, container matrix). |
-| `create-pgorm` | Project scaffolder. |
+| `create-pgormjs` | Project scaffolder (`npm create pgormjs`). |
 
 ## License
 

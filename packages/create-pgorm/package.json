@@ -1,5 +1,5 @@
 {
-  "name": "create-pgorm",
+  "name": "create-pgormjs",
   "version": "0.0.0",
   "description": "Scaffolder for pgorm projects. Pre-alpha — not yet usable.",
   "license": "MPL-2.0",
