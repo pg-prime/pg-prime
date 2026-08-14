@@ -1,0 +1,26 @@
+{
+  "name": "pgorm",
+  "version": "0.0.0",
+  "description": "PostgreSQL-only, type-safe TypeScript ORM. Zero dependencies. Pre-alpha — not yet usable.",
+  "license": "MPL-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pgorm/pgorm.git"
+  },
+  "keywords": [
+    "postgres",
+    "postgresql",
+    "orm",
+    "typescript",
+    "migrations",
+    "typesafe"
+  ]
+}

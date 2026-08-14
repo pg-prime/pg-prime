@@ -1,0 +1,17 @@
+{
+  "name": "pgorm-kit",
+  "version": "0.0.0",
+  "description": "Migration engine and CLI for pgorm: catalog diffing, plan generation, lint, verify. Pre-alpha — not yet usable.",
+  "license": "MPL-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pgorm/pgorm.git"
+  }
+}

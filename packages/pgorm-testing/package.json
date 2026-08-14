@@ -1,0 +1,17 @@
+{
+  "name": "@pgorm/testing",
+  "version": "0.0.0",
+  "description": "Test helpers for pgorm: PGlite fast tier and real-Postgres container matrix. Pre-alpha — not yet usable.",
+  "license": "MPL-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pgorm/pgorm.git"
+  }
+}
