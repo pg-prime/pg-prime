@@ -7,11 +7,13 @@
   },
   "scripts": {
     "test": "pnpm -r --if-present test",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "typecheck": "pnpm -r --if-present typecheck",
+    "bench:types": "pnpm --filter @pgorm-bench/types bench"
   },
   "devDependencies": {
     "@ark/attest": "^0.56.3",
     "@supabase/pg-delta": "1.0.0-alpha.39",
+    "@types/node": "^26.2.0",
     "@types/pg": "^8.21.0",
     "expect-type": "^1.4.0",
     "pg": "^8.23.0",

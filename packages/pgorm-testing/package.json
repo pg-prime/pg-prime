@@ -12,6 +12,6 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/pgorm/pgorm.git"
+    "url": "git+https://github.com/pgormjs/pgorm.git"
   }
 }

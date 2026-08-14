@@ -5,6 +5,14 @@
 **Inputs:** [`research/pg-drivers.md`](../research/pg-drivers.md), [`research/SUMMARY.md`](../research/SUMMARY.md) §3–4.
 **Baseline:** PostgreSQL ≥ 15 · ESM-only · Node ≥ 22 · **zero runtime deps, zero peer deps** · near-raw `pg` performance.
 
+> **AMENDMENT (2026-08-14, implementation spike — PG 17.11).** Five deviations found while building the real adapter (`packages/pgorm/src/driver`, `src/codec`), each detailed in code comments:
+> ① §4.7 ParameterStatus cannot be captured from a user-supplied pool (startup messages predate acquisition) → one `pg_settings` query per *physical* connection, WeakMap-cached, plus a live `parameterStatus` subscription.
+> ② `capabilities.cancel` is always `'pg_cancel_backend'` — the protocol cancel path needs an unconnected second client and is 07's opt-in; claiming `'protocol'` was aspirational.
+> ③ `PgQuery.maxRows` cannot use pg's `rows` option (pg pages, every row still crosses the wire) → implemented over the cursor.
+> ④ **New catalog finding beyond §4.6:** a *scalar* domain column is reported under its **base** type OID (never the domain's), while a domain **array** column keeps its own user OID — so the domain codec's value is on the parameter side (param OID + server-side CHECK), and the `typarray`-derived array codec is the load-bearing decode half.
+> ⑤ `bytea[]` parameters fall back to `\x…` text inside the array literal — array literals are text; binary format is per-scalar-parameter only.
+> Also settled: DECLARE CURSOR takes bind params over the extended protocol (see 07 §9.1) — `.stream()` is zero-dep; `pg-cursor` is out of the dependency discussion entirely.
+
 **Verification method.** Every behavioural claim below was checked by executing code against `pg@8.23.0` +
 `pg-protocol@1.16.0` + `pg-pool@3.14.0` + `pg-cursor@2.22.0` + `pg-copy-streams@7.0.0` +
 `@neondatabase/serverless@1.1.0` + `@electric-sql/pglite@0.5.5` (all installed fresh 2026-08-14) against a

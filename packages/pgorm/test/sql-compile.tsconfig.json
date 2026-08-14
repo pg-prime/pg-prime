@@ -1,0 +1,13 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "./sql/**/*.ts",
+    "./compile/**/*.ts",
+    "./fuzz/**/*.ts",
+    "../src/sql/**/*.ts",
+    "../src/compile/**/*.ts"
+  ]
+}

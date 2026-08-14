@@ -1,0 +1,12 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "./**/*.ts",
+    "../driver/_harness.ts",
+    "../../src/codec/**/*.ts",
+    "../../src/driver/**/*.ts"
+  ]
+}

@@ -53,7 +53,7 @@
 
 ## Week-1 empirical tasks (carried from the docs)
 
-- Live-PG test: bind parameters in `DECLARE … CURSOR` over extended protocol (decides `.stream()` zero-dep story; 07).
+- ~~Live-PG test: bind parameters in `DECLARE … CURSOR` over extended protocol~~ **ANSWERED YES** (spike, PG 17.11): `.stream()` is zero-dep, `pg-cursor` struck entirely. Boundaries: cursors are transaction-scoped (25P01 outside), FETCH count cannot be a bind param (inlined validated integer).
 - **User:** create the `@pgorm` npm org + publish placeholder `pgorm`/`pgorm-kit`/`create-pgorm` (time-sensitive).
 - Spike the in-house diff engine: catalog extraction for tables/columns/constraints/indexes/enums into the fact-base IR, diff + emit for a 3-table fixture, proven on a shadow clone; wire pg-delta as the CI differential oracle with the enum-ordering repro as fixture #1.
 - Stand up the type-budget CI harness (04's numbers as the initial baselines) before the first `table()` implementation lands.

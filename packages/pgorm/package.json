@@ -11,9 +11,14 @@
   "files": [
     "dist"
   ],
+  "scripts": {
+    "test": "vitest run test/schema test/sql test/compile",
+    "test:live": "vitest run test/driver test/codec test/fuzz",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/schema/tsconfig.json && tsc --noEmit -p test/driver/tsconfig.json && tsc --noEmit -p test/codec/tsconfig.json && tsc --noEmit -p test/sql-compile.tsconfig.json"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/pgorm/pgorm.git"
+    "url": "git+https://github.com/pgormjs/pgorm.git"
   },
   "keywords": [
     "postgres",

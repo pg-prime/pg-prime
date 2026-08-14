@@ -1,0 +1,41 @@
+{
+  "_source": "design/04-type-system.md §3.5. CI fails the build on breach.",
+  "_gatedOn": ["5.9.3", "7.0.2"],
+
+  "instantiationsPerColumnDeclaration": 8,
+  "instantiationsPerTableDeclaration": 50,
+  "instantiationsPerDeclaredRelation": 50,
+  "instantiationsPerTableAllRowShapes": 500,
+  "marginalInstantiationsPerUsage": 1000,
+  "schemaSizeIndependenceRatio": 1.15,
+
+  "headline": {
+    "instantiations": 200000,
+    "checkTimeSeconds": { "5.9.3": 2.0, "7.0.2": 0.5 },
+    "peakMemoryMb": 250
+  },
+
+  "_notGatedHere": {
+    "_why": "design/04 §3.5 lines that need constructs the TYPE CORE spike does not carry yet.",
+    "instantiationsPerDistinctQuerySimpleSelect": 1500,
+    "instantiationsPerDistinctQueryJoinAggSqlNest": 2000,
+    "instantiationsPerDistinctQueryWithRelationProjection": 2750,
+    "_blockedBy": "no query builder yet (agent 03); and @ark/attest cannot run on TS 7.0.2."
+  },
+
+  "_design04Measured": {
+    "_why": "design/04 §3.5's own 'Measured today' column, for an honest three-way print: design-04 / here / budget. design/04's prototype was a declaration-only `src/core.ts`; this harness measures the real implementation.",
+    "instantiationsPerColumnDeclaration": 3.7,
+    "instantiationsPerTableDeclaration": 31,
+    "instantiationsPerDeclaredRelation": 33,
+    "instantiationsPerTableAllRowShapes": 359,
+    "marginalInstantiationsPerUsage": "251-661",
+    "schemaSizeIndependenceRatio": 1.0,
+    "headline": {
+      "instantiations": { "5.9.3": 137778, "7.0.2": 164582 },
+      "types": { "5.9.3": 24011, "7.0.2": 29074 },
+      "checkTimeSeconds": { "5.9.3": 1.11, "7.0.2": 0.231 },
+      "peakMemoryMb": { "5.9.3": 145, "7.0.2": 66 }
+    }
+  }
+}
