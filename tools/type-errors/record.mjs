@@ -13,6 +13,19 @@ import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..')
 
+/**
+ * Goldens must not depend on where the checkout lives or on the OS: TS2719-style diagnostics spell
+ * `import("/abs/path/to/repo/packages/…")`, and tsc on Windows prints `C:/…` with CRLF. Both the
+ * recorder and the checker pass every line through this, so the golden is the same on a laptop,
+ * on ubuntu-latest and on windows-latest.
+ */
+const ROOT_FORMS = [...new Set([ROOT, ROOT.replaceAll('\\', '/'), ROOT.replaceAll('/', '\\')])]
+function portable(line) {
+  let out = line.replace(/\r$/, '')
+  for (const form of ROOT_FORMS) out = out.split(form).join('<repo>')
+  return out
+}
+
 export const COMPILERS = {
   /** The consumer floor (design/00 sign-off #2). */
   '5.9.3': join(ROOT, 'node_modules', 'typescript59', 'bin', 'tsc'),
@@ -51,7 +64,8 @@ export function collect(bin) {
 
   const byCase = Object.fromEntries(caseNames().map((n) => [n, []]))
   let current = null
-  for (const raw of out.split('\n')) {
+  for (const rawLine of out.split(/\r?\n/)) {
+    const raw = portable(rawLine)
     if (!raw.trim()) continue
     // `cases/x.ts(6,42): error TS2551: ...` — path is absolute or relative depending on the compiler.
     const m = /^(?:.*[/\\])?cases[/\\]([\w.-]+)\.ts\((\d+),(\d+)\): (error TS\d+: .*)$/.exec(raw)

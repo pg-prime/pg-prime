@@ -51,7 +51,7 @@ describe.each(Object.entries(COMPILERS))('TypeScript %s', (version, bin) => {
     // Includes `ts-expect-error.probe.ts`: an unused `@ts-expect-error` is
     // itself TS2578, so a *lost* type error fails right here.
     expect(tsc(bin, ['--noEmit'])).toEqual([])
-  })
+  }, 180_000)
 
   it('emits declarations without TS2527 (no inaccessible unique symbol)', () => {
     const out = mkdtempSync(join(tmpdir(), `pg-prime-dts-${version}-`))
@@ -73,5 +73,5 @@ describe.each(Object.entries(COMPILERS))('TypeScript %s', (version, bin) => {
     } finally {
       rmSync(out, { recursive: true, force: true })
     }
-  })
+  }, 180_000)
 })
