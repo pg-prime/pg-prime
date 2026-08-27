@@ -10,8 +10,8 @@
     "test:live": "pnpm --filter pg-prime test:live",
     "test:pg": "pnpm -r --if-present test:pg",
     "typecheck": "pnpm -r --if-present typecheck",
-    "bench:types": "pnpm --filter @pg-prime-bench/types bench",
-    "bench:forks": "pnpm --filter @pg-prime-bench/types bench:forks",
+    "bench:types": "pnpm --filter @pg-prime/bench-types bench",
+    "bench:forks": "pnpm --filter @pg-prime/bench-types bench:forks",
     "type-errors": "node tools/type-errors/record.mjs",
     "type-errors:check": "node tools/type-errors/record.mjs --check"
   },

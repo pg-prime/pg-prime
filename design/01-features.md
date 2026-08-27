@@ -417,5 +417,5 @@ All four items are decided; recorded so they are not re-opened.
    into 08's 1.0 release list as a gate. Not yet measurable: there is no executor to benchmark.
 4. **Package layout.** — **Four packages**: `pg-prime` (runtime, zero deps and zero peer deps),
    `@pg-prime/kit` (CLI, may take dependencies the runtime may not), `@pg-prime/testing`,
-   `create-pg-prime`. "Zero runtime dependencies" stays literally true of the artefact that ships to
+   `@pg-prime/create`. "Zero runtime dependencies" stays literally true of the artefact that ships to
    production; verified — `packages/pg-prime/src` has no non-relative imports at all.

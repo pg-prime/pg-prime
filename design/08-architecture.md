@@ -41,7 +41,7 @@ the right number. We copy the count, not the contents.
 | **`pg-prime`** | The runtime. Schema DSL, codec registry, query builder + compiler, executor, transactions, structural driver adapters, migration *applier*. | **zero runtime deps, zero peer deps** | `tsgo`, unbundled ESM | **≤ 2.5 MB / ≤ 400 files** |
 | **`@pg-prime/kit`** | The CLI. Introspection, diff engine, plan emission, hazard linter, `verify` / `baseline` / `push`, codemods. | bundled & inlined | `esbuild` single file + `tsgo` for `.d.ts` | **≤ 8 MB** (hard fail 12 MB) |
 | **`@pg-prime/testing`** | Structural driver mock, ephemeral PGlite/testcontainer fixtures, `expectSql` golden helpers. Dev-only. | `@electric-sql/pglite` + `@testcontainers/postgresql` as **optional** peers | `tsgo` | ≤ 300 KB |
-| **`create-pg-prime`** | `npm create pg-prime` scaffolder. | bundled | `esbuild` | ≤ 500 KB |
+| **`@pg-prime/create`** | `npm create @pg-prime` scaffolder. | bundled | `esbuild` | ≤ 500 KB |
 
 **Deliberately NOT separate packages:**
 
@@ -92,17 +92,23 @@ worth more than a paragraph.
 
 ### 1.3 Name — DECIDED
 
-Runtime `pg-prime` · CLI `@pg-prime/kit` · test helpers `@pg-prime/testing` · scaffolder `create-pg-prime`
-(`npm create pg-prime`). The `@pg-prime` npm scope and the GitHub org `pg-prime` are both held.
+Runtime `pg-prime` · CLI `@pg-prime/kit` · test helpers `@pg-prime/testing` · scaffolder
+`@pg-prime/create` (`npm create @pg-prime`) · anything else that ships lives under `@pg-prime/*`
+(adapters and extensions stay *subpaths* of the runtime, §1.1). The `@pg-prime` npm org and the GitHub
+org `pg-prime` are held. Renamed from `pgorm` / `pgormjs` on 2026-08-27; the SQL-side prefix is
+`pgprime_` because PostgreSQL reserves `pg_` for system schemas (42939) — a rule PGlite does not enforce.
 
 The one lesson worth keeping from the search: **a 404 on the registry does not mean a name is
-available.** Bare `pg-prime` returned 404 and is nevertheless permanently unpublishable — npm's
+available.** Bare `pgorm` returned 404 and was nevertheless permanently unpublishable — npm's
 similarity rule rejects it against the squatted 2015 `pg-orm` ("Package name too similar to
-existing package pg-orm"). Verify by attempting a `0.0.0` publish, not by probing the registry.
-`pg-orm-ts` is separately dead: unpublished 2026-08-04, and npm forbids reuse of unpublished names.
+existing package pg-orm"). The rule compares names with `.`, `-` and `_` stripped, so check every
+punctuation-equivalent (`pg-prime` ≡ `pgprime` ≡ `pg_prime` ≡ `pg.prime`, all unregistered on
+2026-08-27) and treat the first `0.0.0` publish as the proof. `pg-orm-ts` is separately dead:
+unpublished 2026-08-04, and npm forbids reuse of unpublished names.
 
-**Status:** `pg-prime@0.0.0` is published. `@pg-prime/kit`, `@pg-prime/testing` and `create-pg-prime` are
-still unclaimed — placeholders are free and the names are not.
+**Status:** `pgormjs@0.0.0` (the pre-rename placeholder) is published and will be deprecated.
+`pg-prime`, `@pg-prime/kit`, `@pg-prime/testing` and `@pg-prime/create` are unclaimed — placeholders
+are free and the names are not.
 
 ### 1.4 Monorepo tooling
 
@@ -123,7 +129,7 @@ still unclaimed — placeholders are free and the names are not.
   - `pg-prime` and `@pg-prime/kit` are a **`fixed` version group** — they always publish the same version.
     Version skew between an ORM and its CLI is a permanent support tax (it is the top confusion in
     Drizzle's tracker); we design it away.
-  - `@pg-prime/testing` and `create-pg-prime` version independently.
+  - `@pg-prime/testing` and `@pg-prime/create` version independently.
   - CI enforces `changeset status --since=origin/main` on every PR touching `packages/`.
 - **`pkg-pr-new`** on every PR → installable preview builds
   (`pnpm add https://pkg.pr.new/pg-prime@<sha>`). For a migration tool, "try my fix against your real
@@ -265,7 +271,7 @@ where the ecosystem is heading, but it is pre-1.0 and we would be taking it for 
   `.map` files with `sourcesContent` inlined for the small files and omitted for large ones.
 - **`isolatedDeclarations`: `false` in `pg-prime` (the builder API is inference-heavy and explicit
   return types there would be both unwritable and worse for users), `true` in `@pg-prime/kit`,
-  `@pg-prime/testing` and `create-pg-prime`** — where it is free and buys parallel emit plus a guarantee
+  `@pg-prime/testing` and `@pg-prime/create`** — where it is free and buys parallel emit plus a guarantee
   that no inferred type leaks a deep internal path.
 - **Budget: ≤ 900 KB total, ≤ 200 files, ≤ 40 KB per file** (§1.2). `tools/size-budget.mjs` prints
   the top-10 largest declarations on failure so the offender is obvious.
@@ -600,7 +606,7 @@ is the publisher, so adding a second human is a permissions change, not a secret
 
 ### 6.5 License
 
-**MPL-2.0** for `pg-prime`, `@pg-prime/kit`, `@pg-prime/testing` and `create-pg-prime`. Docs content
+**MPL-2.0** for `pg-prime`, `@pg-prime/kit`, `@pg-prime/testing` and `@pg-prime/create`. Docs content
 **CC-BY-4.0**.
 
 Rationale (00-overview sign-off 3): the requirement is that forks stay open source. Apache-2.0 and
@@ -645,7 +651,7 @@ pg-prime/
 │  │  ├─ test/              unit/  golden/  fuzz/  corpus/
 │  │  └─ package.json  tsconfig.json  build.mjs
 │  ├─ pg-prime-testing/        src/{mock-pool.ts,pglite-fixture.ts,pg-fixture.ts,expect-sql.ts}   # → @pg-prime/testing
-│  └─ create-pg-prime/         src/  templates/
+│  └─ pg-prime-create/         src/  templates/
 ├─ fixtures/
 │  ├─ schemas/              10-tables/  100-tables/  400-tables/        # type-perf fixtures
 │  ├─ migrations/<case>/    from.ts  to.ts  expected.sql  expected.plan.json
@@ -676,7 +682,7 @@ pg-prime/
 
 Every item that was open here has been decided; recorded so the reasoning is not re-litigated.
 
-1. **Name** — decided, §1.3. `pg-prime` / `@pg-prime/kit` / `@pg-prime/testing` / `create-pg-prime`.
+1. **Name** — decided, §1.3. `pg-prime` / `@pg-prime/kit` / `@pg-prime/testing` / `@pg-prime/create`.
 2. **TS floor** — **5.9**, and it is a *consumer* floor, not a devDependency question: we compile
    and typecheck with tsgo (TS 7), while 5.9 is the oldest TypeScript a consumer may use against
    our published `.d.ts`. The `types@<5.9` export gate turns an older consumer's failure into one

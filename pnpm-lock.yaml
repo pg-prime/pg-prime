@@ -35,9 +35,9 @@ importers:
 
   bench/types: {}
 
-  packages/create-pg-prime: {}
-
   packages/pg-prime: {}
+
+  packages/pg-prime-create: {}
 
   packages/pg-prime-kit:
     dependencies:

@@ -1,8 +1,11 @@
 {
-  "name": "create-pg-prime",
+  "name": "@pg-prime/create",
   "version": "0.0.0",
-  "description": "Scaffolder for pg-prime projects. Pre-alpha — not yet usable.",
+  "description": "Scaffolder for pg-prime projects. Pre-alpha \u2014 not yet usable.",
   "license": "MPL-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "engines": {
     "node": ">=22"

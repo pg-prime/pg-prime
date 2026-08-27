@@ -20,7 +20,7 @@ Multi-database ORMs pay a dialect tax on every feature: the schema DSL stops at 
 | `pg-prime` | Runtime: schema DSL, codecs, query builder, executor, migration applier. Zero deps, zero peer deps. |
 | `@pg-prime/kit` | CLI: diff engine, migration generation, lint, verify. |
 | `@pg-prime/testing` | Test helpers (PGlite tier, container matrix). |
-| `create-pg-prime` | Project scaffolder (`npm create pg-prime`). |
+| `@pg-prime/create` | Project scaffolder (`npm create @pg-prime`). |
 
 ## License
 

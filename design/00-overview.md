@@ -31,7 +31,7 @@ different `Codec` types coexist (`sql/codec.ts` carries a self-described spike-l
 | Driver | `execute` · `stream` (real cursors) · `describe` · `cancel` · error taxonomy. No transactions, no COPY |
 | SQL + compiler | `sql` tag with `ident`/`lit`/`join`/`unsafeRaw`; SELECT and INSERT compile. **UPDATE and DELETE do not** — the AST nodes exist, the compiler throws |
 | Migration engine | The most complete subsystem. Extract → IR → diff → ordered DDL → prove → apply → re-extract, end to end on 8 object kinds, 21 phases, 21 hazard codes |
-| Packaging | Nothing is consumable: no entry point, no `exports`, no build. `@pg-prime/testing` and `create-pg-prime` are README-only |
+| Packaging | Nothing is consumable: no entry point, no `exports`, no build. `@pg-prime/testing` and `@pg-prime/create` are README-only |
 
 **428 tests green** (168 runtime offline, 203 runtime live, 57 kit); workspace typecheck clean.
 **Type budget, measured on the real implementation:** 137,778 instantiations, 1.11 s on TS 5.9 /
@@ -42,9 +42,13 @@ non-relative imports at all. `@pg-prime/kit` depends on `pg` + `@types/pg`. 7 de
 ## Decisions of record
 
 1. **Names.** Runtime `pg-prime` · CLI `@pg-prime/kit` · helpers `@pg-prime/testing` · scaffolder
-   `create-pg-prime`. Bare `pg-prime` is permanently unpublishable — npm's similarity rule rejects it
-   against the squatted 2015 `pg-orm`, and **a 404 does not prove a name is available**. Only
-   `pg-prime@0.0.0` is published so far; the other three are unclaimed.
+   `@pg-prime/create` — every package other than the runtime lives under the `@pg-prime` scope (npm org
+   held). Renamed from `pgorm` / `pgormjs` on 2026-08-27. The lesson that survives the rename: bare
+   `pgorm` was permanently unpublishable — npm's similarity rule rejected it against the squatted 2015
+   `pg-orm`, and **a 404 does not prove a name is available**. The rule compares names with `.`, `-`
+   and `_` stripped, so `pg-prime` was checked together with `pgprime`, `pg_prime` and `pg.prime` (all
+   unregistered). `pgormjs@0.0.0`, the pre-rename placeholder, is published and to be deprecated; the
+   four new names are unclaimed until their `0.0.0` placeholders publish.
 2. **TypeScript.** Build with tsgo (TS 7); **consumer floor 5.9**. The floor is what a *user* needs
    to typecheck against our `.d.ts`, enforced by a `types@<5.9` export gate. Lowering a floor later
    is non-breaking; raising one is not.
@@ -96,4 +100,4 @@ non-relative imports at all. `@pg-prime/kit` depends on `pg` + `@types/pg`. 7 de
    API forks, to be settled by measurement rather than fiat.
 4. Package entry points and a build, so any of this is installable.
 5. CI. There is none: every gate in these documents is currently run by hand.
-6. Claim `@pg-prime/kit`, `@pg-prime/testing`, `create-pg-prime` on npm.
+6. Claim `@pg-prime/kit`, `@pg-prime/testing`, `@pg-prime/create` on npm.
