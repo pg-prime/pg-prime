@@ -8,7 +8,7 @@
 import { compileExpr } from '../../src/compile/compiler.js'
 import type { Bind } from '../../src/compile/contract.js'
 import { columnMeta, tableMeta, col, table } from '../../src/compile/nodes.js'
-import { spikeCodecs } from '../../src/sql/codec.js'
+import { boolCodec, int8Codec, jsonbCodec, numericCodec, textCodec, timestamptzCodec, varcharCodec } from '../../src/codec/index.js'
 import type { Fragment } from '../../src/sql/fragment.js'
 import { toNode } from '../../src/sql/fragment.js'
 
@@ -35,28 +35,28 @@ export const postsTable = tableMeta('public', 'posts')
 export const commentsTable = tableMeta('public', 'comments')
 
 export const usersCols = {
-  id: columnMeta('id', spikeCodecs.int8),
-  email: columnMeta('email', spikeCodecs.citext),
-  name: columnMeta('name', spikeCodecs.text),
-  role: columnMeta('role', spikeCodecs.text),
-  meta: columnMeta('meta', spikeCodecs.jsonb),
-  createdAt: columnMeta('created_at', spikeCodecs.timestamptz),
-  deletedAt: columnMeta('deleted_at', spikeCodecs.timestamptz),
+  id: columnMeta('id', int8Codec),
+  email: columnMeta('email', varcharCodec),
+  name: columnMeta('name', textCodec),
+  role: columnMeta('role', textCodec),
+  meta: columnMeta('meta', jsonbCodec),
+  createdAt: columnMeta('created_at', timestamptzCodec),
+  deletedAt: columnMeta('deleted_at', timestamptzCodec),
 } as const
 
 export const postsCols = {
-  id: columnMeta('id', spikeCodecs.int8),
-  authorId: columnMeta('author_id', spikeCodecs.int8),
-  title: columnMeta('title', spikeCodecs.text),
-  amount: columnMeta('amount', spikeCodecs.numeric),
-  published: columnMeta('published', spikeCodecs.bool),
-  createdAt: columnMeta('created_at', spikeCodecs.timestamptz),
+  id: columnMeta('id', int8Codec),
+  authorId: columnMeta('author_id', int8Codec),
+  title: columnMeta('title', textCodec),
+  amount: columnMeta('amount', numericCodec),
+  published: columnMeta('published', boolCodec),
+  createdAt: columnMeta('created_at', timestamptzCodec),
 } as const
 
 export const commentsCols = {
-  id: columnMeta('id', spikeCodecs.int8),
-  postId: columnMeta('post_id', spikeCodecs.int8),
-  body: columnMeta('body', spikeCodecs.text),
+  id: columnMeta('id', int8Codec),
+  postId: columnMeta('post_id', int8Codec),
+  body: columnMeta('body', textCodec),
 } as const
 
 /** `u('email')` => the `"users"."email"` column node under the default `users` alias. */

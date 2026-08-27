@@ -52,7 +52,6 @@ export interface IndexPayload extends Payload {
   /** `pg_get_indexdef` with the index's OWN name replaced by `%ID%` (I1). */
   readonly definition: string;
   readonly unique: boolean;
-  readonly primary: boolean;
   readonly valid: boolean;
 }
 

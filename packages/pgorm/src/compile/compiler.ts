@@ -13,27 +13,63 @@
  * pushes the encoded value into `binds`.
  */
 
-import type { Codec } from '../sql/codec.js'
-import { TooManyParametersError, UnsupportedNodeError } from '../sql/errors.js'
+import type { AnyCodec } from '../codec/index.js'
+import {
+  InvalidFragmentError,
+  TooManyParametersError,
+  UnsupportedNodeError,
+} from '../sql/errors.js'
 import { quoteIdentPart, quoteStringLiteral } from '../sql/ident.js'
 import type {
   AggNode,
+  CteNode,
+  DeleteNode,
   Expr,
+  FrameBound,
   FromItem,
   InsertNode,
   JoinNode,
+  OnConflictNode,
   OrderItem,
+  OverNode,
   ProjectionItem,
   QualifiedName,
   RawNode,
   SelectNode,
+  SetItem,
+  SetOpNode,
   Statement,
+  UpdateNode,
+  WindowDef,
 } from './ast.js'
 import type { Bind, Compiled, FieldPlan, ResultShape } from './contract.js'
 import { planReturning, planSelect } from './hoist.js'
 
 /** The PostgreSQL wire protocol caps parameters at 65535 (int16). */
 const MAX_PARAMS = 65535
+
+/**
+ * Memo for `quoteIdentPart` on the one identifier the emitter quotes on the hot path: a
+ * projection alias, which is re-validated on every compile of every query that uses it.
+ * Validation is four scans plus a `replaceAll` allocation; a schema has a bounded set of column
+ * names, so a bounded cache turns that into one `Map.get`.
+ *
+ * The cap exists because an alias can also be caller-generated (`select … as "sum_${n}"`), and an
+ * unbounded module-level cache keyed by caller data is a memory leak. Clearing wholesale is the
+ * cheapest eviction there is and costs one re-validation per entry afterwards. Failures are not
+ * cached: `quoteIdentPart` throws before anything is written.
+ */
+const ALIAS_CACHE = new Map<string, string>()
+const ALIAS_CACHE_MAX = 4096
+
+function quoteAlias(key: string): string {
+  const hit = ALIAS_CACHE.get(key)
+  if (hit !== undefined) return hit
+  const quoted = quoteIdentPart(key)
+  if (ALIAS_CACHE.size >= ALIAS_CACHE_MAX) ALIAS_CACHE.clear()
+  ALIAS_CACHE.set(key, quoted)
+  return quoted
+}
 
 class Emitter {
   readonly chunks: string[] = []
@@ -42,8 +78,16 @@ class Emitter {
   readonly writes: QualifiedName[] = []
   readonly placeholders: string[] = []
   usedUnsafeRaw = false
-  /** INSERT/UPDATE/DELETE RETURNING lists reference the target table implicitly. */
-  qualifyColumns = true
+  /**
+   * The alias whose columns are emitted *unqualified*, or `undefined` for "qualify everything".
+   *
+   * Set only for an INSERT/UPDATE/DELETE RETURNING list, which references the statement's target
+   * table implicitly. It is an alias rather than a flag because `update … from (values …) as "v"`
+   * has other items in scope: unqualifying `"v"."price"` there produces `42702 ambiguous column`
+   * whenever the target has a column of the same name — which, for a bulk update-by-key, it
+   * always does.
+   */
+  unqualified: string | undefined = undefined
   private indent = 0
 
   push(s: string): void {
@@ -63,13 +107,26 @@ class Emitter {
     this.nl()
   }
 
-  /** The ONLY way a caller-supplied value reaches the output. */
-  bindValue(value: unknown, codec: Codec): void {
-    this.binds.push({ k: 'value', encoded: codec.encode(value as never) })
+  /**
+   * The ONLY way a caller-supplied value reaches the output.
+   *
+   * `null` is short-circuited here rather than in each codec, exactly as the registry
+   * short-circuits it on the way back (`Registry.planFor`). Both halves of the seam then get to
+   * declare non-nullable signatures — `encode(v: TIn)`, `decodeText(raw: string)` — and there is
+   * one place, not fifty, that knows SQL NULL is not a value of any type.
+   *
+   * Found in WS3: without this, `isDistinctFrom(x, null)` and every nullable insert value threw
+   * `PgEncodeError` from whichever codec happened to be attached, because `Codec.encode`'s
+   * contract lists `null` as a legal *return* and no built-in accepts it as an argument.
+   * The declared parameter type is still the codec's, so PostgreSQL sees a typed NULL.
+   */
+  bindValue(value: unknown, codec: AnyCodec): void {
+    const encoded = value === null ? null : codec.encode(value as never)
+    this.binds.push({ k: 'value', encoded, oid: codec.paramOid })
     this.chunks.push(`$${this.binds.length}`)
   }
 
-  bindSlot(name: string, codec: Codec): void {
+  bindSlot(name: string, codec: AnyCodec): void {
     this.binds.push({ k: 'slot', name, codec })
     this.placeholders.push(name)
     this.chunks.push(`$${this.binds.length}`)
@@ -100,7 +157,48 @@ function needsParens(e: Expr): boolean {
   if (e.k === 'bool') {
     return e.args.length === 1 && needsParens(e.args[0] as Expr)
   }
-  return e.k === 'bin' || e.k === 'is' || e.k === 'in' || e.k === 'between' || isOpaque(e)
+  // `un` is here for the *operand* positions only — `bool` parenthesises with `isOpaque`, so
+  // `not a and b` stays as written (`not` binds tighter than `and`/`or`). Everywhere else a
+  // bare unary changes the parse: `not a = b` is `not (a = b)` to PostgreSQL, and `-a::text`
+  // is `-(a::text)`. Confirmed against PG 17.
+  return (
+    e.k === 'bin' ||
+    e.k === 'is' ||
+    e.k === 'in' ||
+    e.k === 'between' ||
+    e.k === 'un' ||
+    isOpaque(e)
+  )
+}
+
+/**
+ * A negative numeric literal, which *fuses with a preceding operator character*.
+ *
+ * `un('-', lit(-1))` would emit `--1` — a line comment, so the rest of the statement is
+ * silently dropped — and `cast(lit(-2147483648), 'int4')` would emit `-2147483648::int4`,
+ * which PostgreSQL parses as `-(2147483648::int4)` and rejects with 22003. Wrapping the literal
+ * is the only fix that keeps the value intact.
+ */
+function isNegativeLit(e: Expr): boolean {
+  return (
+    e.k === 'lit' &&
+    (typeof e.value === 'number' || typeof e.value === 'bigint') &&
+    e.value < 0
+  )
+}
+
+/**
+ * An operand that is glued to a preceding operator character: the operand of a symbolic prefix
+ * operator (`-x`, `+x`, `~x`) and the operand of a `::` cast.
+ */
+function emitGluedOperand(em: Emitter, e: Expr): void {
+  if (isNegativeLit(e)) {
+    em.push('(')
+    emitExpr(em, e)
+    em.push(')')
+    return
+  }
+  emitParenthesized(em, e)
 }
 
 function emitParenthesized(em: Emitter, e: Expr): void {
@@ -111,6 +209,116 @@ function emitParenthesized(em: Emitter, e: Expr): void {
   } else {
     emitExpr(em, e)
   }
+}
+
+/**
+ * ── The option-string whitelist (03 §1.1(5)) ─────────────────────────────────────────────────
+ *
+ * `emitIdentPart`, `emitUnsafeRaw` and `quoteStringLiteral` are supposed to be the *whole* audit
+ * surface, but an AST option slot is a string too: `` locking: { strength: evil } `` would have
+ * been concatenated into `for <evil>` verbatim. These switches make every option position emit a
+ * **compile-time constant**, so a value that is not one of the documented options cannot reach
+ * the output at all — it throws. The builder validates the same options a layer earlier; this is
+ * the layer that makes the guarantee structural.
+ */
+function orderDir(v: OrderItem['dir']): string {
+  switch (v) {
+    case 'asc':
+      return ' asc'
+    case 'desc':
+      return ' desc'
+    default:
+      throw new UnsupportedNodeError('order.dir', `expected 'asc' or 'desc', got ${show(v)}`)
+  }
+}
+
+function nullsKeyword(v: OrderItem['nulls']): string {
+  switch (v) {
+    case 'first':
+      return ' nulls first'
+    case 'last':
+      return ' nulls last'
+    default:
+      throw new UnsupportedNodeError('order.nulls', `expected 'first' or 'last', got ${show(v)}`)
+  }
+}
+
+function lockStrength(v: string): string {
+  switch (v) {
+    case 'update':
+      return 'for update'
+    case 'no key update':
+      return 'for no key update'
+    case 'share':
+      return 'for share'
+    case 'key share':
+      return 'for key share'
+    default:
+      throw new UnsupportedNodeError('locking.strength', `not a lock strength: ${show(v)}`)
+  }
+}
+
+function lockWait(v: string): string {
+  switch (v) {
+    case 'block':
+      return ''
+    case 'nowait':
+      return ' nowait'
+    case 'skip locked':
+      return ' skip locked'
+    default:
+      throw new UnsupportedNodeError('locking.wait', `not a lock wait mode: ${show(v)}`)
+  }
+}
+
+function frameMode(v: string): string {
+  switch (v) {
+    case 'rows':
+      return 'rows '
+    case 'range':
+      return 'range '
+    case 'groups':
+      return 'groups '
+    default:
+      throw new UnsupportedNodeError('frame.mode', `not a frame mode: ${show(v)}`)
+  }
+}
+
+function frameExclude(v: string): string {
+  switch (v) {
+    case 'current row':
+      return ' exclude current row'
+    case 'group':
+      return ' exclude group'
+    case 'ties':
+      return ' exclude ties'
+    case 'no others':
+      return ' exclude no others'
+    default:
+      throw new UnsupportedNodeError('frame.exclude', `not a frame exclusion: ${show(v)}`)
+  }
+}
+
+function frameBoundKeyword(k: string): string {
+  switch (k) {
+    case 'unbounded preceding':
+      return 'unbounded preceding'
+    case 'current row':
+      return 'current row'
+    case 'unbounded following':
+      return 'unbounded following'
+    case 'preceding':
+      return ' preceding'
+    case 'following':
+      return ' following'
+    default:
+      throw new UnsupportedNodeError('frame.bound', `not a frame bound: ${show(k)}`)
+  }
+}
+
+/** Quote an offending option for an error message. It never reaches the SQL. */
+function show(v: unknown): string {
+  return typeof v === 'string' ? JSON.stringify(v) : String(v)
 }
 
 function emitLiteralValue(v: number | bigint | boolean | null): string {
@@ -126,7 +334,7 @@ function emitLiteralValue(v: number | bigint | boolean | null): string {
 function emitExpr(em: Emitter, e: Expr): void {
   switch (e.k) {
     case 'col':
-      em.push(em.qualifyColumns ? e.q : e.qn)
+      em.push(e.alias === em.unqualified ? e.qn : e.q)
       return
 
     case 'param':
@@ -196,7 +404,7 @@ function emitExpr(em: Emitter, e: Expr): void {
         emitParenthesized(em, e.e)
       } else {
         em.push(e.op)
-        emitParenthesized(em, e.e)
+        emitGluedOperand(em, e.e)
       }
       return
 
@@ -205,7 +413,11 @@ function emitExpr(em: Emitter, e: Expr): void {
       em.push(` is ${e.test}`)
       if (e.r !== undefined) {
         em.push(' ')
-        emitExpr(em, e.r)
+        // `is distinct from` binds looser than every operator, so an opaque fragment here
+        // (`sql`b or true``) would swallow the comparison: `a is distinct from b or true`
+        // evaluates as `(a is distinct from b) or true`. The docblock on `isOpaque` promises
+        // "every operand position"; this is one of them.
+        emitParenthesized(em, e.r)
       }
       return
 
@@ -222,7 +434,9 @@ function emitExpr(em: Emitter, e: Expr): void {
         em.push(e.not ? ' not in (' : ' in (')
         for (let i = 0; i < set.items.length; i++) {
           if (i > 0) em.push(', ')
-          emitExpr(em, set.items[i] as Expr)
+          // A list item is comma-delimited, but an opaque fragment can itself contain a comma
+          // (`sql`a, b``) and would turn one item into two.
+          emitParenthesized(em, set.items[i] as Expr)
         }
         em.push(')')
         return
@@ -246,9 +460,11 @@ function emitExpr(em: Emitter, e: Expr): void {
       emitParenthesized(em, e.e)
       em.push(e.not ? ' not between ' : ' between ')
       if (e.symmetric) em.push('symmetric ')
-      emitExpr(em, e.lo)
+      // `and` inside a BETWEEN is the clause's own separator, so an opaque `lo` containing one
+      // (`sql`a and b``) re-parses the whole clause.
+      emitParenthesized(em, e.lo)
       em.push(' and ')
-      emitExpr(em, e.hi)
+      emitParenthesized(em, e.hi)
       return
 
     case 'fn':
@@ -264,10 +480,63 @@ function emitExpr(em: Emitter, e: Expr): void {
       emitAgg(em, e)
       return
 
+    case 'over':
+      emitOver(em, e)
+      return
+
     case 'cast':
-      emitParenthesized(em, e.e)
+      emitGluedOperand(em, e.e)
       em.push(`::${e.to}`)
       return
+
+    // `case` / `row` / `array` were understood by `codecOf`, the CSE digest and the rewriter but
+    // rejected here, so a tree containing one planned fine and then failed at emission. All three
+    // are self-delimiting (`… end`, `(…)`, `[…]`), so none of them needs parentheses anywhere.
+    case 'case': {
+      if (e.whens.length === 0) {
+        throw new UnsupportedNodeError('case', 'a CASE expression needs at least one WHEN branch')
+      }
+      em.push('case')
+      if (e.operand !== undefined) {
+        em.push(' ')
+        emitExpr(em, e.operand)
+      }
+      for (const w of e.whens) {
+        em.push(' when ')
+        emitExpr(em, w.when)
+        em.push(' then ')
+        emitExpr(em, w.then)
+      }
+      if (e.else !== undefined) {
+        em.push(' else ')
+        emitExpr(em, e.else)
+      }
+      em.push(' end')
+      return
+    }
+
+    case 'row': {
+      em.push('row(')
+      for (let i = 0; i < e.items.length; i++) {
+        if (i > 0) em.push(', ')
+        emitExpr(em, e.items[i] as Expr)
+      }
+      em.push(')')
+      return
+    }
+
+    case 'array': {
+      em.push('array[')
+      for (let i = 0; i < e.items.length; i++) {
+        if (i > 0) em.push(', ')
+        emitExpr(em, e.items[i] as Expr)
+      }
+      em.push(']')
+      // An empty `array[]` has no element type, and PostgreSQL says so (42P18). The cast is not
+      // decoration: `array[]::int4[]` is the only spelling that parses.
+      if (e.items.length === 0) em.push(`::${e.elemCodec.sqlName}[]`)
+      return
+    }
 
     case 'sq':
       em.push('(')
@@ -343,6 +612,68 @@ function emitAgg(em: Emitter, e: AggNode): void {
 }
 
 /**
+ * `fn(...) over (...)` or `fn(...) over "name"`.
+ *
+ * The inline and the named form are the same node with a different `window`; PostgreSQL treats
+ * them identically, and `03` §2.8 offers both because a window repeated across four projection
+ * items should be written once.
+ */
+function emitOver(em: Emitter, e: OverNode): void {
+  emitExpr(em, e.fn)
+  em.push(' over ')
+  if ('ref' in e.window) {
+    em.push(quoteIdentPart(e.window.ref))
+    return
+  }
+  emitWindowDef(em, e.window)
+}
+
+function emitWindowDef(em: Emitter, w: WindowDef): void {
+  em.push('(')
+  let first = true
+  const sep = (): void => {
+    if (!first) em.push(' ')
+    first = false
+  }
+  if (w.partitionBy !== undefined && w.partitionBy.length > 0) {
+    sep()
+    em.push('partition by ')
+    for (let i = 0; i < w.partitionBy.length; i++) {
+      if (i > 0) em.push(', ')
+      emitExpr(em, w.partitionBy[i] as Expr)
+    }
+  }
+  if (w.orderBy !== undefined && w.orderBy.length > 0) {
+    sep()
+    em.push('order by ')
+    emitOrderItems(em, w.orderBy)
+  }
+  if (w.frame !== undefined) {
+    sep()
+    em.push(frameMode(w.frame.mode))
+    if (w.frame.end !== undefined) {
+      em.push('between ')
+      emitFrameBound(em, w.frame.start)
+      em.push(' and ')
+      emitFrameBound(em, w.frame.end)
+    } else {
+      emitFrameBound(em, w.frame.start)
+    }
+    if (w.frame.exclude !== undefined) em.push(frameExclude(w.frame.exclude))
+  }
+  em.push(')')
+}
+
+function emitFrameBound(em: Emitter, b: FrameBound): void {
+  if (b.k === 'preceding' || b.k === 'following') {
+    emitExpr(em, b.n)
+    em.push(frameBoundKeyword(b.k))
+    return
+  }
+  em.push(frameBoundKeyword(b.k))
+}
+
+/**
  * `chunks` and `parts` interleave. `chunks` are compile-time constants from a
  * `TemplateStringsArray`; every `part` is dispatched here and only two branches can put
  * non-`$n` text into the output.
@@ -351,7 +682,15 @@ function emitRaw(em: Emitter, node: RawNode): void {
   em.push(node.chunks[0] as string)
   for (let i = 0; i < node.parts.length; i++) {
     const part = node.parts[i]
-    if (part === undefined) continue
+    if (part === undefined) {
+      // A sparse or short `parts` array can only come from a hand-built node (`raw()` copies and
+      // checks the interleave invariant). Skipping it silently dropped the *following* chunk
+      // too, i.e. deleted a piece of the caller's SQL.
+      throw new InvalidFragmentError(
+        `sql fragment: part ${i} of ${node.parts.length} is missing; chunks and parts must ` +
+          'interleave exactly.',
+      )
+    }
     switch (part.k) {
       case 'ident':
         // AUDIT SURFACE 1: pre-quoted + validated at sql.ident() call time (03 §3.4).
@@ -376,8 +715,8 @@ function emitOrderItems(em: Emitter, items: readonly OrderItem[]): void {
     const it = items[i] as OrderItem
     if (i > 0) em.push(', ')
     emitExpr(em, it.e)
-    em.push(` ${it.dir}`)
-    if (it.nulls !== undefined) em.push(` nulls ${it.nulls}`)
+    em.push(orderDir(it.dir))
+    if (it.nulls !== undefined) em.push(nullsKeyword(it.nulls))
   }
 }
 
@@ -391,7 +730,7 @@ function emitProjection(em: Emitter, items: readonly ProjectionItem[]): void {
     if (i > 0) em.push(', ')
     emitExpr(em, item.expr)
     // Result aliases are identifiers, so they go through the same fuzzed sanitizer.
-    em.push(` as ${quoteIdentPart(item.key)}`)
+    em.push(` as ${quoteAlias(item.key)}`)
   }
 }
 
@@ -410,15 +749,62 @@ function emitFromItem(em: Emitter, item: FromItem): void {
     case 'cteRef':
       em.push(`${quoteIdentPart(item.name)} as ${item.qAlias}`)
       return
+    case 'values': {
+      // `(values ($1::int8, $2::numeric), ($3, $4)) as "v"("id", "price")` — casts on the first
+      // row only, exactly as a bulk INSERT does (03 §2.6): PostgreSQL infers the rest from row 1,
+      // and without them a `values` join source is `text` and every comparison is a 42883.
+      em.push('(values ')
+      for (let r = 0; r < item.rows.length; r++) {
+        if (r > 0) em.push(', ')
+        em.push('(')
+        const row = item.rows[r] as readonly Expr[]
+        for (let c = 0; c < row.length; c++) {
+          if (c > 0) em.push(', ')
+          emitExpr(em, row[c] as Expr)
+          const cast = r === 0 ? item.casts[c] : null
+          if (cast !== null && cast !== undefined) em.push(`::${cast}`)
+        }
+        em.push(')')
+      }
+      em.push(`) as ${item.qAlias}(`)
+      em.push(item.columns.map((c) => quoteIdentPart(c)).join(', '))
+      em.push(')')
+      return
+    }
+    case 'func': {
+      if (item.lateral) em.push('lateral ')
+      em.push(`${item.fn}(`)
+      for (let i = 0; i < item.args.length; i++) {
+        if (i > 0) em.push(', ')
+        emitExpr(em, item.args[i] as Expr)
+      }
+      em.push(')')
+      if (item.ordinality) em.push(' with ordinality')
+      em.push(` as ${item.qAlias}`)
+      if (item.columns !== undefined && item.columns.length > 0) {
+        em.push(`(${item.columns.map((c) => quoteIdentPart(c)).join(', ')})`)
+      }
+      return
+    }
     default:
-      throw new UnsupportedNodeError(item.k, 'from item')
+      throw new UnsupportedNodeError((item as { k: string }).k, 'from item')
   }
 }
 
 function emitJoin(em: Emitter, j: JoinNode): void {
   em.push(`${j.type} join `)
   emitFromItem(em, j.item)
-  if (j.type === 'cross') return
+  if (j.type === 'cross') {
+    // Dropping the predicate would turn a filtered join into a full cartesian product — the one
+    // silent mistake in this file that multiplies rows instead of losing them.
+    if (j.on !== undefined) {
+      throw new UnsupportedNodeError(
+        'join',
+        'a cross join takes no ON clause; use an inner join for a predicate',
+      )
+    }
+    return
+  }
   if (j.on === undefined) {
     // A hoisted lateral projection: ON TRUE.
     em.push(' on true')
@@ -430,7 +816,59 @@ function emitJoin(em: Emitter, j: JoinNode): void {
 
 // ─────────────────────────── statements ───────────────────────────
 
+/**
+ * `with [recursive] "a" as [materialized] (…), "b" as (…)`.
+ *
+ * Emitted first, so a CTE's parameters get the LOWEST `$n` — which is what makes `$n` numbering a
+ * single left-to-right textual pass (03 §1.1) even though the CTE is logically evaluated first.
+ *
+ * `recursive` is a property of the WITH clause, not of one CTE: PostgreSQL takes the keyword once
+ * and applies it to the whole list, so one recursive member marks the clause.
+ */
+function emitWith(em: Emitter, ctes: readonly CteNode[]): void {
+  if (ctes.length === 0) return
+  em.push(ctes.some((c) => c.recursive) ? 'with recursive ' : 'with ')
+  for (let i = 0; i < ctes.length; i++) {
+    const cte = ctes[i] as CteNode
+    if (i > 0) em.push(', ')
+    em.push(quoteIdentPart(cte.name))
+    if (cte.columns !== undefined && cte.columns.length > 0) {
+      em.push(`(${cte.columns.map((c) => quoteIdentPart(c)).join(', ')})`)
+    }
+    em.push(' as ')
+    // A PG-only planner lever no other TS builder exposes ergonomically (03 §2.7): `materialized`
+    // forces an optimization fence, `not materialized` forbids one. Absent = the planner decides.
+    if (cte.materialized === true) em.push('materialized ')
+    else if (cte.materialized === false) em.push('not materialized ')
+    em.push('(')
+    em.block(() => emitStatement(em, cte.query))
+    em.push(')')
+  }
+  em.nl()
+}
+
+/**
+ * A SELECT always qualifies its column references, even one nested inside a clause that does not.
+ *
+ * `emitReturning` turns qualification off, because RETURNING's columns implicitly belong to the
+ * statement's target. A correlated subquery *inside* that RETURNING list has its own FROM clause,
+ * so the same rule there is not a style choice but a wrong answer: found in WS5, where a
+ * `posts.comments.count()` in a RETURNING list emitted
+ * `where "post_id" = "id"` — two columns of `comments`, silently comparing a row to itself —
+ * instead of `where "comments"."post_id" = "posts"."id"`.
+ */
 function emitSelectBody(em: Emitter, n: SelectNode): void {
+  const prev = em.unqualified
+  em.unqualified = undefined
+  try {
+    emitSelectBodyIn(em, n)
+  } finally {
+    em.unqualified = prev
+  }
+}
+
+function emitSelectBodyIn(em: Emitter, n: SelectNode): void {
+  if (n.with !== undefined) emitWith(em, n.with)
   em.push('select ')
   if (n.distinct !== undefined) {
     em.push('distinct ')
@@ -474,6 +912,16 @@ function emitSelectBody(em: Emitter, n: SelectNode): void {
     em.push('having ')
     emitExpr(em, n.having)
   }
+  if (n.windows !== undefined && n.windows.length > 0) {
+    em.nl()
+    em.push('window ')
+    for (let i = 0; i < n.windows.length; i++) {
+      const w = n.windows[i] as { name: string; def: WindowDef }
+      if (i > 0) em.push(', ')
+      em.push(`${quoteIdentPart(w.name)} as `)
+      emitWindowDef(em, w.def)
+    }
+  }
   if (n.orderBy !== undefined && n.orderBy.length > 0) {
     em.nl()
     em.push('order by ')
@@ -491,17 +939,22 @@ function emitSelectBody(em: Emitter, n: SelectNode): void {
   }
   if (n.locking !== undefined) {
     em.nl()
-    em.push(`for ${n.locking.strength}`)
+    em.push(lockStrength(n.locking.strength))
     if (n.locking.of !== undefined && n.locking.of.length > 0) {
       em.push(` of ${n.locking.of.map((a) => quoteIdentPart(a)).join(', ')}`)
     }
-    if (n.locking.wait !== 'block') em.push(` ${n.locking.wait}`)
+    em.push(lockWait(n.locking.wait))
   }
 }
 
 function emitInsertBody(em: Emitter, n: InsertNode): void {
+  if (n.with !== undefined) emitWith(em, n.with)
   em.writes.push({ schema: n.into.table.schema, name: n.into.table.name })
-  em.push(`insert into ${n.into.table.qualified} (`)
+  em.push(`insert into ${n.into.table.qualified}`)
+  // Only when it differs: `insert into "public"."users" (...)` is the 03 §2.5 golden, and an
+  // alias that repeats the table name would break it for no gain.
+  if (n.into.alias !== n.into.table.name) em.push(` as ${n.into.qAlias}`)
+  em.push(' (')
   for (let i = 0; i < n.columns.length; i++) {
     if (i > 0) em.push(', ')
     em.push((n.columns[i] as { quoted: string }).quoted)
@@ -522,11 +975,23 @@ function emitInsertBody(em: Emitter, n: InsertNode): void {
           // Casts on the first row only; PostgreSQL infers the rest (03 §2.6).
           if (r === 0 && n.castFirstRow === true) {
             const meta = n.columns[c]
-            if (meta !== undefined) em.push(`::${meta.codec.pgType}`)
+            if (meta !== undefined) em.push(`::${meta.codec.sqlName}`)
           }
         }
         em.push(')')
       }
+      return
+    }
+    case 'unnest': {
+      // ONE parameter per column regardless of row count (03 §2.6) — the PG-only trick that
+      // sidesteps the 65535-param ceiling and collapses the parse cost of a huge batch.
+      em.nl()
+      em.push('select * from unnest(')
+      for (let i = 0; i < src.arrays.length; i++) {
+        if (i > 0) em.push(', ')
+        emitExpr(em, src.arrays[i] as Expr)
+      }
+      em.push(')')
       return
     }
     case 'defaults':
@@ -537,18 +1002,202 @@ function emitInsertBody(em: Emitter, n: InsertNode): void {
       emitStatement(em, src.query)
       return
     default:
-      throw new UnsupportedNodeError(src.k, 'insert source')
+      throw new UnsupportedNodeError((src as { k: string }).k, 'insert source')
   }
 }
 
-function emitReturning(em: Emitter, items: readonly ProjectionItem[]): void {
+/**
+ * `on conflict <target> do nothing | do update set … where …` (03 §2.5).
+ *
+ * The `where` on the *target* is the partial-index predicate — it selects which unique index the
+ * arbiter is, and without it an upsert against a partial index raises 42P10. The `where` on the
+ * *action* is `DO UPDATE … WHERE`, which decides per row whether to write at all. Two different
+ * clauses that both spell `where`; conflating them is the classic upsert bug.
+ */
+function emitOnConflict(em: Emitter, n: OnConflictNode): void {
+  em.nl()
+  em.push('on conflict')
+  const t = n.target
+  if (t !== undefined) {
+    if (t.k === 'constraint') {
+      em.push(` on constraint ${quoteIdentPart(t.name)}`)
+    } else if (t.k === 'columns') {
+      em.push(' (')
+      em.push(t.columns.map((c) => c.quoted).join(', '))
+      em.push(')')
+      if (t.where !== undefined) {
+        em.push(' where ')
+        emitExpr(em, t.where)
+      }
+    } else {
+      em.push(' (')
+      for (let i = 0; i < t.exprs.length; i++) {
+        if (i > 0) em.push(', ')
+        emitExpr(em, t.exprs[i] as Expr)
+      }
+      em.push(')')
+      if (t.where !== undefined) {
+        em.push(' where ')
+        emitExpr(em, t.where)
+      }
+    }
+  }
+  em.nl()
+  if (n.action.k === 'nothing') {
+    em.push('do nothing')
+    return
+  }
+  em.push('do update set ')
+  emitSetItems(em, n.action.set)
+  if (n.action.where !== undefined) {
+    em.nl()
+    em.push('where ')
+    emitExpr(em, n.action.where)
+  }
+}
+
+/**
+ * `"price" = "v"."price", "updated_at" = now()`.
+ *
+ * The **target** is always unqualified — `set "users"."name" = …` is a syntax error in PostgreSQL,
+ * because the target of a SET is a column of the statement's one target table by definition. The
+ * **value** is qualified, because it may name `excluded`, a FROM item, or the target row itself.
+ */
+function emitSetItems(em: Emitter, items: readonly SetItem[]): void {
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i] as SetItem
+    if (i > 0) em.push(', ')
+    em.push(`${it.column.quoted} = `)
+    emitExpr(em, it.value)
+  }
+}
+
+function emitUpdateBody(em: Emitter, n: UpdateNode): void {
+  if (n.with !== undefined) emitWith(em, n.with)
+  em.writes.push({ schema: n.target.table.schema, name: n.target.table.name })
+  em.push(`update ${n.target.table.qualified} as ${n.target.qAlias}`)
+  em.nl()
+  em.push('set ')
+  emitSetItems(em, n.set)
+  if (n.from !== undefined && n.from.length > 0) {
+    em.nl()
+    em.push('from ')
+    for (let i = 0; i < n.from.length; i++) {
+      if (i > 0) em.push(', ')
+      emitFromItem(em, n.from[i] as FromItem)
+    }
+  }
+  if (n.where !== undefined) {
+    em.nl()
+    em.push('where ')
+    emitExpr(em, n.where)
+  }
+}
+
+function emitDeleteBody(em: Emitter, n: DeleteNode): void {
+  if (n.with !== undefined) emitWith(em, n.with)
+  em.writes.push({ schema: n.from.table.schema, name: n.from.table.name })
+  em.push(`delete from ${n.from.table.qualified} as ${n.from.qAlias}`)
+  if (n.using !== undefined && n.using.length > 0) {
+    em.nl()
+    em.push('using ')
+    for (let i = 0; i < n.using.length; i++) {
+      if (i > 0) em.push(', ')
+      emitFromItem(em, n.using[i] as FromItem)
+    }
+  }
+  if (n.where !== undefined) {
+    em.nl()
+    em.push('where ')
+    emitExpr(em, n.where)
+  }
+}
+
+/**
+ * `a union all b`, with `order by` / `limit` / `offset` applying to the WHOLE result.
+ *
+ * A branch is parenthesized exactly when it carries clauses PostgreSQL would otherwise bind to the
+ * set operation instead: its own `order by`/`limit`/`offset`, or a nested set operation whose
+ * precedence differs (`intersect` binds tighter than `union`). The common case — two plain selects
+ * — emits no parentheses at all, which is what a hand-written query looks like.
+ */
+function branchNeedsParens(n: SelectNode | SetOpNode): boolean {
+  if (n.k === 'setop') return true
+  return (
+    // `… union with "c" as (…) select …` is 42601: WITH may only start a *parenthesised*
+    // branch. PostgreSQL accepts `(with x as (…) select …) union …`.
+    (n.with !== undefined && n.with.length > 0) ||
+    (n.orderBy !== undefined && n.orderBy.length > 0) ||
+    n.limit !== undefined ||
+    n.offset !== undefined ||
+    n.locking !== undefined
+  )
+}
+
+function emitSetOpBranch(em: Emitter, n: SelectNode | SetOpNode): void {
+  if (branchNeedsParens(n)) {
+    em.push('(')
+    em.block(() => emitStatement(em, n))
+    em.push(')')
+    return
+  }
+  emitStatement(em, n)
+}
+
+function emitSetOpBody(em: Emitter, n: SetOpNode): void {
+  emitSetOpBranch(em, n.left)
+  em.nl()
+  em.push(n.op)
+  em.nl()
+  emitSetOpBranch(em, n.right)
+  if (n.orderBy !== undefined && n.orderBy.length > 0) {
+    em.nl()
+    em.push('order by ')
+    emitOrderItems(em, n.orderBy)
+  }
+  if (n.limit !== undefined) {
+    em.nl()
+    em.push('limit ')
+    emitExpr(em, n.limit)
+  }
+  if (n.offset !== undefined) {
+    em.nl()
+    em.push('offset ')
+    emitExpr(em, n.offset)
+  }
+}
+
+/**
+ * `target` is the alias whose columns may drop their prefix, or `undefined` for "qualify
+ * everything".
+ *
+ * `undefined` is what an `UPDATE … FROM` / `DELETE … USING` gets, and it is not a style choice:
+ * PostgreSQL resolves a bare RETURNING column against the target **and** every FROM item, so with
+ * `from (values …) as "v"("id", "price")` a bare `id` is 42702 even though it is the target's own
+ * column. Qualifying is always legal there; unqualifying is legal only when nothing else is in
+ * scope, which is also the case the 03 §2.5 goldens pin.
+ */
+function emitReturning(
+  em: Emitter,
+  items: readonly ProjectionItem[],
+  target: string | undefined,
+): void {
   em.nl()
   em.push('returning ')
-  const prev = em.qualifyColumns
-  // RETURNING implicitly references the target table, so columns are emitted unqualified.
-  em.qualifyColumns = false
+  const prev = em.unqualified
+  em.unqualified = target
   emitProjection(em, items)
-  em.qualifyColumns = prev
+  em.unqualified = prev
+}
+
+/** The RETURNING scope of an UPDATE: `undefined` as soon as a FROM item shares it. */
+function updateReturningScope(n: UpdateNode): string | undefined {
+  return n.from !== undefined && n.from.length > 0 ? undefined : n.target.alias
+}
+
+/** Same for a DELETE and its USING list. */
+function deleteReturningScope(n: DeleteNode): string | undefined {
+  return n.using !== undefined && n.using.length > 0 ? undefined : n.from.alias
 }
 
 function emitStatement(em: Emitter, n: Statement): void {
@@ -560,10 +1209,28 @@ function emitStatement(em: Emitter, n: Statement): void {
       return
     case 'insert':
       emitInsertBody(em, n)
-      if (n.returning !== undefined) emitReturning(em, n.returning)
+      if (n.onConflict !== undefined) emitOnConflict(em, n.onConflict)
+      if (n.returning !== undefined) {
+        emitReturning(em, planReturning(n.returning).items, n.into.alias)
+      }
+      return
+    case 'update':
+      emitUpdateBody(em, n)
+      if (n.returning !== undefined) {
+        emitReturning(em, planReturning(n.returning).items, updateReturningScope(n))
+      }
+      return
+    case 'delete':
+      emitDeleteBody(em, n)
+      if (n.returning !== undefined) {
+        emitReturning(em, planReturning(n.returning).items, deleteReturningScope(n))
+      }
+      return
+    case 'setop':
+      emitSetOpBody(em, n)
       return
     default:
-      throw new UnsupportedNodeError(n.k, 'statement')
+      throw new UnsupportedNodeError((n as { k: string }).k, 'statement')
   }
 }
 
@@ -571,6 +1238,24 @@ function emitStatement(em: Emitter, n: Statement): void {
 
 function shapeOf(fields: readonly FieldPlan[]): ResultShape {
   return fields.length === 0 ? { k: 'void' } : { k: 'row', fields }
+}
+
+/** RETURNING at the top level, where the decode plan is kept rather than discarded. */
+function emitTopReturning(
+  em: Emitter,
+  returning: readonly ProjectionItem[] | undefined,
+  target: string | undefined,
+): FieldPlan[] {
+  if (returning === undefined) return []
+  const planned = planReturning(returning)
+  emitReturning(em, planned.items, target)
+  return planned.fields
+}
+
+function leftmost(n: SetOpNode): SelectNode {
+  let cur: SelectNode | SetOpNode = n
+  while (cur.k === 'setop') cur = cur.left
+  return cur
 }
 
 /**
@@ -592,20 +1277,36 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
     case 'insert': {
       kind = 'insert'
       emitInsertBody(em, stmt)
-      if (stmt.returning !== undefined) {
-        const planned = planReturning(stmt.returning)
-        fields = planned.fields
-        emitReturning(em, planned.items)
-      } else {
-        fields = []
-      }
+      if (stmt.onConflict !== undefined) emitOnConflict(em, stmt.onConflict)
+      fields = emitTopReturning(em, stmt.returning, stmt.into.alias)
+      break
+    }
+    case 'update': {
+      kind = 'update'
+      emitUpdateBody(em, stmt)
+      fields = emitTopReturning(em, stmt.returning, updateReturningScope(stmt))
+      break
+    }
+    case 'delete': {
+      kind = 'delete'
+      emitDeleteBody(em, stmt)
+      fields = emitTopReturning(em, stmt.returning, deleteReturningScope(stmt))
+      break
+    }
+    case 'setop': {
+      kind = 'setop'
+      // The result shape of a set operation is the LEFT-most branch's: PostgreSQL takes the
+      // column names and types from there and requires every other branch to be union-compatible,
+      // which `SetMismatch` in `src/query/types.ts` checks at compile time.
+      fields = planSelect(leftmost(stmt)).fields
+      emitSetOpBody(em, stmt)
       break
     }
     default:
-      throw new UnsupportedNodeError(stmt.k, 'compile entry point')
+      throw new UnsupportedNodeError((stmt as { k: string }).k, 'compile entry point')
   }
 
-  if (em.binds.length > MAX_PARAMS) throw new TooManyParametersError(em.binds.length)
+  if (em.binds.length > MAX_PARAMS) throw new TooManyParametersError(em.binds.length, kind)
 
   return Object.freeze({
     sql: em.sql(),

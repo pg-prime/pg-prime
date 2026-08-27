@@ -5,9 +5,10 @@ import { diffIR, type DiffResult } from "./diff/diff.js";
 import { orderStatements } from "./diff/order.js";
 import { withClient, type ConnInfo } from "./db/pg.js";
 import type { SchemaIR } from "./ir/fact.js";
-import { writePlan, type ProofRequiredError } from "./plan/emit.js";
-import { buildPlan, type Plan } from "./plan/plan.js";
+import { writePlan, WriteRefusedError } from "./plan/emit.js";
+import { buildPlan, type AcknowledgeInput, type Plan } from "./plan/plan.js";
 import { proveOnShadowClone } from "./prove/prove.js";
+import type { DumpOracleMode, PgDumpLauncher } from "./prove/pg-dump.js";
 
 export interface GenerateInput {
   /** maintenance connection used for CREATE DATABASE (the shadow ladder, tier 2) */
@@ -23,6 +24,13 @@ export interface GenerateInput {
   readonly outDir?: string;
   readonly prove?: boolean;
   readonly allowUnproven?: boolean;
+  /** pg_dump equality oracle; default `"warn"` (record differences, never block) */
+  readonly dumpOracle?: DumpOracleMode;
+  /** under `strict`, accept a `skipped` oracle instead of blocking the plan */
+  readonly allowSkippedOracle?: boolean;
+  readonly pgDump?: PgDumpLauncher;
+  /** design/06 §3.6 — sign-off for destructive changes, recorded in the plan */
+  readonly acknowledge?: AcknowledgeInput;
 }
 
 export interface GenerateResult {
@@ -57,6 +65,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
     pgVersionNum: current.pgVersionNum,
     renames: diff.renames,
     diagnostics: [...current.diagnostics, ...diagnostics],
+    ...(input.acknowledge ? { acknowledge: input.acknowledge } : {}),
   };
 
   const draft = buildPlan(base);
@@ -66,10 +75,15 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
     const proof = await proveOnShadowClone({
       admin: input.admin,
       source: input.target,
+      current: current.ir,
       desired: desired.ir,
       schemas,
       statements: draft.statements,
       segments: draft.segments,
+      desiredConn: input.desired,
+      ...(input.dumpOracle ? { dumpOracle: input.dumpOracle } : {}),
+      ...(input.allowSkippedOracle === undefined ? {} : { allowSkippedOracle: input.allowSkippedOracle }),
+      ...(input.pgDump ? { pgDump: input.pgDump } : {}),
     });
     plan = buildPlan({ ...base, proof });
   }
@@ -79,13 +93,21 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
     diff,
     currentIR: current.ir,
     desiredIR: desired.ir,
-    diagnostics,
+    // The extractor's own findings (orphaned facts, unmodeled kinds, partitioning)
+    // are diagnostics about THIS run and belong in the report, not only in the plan.
+    diagnostics: [...current.diagnostics, ...desired.diagnostics, ...diagnostics],
   };
   if (!input.outDir) return result;
   try {
-    const written = await writePlan(input.outDir, plan, { allowUnproven: input.allowUnproven ?? false });
+    const written = await writePlan(input.outDir, plan, {
+      allowUnproven: input.allowUnproven ?? false,
+      allowDataLoss: input.acknowledge?.allowDataLoss ?? false,
+    });
     return { ...result, written };
   } catch (err) {
-    return { ...result, writeRefusal: (err as ProofRequiredError).message };
+    // Only a REFUSAL is a refusal. EACCES/ENOSPC used to be reported as one, so a
+    // read-only output directory looked exactly like an unproven plan.
+    if (err instanceof WriteRefusedError) return { ...result, writeRefusal: err.message };
+    throw err;
   }
 }

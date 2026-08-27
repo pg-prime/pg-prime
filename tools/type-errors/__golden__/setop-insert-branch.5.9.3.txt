@@ -1,0 +1,1 @@
+setop-insert-branch.ts(8,16): error TS2339: Property 'execute' does not exist on type 'OrmTypeError<"a set operation takes a SELECT: an insert/update/delete … returning … yields rows but is not a union branch">'.

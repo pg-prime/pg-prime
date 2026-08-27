@@ -22,7 +22,8 @@ import type pg from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { InvalidIdentifierError } from '../../src/sql/errors.js'
 import { MAX_IDENT_BYTES, quoteIdentPart } from '../../src/sql/ident.js'
-import { FUZZ_CASES, FUZZ_SEED, connect } from './_pg.js'
+import { connect } from '../live/_harness.js'
+import { FUZZ_CASES, FUZZ_SEED } from './_budget.js'
 import type { Case } from './generator.js'
 import { cases, utf8Bytes } from './generator.js'
 
@@ -191,9 +192,11 @@ describe('oracle B — CREATE TEMP TABLE round trip', () => {
       await client.query(ddl)
 
       const back = await client.query<{ relname: string }>(
+        // `pg_my_temp_schema()`, not `nspname like 'pg_temp%'`: every session's temp schema is
+        // visible in pg_class, and the whole suite now shares one server (design/09 §2.2), so the
+        // wildcard counts other test files' tables as ours.
         `select c.relname from pg_class c
-         join pg_namespace n on n.oid = c.relnamespace
-         where n.nspname like 'pg_temp%' and c.relkind = 'r'`,
+         where c.relnamespace = pg_my_temp_schema() and c.relkind = 'r'`,
       )
       const names = new Set(back.rows.map((r) => r.relname))
       for (const b of batch) {
@@ -223,8 +226,8 @@ describe('oracle B — CREATE TEMP TABLE round trip', () => {
         `create temp table ${quoteIdentPart(decomposed)} (x int)`,
     )
     const back = await client.query<{ relname: string }>(
-      `select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
-       where n.nspname like 'pg_temp%' and c.relkind = 'r' order by 1`,
+      `select c.relname from pg_class c
+       where c.relnamespace = pg_my_temp_schema() and c.relkind = 'r' order by 1`,
     )
     expect(back.rows).toHaveLength(2)
     expect(new Set(back.rows.map((r) => r.relname))).toEqual(new Set([composed, decomposed]))
@@ -238,8 +241,8 @@ describe('the 63-byte divergence — reject vs truncate', () => {
   /** Temp tables are session-scoped, so a leftover from a previous case would pollute this. */
   async function tempTables(): Promise<string[]> {
     const back = await client.query<{ relname: string }>(
-      `select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
-       where n.nspname like 'pg_temp%' and c.relkind = 'r' order by 1`,
+      `select c.relname from pg_class c
+       where c.relnamespace = pg_my_temp_schema() and c.relkind = 'r' order by 1`,
     )
     return back.rows.map((r) => r.relname)
   }

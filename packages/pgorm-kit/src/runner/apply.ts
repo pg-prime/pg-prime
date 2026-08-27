@@ -25,6 +25,27 @@ export interface ApplyOptions {
  * whole run: that would hold every ACCESS EXCLUSIVE lock taken anywhere until
  * the final COMMIT — and it makes a commitBoundaryAfter segment meaningless.
  */
+/**
+ * `SET LOCAL <guc> = '<value>'` cannot take a bind parameter, so every caller-supplied
+ * timeout used to be string-interpolated into DDL. `set_config` is the same GUC write
+ * with a real parameter, and it takes the local/session flag as data too.
+ */
+async function setConfig(
+  client: CatalogClient,
+  name: string,
+  value: string,
+  local: boolean,
+): Promise<void> {
+  await client.query("SELECT set_config($1, $2, $3)", [name, value, local]);
+}
+
+/** Session GUCs a bare (non-transactional) segment set for itself. */
+async function resetSessionGucs(client: CatalogClient): Promise<void> {
+  await client.query("RESET lock_timeout");
+  await client.query("RESET statement_timeout");
+  await client.query("RESET search_path");
+}
+
 export async function applySegments(
   client: CatalogClient,
   statements: readonly PlanStatement[],
@@ -33,23 +54,32 @@ export async function applySegments(
 ): Promise<ApplyReport> {
   let applied = 0;
   let executing = -1;
+  const lockTimeout = options.lockTimeout ?? "3s";
   for (const seg of segments) {
     if (seg.transactional) await client.query("BEGIN");
     try {
-      if (seg.transactional) {
-        await client.query(`SET LOCAL lock_timeout = '${options.lockTimeout ?? "3s"}'`);
-      }
+      // A bare segment has no transaction for `SET LOCAL` to scope to, so its GUCs
+      // are session-scoped and reset at the end — a `txmode none` file used to run
+      // with NO lock_timeout at all, which is exactly where a CIC blocks forever.
+      await setConfig(client, "lock_timeout", lockTimeout, seg.transactional);
+      // design/06 §5.3: every identifier the emitter writes is schema-qualified and
+      // extraction ran under the same search_path. Pinning it means a rogue schema
+      // earlier on the path cannot capture an unqualified reference in a stored
+      // definition we replay verbatim.
+      await setConfig(client, "search_path", "pg_catalog", seg.transactional);
       for (const i of seg.statements) {
         const s = statements[i]!;
         executing = i;
         const timeout = s.timeouts.statement ?? options.statementTimeout ?? "0";
-        if (seg.transactional) await client.query(`SET LOCAL statement_timeout = '${timeout}'`);
+        await setConfig(client, "statement_timeout", timeout, seg.transactional);
         await client.query(s.sql);
         applied += 1;
       }
       if (seg.transactional) await client.query("COMMIT");
+      else await resetSessionGucs(client);
     } catch (err) {
       if (seg.transactional) await client.query("ROLLBACK").catch(() => undefined);
+      else await resetSessionGucs(client).catch(() => undefined);
       return {
         status: "failed",
         appliedStatements: applied,

@@ -34,6 +34,13 @@ export type {
   PgLikeTypeSource,
 } from './pg-like.js'
 
+export type { PgLikeCancelClient } from './pg-like.js'
+
 export { PgDriverError, isServerErrorShape, normaliseError, toServerErrorData } from './errors.js'
+/**
+ * `typeSource` and `assertSessionGucs` are `@internal`: they are exported for the adapter's own
+ * tests (test/driver/types-trick.test.ts pins the two-readers trick) and are not part of the
+ * public surface. The Submittable helpers used to be exported here too — they are pg-protocol
+ * plumbing with no meaning above the seam, so they are not.
+ */
 export { assertSessionGucs, pgDriver, typeSource } from './pg-adapter.js'
-export { closeStatementViaSubmittable, describeViaSubmittable, toPgField } from './submittable.js'

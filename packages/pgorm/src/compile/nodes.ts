@@ -18,20 +18,36 @@
  * queries, which is the MikroORM v7 fragment model (research/mikroorm.md §ADAPT).
  */
 
+import { InvalidFragmentError } from '../sql/errors.js'
 import { quoteIdentPart } from '../sql/ident.js'
-import type { Codec } from '../sql/codec.js'
-import { spikeCodecs } from '../sql/codec.js'
+import type { AnyCodec } from '../codec/index.js'
+import {
+  arrayCodecOf,
+  boolCodec,
+  int8Codec,
+  jsonCodecJson,
+  jsonbCodec,
+  textCodec,
+  unknownCodec,
+} from '../codec/index.js'
 import type {
   AggNode,
+  ArrayNode,
   BinaryOp,
   BoolNode,
+  CaseNode,
   CastNode,
   ColumnMeta,
   ColumnNode,
+  CteNode,
+  CteRefNode,
+  DeleteNode,
   Expr,
   ExistsNode,
   FromItem,
   FuncCallNode,
+  FuncNode,
+  GroupPlan,
   InNode,
   InsertNode,
   IsNode,
@@ -41,21 +57,35 @@ import type {
   LiteralNode,
   NestedPlan,
   OrderItem,
+  OverNode,
   ParamNode,
   PlaceholderNode,
   ProjectionItem,
   RawNode,
   RawPart,
+  RowNode,
   SelectNode,
+  SetItem,
   SetOpNode,
   SubqueryExprNode,
   SubqueryNode,
   TableMeta,
   TableRefNode,
   UnaryNode,
+  UpdateNode,
+  ValuesNode,
+  WindowDef,
 } from './ast.js'
 
 const NODES = new WeakSet<object>()
+
+/**
+ * `text[]`, for the jsonb path operators whose right operand is a path array (03 §3.4, D7 — the
+ * GHSA-wmrf-hv6w-mr66 class: a path is a PARAMETER, never spliced text). Derived rather than taken
+ * from a registry so importing the node constructors does not build 50 codecs; it carries
+ * `textCodec.arrayOid` (1009), so it is the same type PostgreSQL will see.
+ */
+const textArrayCodec = arrayCodecOf(textCodec)
 
 /** Freeze, register, return. The only way a value becomes "SQL" rather than "data". */
 export function mkNode<T extends object>(n: T): T {
@@ -67,9 +97,61 @@ export function mkNode<T extends object>(n: T): T {
 /**
  * Nominal check. Never replace this with a structural `'k' in v` test — see the module
  * docblock for the attack it would reopen.
+ *
+ * Note that the registry holds **every** node kind, not just expressions: statements, order
+ * items, joins and column metadata are all in it. Use {@link isRawPart} where the answer has to
+ * be "can this stand in an expression position?".
  */
 export function isAstNode(v: unknown): v is Expr {
   return typeof v === 'object' && v !== null && NODES.has(v)
+}
+
+/**
+ * Every `k` that may appear in a `sql` fragment's `parts`: the {@link Expr} kinds plus the two
+ * splice parts (`ident`, `unsafeRaw`).
+ *
+ * An `order` item or a `select` node passed into a template hole used to be accepted here and
+ * then failed in the emitter as `node kind 'undefined' is not implemented`, pointing at the
+ * compiler rather than at the interpolation that caused it.
+ */
+const PART_KINDS: ReadonlySet<string> = new Set([
+  'col',
+  'param',
+  'ph',
+  'lit',
+  'bin',
+  'bool',
+  'un',
+  'is',
+  'in',
+  'between',
+  'fn',
+  'agg',
+  'over',
+  'case',
+  'cast',
+  'row',
+  'array',
+  'sq',
+  'exists',
+  'jsonBuild',
+  'jsonAgg',
+  'raw',
+  'ident',
+  'unsafeRaw',
+])
+
+/** Nominal + kind check: a registered node that may stand in a fragment's part position. */
+export function isRawPart(v: unknown): v is RawPart {
+  if (typeof v !== 'object' || v === null || !NODES.has(v)) return false
+  const k: unknown = (v as { k?: unknown }).k
+  return typeof k === 'string' && PART_KINDS.has(k)
+}
+
+/** The `k` of a registered node, for an error message. Never reaches SQL. */
+export function nodeKindOf(v: unknown): string {
+  const k: unknown = (v as { k?: unknown } | null)?.k
+  return typeof k === 'string' ? k : 'clause'
 }
 
 // ─────────────────────────── Schema seam helpers ───────────────────────────
@@ -83,7 +165,7 @@ export function tableMeta(schema: string, name: string): TableMeta {
   })
 }
 
-export function columnMeta(name: string, codec: Codec): ColumnMeta {
+export function columnMeta(name: string, codec: AnyCodec): ColumnMeta {
   return mkNode({ name, quoted: quoteIdentPart(name), codec })
 }
 
@@ -116,17 +198,17 @@ export function leftJoinLateral(item: FromItem): JoinNode {
 
 // ─────────────────────────── Expressions ───────────────────────────
 
-export function col(alias: string, name: string, codec: Codec): ColumnNode {
+export function col(alias: string, name: string, codec: AnyCodec): ColumnNode {
   const qa = quoteIdentPart(alias)
   const qn = quoteIdentPart(name)
   return mkNode({ k: 'col' as const, alias, name, q: `${qa}.${qn}`, qn, codec })
 }
 
-export function param(value: unknown, codec: Codec = spikeCodecs.unknownParam): ParamNode {
+export function param(value: unknown, codec: AnyCodec = unknownCodec): ParamNode {
   return mkNode({ k: 'param' as const, value, codec })
 }
 
-export function placeholder(name: string, codec: Codec): PlaceholderNode {
+export function placeholder(name: string, codec: AnyCodec): PlaceholderNode {
   return mkNode({ k: 'ph' as const, name, codec })
 }
 
@@ -136,7 +218,7 @@ export function placeholder(name: string, codec: Codec): PlaceholderNode {
  */
 export function lit(
   value: number | bigint | boolean | null,
-  codec: Codec = spikeCodecs.unknownParam,
+  codec: AnyCodec = unknownCodec,
 ): LiteralNode {
   return mkNode({ k: 'lit' as const, value, codec })
 }
@@ -145,7 +227,7 @@ export function bin(
   op: BinaryOp,
   l: Expr,
   r: Expr,
-  resultCodec: Codec = spikeCodecs.bool,
+  resultCodec: AnyCodec = boolCodec,
 ): Expr {
   return mkNode({ k: 'bin' as const, op, l, r, resultCodec })
 }
@@ -166,7 +248,7 @@ export function or(...args: Expr[]): BoolNode {
 }
 
 export function not(e: Expr): UnaryNode {
-  return mkNode({ k: 'un' as const, op: 'not' as const, e, resultCodec: spikeCodecs.bool })
+  return mkNode({ k: 'un' as const, op: 'not' as const, e, resultCodec: boolCodec })
 }
 
 export function is(e: Expr, test: IsNode['test'], r?: Expr): IsNode {
@@ -219,42 +301,42 @@ export function inQuery(e: Expr, query: SelectNode | SetOpNode, negated = false)
 
 /** `jsonb -> $n` — key or array index lookup, returning json. */
 export function jsonGet(e: Expr, key: string | number): Expr {
-  return bin('->', e, param(key, spikeCodecs.text), spikeCodecs.jsonb)
+  return bin('->', e, param(key, textCodec), jsonbCodec)
 }
 
 /** `jsonb ->> $n` — key lookup returning text. */
 export function jsonGetText(e: Expr, key: string | number): Expr {
-  return bin('->>', e, param(key, spikeCodecs.text), spikeCodecs.text)
+  return bin('->>', e, param(key, textCodec), textCodec)
 }
 
 /** `jsonb #> $n` — path lookup returning json. The path is a `text[]` parameter. */
 export function jsonPath(e: Expr, path: readonly string[]): Expr {
-  return bin('#>', e, param(path, spikeCodecs.textArray), spikeCodecs.jsonb)
+  return bin('#>', e, param(path, textArrayCodec), jsonbCodec)
 }
 
 /** `jsonb #>> $n` — path lookup returning text. The path is a `text[]` parameter. */
 export function jsonPathText(e: Expr, path: readonly string[]): Expr {
-  return bin('#>>', e, param(path, spikeCodecs.textArray), spikeCodecs.text)
+  return bin('#>>', e, param(path, textArrayCodec), textCodec)
 }
 
 /** `jsonb ? $n` — key-existence test. */
 export function jsonHasKey(e: Expr, key: string): Expr {
-  return bin('?', e, param(key, spikeCodecs.text), spikeCodecs.bool)
+  return bin('?', e, param(key, textCodec), boolCodec)
 }
 
 /** `jsonb @> $n` — containment. The probe document is a parameter, never inlined JSON. */
 export function jsonContains(e: Expr, doc: unknown): Expr {
-  return bin('@>', e, param(doc, spikeCodecs.jsonb), spikeCodecs.bool)
+  return bin('@>', e, param(doc, jsonbCodec), boolCodec)
 }
 
-export function fn(name: string, args: readonly Expr[], resultCodec: Codec): FuncCallNode {
+export function fn(name: string, args: readonly Expr[], resultCodec: AnyCodec): FuncCallNode {
   return mkNode({ k: 'fn' as const, name, args: Object.freeze([...args]), resultCodec })
 }
 
 export function agg(
   name: string,
   args: readonly Expr[],
-  resultCodec: Codec,
+  resultCodec: AnyCodec,
   opts: { distinct?: boolean; orderBy?: readonly OrderItem[]; filter?: Expr; star?: boolean } = {},
 ): AggNode {
   return mkNode({
@@ -270,10 +352,40 @@ export function agg(
 }
 
 export const countStar = (): AggNode =>
-  agg('count', [], spikeCodecs.int8, { star: true })
+  agg('count', [], int8Codec, { star: true })
 
-export function cast(e: Expr, to: string, resultCodec: Codec): CastNode {
+export function cast(e: Expr, to: string, resultCodec: AnyCodec): CastNode {
   return mkNode({ k: 'cast' as const, e, to, resultCodec })
+}
+
+/**
+ * `case when a then b [when …] [else z] end`, or the "simple" form when `operand` is given.
+ *
+ * `resultCodec` is the caller's: PostgreSQL resolves the branches to one common type, and the
+ * decoder needs to know which one before the query runs.
+ */
+export function caseWhen(
+  whens: readonly { when: Expr; then: Expr }[],
+  resultCodec: AnyCodec,
+  opts: { operand?: Expr; else?: Expr } = {},
+): CaseNode {
+  return mkNode({
+    k: 'case' as const,
+    operand: opts.operand,
+    whens: Object.freeze(whens.map((w) => mkNode({ when: w.when, then: w.then }))),
+    else: opts.else,
+    resultCodec,
+  })
+}
+
+/** `row(a, b)` — a composite value, e.g. for a row-wise comparison. */
+export function rowExpr(items: readonly Expr[]): RowNode {
+  return mkNode({ k: 'row' as const, items: Object.freeze([...items]) })
+}
+
+/** `array[a, b]`. `elemCodec` is the ELEMENT codec; the expression's type is the array of it. */
+export function arrayExpr(items: readonly Expr[], elemCodec: AnyCodec): ArrayNode {
+  return mkNode({ k: 'array' as const, items: Object.freeze([...items]), elemCodec })
 }
 
 export function jsonBuild(
@@ -300,21 +412,30 @@ export function exists(query: SelectNode, negated = false): ExistsNode {
   return mkNode({ k: 'exists' as const, not: negated, query })
 }
 
+/**
+ * `(select … )` in expression position.
+ *
+ * `hoist` is the relation layer's marker (see {@link SubqueryExprNode.hoist}); every other caller
+ * leaves it `undefined`, and the field is written unconditionally so all `sq` nodes share one
+ * hidden class.
+ */
 export function scalarSubquery(
   query: SelectNode | SetOpNode,
-  resultCodec: Codec,
+  resultCodec: AnyCodec,
+  hoist?: boolean,
 ): SubqueryExprNode {
-  return mkNode({ k: 'sq' as const, query, resultCodec })
+  return mkNode({ k: 'sq' as const, query, resultCodec, hoist })
 }
 
 export function raw(
   chunks: readonly string[],
   parts: readonly RawPart[],
-  resultCodec: Codec | null = null,
+  resultCodec: AnyCodec | null = null,
 ): RawNode {
   if (chunks.length !== parts.length + 1) {
-    throw new Error(
-      `raw(): chunks/parts interleave invariant violated (${chunks.length} chunks, ${parts.length} parts)`,
+    throw new InvalidFragmentError(
+      `raw(): chunks/parts interleave invariant violated (${chunks.length} chunks, ` +
+        `${parts.length} parts). A fragment must have exactly one more chunk than parts.`,
     )
   }
   return mkNode({
@@ -354,10 +475,57 @@ export function nested(key: string, plan: NestedPlan): ProjectionItem {
   return mkNode({ key, expr: lit(null), nested: plan })
 }
 
+/**
+ * A `nest({...})` projection item (03 §2.2). `expr` is a placeholder the planner never reads:
+ * the group's children are the emitted columns, and `hoist.ts` expands them.
+ */
+export function group(key: string, plan: GroupPlan): ProjectionItem {
+  return mkNode({ key, expr: lit(null), group: plan })
+}
+
 export function select(n: Omit<SelectNode, 'k'>): SelectNode {
   return mkNode({ k: 'select' as const, ...n })
 }
 
 export function insert(n: Omit<InsertNode, 'k'>): InsertNode {
   return mkNode({ k: 'insert' as const, ...n })
+}
+
+export function update(n: Omit<UpdateNode, 'k'>): UpdateNode {
+  return mkNode({ k: 'update' as const, ...n })
+}
+
+/** `delete` is a reserved word, so the constructor is `del`. */
+export function del(n: Omit<DeleteNode, 'k'>): DeleteNode {
+  return mkNode({ k: 'delete' as const, ...n })
+}
+
+export function setop(n: Omit<SetOpNode, 'k'>): SetOpNode {
+  return mkNode({ k: 'setop' as const, ...n })
+}
+
+export function cte(n: CteNode): CteNode {
+  return mkNode({ ...n })
+}
+
+export function cteRef(name: string, alias = name): CteRefNode {
+  return mkNode({ k: 'cteRef' as const, name, alias, qAlias: quoteIdentPart(alias) })
+}
+
+export function setItem(column: ColumnMeta, value: Expr): SetItem {
+  return mkNode({ column, value })
+}
+
+/** `(values (…), (…)) as "v"("a", "b")` — the bulk-update source (03 §2.6). */
+export function valuesFrom(n: Omit<ValuesNode, 'k' | 'qAlias'>): ValuesNode {
+  return mkNode({ k: 'values' as const, ...n, qAlias: quoteIdentPart(n.alias) })
+}
+
+/** A set-returning function in FROM: `unnest($1, $2) as "v"("a", "b")`. */
+export function funcFrom(n: Omit<FuncNode, 'k' | 'qAlias'>): FuncNode {
+  return mkNode({ k: 'func' as const, ...n, qAlias: quoteIdentPart(n.alias) })
+}
+
+export function over(f: AggNode | FuncCallNode, window: WindowDef | { ref: string }): OverNode {
+  return mkNode({ k: 'over' as const, fn: f, window })
 }

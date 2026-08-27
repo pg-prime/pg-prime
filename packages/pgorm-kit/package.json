@@ -12,16 +12,18 @@
   ],
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
+    "test:pg": "vitest run"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pgormjs/pgorm.git"
   },
-  "devDependencies": {
-    "@supabase/pg-delta": "1.0.0-alpha.39",
+  "dependencies": {
     "@types/pg": "^8.21.0",
-    "pg": "^8.23.0",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
     "vitest": "^4.1.10"
   }
 }

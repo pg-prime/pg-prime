@@ -14,7 +14,7 @@
  * transform in `hoist.ts` builds new nodes by spreading old ones.
  */
 
-import type { Codec } from '../sql/codec.js'
+import type { AnyCodec } from '../codec/index.js'
 
 // ─────────────────────────── Schema seam (agent 05 owns the real ones) ───────────────────
 
@@ -34,7 +34,7 @@ export interface ColumnMeta {
   readonly name: string
   /** Pre-quoted `"name"`. */
   readonly quoted: string
-  readonly codec: Codec
+  readonly codec: AnyCodec
 }
 
 export interface QualifiedName {
@@ -59,6 +59,8 @@ export interface SelectNode {
   where?: Expr | undefined
   groupBy?: readonly Expr[] | undefined
   having?: Expr | undefined
+  /** `window "w" as (...)`. Ordered; PostgreSQL allows a definition to reference an earlier one. */
+  windows?: readonly NamedWindow[] | undefined
   orderBy?: readonly OrderItem[] | undefined
   limit?: Expr | undefined
   offset?: Expr | undefined
@@ -179,6 +181,8 @@ export interface FuncNode {
   args: readonly Expr[]
   alias: string
   qAlias: string
+  /** `unnest($1::int8[], $2::numeric[]) as "v"("id", "price")` — the bulk-update source (03 §2.6). */
+  columns?: readonly string[] | undefined
   lateral: boolean
   ordinality: boolean
 }
@@ -232,31 +236,45 @@ export interface ColumnNode {
   name: string
   q: string
   qn: string
-  codec: Codec
+  codec: AnyCodec
 }
 
 /** [spike] A user value. Always emitted as `$n`; never interpolated. */
 export interface ParamNode {
   k: 'param'
   value: unknown
-  codec: Codec
+  codec: AnyCodec
 }
 
 /** [spike] A named hole filled at `.execute(args)` time on a prepared query. */
 export interface PlaceholderNode {
   k: 'ph'
   name: string
-  codec: Codec
+  codec: AnyCodec
 }
 
 /** [spike] Non-string literals ONLY (03 §3.4 / D7). Strings are always params. */
 export interface LiteralNode {
   k: 'lit'
   value: number | bigint | boolean | null
-  codec: Codec
+  codec: AnyCodec
 }
 
+/**
+ * Every infix operator the builder can emit, as the exact token the emitter splices.
+ *
+ * The list is closed on purpose: `bin()` takes a member of this union, never a string, so
+ * `src/query/ops.ts` cannot invent an operator and no caller-supplied text ever reaches the
+ * operator position. Adding a row here is the only way to grow the vocabulary, which makes the
+ * diff the review artifact (03 §2.9's table is generated from the `OPS` manifest that consumes
+ * this union — `tools/ops-table`).
+ *
+ * Grouped by the PostgreSQL type class that owns them; several are shared (`@>` is array, jsonb
+ * AND range; `&&` is array, range AND net), which is exactly why the *operand* type comes from
+ * the operator rather than from the column (03 §2.9, the Kysely defect).
+ */
 export type BinaryOp =
+  // comparison / arithmetic / concat — every class
   | '='
   | '<>'
   | '<'
@@ -269,17 +287,37 @@ export type BinaryOp =
   | '/'
   | '%'
   | '||'
+  // text
   | 'like'
   | 'ilike'
+  | 'not like'
+  | 'not ilike'
+  | 'similar to'
+  | 'not similar to'
+  | '~'
+  | '~*'
+  | '!~'
+  | '!~*'
+  | '^@'
+  // array / jsonb / range / net (shared containment + overlap)
   | '@>'
   | '<@'
   | '&&'
+  // jsonb
   | '->'
   | '->>'
   | '#>'
   | '#>>'
+  | '#-'
   | '?'
+  | '?|'
+  | '?&'
+  | '@?'
   | '@@'
+  // range / net
+  | '<<'
+  | '>>'
+  | '-|-'
 
 /** [spike] Exactly two operands. `and`/`or` are `BoolNode` instead — see below. */
 export interface BinaryNode {
@@ -287,7 +325,7 @@ export interface BinaryNode {
   op: BinaryOp
   l: Expr
   r: Expr
-  resultCodec: Codec
+  resultCodec: AnyCodec
 }
 
 /**
@@ -306,7 +344,7 @@ export interface FuncCallNode {
   k: 'fn'
   name: string
   args: readonly Expr[]
-  resultCodec: Codec
+  resultCodec: AnyCodec
 }
 
 /** [spike] */
@@ -314,7 +352,7 @@ export interface UnaryNode {
   k: 'un'
   op: 'not' | '-' | '+' | '~'
   e: Expr
-  resultCodec: Codec
+  resultCodec: AnyCodec
 }
 
 /** [spike] */
@@ -365,7 +403,7 @@ export interface AggNode {
   filter?: Expr | undefined
   /** `count(*)` */
   star?: boolean | undefined
-  resultCodec: Codec
+  resultCodec: AnyCodec
 }
 
 export interface WindowDef {
@@ -381,6 +419,12 @@ export interface WindowDef {
     | undefined
 }
 
+/** One entry of a `WINDOW` clause. `03` §2.8's `.window('byAuthor', ...)`. */
+export interface NamedWindow {
+  name: string
+  def: WindowDef
+}
+
 export interface OverNode {
   k: 'over'
   fn: AggNode | FuncCallNode
@@ -392,7 +436,7 @@ export interface CaseNode {
   operand?: Expr | undefined
   whens: readonly { when: Expr; then: Expr }[]
   else?: Expr | undefined
-  resultCodec: Codec
+  resultCodec: AnyCodec
 }
 
 /** [spike] — used for the per-codec JSON casts. */
@@ -400,7 +444,7 @@ export interface CastNode {
   k: 'cast'
   e: Expr
   to: string
-  resultCodec: Codec
+  resultCodec: AnyCodec
 }
 
 export interface RowNode {
@@ -411,14 +455,27 @@ export interface RowNode {
 export interface ArrayNode {
   k: 'array'
   items: readonly Expr[]
-  elemCodec: Codec
+  elemCodec: AnyCodec
 }
 
 /** [spike] */
 export interface SubqueryExprNode {
   k: 'sq'
   query: SelectNode | SetOpNode
-  resultCodec: Codec
+  resultCodec: AnyCodec
+  /**
+   * Set **only** by the relation layer (`src/query/relations.ts`), on the correlated subquery a
+   * `.count()` / `.sum(f)` accessor produces. It marks the node as a candidate for `03` §2.3
+   * point 6: `planSelect` lifts it into a `LEFT JOIN LATERAL … ON TRUE` and replaces every
+   * structurally identical occurrence with one reference to that lateral's `"v"`.
+   *
+   * A user's own `sq` node never carries it, which is what confines the compiler's only
+   * common-subexpression elimination to nodes the compiler itself generated. Absent — or present
+   * in a position with no FROM clause to hoist onto, such as a RETURNING list — the node still
+   * emits as an ordinary correlated subquery, so the flag can only change the *plan*, never the
+   * answer.
+   */
+  hoist?: boolean | undefined
 }
 
 /** [spike] */
@@ -455,7 +512,7 @@ export interface RawNode {
   chunks: readonly string[]
   parts: readonly RawPart[]
   /** null => decode dynamically by OID (03 §3.2). */
-  resultCodec: Codec | null
+  resultCodec: AnyCodec | null
 }
 
 export type RawPart = Expr | IdentPart | RawSpliceNode
@@ -486,6 +543,42 @@ export interface ProjectionItem {
   expr: Expr
   /** Present iff this projection item is a nested relation (03 §2.3, D4). */
   nested?: NestedPlan | undefined
+  /** Present iff this projection item is a nested *literal* — `nest({...})` (03 §2.2, fork F2). */
+  group?: GroupPlan | undefined
+}
+
+/**
+ * A `nest({...})` group: pure grouping, **zero SQL cost**.
+ *
+ * Unlike {@link NestedPlan} this is not a relation and hoists nothing. Its children are emitted as
+ * ordinary projection columns of the enclosing select — so one `ProjectionItem` here stands for
+ * `n` result columns — and the decoder reassembles the object positionally. `03` §2.2's promise
+ * that grouping costs nothing is this: the SQL of a query with `nest` is byte-identical to the
+ * same query with the group's members spelled flat.
+ *
+ * **`nullable` is whole-object, not per-field** (03 §2.2, the one thing Drizzle gets right):
+ * `author: { id: bigint } | null`, never `author: { id: bigint | null }`. Deciding *which* rows
+ * are the null ones needs a witness, and `sentinel` is it: the index within {@link items} of a
+ * child the schema declares NOT NULL, so a null there can only mean the left join found no row.
+ * `undefined` when the group projects no such column, and the decoder then falls back to
+ * "every field is null" — the Drizzle rule, which is right in every case except a real row whose
+ * projected columns happen to all be NULL. `src/query/scope.ts` picks the sentinel.
+ */
+export interface GroupPlan {
+  items: readonly ProjectionItem[]
+  nullable: boolean
+  sentinel?: number | undefined
+  /**
+   * Indexes into {@link items} whose simultaneous NULL means "this group is null", overriding
+   * both `sentinel` and the decoder's fallback.
+   *
+   * The fallback ("every column of the group is NULL") is a heuristic, and only the builder knows
+   * the two things that would settle it: whether the group came from an outer join at all, and
+   * which of its columns the schema declares NOT NULL. This field is the seam for that decision;
+   * an empty array means "never null". Members that are not plain columns are ignored — a nested
+   * group or a relation has no single column to test.
+   */
+  witnesses?: readonly number[] | undefined
 }
 
 /**
@@ -498,11 +591,26 @@ export interface ProjectionItem {
 export interface NestedPlan {
   kind: 'many' | 'one'
   query: SelectNode
-  /** Lateral alias. Deterministic and caller-visible so goldens can pin it. */
-  alias: string
+  /**
+   * Lateral alias. Deterministic and caller-visible so goldens can pin it.
+   *
+   * Optional since WS5: a hand-built node names its own alias (the compiler suite's `"lp"`,
+   * `"cc"`, `"au"`), while a builder-generated relation cannot — the accessor that creates it
+   * does not know how many siblings precede it. When absent, `planSelect` assigns `_r0`, `_r1`,
+   * … in left-to-right order over the whole plan, sharing one number between occurrences that
+   * {@link SubqueryExprNode.hoist} has already collapsed.
+   */
+  alias?: string | undefined
   variant?: 'json' | 'jsonb' | undefined
   /** `one` relations: false => the decoded value is `T | null`. */
   required?: boolean | undefined
+  /**
+   * `03` §2.3 point 1: `LEFT JOIN LATERAL` by default because it plans better for large fan-outs,
+   * with the correlated-subquery form available per projection for the cases where the planner
+   * prefers it. The two are differentials of each other — same rows, same decode plan, and
+   * `test/live-query/relations.test.ts` asserts exactly that.
+   */
+  strategy?: 'lateral' | 'subquery' | undefined
 }
 
 export interface OrderItem {

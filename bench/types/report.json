@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-14T12:55:11.967Z",
+  "generatedAt": "2026-08-27T04:40:00.882Z",
   "node": "v24.14.1",
   "compilers": [
     "5.9.3",
@@ -178,313 +178,973 @@
       "usages": 200,
       "distinct": 100,
       "repeats": 3
+    },
+    "qs1t25u25": {
+      "name": "qs1t25u25",
+      "tables": 25,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 1,
+        "count": 25,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs1t25u50": {
+      "name": "qs1t25u50",
+      "tables": 25,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 1,
+        "count": 50,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs1t300u25": {
+      "name": "qs1t300u25",
+      "tables": 300,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 1,
+        "count": 25,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs1t300u50": {
+      "name": "qs1t300u50",
+      "tables": 300,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 1,
+        "count": 50,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs2t25u25": {
+      "name": "qs2t25u25",
+      "tables": 25,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 2,
+        "count": 25,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs2t25u50": {
+      "name": "qs2t25u50",
+      "tables": 25,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 2,
+        "count": 50,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs2t300u25": {
+      "name": "qs2t300u25",
+      "tables": 300,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 2,
+        "count": 25,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs2t300u50": {
+      "name": "qs2t300u50",
+      "tables": 300,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 2,
+        "count": 50,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs3t25u25": {
+      "name": "qs3t25u25",
+      "tables": 25,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 3,
+        "count": 25,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs3t25u50": {
+      "name": "qs3t25u50",
+      "tables": 25,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 3,
+        "count": 50,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs3t300u25": {
+      "name": "qs3t300u25",
+      "tables": 300,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 3,
+        "count": 25,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs3t300u50": {
+      "name": "qs3t300u50",
+      "tables": 300,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 3,
+        "count": 50,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs5t25u5": {
+      "name": "qs5t25u5",
+      "tables": 25,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 5,
+        "count": 5,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs5t25u10": {
+      "name": "qs5t25u10",
+      "tables": 25,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 5,
+        "count": 10,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs5t300u5": {
+      "name": "qs5t300u5",
+      "tables": 300,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 5,
+        "count": 5,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs5t300u10": {
+      "name": "qs5t300u10",
+      "tables": 300,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 5,
+        "count": 10,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs6t25u5": {
+      "name": "qs6t25u5",
+      "tables": 25,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 6,
+        "count": 5,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs6t25u10": {
+      "name": "qs6t25u10",
+      "tables": 25,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 6,
+        "count": 10,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs6t300u5": {
+      "name": "qs6t300u5",
+      "tables": 300,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 6,
+        "count": 5,
+        "distinct": 25
+      },
+      "repeats": 1
+    },
+    "qs6t300u10": {
+      "name": "qs6t300u10",
+      "tables": 300,
+      "cols": 12,
+      "rels": 2,
+      "rows": true,
+      "usages": 0,
+      "queries": {
+        "arm": "decided",
+        "shape": 6,
+        "count": 10,
+        "distinct": 25
+      },
+      "repeats": 1
     }
   },
   "results": {
     "empty": {
       "5.9.3": {
-        "instantiations": 1170,
-        "types": 1697,
-        "symbols": 33271,
-        "checkTime": 0.06,
-        "totalTime": 0.22,
-        "memoryMb": 74
+        "instantiations": 2209,
+        "types": 2742,
+        "symbols": 34634,
+        "checkTime": 0.11,
+        "totalTime": 0.29,
+        "memoryMb": 70
       },
       "7.0.2": {
-        "instantiations": 1199,
-        "types": 2506,
-        "symbols": 35478,
-        "checkTime": 0.004,
-        "totalTime": 0.036,
-        "memoryMb": 27
+        "instantiations": 2453,
+        "types": 3928,
+        "symbols": 37319,
+        "checkTime": 0.006,
+        "totalTime": 0.03,
+        "memoryMb": 29
       }
     },
     "d10r0": {
       "5.9.3": {
-        "instantiations": 1616,
-        "types": 1926,
-        "symbols": 34288,
-        "checkTime": 0.07,
-        "totalTime": 0.22,
-        "memoryMb": 78
+        "instantiations": 2713,
+        "types": 2971,
+        "symbols": 35662,
+        "checkTime": 0.12,
+        "totalTime": 0.29,
+        "memoryMb": 75
       },
       "7.0.2": {
-        "instantiations": 1695,
-        "types": 2832,
-        "symbols": 36584,
+        "instantiations": 3059,
+        "types": 4292,
+        "symbols": 38438,
         "checkTime": 0.005,
-        "totalTime": 0.033,
-        "memoryMb": 27
+        "totalTime": 0.03,
+        "memoryMb": 29
       }
     },
     "d25r0": {
       "5.9.3": {
-        "instantiations": 2156,
-        "types": 2151,
-        "symbols": 35353,
-        "checkTime": 0.12,
-        "totalTime": 0.43,
-        "memoryMb": 66
+        "instantiations": 3253,
+        "types": 3196,
+        "symbols": 36727,
+        "checkTime": 0.14,
+        "totalTime": 0.3,
+        "memoryMb": 67
       },
       "7.0.2": {
-        "instantiations": 2250,
-        "types": 3057,
-        "symbols": 37694,
+        "instantiations": 3614,
+        "types": 4517,
+        "symbols": 39548,
         "checkTime": 0.005,
-        "totalTime": 0.037,
-        "memoryMb": 28
+        "totalTime": 0.03,
+        "memoryMb": 30
       }
     },
     "d100r0": {
       "5.9.3": {
-        "instantiations": 4856,
-        "types": 3276,
-        "symbols": 40678,
-        "checkTime": 0.15,
-        "totalTime": 0.34,
-        "memoryMb": 76
+        "instantiations": 5953,
+        "types": 4321,
+        "symbols": 42052,
+        "checkTime": 0.16,
+        "totalTime": 0.33,
+        "memoryMb": 92
       },
       "7.0.2": {
-        "instantiations": 5025,
-        "types": 4182,
-        "symbols": 43244,
-        "checkTime": 0.012,
-        "totalTime": 0.036,
-        "memoryMb": 31
+        "instantiations": 6389,
+        "types": 5642,
+        "symbols": 45098,
+        "checkTime": 0.021,
+        "totalTime": 0.053,
+        "memoryMb": 33
       }
     },
     "d25r2": {
       "5.9.3": {
-        "instantiations": 3294,
-        "types": 2381,
-        "symbols": 35796,
-        "checkTime": 0.1,
-        "totalTime": 0.25,
-        "memoryMb": 70
+        "instantiations": 4992,
+        "types": 3550,
+        "symbols": 38020,
+        "checkTime": 0.15,
+        "totalTime": 0.32,
+        "memoryMb": 74
       },
       "7.0.2": {
-        "instantiations": 3394,
-        "types": 3444,
-        "symbols": 38398,
+        "instantiations": 5365,
+        "types": 5049,
+        "symbols": 41054,
         "checkTime": 0.005,
-        "totalTime": 0.029,
-        "memoryMb": 28
+        "totalTime": 0.031,
+        "memoryMb": 30
       }
     },
     "d100r2": {
       "5.9.3": {
-        "instantiations": 9069,
-        "types": 4031,
-        "symbols": 42321,
-        "checkTime": 0.15,
-        "totalTime": 0.31,
-        "memoryMb": 79
+        "instantiations": 12567,
+        "types": 5575,
+        "symbols": 47095,
+        "checkTime": 0.2,
+        "totalTime": 0.36,
+        "memoryMb": 84
       },
       "7.0.2": {
-        "instantiations": 9244,
-        "types": 5094,
-        "symbols": 45598,
-        "checkTime": 0.013,
-        "totalTime": 0.037,
-        "memoryMb": 32
+        "instantiations": 13015,
+        "types": 7074,
+        "symbols": 50654,
+        "checkTime": 0.02,
+        "totalTime": 0.044,
+        "memoryMb": 35
       }
     },
     "rows25": {
       "5.9.3": {
-        "instantiations": 12073,
-        "types": 2757,
-        "symbols": 36709,
-        "checkTime": 0.12,
-        "totalTime": 0.28,
-        "memoryMb": 74
+        "instantiations": 13568,
+        "types": 3925,
+        "symbols": 38660,
+        "checkTime": 0.16,
+        "totalTime": 0.32,
+        "memoryMb": 78
       },
       "7.0.2": {
-        "instantiations": 13248,
-        "types": 4346,
-        "symbols": 40836,
-        "checkTime": 0.006,
+        "instantiations": 15327,
+        "types": 5987,
+        "symbols": 43526,
+        "checkTime": 0.007,
         "totalTime": 0.032,
-        "memoryMb": 30
+        "memoryMb": 32
       }
     },
     "rows100": {
       "5.9.3": {
-        "instantiations": 44098,
-        "types": 5532,
-        "symbols": 45859,
-        "checkTime": 0.19,
-        "totalTime": 0.35,
-        "memoryMb": 114
+        "instantiations": 46793,
+        "types": 7075,
+        "symbols": 49535,
+        "checkTime": 0.23,
+        "totalTime": 0.4,
+        "memoryMb": 134
       },
       "7.0.2": {
-        "instantiations": 48123,
-        "types": 8096,
-        "symbols": 53511,
-        "checkTime": 0.018,
-        "totalTime": 0.043,
-        "memoryMb": 36
+        "instantiations": 52002,
+        "types": 10112,
+        "symbols": 58676,
+        "checkTime": 0.022,
+        "totalTime": 0.05,
+        "memoryMb": 39
       }
     },
     "rows300": {
       "5.9.3": {
-        "instantiations": 129498,
-        "types": 12932,
-        "symbols": 70259,
-        "checkTime": 0.33,
-        "totalTime": 0.52,
-        "memoryMb": 146
+        "instantiations": 135393,
+        "types": 15475,
+        "symbols": 78535,
+        "checkTime": 0.42,
+        "totalTime": 0.62,
+        "memoryMb": 151
       },
       "7.0.2": {
-        "instantiations": 141123,
-        "types": 18096,
-        "symbols": 87311,
-        "checkTime": 0.06,
-        "totalTime": 0.087,
-        "memoryMb": 53
+        "instantiations": 149802,
+        "types": 21112,
+        "symbols": 99076,
+        "checkTime": 0.066,
+        "totalTime": 0.092,
+        "memoryMb": 59
       }
     },
     "q25": {
       "5.9.3": {
-        "instantiations": 19237,
-        "types": 3273,
-        "symbols": 40296,
-        "checkTime": 0.2,
-        "totalTime": 0.37,
-        "memoryMb": 77
+        "instantiations": 20507,
+        "types": 4388,
+        "symbols": 41947,
+        "checkTime": 0.18,
+        "totalTime": 0.35,
+        "memoryMb": 96
       },
       "7.0.2": {
-        "instantiations": 31423,
-        "types": 6054,
-        "symbols": 47036,
-        "checkTime": 0.014,
-        "totalTime": 0.039,
-        "memoryMb": 33
+        "instantiations": 33722,
+        "types": 7758,
+        "symbols": 49747,
+        "checkTime": 0.015,
+        "totalTime": 0.042,
+        "memoryMb": 35
       }
     },
     "q25x2": {
       "5.9.3": {
-        "instantiations": 21237,
-        "types": 3373,
-        "symbols": 41196,
-        "checkTime": 0.14,
-        "totalTime": 0.32,
-        "memoryMb": 88
+        "instantiations": 22507,
+        "types": 4488,
+        "symbols": 42847,
+        "checkTime": 0.19,
+        "totalTime": 0.36,
+        "memoryMb": 109
       },
       "7.0.2": {
-        "instantiations": 33423,
-        "types": 6154,
-        "symbols": 47936,
-        "checkTime": 0.014,
-        "totalTime": 0.038,
-        "memoryMb": 34
+        "instantiations": 35722,
+        "types": 7858,
+        "symbols": 50647,
+        "checkTime": 0.017,
+        "totalTime": 0.045,
+        "memoryMb": 36
       }
     },
     "q100": {
       "5.9.3": {
-        "instantiations": 51262,
-        "types": 6049,
-        "symbols": 49521,
-        "checkTime": 0.2,
-        "totalTime": 0.36,
-        "memoryMb": 132
+        "instantiations": 53732,
+        "types": 7539,
+        "symbols": 52897,
+        "checkTime": 0.26,
+        "totalTime": 0.44,
+        "memoryMb": 94
       },
       "7.0.2": {
-        "instantiations": 72153,
-        "types": 11310,
-        "symbols": 63536,
-        "checkTime": 0.019,
-        "totalTime": 0.045,
-        "memoryMb": 41
+        "instantiations": 78052,
+        "types": 13764,
+        "symbols": 70822,
+        "checkTime": 0.029,
+        "totalTime": 0.055,
+        "memoryMb": 45
       }
     },
     "q100x2": {
       "5.9.3": {
-        "instantiations": 53262,
-        "types": 6149,
-        "symbols": 50421,
-        "checkTime": 0.21,
-        "totalTime": 0.37,
-        "memoryMb": 90
+        "instantiations": 55732,
+        "types": 7639,
+        "symbols": 53797,
+        "checkTime": 0.27,
+        "totalTime": 0.46,
+        "memoryMb": 97
       },
       "7.0.2": {
-        "instantiations": 74153,
-        "types": 11410,
-        "symbols": 64436,
-        "checkTime": 0.023,
-        "totalTime": 0.049,
-        "memoryMb": 42
+        "instantiations": 80052,
+        "types": 13864,
+        "symbols": 71722,
+        "checkTime": 0.031,
+        "totalTime": 0.058,
+        "memoryMb": 46
       }
     },
     "q300": {
       "5.9.3": {
-        "instantiations": 136662,
-        "types": 13449,
-        "symbols": 74121,
-        "checkTime": 0.38,
-        "totalTime": 0.57,
-        "memoryMb": 125
+        "instantiations": 142332,
+        "types": 15939,
+        "symbols": 82097,
+        "checkTime": 0.46,
+        "totalTime": 0.66,
+        "memoryMb": 128
       },
       "7.0.2": {
-        "instantiations": 180753,
-        "types": 25310,
-        "symbols": 107536,
-        "checkTime": 0.063,
-        "totalTime": 0.088,
-        "memoryMb": 63
+        "instantiations": 196252,
+        "types": 29764,
+        "symbols": 127022,
+        "checkTime": 0.077,
+        "totalTime": 0.104,
+        "memoryMb": 72
       }
     },
     "q300x2": {
       "5.9.3": {
-        "instantiations": 138662,
-        "types": 13549,
-        "symbols": 75021,
-        "checkTime": 0.37,
-        "totalTime": 0.57,
-        "memoryMb": 142
+        "instantiations": 144332,
+        "types": 16039,
+        "symbols": 82997,
+        "checkTime": 0.47,
+        "totalTime": 0.68,
+        "memoryMb": 145
       },
       "7.0.2": {
-        "instantiations": 182753,
-        "types": 25410,
-        "symbols": 108436,
-        "checkTime": 0.06,
-        "totalTime": 0.085,
-        "memoryMb": 64
+        "instantiations": 198252,
+        "types": 29864,
+        "symbols": 127922,
+        "checkTime": 0.074,
+        "totalTime": 0.102,
+        "memoryMb": 72
       }
     },
     "q100cold": {
       "5.9.3": {
-        "instantiations": 56412,
-        "types": 6449,
-        "symbols": 52171,
-        "checkTime": 0.2,
-        "totalTime": 0.36,
-        "memoryMb": 87
+        "instantiations": 58657,
+        "types": 7889,
+        "symbols": 55247,
+        "checkTime": 0.27,
+        "totalTime": 0.45,
+        "memoryMb": 115
       },
       "7.0.2": {
-        "instantiations": 86003,
-        "types": 12110,
-        "symbols": 66886,
-        "checkTime": 0.026,
-        "totalTime": 0.05,
-        "memoryMb": 42
+        "instantiations": 91477,
+        "types": 14514,
+        "symbols": 73597,
+        "checkTime": 0.036,
+        "totalTime": 0.061,
+        "memoryMb": 46
       }
     },
     "headline": {
       "5.9.3": {
-        "instantiations": 72712,
-        "types": 7548,
-        "symbols": 60171,
-        "checkTime": 0.25,
-        "totalTime": 0.43,
-        "memoryMb": 116
+        "instantiations": 74507,
+        "types": 8888,
+        "symbols": 62647,
+        "checkTime": 0.31,
+        "totalTime": 0.5,
+        "memoryMb": 142
       },
       "7.0.2": {
-        "instantiations": 119698,
-        "types": 14004,
-        "symbols": 76286,
+        "instantiations": 124322,
+        "types": 16308,
+        "symbols": 81847,
+        "checkTime": 0.048,
+        "totalTime": 0.074,
+        "memoryMb": 50
+      }
+    },
+    "qs1t25u25": {
+      "5.9.3": {
+        "instantiations": 35434,
+        "types": 17363,
+        "symbols": 68209,
+        "checkTime": 0.49,
+        "totalTime": 0.74,
+        "memoryMb": 144
+      },
+      "7.0.2": {
+        "instantiations": 45482,
+        "types": 26241,
+        "symbols": 82537,
+        "checkTime": 0.034,
+        "totalTime": 0.071,
+        "memoryMb": 61
+      }
+    },
+    "qs1t25u50": {
+      "5.9.3": {
+        "instantiations": 37784,
+        "types": 17804,
+        "symbols": 70734,
+        "checkTime": 0.51,
+        "totalTime": 0.78,
+        "memoryMb": 158
+      },
+      "7.0.2": {
+        "instantiations": 47832,
+        "types": 26684,
+        "symbols": 85087,
+        "checkTime": 0.05,
+        "totalTime": 0.081,
+        "memoryMb": 62
+      }
+    },
+    "qs1t300u25": {
+      "5.9.3": {
+        "instantiations": 159734,
+        "types": 28913,
+        "symbols": 108359,
+        "checkTime": 0.89,
+        "totalTime": 1.17,
+        "memoryMb": 151
+      },
+      "7.0.2": {
+        "instantiations": 211582,
+        "types": 48241,
+        "symbols": 161737,
+        "checkTime": 0.128,
+        "totalTime": 0.159,
+        "memoryMb": 97
+      }
+    },
+    "qs1t300u50": {
+      "5.9.3": {
+        "instantiations": 162084,
+        "types": 29354,
+        "symbols": 110884,
+        "checkTime": 1.02,
+        "totalTime": 1.29,
+        "memoryMb": 195
+      },
+      "7.0.2": {
+        "instantiations": 213932,
+        "types": 48684,
+        "symbols": 164287,
+        "checkTime": 0.156,
+        "totalTime": 0.192,
+        "memoryMb": 98
+      }
+    },
+    "qs2t25u25": {
+      "5.9.3": {
+        "instantiations": 41361,
+        "types": 18673,
+        "symbols": 70747,
+        "checkTime": 0.53,
+        "totalTime": 0.75,
+        "memoryMb": 129
+      },
+      "7.0.2": {
+        "instantiations": 51460,
+        "types": 27607,
+        "symbols": 85108,
         "checkTime": 0.039,
-        "totalTime": 0.064,
-        "memoryMb": 47
+        "totalTime": 0.068,
+        "memoryMb": 62
+      }
+    },
+    "qs2t25u50": {
+      "5.9.3": {
+        "instantiations": 45786,
+        "types": 19498,
+        "symbols": 74722,
+        "checkTime": 0.57,
+        "totalTime": 0.8,
+        "memoryMb": 156
+      },
+      "7.0.2": {
+        "instantiations": 55885,
+        "types": 28432,
+        "symbols": 89108,
+        "checkTime": 0.047,
+        "totalTime": 0.076,
+        "memoryMb": 64
+      }
+    },
+    "qs2t300u25": {
+      "5.9.3": {
+        "instantiations": 165661,
+        "types": 30223,
+        "symbols": 110897,
+        "checkTime": 1.03,
+        "totalTime": 1.29,
+        "memoryMb": 174
+      },
+      "7.0.2": {
+        "instantiations": 217560,
+        "types": 49607,
+        "symbols": 164308,
+        "checkTime": 0.159,
+        "totalTime": 0.189,
+        "memoryMb": 98
+      }
+    },
+    "qs2t300u50": {
+      "5.9.3": {
+        "instantiations": 170086,
+        "types": 31048,
+        "symbols": 114872,
+        "checkTime": 1.36,
+        "totalTime": 1.64,
+        "memoryMb": 157
+      },
+      "7.0.2": {
+        "instantiations": 221985,
+        "types": 50432,
+        "symbols": 168308,
+        "checkTime": 0.23,
+        "totalTime": 0.26,
+        "memoryMb": 100
+      }
+    },
+    "qs3t25u25": {
+      "5.9.3": {
+        "instantiations": 44744,
+        "types": 20210,
+        "symbols": 71877,
+        "checkTime": 0.57,
+        "totalTime": 0.81,
+        "memoryMb": 122
+      },
+      "7.0.2": {
+        "instantiations": 54911,
+        "types": 29224,
+        "symbols": 86315,
+        "checkTime": 0.051,
+        "totalTime": 0.077,
+        "memoryMb": 63
+      }
+    },
+    "qs3t25u50": {
+      "5.9.3": {
+        "instantiations": 50994,
+        "types": 22201,
+        "symbols": 76902,
+        "checkTime": 0.67,
+        "totalTime": 0.95,
+        "memoryMb": 161
+      },
+      "7.0.2": {
+        "instantiations": 61161,
+        "types": 31217,
+        "symbols": 91390,
+        "checkTime": 0.069,
+        "totalTime": 0.096,
+        "memoryMb": 65
+      }
+    },
+    "qs3t300u25": {
+      "5.9.3": {
+        "instantiations": 169051,
+        "types": 31762,
+        "symbols": 112031,
+        "checkTime": 1.63,
+        "totalTime": 1.89,
+        "memoryMb": 187
+      },
+      "7.0.2": {
+        "instantiations": 221023,
+        "types": 51227,
+        "symbols": 165519,
+        "checkTime": 0.302,
+        "totalTime": 0.331,
+        "memoryMb": 99
+      }
+    },
+    "qs3t300u50": {
+      "5.9.3": {
+        "instantiations": 175301,
+        "types": 33753,
+        "symbols": 117056,
+        "checkTime": 2.44,
+        "totalTime": 2.72,
+        "memoryMb": 181
+      },
+      "7.0.2": {
+        "instantiations": 227273,
+        "types": 53220,
+        "symbols": 170594,
+        "checkTime": 0.486,
+        "totalTime": 0.515,
+        "memoryMb": 102
+      }
+    },
+    "qs5t25u5": {
+      "5.9.3": {
+        "instantiations": 72777,
+        "types": 20094,
+        "symbols": 70446,
+        "checkTime": 0.63,
+        "totalTime": 0.86,
+        "memoryMb": 113
+      },
+      "7.0.2": {
+        "instantiations": 82392,
+        "types": 28992,
+        "symbols": 84823,
+        "checkTime": 0.068,
+        "totalTime": 0.117,
+        "memoryMb": 62
+      }
+    },
+    "qs5t25u10": {
+      "5.9.3": {
+        "instantiations": 115321,
+        "types": 23765,
+        "symbols": 76545,
+        "checkTime": 0.74,
+        "totalTime": 0.96,
+        "memoryMb": 134
+      },
+      "7.0.2": {
+        "instantiations": 124961,
+        "types": 32663,
+        "symbols": 91032,
+        "checkTime": 0.079,
+        "totalTime": 0.107,
+        "memoryMb": 66
+      }
+    },
+    "qs5t300u5": {
+      "5.9.3": {
+        "instantiations": 197077,
+        "types": 31644,
+        "symbols": 110596,
+        "checkTime": 1.79,
+        "totalTime": 2.05,
+        "memoryMb": 197
+      },
+      "7.0.2": {
+        "instantiations": 248492,
+        "types": 50992,
+        "symbols": 164023,
+        "checkTime": 0.261,
+        "totalTime": 0.289,
+        "memoryMb": 99
+      }
+    },
+    "qs5t300u10": {
+      "5.9.3": {
+        "instantiations": 239621,
+        "types": 35315,
+        "symbols": 116695,
+        "checkTime": 2.67,
+        "totalTime": 2.97,
+        "memoryMb": 212
+      },
+      "7.0.2": {
+        "instantiations": 291061,
+        "types": 54663,
+        "symbols": 170232,
+        "checkTime": 0.429,
+        "totalTime": 0.458,
+        "memoryMb": 102
+      }
+    },
+    "qs6t25u5": {
+      "5.9.3": {
+        "instantiations": 34809,
+        "types": 17601,
+        "symbols": 66658,
+        "checkTime": 0.53,
+        "totalTime": 0.76,
+        "memoryMb": 153
+      },
+      "7.0.2": {
+        "instantiations": 44368,
+        "types": 26585,
+        "symbols": 80987,
+        "checkTime": 0.04,
+        "totalTime": 0.07,
+        "memoryMb": 60
+      }
+    },
+    "qs6t25u10": {
+      "5.9.3": {
+        "instantiations": 39389,
+        "types": 18476,
+        "symbols": 68988,
+        "checkTime": 0.58,
+        "totalTime": 0.82,
+        "memoryMb": 118
+      },
+      "7.0.2": {
+        "instantiations": 48973,
+        "types": 27465,
+        "symbols": 83382,
+        "checkTime": 0.051,
+        "totalTime": 0.079,
+        "memoryMb": 61
+      }
+    },
+    "qs6t300u5": {
+      "5.9.3": {
+        "instantiations": 159109,
+        "types": 29151,
+        "symbols": 106808,
+        "checkTime": 1.34,
+        "totalTime": 1.61,
+        "memoryMb": 151
+      },
+      "7.0.2": {
+        "instantiations": 210468,
+        "types": 48585,
+        "symbols": 160187,
+        "checkTime": 0.221,
+        "totalTime": 0.251,
+        "memoryMb": 97
+      }
+    },
+    "qs6t300u10": {
+      "5.9.3": {
+        "instantiations": 163689,
+        "types": 30026,
+        "symbols": 109138,
+        "checkTime": 1.89,
+        "totalTime": 2.17,
+        "memoryMb": 202
+      },
+      "7.0.2": {
+        "instantiations": 215073,
+        "types": 49465,
+        "symbols": 162582,
+        "checkTime": 0.355,
+        "totalTime": 0.382,
+        "memoryMb": 98
       }
     }
   },
@@ -492,8 +1152,8 @@
     "5.9.3": {
       "instantiationsPerTableDeclaration": 36,
       "instantiationsPerColumnDeclaration": 3,
-      "instantiationsPerDeclaredRelation": 20.5,
-      "instantiationsPerTableAllRowShapes": 350,
+      "instantiationsPerDeclaredRelation": 32.5,
+      "instantiationsPerTableAllRowShapes": 342,
       "marginalInstantiationsPerUsage": {
         "at25Tables": 40,
         "at100Tables": 40,
@@ -501,30 +1161,62 @@
       },
       "schemaSizeIndependenceRatio": 1,
       "schemaSizeIndependenceRatio300": 1,
-      "coldFirstTouchPerUsageAt100Tables": 246.3,
+      "coldFirstTouchPerUsageAt100Tables": 237.3,
       "marginalInstantiationsPerUsageVsZeroBaseline": {
-        "at25Tables": 143.3,
-        "at100Tables": 143.3,
-        "at300Tables": 143.3
+        "at25Tables": 138.8,
+        "at100Tables": 138.8,
+        "at300Tables": 138.8
       },
       "schemaSizeIndependenceRatioVsZeroBaseline": 1,
       "schemaSizeIndependenceRatio300VsZeroBaseline": 1,
       "fixedSchemaRegistryTouch": {
-        "at25Tables": 5164,
-        "at100Tables": 5164,
-        "at300Tables": 5164,
+        "at25Tables": 4939,
+        "at100Tables": 4939,
+        "at300Tables": 4939,
         "perTable": 0
       },
       "marginalInstantiationsPerTable": {
         "from10to25": 36,
         "from25to100": 36,
         "ratio": 1
+      },
+      "perQuery": {
+        "instantiationsPerDistinctQuerySimpleSelect": {
+          "label": "simple select (4 cols, 1 where)",
+          "at25Tables": 94,
+          "at300Tables": 94,
+          "schemaSizeIndependenceRatio300": 1
+        },
+        "instantiationsPerDistinctQueryJoinAggSqlNest": {
+          "label": "join + aggregate + sql + nest",
+          "at25Tables": 177,
+          "at300Tables": 177,
+          "schemaSizeIndependenceRatio300": 1
+        },
+        "instantiationsPerDistinctQueryWithRelationProjection": {
+          "label": "select + relation projection",
+          "at25Tables": 250,
+          "at300Tables": 250,
+          "schemaSizeIndependenceRatio300": 1
+        },
+        "instantiationsPerDistinctQuery20ChainedJoins": {
+          "label": "20 chained joins",
+          "at25Tables": 8508.8,
+          "at300Tables": 8508.8,
+          "schemaSizeIndependenceRatio300": 1
+        },
+        "instantiationsPerDistinctQueryNestedRelation4Deep": {
+          "label": "relation projection, 4 levels deep",
+          "at25Tables": 916,
+          "at300Tables": 916,
+          "schemaSizeIndependenceRatio300": 1
+        }
       }
     },
     "7.0.2": {
       "instantiationsPerTableDeclaration": 37,
       "instantiationsPerColumnDeclaration": 3.08,
-      "instantiationsPerDeclaredRelation": 20.5,
+      "instantiationsPerDeclaredRelation": 32.5,
       "instantiationsPerTableAllRowShapes": 387,
       "marginalInstantiationsPerUsage": {
         "at25Tables": 40,
@@ -533,25 +1225,114 @@
       },
       "schemaSizeIndependenceRatio": 1,
       "schemaSizeIndependenceRatio300": 1,
-      "coldFirstTouchPerUsageAt100Tables": 757.6,
+      "coldFirstTouchPerUsageAt100Tables": 789.5,
       "marginalInstantiationsPerUsageVsZeroBaseline": {
-        "at25Tables": 363.5,
-        "at100Tables": 480.6,
-        "at300Tables": 792.6
+        "at25Tables": 367.9,
+        "at100Tables": 521,
+        "at300Tables": 929
       },
-      "schemaSizeIndependenceRatioVsZeroBaseline": 1.322,
-      "schemaSizeIndependenceRatio300VsZeroBaseline": 2.18,
+      "schemaSizeIndependenceRatioVsZeroBaseline": 1.416,
+      "schemaSizeIndependenceRatio300VsZeroBaseline": 2.525,
       "fixedSchemaRegistryTouch": {
-        "at25Tables": 16175,
-        "at100Tables": 22030,
-        "at300Tables": 37630,
-        "perTable": 78.1
+        "at25Tables": 16395,
+        "at100Tables": 24050,
+        "at300Tables": 44450,
+        "perTable": 102.1
       },
       "marginalInstantiationsPerTable": {
         "from10to25": 37,
         "from25to100": 37,
         "ratio": 1
+      },
+      "perQuery": {
+        "instantiationsPerDistinctQuerySimpleSelect": {
+          "label": "simple select (4 cols, 1 where)",
+          "at25Tables": 94,
+          "at300Tables": 94,
+          "schemaSizeIndependenceRatio300": 1
+        },
+        "instantiationsPerDistinctQueryJoinAggSqlNest": {
+          "label": "join + aggregate + sql + nest",
+          "at25Tables": 177,
+          "at300Tables": 177,
+          "schemaSizeIndependenceRatio300": 1
+        },
+        "instantiationsPerDistinctQueryWithRelationProjection": {
+          "label": "select + relation projection",
+          "at25Tables": 250,
+          "at300Tables": 250,
+          "schemaSizeIndependenceRatio300": 1
+        },
+        "instantiationsPerDistinctQuery20ChainedJoins": {
+          "label": "20 chained joins",
+          "at25Tables": 8513.8,
+          "at300Tables": 8513.8,
+          "schemaSizeIndependenceRatio300": 1
+        },
+        "instantiationsPerDistinctQueryNestedRelation4Deep": {
+          "label": "relation projection, 4 levels deep",
+          "at25Tables": 921,
+          "at300Tables": 921,
+          "schemaSizeIndependenceRatio300": 1
+        }
       }
+    }
+  },
+  "dts": {
+    "total": 307967,
+    "files": {
+      "query/types.d.ts": 50790,
+      "compile/ast.d.ts": 18588,
+      "query/ops.d.ts": 16501,
+      "driver/types.d.ts": 13704,
+      "codec/builtins.d.ts": 12858,
+      "codec/types.d.ts": 11098,
+      "schema/column.d.ts": 9995,
+      "compile/nodes.d.ts": 9907,
+      "schema/relations.d.ts": 8009,
+      "query/ops.types.d.ts": 7522,
+      "driver/pg-like.d.ts": 7501,
+      "query/builder-state.d.ts": 7482,
+      "index.d.ts": 7475,
+      "sql/fragment.d.ts": 7140,
+      "query/select.d.ts": 6862,
+      "query/projection.d.ts": 6482,
+      "codec/registry.d.ts": 6000,
+      "query/insert.d.ts": 5858,
+      "query/errors.d.ts": 5319,
+      "sql/errors.d.ts": 5151,
+      "sql/ident.d.ts": 5138,
+      "schema/table.d.ts": 4599,
+      "query/scope.d.ts": 4412,
+      "query/meta.d.ts": 4386,
+      "query/ref.d.ts": 4372,
+      "query/window.d.ts": 4109,
+      "compile/contract.d.ts": 4089,
+      "query/fn.d.ts": 3796,
+      "schema/types.d.ts": 3586,
+      "compile/hoist.d.ts": 3485,
+      "query/relations.d.ts": 3403,
+      "query/nominal.d.ts": 3362,
+      "query/update.d.ts": 2976,
+      "query/cte.d.ts": 2821,
+      "driver/errors.d.ts": 2782,
+      "driver/pg-adapter.d.ts": 2681,
+      "query/ops.manifest.d.ts": 2372,
+      "query/run.d.ts": 2157,
+      "compile/decode.d.ts": 2065,
+      "driver/submittable.d.ts": 2054,
+      "codec/array.d.ts": 2004,
+      "schema/symbols.d.ts": 1912,
+      "query/delete.d.ts": 1804,
+      "schema/ref.d.ts": 1762,
+      "schema/index.d.ts": 1269,
+      "compile/compiler.d.ts": 1239,
+      "codec/index.d.ts": 1213,
+      "driver/index.d.ts": 1101,
+      "schema/extras.d.ts": 1058,
+      "query/symbols.d.ts": 709,
+      "sql/index.d.ts": 608,
+      "compile/index.d.ts": 401
     }
   },
   "budget": {
@@ -565,7 +1346,13 @@
     "instantiationsPerDeclaredRelation": 50,
     "instantiationsPerTableAllRowShapes": 500,
     "marginalInstantiationsPerUsage": 1000,
+    "instantiationsPerDistinctQuerySimpleSelect": 1500,
+    "instantiationsPerDistinctQueryJoinAggSqlNest": 2000,
+    "instantiationsPerDistinctQueryWithRelationProjection": 2750,
+    "instantiationsPerDistinctQuery20ChainedJoins": 12000,
+    "instantiationsPerDistinctQueryNestedRelation4Deep": 1500,
     "schemaSizeIndependenceRatio": 1.15,
+    "packageDtsBytes": 409600,
     "headline": {
       "instantiations": 200000,
       "checkTimeSeconds": {
@@ -573,13 +1360,6 @@
         "7.0.2": 0.5
       },
       "peakMemoryMb": 250
-    },
-    "_notGatedHere": {
-      "_why": "design/04 §3.5 lines that need constructs the TYPE CORE spike does not carry yet.",
-      "instantiationsPerDistinctQuerySimpleSelect": 1500,
-      "instantiationsPerDistinctQueryJoinAggSqlNest": 2000,
-      "instantiationsPerDistinctQueryWithRelationProjection": 2750,
-      "_blockedBy": "no query builder yet (agent 03); and @ark/attest cannot run on TS 7.0.2."
     },
     "_design04Measured": {
       "_why": "design/04 §3.5's own 'Measured today' column, for an honest three-way print: design-04 / here / budget. design/04's prototype was a declaration-only `src/core.ts`; this harness measures the real implementation.",
@@ -607,6 +1387,13 @@
           "7.0.2": 66
         }
       }
+    },
+    "_measuredWs0": {
+      "_why": "design/09 §3.0, `node bench/types/forks.mjs`, measured on the WS0 declaration-only prototype: marginal instantiations per distinct query, identical at 25/100/300 tables and on both compilers. Kept as the WS0 baseline so WS1's additions — left-join nullability, the GROUP BY guard, CTE handles, set ops, `$if` — read as a delta rather than as an absolute. WS1's own numbers are gated above and re-measured by `run.mjs` on every run; see design/09 §3.1.",
+      "instantiationsPerDistinctQuerySimpleSelect": 90,
+      "instantiationsPerDistinctQueryJoinAggSqlNest": 172,
+      "instantiationsPerDistinctQueryWithRelationProjection": 206,
+      "schemaSizeIndependenceRatio300": 1
     }
   },
   "checks": [
@@ -627,14 +1414,14 @@
     {
       "name": "instantiations / declared relation",
       "version": "5.9.3",
-      "actual": 20.5,
+      "actual": 32.5,
       "limit": 50,
       "ok": true
     },
     {
       "name": "instantiations / table, all 3 row shapes",
       "version": "5.9.3",
-      "actual": 350,
+      "actual": 342,
       "limit": 500,
       "ok": true
     },
@@ -662,22 +1449,92 @@
     {
       "name": "headline instantiations",
       "version": "5.9.3",
-      "actual": 72712,
+      "actual": 74507,
       "limit": 200000,
       "ok": true
     },
     {
       "name": "headline check time (s)",
       "version": "5.9.3",
-      "actual": 0.25,
+      "actual": 0.31,
       "limit": 2,
       "ok": true
     },
     {
       "name": "headline peak memory (MB)",
       "version": "5.9.3",
-      "actual": 116,
+      "actual": 142,
       "limit": 250,
+      "ok": true
+    },
+    {
+      "name": "per-query simple select (4 cols, 1 where) (300t)",
+      "version": "5.9.3",
+      "actual": 94,
+      "limit": 1500,
+      "ok": true
+    },
+    {
+      "name": "per-query simple select (4 cols, 1 where) 300t/25t",
+      "version": "5.9.3",
+      "actual": 1,
+      "limit": 1.15,
+      "ok": true
+    },
+    {
+      "name": "per-query join + aggregate + sql + nest (300t)",
+      "version": "5.9.3",
+      "actual": 177,
+      "limit": 2000,
+      "ok": true
+    },
+    {
+      "name": "per-query join + aggregate + sql + nest 300t/25t",
+      "version": "5.9.3",
+      "actual": 1,
+      "limit": 1.15,
+      "ok": true
+    },
+    {
+      "name": "per-query select + relation projection (300t)",
+      "version": "5.9.3",
+      "actual": 250,
+      "limit": 2750,
+      "ok": true
+    },
+    {
+      "name": "per-query select + relation projection 300t/25t",
+      "version": "5.9.3",
+      "actual": 1,
+      "limit": 1.15,
+      "ok": true
+    },
+    {
+      "name": "per-query 20 chained joins (300t)",
+      "version": "5.9.3",
+      "actual": 8508.8,
+      "limit": 12000,
+      "ok": true
+    },
+    {
+      "name": "per-query 20 chained joins 300t/25t",
+      "version": "5.9.3",
+      "actual": 1,
+      "limit": 1.15,
+      "ok": true
+    },
+    {
+      "name": "per-query relation projection, 4 levels deep (300t)",
+      "version": "5.9.3",
+      "actual": 916,
+      "limit": 1500,
+      "ok": true
+    },
+    {
+      "name": "per-query relation projection, 4 levels deep 300t/25t",
+      "version": "5.9.3",
+      "actual": 1,
+      "limit": 1.15,
       "ok": true
     },
     {
@@ -697,7 +1554,7 @@
     {
       "name": "instantiations / declared relation",
       "version": "7.0.2",
-      "actual": 20.5,
+      "actual": 32.5,
       "limit": 50,
       "ok": true
     },
@@ -732,22 +1589,99 @@
     {
       "name": "headline instantiations",
       "version": "7.0.2",
-      "actual": 119698,
+      "actual": 124322,
       "limit": 200000,
       "ok": true
     },
     {
       "name": "headline check time (s)",
       "version": "7.0.2",
-      "actual": 0.039,
+      "actual": 0.048,
       "limit": 0.5,
       "ok": true
     },
     {
       "name": "headline peak memory (MB)",
       "version": "7.0.2",
-      "actual": 47,
+      "actual": 50,
       "limit": 250,
+      "ok": true
+    },
+    {
+      "name": "per-query simple select (4 cols, 1 where) (300t)",
+      "version": "7.0.2",
+      "actual": 94,
+      "limit": 1500,
+      "ok": true
+    },
+    {
+      "name": "per-query simple select (4 cols, 1 where) 300t/25t",
+      "version": "7.0.2",
+      "actual": 1,
+      "limit": 1.15,
+      "ok": true
+    },
+    {
+      "name": "per-query join + aggregate + sql + nest (300t)",
+      "version": "7.0.2",
+      "actual": 177,
+      "limit": 2000,
+      "ok": true
+    },
+    {
+      "name": "per-query join + aggregate + sql + nest 300t/25t",
+      "version": "7.0.2",
+      "actual": 1,
+      "limit": 1.15,
+      "ok": true
+    },
+    {
+      "name": "per-query select + relation projection (300t)",
+      "version": "7.0.2",
+      "actual": 250,
+      "limit": 2750,
+      "ok": true
+    },
+    {
+      "name": "per-query select + relation projection 300t/25t",
+      "version": "7.0.2",
+      "actual": 1,
+      "limit": 1.15,
+      "ok": true
+    },
+    {
+      "name": "per-query 20 chained joins (300t)",
+      "version": "7.0.2",
+      "actual": 8513.8,
+      "limit": 12000,
+      "ok": true
+    },
+    {
+      "name": "per-query 20 chained joins 300t/25t",
+      "version": "7.0.2",
+      "actual": 1,
+      "limit": 1.15,
+      "ok": true
+    },
+    {
+      "name": "per-query relation projection, 4 levels deep (300t)",
+      "version": "7.0.2",
+      "actual": 921,
+      "limit": 1500,
+      "ok": true
+    },
+    {
+      "name": "per-query relation projection, 4 levels deep 300t/25t",
+      "version": "7.0.2",
+      "actual": 1,
+      "limit": 1.15,
+      "ok": true
+    },
+    {
+      "name": "package .d.ts bytes",
+      "version": "—",
+      "actual": 307967,
+      "limit": 409600,
       "ok": true
     }
   ],

@@ -9,8 +9,8 @@ import { describe, expect, it } from 'vitest'
 import { compile } from '../../src/compile/compiler.js'
 import { buildDecoder } from '../../src/compile/decode.js'
 import type { Expr } from '../../src/compile/ast.js'
-import { insert, param, projection, table } from '../../src/compile/nodes.js'
-import { spikeCodecs } from '../../src/sql/codec.js'
+import { insert, param, projection, select, table } from '../../src/compile/nodes.js'
+import { int8Codec, textCodec, varcharCodec } from '../../src/codec/index.js'
 import { UnsupportedNodeError } from '../../src/sql/errors.js'
 import { sql, toNode } from '../../src/sql/fragment.js'
 import { u, usersCols, usersTable } from '../sql/_helpers.js'
@@ -19,9 +19,9 @@ const into = table(usersTable)
 const cols = [usersCols.email, usersCols.name, usersCols.role]
 
 const row = (email: string, name: string, role: string): readonly Expr[] => [
-  param(email, spikeCodecs.citext),
-  param(name, spikeCodecs.text),
-  param(role, spikeCodecs.text),
+  param(email, varcharCodec),
+  param(name, textCodec),
+  param(role, textCodec),
 ]
 
 const vals = (c: { binds: readonly { k: string }[] }) =>
@@ -108,9 +108,13 @@ describe('§2.6 — multi-row VALUES', () => {
         source: { k: 'values', rows: [row('a@x', 'A', 'admin'), row('b@x', 'B', 'user')] },
       }),
     )
+    // WS2: the cast comes from `codec.sqlName`. `email` is `varchar` and not, as in design/03
+    // §2's schema, `citext` — citext is an EXTENSION type with a per-database OID, so it has no
+    // static built-in codec and belongs on the `resolveDynamic` path. varchar keeps the property
+    // this golden exists to pin: each column is cast to its OWN type, not to a shared one.
     expect(compiled.sql).toBe(
       'insert into "public"."users" ("email", "name", "role") values ' +
-        '($1::citext, $2::text, $3::text), ($4, $5, $6)',
+        '($1::varchar, $2::text, $3::text), ($4, $5, $6)',
     )
   })
 
@@ -130,7 +134,7 @@ describe('RETURNING reuses the projection machinery', () => {
         source: { k: 'values', rows: [row('a@x', 'A', 'admin')] },
         returning: [
           projection('id', u('id')),
-          projection('tag', toNode(sql`${'v'} || ${'w'}`.as(spikeCodecs.text))),
+          projection('tag', toNode(sql`${'v'} || ${'w'}`.as(textCodec))),
         ],
       }),
     )
@@ -144,8 +148,8 @@ describe('RETURNING reuses the projection machinery', () => {
     expect(compiled.shape).toEqual({
       k: 'row',
       fields: [
-        { key: 'id', k: 'col', idx: 0, codec: spikeCodecs.int8 },
-        { key: 'tag', k: 'col', idx: 1, codec: spikeCodecs.text },
+        { key: 'id', k: 'col', idx: 0, codec: int8Codec },
+        { key: 'tag', k: 'col', idx: 1, codec: textCodec },
       ],
     })
   })
@@ -174,13 +178,25 @@ describe('RETURNING reuses the projection machinery', () => {
   })
 })
 
-describe('unsupported statements fail loudly', () => {
-  it('names the node kind rather than emitting something plausible', () => {
+describe('unsupported nodes fail loudly', () => {
+  // WS4 implemented `update` / `delete` / `setop`, which is what this test used to reach for.
+  // The property under test is unchanged: a node the emitter does not handle must NAME itself
+  // rather than emit something plausible. `case` is still declared-not-implemented (`ast.ts`),
+  // and an unknown statement kind is the totality backstop at the entry point.
+  it('names an expression kind the emitter does not implement', () => {
     expect(() =>
-      compile({
-        k: 'delete',
-        from: into,
-      } as never),
-    ).toThrowError(/'delete' is not implemented/)
+      compile(
+        select({
+          projection: [projection('x', { k: 'case', whens: [], resultCodec: textCodec } as never)],
+          from: into,
+        }),
+      ),
+    ).toThrowError(/'case' is not implemented/)
+  })
+
+  it('names an unknown statement kind at the entry point', () => {
+    expect(() => compile({ k: 'copy', from: into } as never)).toThrowError(
+      /'copy' is not implemented/,
+    )
   })
 })

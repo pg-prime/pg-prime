@@ -38,80 +38,71 @@ the right number. We copy the count, not the contents.
 
 | Package | Role | Deps | Build | Budget (unpacked) |
 |---|---|---|---|---|
-| **`pgorm`** | The runtime. Schema DSL, codec registry, query builder + compiler, executor, transactions, structural driver adapters, migration *applier*. | **zero runtime deps, zero peer deps** | `tsgo`, unbundled ESM | **≤ 2.5 MB / ≤ 400 files** |
-| **`pgorm-kit`** | The CLI. Introspection, diff engine, plan emission, hazard linter, `verify` / `baseline` / `push`, codemods. | bundled & inlined | `esbuild` single file + `tsgo` for `.d.ts` | **≤ 8 MB** (hard fail 12 MB) |
+| **`pgormjs`** | The runtime. Schema DSL, codec registry, query builder + compiler, executor, transactions, structural driver adapters, migration *applier*. | **zero runtime deps, zero peer deps** | `tsgo`, unbundled ESM | **≤ 2.5 MB / ≤ 400 files** |
+| **`@pgorm/kit`** | The CLI. Introspection, diff engine, plan emission, hazard linter, `verify` / `baseline` / `push`, codemods. | bundled & inlined | `esbuild` single file + `tsgo` for `.d.ts` | **≤ 8 MB** (hard fail 12 MB) |
 | **`@pgorm/testing`** | Structural driver mock, ephemeral PGlite/testcontainer fixtures, `expectSql` golden helpers. Dev-only. | `@electric-sql/pglite` + `@testcontainers/postgresql` as **optional** peers | `tsgo` | ≤ 300 KB |
-| **`create-pgorm`** | `pnpm create pgorm` scaffolder. | bundled | `esbuild` | ≤ 500 KB |
+| **`create-pgormjs`** | `npm create pgormjs` scaffolder. | bundled | `esbuild` | ≤ 500 KB |
 
 **Deliberately NOT separate packages:**
 
 - **No `@pgorm/adapter-pg`.** The adapter interface is structural (`PgLikePool`, per research §6) — it
   never imports `pg`'s types, it declares the shape `pg` happens to satisfy. That is ~300 LOC and it
-  ships as the `pgorm/adapter-pg` **subpath**, not a package. Same for `pgorm/adapter-pglite`. This is
+  ships as the `pgormjs/adapter-pg` **subpath**, not a package. Same for `pgormjs/adapter-pglite`. This is
   how we get zero deps *and* zero peer deps, and how Neon/Hyperdrive duck-type in for free.
 - **No `@pgorm/pgvector` / `@pgorm/postgis`.** Extension codecs are pure TS with no dependencies; they
-  ship as `pgorm/pgvector` and `pgorm/postgis` subpaths and tree-shake to zero when unused. Splitting
+  ship as `pgormjs/pgvector` and `pgormjs/postgis` subpaths and tree-shake to zero when unused. Splitting
   them into packages buys nothing and costs a version-skew axis.
 - **No `@pgorm/core` + `@pgorm/postgres` split.** There is no second dialect. Ever. That split is the
   thing we are differentiating against.
 
 **Where the CLI/runtime boundary sits (the load-bearing decision):**
-`pgorm` contains the migration **applier** (read `.sql` + `.plan.json`, take
+`pgormjs` contains the migration **applier** (read `.sql` + `.plan.json`, take
 `pg_advisory_xact_lock`, honour `txmode`, record in the history table) because production apps run
-migrations at boot and must not install a CLI to do it. `pgorm-kit` contains the migration
+migrations at boot and must not install a CLI to do it. `@pgorm/kit` contains the migration
 **author** (introspect → diff → emit → lint), which is a dev-time-only concern and is where all the
 weight is. This is the Kysely `kysely/migration` lesson applied deliberately rather than as a 0.29
-breaking change: **`pgorm/migrate` is a first-class subpath from day one and is never re-exported
+breaking change: **`pgormjs/migrate` is a first-class subpath from day one and is never re-exported
 from the root.**
 
 ### 1.2 Size budgets, and how they are enforced
 
 Anchored on F10. `kysely` is the closest comparable (types-heavy, zero-dep, ESM-only) at 1.65 MB, and
 it has no schema DSL, no codecs and no diff engine — so ~1.5× of Kysely is the honest target for
-`pgorm`.
+`pgormjs`.
 
 | Budget | Value | Enforcement |
 |---|---|---|
-| `pgorm` unpacked | ≤ 2.5 MB, ≤ 400 files | `tools/size-budget.mjs`, fails CI |
-| `pgorm` total `.d.ts` | ≤ 900 KB across ≤ 200 files (warn at 750 KB) | same |
-| `pgorm` **largest single `.d.ts`** | **≤ 40 KB** | same — this is the canary. Drizzle's `codecs.d.ts` (34 KB) and `select.d.ts` (31.5 KB) are exactly where its 1.96 MB came from |
-| `pgorm` total JS | ≤ 700 KB raw | same |
+| `pgormjs` unpacked | ≤ 2.5 MB, ≤ 400 files | `tools/size-budget.mjs`, fails CI |
+| `pgormjs` total `.d.ts` | ≤ 900 KB across ≤ 200 files (warn at 750 KB) | same |
+| `pgormjs` **largest single `.d.ts`** | **≤ 40 KB** | same — this is the canary. Drizzle's `codecs.d.ts` (34 KB) and `select.d.ts` (31.5 KB) are exactly where its 1.96 MB came from |
+| `pgormjs` total JS | ≤ 700 KB raw | same |
 | Tree-shaken "connect + one select" | ≤ 35 KB min+gz | `tools/treeshake-check.mjs` |
 | Tree-shaken "full CRUD + tx" | ≤ 55 KB min+gz | same |
 | Full root import | ≤ 120 KB min+gz | same |
-| `pgorm` runtime deps / peer deps | **0 / 0** | asserted in `size-budget.mjs` |
-| `pgorm-kit` unpacked | ≤ 8 MB (fail 12 MB); single bundle file ≤ 2 MB | `size-budget.mjs` |
+| `pgormjs` runtime deps / peer deps | **0 / 0** | asserted in `size-budget.mjs` |
+| `@pgorm/kit` unpacked | ≤ 8 MB (fail 12 MB); single bundle file ≤ 2 MB | `size-budget.mjs` |
 
 The min+gz numbers are **provisional and get baselined on the first release**, then ratcheted
 downward only. Budgets live in `tools/budgets.json` and every change to that file requires a
 reviewer-visible justification in the PR body.
 
-**The `pgorm-kit` headline:** ≤ 8 MB against drizzle-kit's 95 MB is a **~12× smaller** dev
+**The `@pgorm/kit` headline:** ≤ 8 MB against drizzle-kit's 95 MB is a **~12× smaller** dev
 dependency. That number goes in the README, because "one number that explains why this exists" is
 worth more than a paragraph.
 
-### 1.3 Name — availability verified against the live registry
+### 1.3 Name — DECIDED
 
-`pg-orm` is taken (abandoned 2015 package). **`pg-orm-ts` is unusable**: the registry reports
-`Unpublished on 2026-08-04`, and npm does not permit reuse of unpublished names. `[verified]`
+Runtime `pgormjs` · CLI `@pgorm/kit` · test helpers `@pgorm/testing` · scaffolder `create-pgormjs`
+(`npm create pgormjs`). The `@pgorm` npm scope and the GitHub org `pgormjs` are both held.
 
-Three candidates, all confirmed **404 on the registry** (unscoped name free) **and** zero packages
-under the matching scope, on 2026-08-14:
+The one lesson worth keeping from the search: **a 404 on the registry does not mean a name is
+available.** Bare `pgorm` returned 404 and is nevertheless permanently unpublishable — npm's
+similarity rule rejects it against the squatted 2015 `pg-orm` ("Package name too similar to
+existing package pg-orm"). Verify by attempting a `0.0.0` publish, not by probing the registry.
+`pg-orm-ts` is separately dead: unpublished 2026-08-04, and npm forbids reuse of unpublished names.
 
-| Rank | Name | Runtime pkg | CLI pkg | Scope | Notes |
-|---|---|---|---|---|---|
-| **1 — RECOMMEND** | **`pgorm`** | `pgorm` | `pgorm-kit` | `@pgorm` | Free `[verified: 404]`. Says exactly what it is; unbeatable for search ("postgres orm typescript"). `pgorm-kit` also free `[verified]`. Near-collisions exist (`noflo-pgorm`, `@titanpl/pgorm`) but neither owns the bare name. |
-| 2 | `pgloom` | `pgloom` | `pgloom-kit` | `@pgloom` | Free `[verified: 404]`, zero search collisions at all. More brandable/trademarkable; weaving metaphor fits schema→types. Costs discoverability. |
-| 3 | `pglayer` | `pglayer` | `pglayer-kit` | `@pglayer` | Free `[verified: 404]`. Safe, forgettable. |
-
-**Recommendation: `pgorm`, and claim all three of `pgorm` + `pgorm-kit` + the `@pgorm` scope on day
-one** (before the first commit — squatting is cheap and irreversible-if-lost). Publish `0.0.0`
-placeholders immediately with a README pointing at the repo. The unscoped names are what users type;
-the `@pgorm` scope exists so future packages never need a new brand.
-
-*Caveat to close manually:* GitHub org availability could not be verified in-session (the unauth API
-rate-limited us, `403` for every probe). Check `github.com/pgorm` before committing to the name;
-`pgorm-dev` or `pgorm-org` are acceptable fallbacks since the npm name is what matters.
+**Status:** `pgormjs@0.0.0` is published. `@pgorm/kit`, `@pgorm/testing` and `create-pgormjs` are
+still unclaimed — placeholders are free and the names are not.
 
 ### 1.4 Monorepo tooling
 
@@ -129,13 +120,13 @@ rate-limited us, `403` for every probe). Check `github.com/pgorm` before committ
 - **Release: Changesets** (`@changesets/cli@^3`; 3.0.0 landed 2026-08-11 and requires
   `node ^22.11 || ^24 || >=26`, `pnpm >=10` `[verified]` — aligned with our floor. If 3.0 proves
   rough in week 1, fall back to the `2.31.x` maintenance line).
-  - `pgorm` and `pgorm-kit` are a **`fixed` version group** — they always publish the same version.
+  - `pgormjs` and `@pgorm/kit` are a **`fixed` version group** — they always publish the same version.
     Version skew between an ORM and its CLI is a permanent support tax (it is the top confusion in
     Drizzle's tracker); we design it away.
-  - `@pgorm/testing` and `create-pgorm` version independently.
+  - `@pgorm/testing` and `create-pgormjs` version independently.
   - CI enforces `changeset status --since=origin/main` on every PR touching `packages/`.
 - **`pkg-pr-new`** on every PR → installable preview builds
-  (`pnpm add https://pkg.pr.new/pgorm@<sha>`). For a migration tool, "try my fix against your real
+  (`pnpm add https://pkg.pr.new/pgormjs@<sha>`). For a migration tool, "try my fix against your real
   schema" is the single highest-value contributor loop.
 
 ---
@@ -175,7 +166,7 @@ import silently bypasses it. `[verified working, F4]`
 ```
 
 **Why `./schema` is not in the root barrel.** DDL builders are imported by *both* app code and the
-CLI. Keeping them behind their own entry means (a) `pgorm-kit` loads the schema graph without ever
+CLI. Keeping them behind their own entry means (a) `@pgorm/kit` loads the schema graph without ever
 touching the executor, (b) an application's server bundle never pulls DDL builders, and (c) the
 tree-shaking golden files (§2.4) become meaningful instead of trivially green. The runtime imports
 schema **types only** (`import type`), which erase. A lint rule forbids value imports across the
@@ -244,7 +235,7 @@ Not "we set `sideEffects: false` and hope". Concretely, `tools/treeshake-check.m
 
 ### 3.1 Compiler
 
-**`pgorm` runtime: `tsc` only (via `tsgo`, `typescript@7.0.2`). Unbundled ESM, 1:1 source→output file
+**`pgormjs` runtime: `tsc` only (via `tsgo`, `typescript@7.0.2`). Unbundled ESM, 1:1 source→output file
 mapping. No bundler, ever.**
 
 This is the Kysely model and it is unambiguously right for a types-heavy library: the `.d.ts` the
@@ -260,9 +251,9 @@ config.
 two `dist/` trees, failing on any difference. That converts "is the new compiler's emit trustworthy?"
 from an unknown into a test, and gives us a one-line fallback (`build with 6.0.3`) if it ever fires.
 
-**`pgorm-kit` CLI: bundled with `esbuild@0.28` into a single ESM file with a shebang; `.d.ts` for its
+**`@pgorm/kit` CLI: bundled with `esbuild@0.28` into a single ESM file with a shebang; `.d.ts` for its
 small programmatic API emitted by `tsgo`.** Bundling pays here and only here: CLI cold-start matters,
-and inlining deps means `npm i -D pgorm-kit` never surprises anyone with a transitive tree.
+and inlining deps means `npm i -D @pgorm/kit` never surprises anyone with a transitive tree.
 **esbuild rather than `tsdown`** — `tsdown@0.22` (rolldown) is the Vite team's tsup successor and is
 where the ecosystem is heading, but it is pre-1.0 and we would be taking it for a job esbuild does in
 20 lines of stable config. **Revisit `tsdown` when it hits 1.0.**
@@ -272,9 +263,9 @@ where the ecosystem is heading, but it is pre-1.0 and we would be taking it for 
 - `declaration: true`, `declarationMap: true`, `sourceMap: true`. Ship `dist/**/*.d.ts` +
   `.d.ts.map` + `.js.map`; do **not** ship sources (`files: ["dist"]`) — maps point at published
   `.map` files with `sourcesContent` inlined for the small files and omitted for large ones.
-- **`isolatedDeclarations`: `false` in `pgorm` (the builder API is inference-heavy and explicit
-  return types there would be both unwritable and worse for users), `true` in `pgorm-kit`,
-  `@pgorm/testing` and `create-pgorm`** — where it is free and buys parallel emit plus a guarantee
+- **`isolatedDeclarations`: `false` in `pgormjs` (the builder API is inference-heavy and explicit
+  return types there would be both unwritable and worse for users), `true` in `@pgorm/kit`,
+  `@pgorm/testing` and `create-pgormjs`** — where it is free and buys parallel emit plus a guarantee
   that no inferred type leaks a deep internal path.
 - **Budget: ≤ 900 KB total, ≤ 200 files, ≤ 40 KB per file** (§1.2). `tools/size-budget.mjs` prints
   the top-10 largest declarations on failure so the offender is obvious.
@@ -380,6 +371,12 @@ safety would test green on PGlite while being completely broken.** So:
 > `@pgorm/testing` exports the PGlite fixture with a `requiresConcurrency()` guard that throws
 > loudly rather than passing quietly.
 
+> **Addendum, 2026-08-25 (WS-L).** `@electric-sql/pglite-socket` turned out not to be usable as
+> the socket in front of it — PGlite emits a spurious `ReadyForQuery` after every
+> extended-protocol error, which desynchronises `pg` on ~50% of erroring parameterised queries.
+> `pgormjs` ships its own ~130-line bridge in `test/live/_pglite-bridge.ts` instead. F7's finding
+> (the real `pg` driver over the real wire protocol) stands; the package does not. See `09` §2.4.
+
 Second boundary: PGlite is PG **18.3**, above our PG-15 floor, so it cannot catch version-gated
 `pg_catalog` differences. Tier 2 is mandatory, not optional.
 
@@ -434,7 +431,7 @@ mechanisms, in order of value:
    once introspection works, and it is the test most likely to find the bugs users would have found.
    Nightly.
 
-Coverage gate: 90% lines on `pgorm`, 85% on `pgorm-kit`. Not 100% — chasing the last 10% on a code
+Coverage gate: 90% lines on `pgormjs`, 85% on `@pgorm/kit`. Not 100% — chasing the last 10% on a code
 generator produces tests that assert the implementation.
 
 ### 4.5 Type-level testing (harness — budgets are agent 04's)
@@ -480,7 +477,7 @@ Postgres-tooling projects usually give up on Windows support entirely.
 The bar from round-1 is "near-raw driver overhead"; the anti-target is Prisma 7's ~11× average /
 ~27× p99. Both of those are *ratios*, so the harness measures ratios.
 
-**Design: every case is a pair.** `raw()` uses `pg` directly, `orm()` uses `pgorm`, against the same
+**Design: every case is a pair.** `raw()` uses `pg` directly, `orm()` uses `pgormjs`, against the same
 database, the same query, the same connection settings, interleaved in the same process to cancel
 drift. We report `overhead_p50 = orm_p50 / raw_p50` and `overhead_p99`, never absolute milliseconds in
 isolation.
@@ -531,7 +528,7 @@ Both are policy failures, so the fix is policy.
   never in a PATCH.** This is stated in the README's first section, not buried in CONTRIBUTING.
 - **Every breaking change requires**: a `BREAKING:` section in the changeset, a before/after entry in
   `MIGRATING.md`, and — wherever the change is mechanical — a codemod shipped as
-  `pgorm-kit codemod <name>`. A breaking change without a migration path does not merge.
+  `pgorm codemod <name>`. A breaking change without a migration path does not merge.
 - **Cadence:** a minor roughly every 6 weeks; patches whenever needed. `ROADMAP.md` carries the 1.0
   checklist with a per-item status and is updated on every minor.
 - **The no-RC-purgatory rule:** *never more than 3 consecutive prereleases of the same target version,
@@ -560,8 +557,8 @@ Both are policy failures, so the fix is policy.
 6. **Type perf:** ≤ 25 000 instantiations for the 100-table fixture, ≤ 8 s cold `tsc --noEmit` on the
    400-table fixture, and **no schema size at which check time is superlinear** (measured across
    10/100/400). *(Exact thresholds are agent 04's to set; the gate exists regardless.)*
-7. **Size budgets met:** `pgorm` ≤ 2.5 MB unpacked, `.d.ts` ≤ 900 KB, no single `.d.ts` > 40 KB,
-   hello-world ≤ 35 KB min+gz, **zero runtime deps and zero peer deps**; `pgorm-kit` ≤ 8 MB.
+7. **Size budgets met:** `pgormjs` ≤ 2.5 MB unpacked, `.d.ts` ≤ 900 KB, no single `.d.ts` > 40 KB,
+   hello-world ≤ 35 KB min+gz, **zero runtime deps and zero peer deps**; `@pgorm/kit` ≤ 8 MB.
 8. **Security:** sanitizer fuzz suite green over ≥ 10⁷ generated cases differential-tested against
    PostgreSQL's own `quote_ident`/`quote_literal`; `SECURITY.md` published with a disclosure address
    and a ≤ 72 h triage commitment; every release published via npm **trusted publishing** with
@@ -603,40 +600,18 @@ is the publisher, so adding a second human is a permissions change, not a secret
 
 ### 6.5 License
 
-**Apache-2.0** for `pgorm`, `pgorm-kit`, `@pgorm/testing` and `create-pgorm`, with a `NOTICE` file.
-Docs content **CC-BY-4.0**.
+**MPL-2.0** for `pgormjs`, `@pgorm/kit`, `@pgorm/testing` and `create-pgormjs`. Docs content
+**CC-BY-4.0**.
 
-Rationale: the express patent grant (§3) and patent-retaliation clause are the reason enterprise OSS
-review boards wave Apache-2.0 through, and a schema-diff engine plus a SQL compiler is exactly the
-category where that matters. `drizzle-orm` and Prisma both chose Apache-2.0; Kysely and MikroORM chose
-MIT. MIT is the alternative if maximum familiarity is judged more valuable than the patent grant, but
-there is no practical downside to Apache-2.0 for a library nobody will statically link into a GPLv2-
-only project. **Contributions under DCO sign-off, not a CLA** — a CLA deters drive-by contributors and
-we have nothing to relicense toward.
+Rationale (00-overview sign-off 3): the requirement is that forks stay open source. Apache-2.0 and
+MIT fail it — permissive licences allow closed forks. GPL/AGPL satisfy it but are wrong for a
+library, because linking semantics scare adopters away from bundling an ORM into their app.
+MPL-2.0 is file-level copyleft: a modified copy of *our* files must be published under MPL, while
+an application that merely imports the library is untouched.
 
-### 6.6 Governance — the bus-factor-1 answer
-
-Kysely's health is genuinely good and its adoption is genuinely real, and it is *still* the thing
-every evaluation flags, because ~90% of human commits are one person who has publicly refused both
-money and a 1.0. That is an optics problem as much as a real one, and both halves are addressable:
-
-- **`GOVERNANCE.md`** naming maintainers, the contributor → maintainer path (3 merged non-trivial PRs
-  + one shadowed release), public RFC issues required for any public-API change, and an explicit
-  **succession clause**: if the lead is unreachable for 90 days, named backup maintainers assume
-  publish rights.
-- **Two humans with publish rights and repo admin from day one**, plus trusted publishing so CI — not
-  a personal token — is the actual publisher.
-- **`CONTRIBUTING.md`** whose setup section is three commands (`pnpm i`, `pnpm build`, `pnpm test`)
-  **with no Docker required** — that is what tier 1 buys us and it should be the first line, because
-  "you need Docker and a local Postgres" is where most would-be contributors stop.
-- **We accept funding**, explicitly contra Kysely: GitHub Sponsors + Open Collective, with
-  `FUNDING.md` stating what money buys (maintainer hours and the PG-matrix CI bill). Refusing funding
-  is a principled position that structurally caps maintenance capacity; we are not taking it.
-- `SECURITY.md` with GitHub private vulnerability reporting enabled, plus `SUPPORT.md` and issue
-  templates — including a dedicated **"diff engine produced wrong SQL"** template that *requires* a
-  minimal `from`/`to` schema pair, because that is the bug class that will dominate the tracker.
-
----
+The cost, accepted knowingly: MPL lacks Apache-2.0's express patent grant, which some enterprise
+OSS review boards look for. Revisit only to move *toward* stronger copyleft, never weaker — a
+licence can be relaxed after the fact only with every contributor's consent.
 
 ## 7. Repo layout
 
@@ -697,18 +672,22 @@ pgorm/
 
 ---
 
-## 8. Open items for the team lead
+## 8. Resolutions
 
-1. **Confirm the name.** `pgorm` is the recommendation; GitHub org availability is the one thing not
-   verifiable in-session. Claim `pgorm`, `pgorm-kit` and the `@pgorm` scope on npm today regardless of
-   the final call — placeholders are free and the names are not.
-2. **TS floor 5.9 vs 5.4.** I chose 5.9 (§2.2) to keep the supported-checker count at four. If
-   adoption research says otherwise, dropping to 5.4 later is non-breaking; raising it is not.
-3. **Apache-2.0 vs MIT** (§6.5) — a one-line decision that is effectively irreversible after the first
-   external contribution.
-4. **Agent 04 owns the numeric type-perf budgets**; §5 and criterion #6 carry placeholders. The
-   harness (`bench/types`, pinned to `typescript@6.0.3`, `@ark/attest`, committed baselines, 5%
-   fail / 2% warn) is wired here and does not depend on the values.
-5. **Agent 02's `PgLikePool` seam** is assumed to be structural and driver-free; `@pgorm/testing`'s
-   `createMockPool()` and the `pgorm/adapter-pg` subpath both depend on that shape holding.
+Every item that was open here has been decided; recorded so the reasoning is not re-litigated.
+
+1. **Name** — decided, §1.3. `pgormjs` / `@pgorm/kit` / `@pgorm/testing` / `create-pgormjs`.
+2. **TS floor** — **5.9**, and it is a *consumer* floor, not a devDependency question: we compile
+   and typecheck with tsgo (TS 7), while 5.9 is the oldest TypeScript a consumer may use against
+   our published `.d.ts`. The `types@<5.9` export gate turns an older consumer's failure into one
+   sentence. Lowering a floor later is non-breaking; raising one is not.
+3. **License** — **MPL-2.0**, §6.5.
+4. **Type-perf budgets** — measured, not estimated, and wired into `bench/types` with committed
+   baselines: 137,778 instantiations / 1.11 s on TS 5.9 / 0.231 s on TS 7 for the 100-table
+   headline, against gates of 200k / 2.0 s / 0.5 s and a schema-size-independence ratio of 1.15
+   (measured **1.00**). `@ark/attest` is *not* part of the harness — it cannot run on TS 7 and has
+   been removed from the tree; the per-construct baselines it would have provided are still unwired.
+5. **`PgLikePool` seam** — holds. `packages/pgorm/src/driver` imports nothing non-relative, and
+   `pg.Pool` casts to it structurally with no `as any`.
+
 ```

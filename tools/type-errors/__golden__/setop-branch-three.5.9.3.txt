@@ -1,0 +1,1 @@
+setop-branch-three.ts(8,24): error TS2339: Property 'execute' does not exist on type 'OrmTypeError<"union branch 3 has no column \"kind\"">'.

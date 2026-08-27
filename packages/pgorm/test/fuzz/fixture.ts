@@ -1,62 +1,104 @@
 /**
- * The live fixture schema expressed as compiler metadata, so the fuzz suites compile against
- * tables that actually exist in the container.
+ * The fuzz fixture — three tables that exist in the container, declared ONCE as `pgTable(...)` and
+ * turned into compiler metadata by `metaOf` (design/09 WS2).
+ *
+ * Before the codec seam landed this file hand-wrote `columnMeta('id', spikeCodecs.int8)` per
+ * column, which meant the fuzz suites exercised a mapping nobody had checked against a database.
+ * Going through `metaOf` puts them on the same seam production uses, so a codec that resolves
+ * wrongly now shows up as a fuzz failure rather than as a fuzz *tolerance*.
  *
  * It is a *factory* keyed by schema name because vitest runs test files in parallel workers
  * against one shared container: each file owns its own schema, so a `drop schema … cascade`
  * in one file cannot pull the floor out from under another.
+ *
+ * TS keys are deliberately snake_case here (`created_at`, not `createdAt`): this fixture is about
+ * SQL shapes, and matching the DB name keeps the generated statements readable next to the DDL.
  */
 
-import { columnMeta, col, table, tableMeta } from '../../src/compile/nodes.js'
-import { spikeCodecs } from '../../src/sql/codec.js'
+import { col, table } from '../../src/compile/nodes.js'
+import { metaOf } from '../../src/query/meta.js'
+import { refsOf } from '../../src/query/ref.js'
+import { pgTable } from '../../src/schema/index.js'
 
 export function makeFixture(schema: string) {
-  const usersTable = tableMeta(schema, 'users')
-  const postsTable = tableMeta(schema, 'posts')
-  const commentsTable = tableMeta(schema, 'comments')
+  const opts = { schema } as const
 
-  const usersCols = {
-    id: columnMeta('id', spikeCodecs.int8),
-    email: columnMeta('email', spikeCodecs.text),
-    name: columnMeta('name', spikeCodecs.text),
-    role: columnMeta('role', spikeCodecs.text),
-    meta: columnMeta('meta', spikeCodecs.jsonb),
-    created_at: columnMeta('created_at', spikeCodecs.timestamptz),
-    deleted_at: columnMeta('deleted_at', spikeCodecs.timestamptz),
-  } as const
+  const users = pgTable(
+    'users',
+    (t) => ({
+      id: t.bigint().primaryKey(),
+      email: t.text(),
+      name: t.text(),
+      role: t.text(),
+      meta: t.jsonb(),
+      created_at: t.timestamptz(),
+      deleted_at: t.timestamptz().nullable(),
+    }),
+    undefined,
+    opts,
+  )
 
-  const postsCols = {
-    id: columnMeta('id', spikeCodecs.int8),
-    author_id: columnMeta('author_id', spikeCodecs.int8),
-    title: columnMeta('title', spikeCodecs.text),
-    amount: columnMeta('amount', spikeCodecs.numeric),
-    published: columnMeta('published', spikeCodecs.bool),
-    created_at: columnMeta('created_at', spikeCodecs.timestamptz),
-  } as const
+  const posts = pgTable(
+    'posts',
+    (t) => ({
+      id: t.bigint().primaryKey(),
+      author_id: t.bigint(),
+      title: t.text(),
+      amount: t.numeric(),
+      published: t.boolean(),
+      created_at: t.timestamptz(),
+    }),
+    undefined,
+    opts,
+  )
 
-  const commentsCols = {
-    id: columnMeta('id', spikeCodecs.int8),
-    post_id: columnMeta('post_id', spikeCodecs.int8),
-    body: columnMeta('body', spikeCodecs.text),
-  } as const
+  const comments = pgTable(
+    'comments',
+    (t) => ({
+      id: t.bigint().primaryKey(),
+      post_id: t.bigint(),
+      body: t.text(),
+    }),
+    undefined,
+    opts,
+  )
+
+  const usersMeta = metaOf(users)
+  const postsMeta = metaOf(posts)
+  const commentsMeta = metaOf(comments)
+
+  // `metaOf` is string-keyed (`Readonly<Record<string, ColumnMeta>>`), so the column-key unions
+  // below are declared by hand. Making `metaOf` generic in the table would recover them, but it
+  // would also put a mapped type on every table in the program, and `bench/types` gates that —
+  // the builder (WS4) indexes by key from `Sources` and does not need it. Noted in design/09 §3.2.
+  const usersCols = usersMeta.byKey
+  const postsCols = postsMeta.byKey
+  const commentsCols = commentsMeta.byKey
 
   return {
     schema,
-    usersTable,
-    postsTable,
-    commentsTable,
+    usersTable: usersMeta.table,
+    postsTable: postsMeta.table,
+    commentsTable: commentsMeta.table,
     usersCols,
     postsCols,
     commentsCols,
-    usersFrom: table(usersTable),
-    postsFrom: table(postsTable),
-    commentsFrom: table(commentsTable),
-    u: (k: keyof typeof usersCols, alias = 'users') =>
-      col(alias, usersCols[k].name, usersCols[k].codec),
-    p: (k: keyof typeof postsCols, alias = 'posts') =>
-      col(alias, postsCols[k].name, postsCols[k].codec),
-    c: (k: keyof typeof commentsCols, alias = 'comments') =>
-      col(alias, commentsCols[k].name, commentsCols[k].codec),
+    usersFrom: table(usersMeta.table),
+    postsFrom: table(postsMeta.table),
+    commentsFrom: table(commentsMeta.table),
+    /**
+     * The same columns as {@link u}, but as typed refs for the **operator surface** (WS3).
+     *
+     * `u('email')` gives the compiler's `ColumnNode`; `ur.email` gives the thing
+     * `src/query/ops.ts` accepts, so the fuzz can generate predicates the way a user writes them
+     * — through `ilike`/`hasKey`/`between` — instead of only through `nodes.ts`. Same alias, so
+     * the two mix freely inside one generated statement.
+     */
+    ur: refsOf(users, 'users'),
+    pr: refsOf(posts, 'posts'),
+    u: (k: UserCol, alias = 'users') => col(alias, usersCols[k]!.name, usersCols[k]!.codec),
+    p: (k: PostCol, alias = 'posts') => col(alias, postsCols[k]!.name, postsCols[k]!.codec),
+    c: (k: CommentCol, alias = 'comments') => col(alias, commentsCols[k]!.name, commentsCols[k]!.codec),
 
     ddl: `
 drop schema if exists ${schema} cascade;
@@ -106,5 +148,9 @@ insert into ${schema}.comments (id, post_id, body) values
     drop: `drop schema if exists ${schema} cascade`,
   }
 }
+
+export type UserCol = 'id' | 'email' | 'name' | 'role' | 'meta' | 'created_at' | 'deleted_at'
+export type PostCol = 'id' | 'author_id' | 'title' | 'amount' | 'published' | 'created_at'
+export type CommentCol = 'id' | 'post_id' | 'body'
 
 export type Fixture = ReturnType<typeof makeFixture>

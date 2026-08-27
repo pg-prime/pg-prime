@@ -1,0 +1,1 @@
+e3-generated-always-insert.ts(5,57): error TS2353: Object literal may only specify known properties, and 'seq' does not exist in type '{ id?: UserId; email: string; displayName?: string | null; age?: number | null; views?: bigint; active?: boolean; prefs?: UserPrefs; tags?: string[]; role?: "admin" | "member" | "owner"; ... 4 more ...; slug?: string; }'.

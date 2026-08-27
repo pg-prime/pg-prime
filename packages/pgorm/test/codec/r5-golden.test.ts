@@ -33,8 +33,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { makeHarness, type Harness } from '../driver/_harness.js'
-import { builtinCodecs, createRegistry } from '../../src/codec/index.js'
+import { makeHarness, type Harness } from '../live/_harness.js'
+import { ALTERNATE_CODECS, builtinCodecs, createRegistry } from '../../src/codec/index.js'
 import type { AnyCodec } from '../../src/codec/index.js'
 import type { PgConnection } from '../../src/driver/index.js'
 
@@ -95,6 +95,22 @@ const FIXTURES: Readonly<Record<string, readonly string[]>> = {
   date: [`'2026-08-14'::date`, `'infinity'::date`, `'0001-01-01 BC'::date`, `'294276-12-31'::date`],
   time: [`'04:05:06.789'::time`],
   timetz: [`'04:05:06+05:30'::timetz`],
+  // WS-audit: `interval` is the one type in §4.5's table with a STRUCTURED decoding, and the one
+  // whose wire spelling depends on a session GUC (`IntervalStyle`) — both grammars are parsed,
+  // and `json_build_object` uses the same output function, so depth 3 is the same text.
+  interval: [
+    `'1 year 2 mons 3 days 04:05:06.789'::interval`,
+    `'-1 year -2 mons +3 days -04:05:06'::interval`,
+    `'00:00:00'::interval`,
+  ],
+  // the string-like remainder of §4.5's table, registered by the WS-audit so their OIDs stop
+  // falling through `planFor`'s unknown-OID escape hatch.
+  char: [`'a'::"char"`],
+  macaddr: [`'08:00:2b:01:02:03'::macaddr`],
+  macaddr8: [`'08:00:2b:01:02:03:04:05'::macaddr8`],
+  bit: [`'101'::bit(3)`],
+  varbit: [`'10101'::varbit`],
+  pg_lsn: [`'16/B374D848'::pg_lsn`],
   // ⚠️ PG's to_json inserts an ISO `T` where the wire text has a space. decodeJson normalises.
   timestamp: [
     `'2026-08-14 12:00:00.123456'::timestamp`,
@@ -109,6 +125,21 @@ const FIXTURES: Readonly<Record<string, readonly string[]>> = {
   jsonb: [`'{"a":1,"b":[1,2],"c":null}'::jsonb`, `'[1,"two",3.5]'::jsonb`],
   json: [`'{"a": 1,   "b":2}'::json`],
   bytea: [`'\\x00ff80'::bytea`, `''::bytea`],
+
+  // ── full text + ranges (WS3: `03` §2.9's tsvector and range operator classes) ──
+  // All built-in, all wire-text in and out, all `jsonEncode: 'native'` because PostgreSQL
+  // renders each as a JSON *string* — which this file is the proof of, not the claim.
+  tsvector: [`to_tsvector('english', 'a fat cat sat')`],
+  tsquery: [`websearch_to_tsquery('english', 'fat cat')`],
+  jsonpath: [`'$.a[*] > 1'::jsonpath`],
+  // `empty` is the case a naive `{lower, upper}` decoding cannot represent at all.
+  int4range: [`'[1,5)'::int4range`, `'empty'::int4range`, `'(,5]'::int4range`],
+  int8range: [`'[1,9223372036854775807)'::int8range`],
+  // the trailing zero again: a range of numerics keeps the scale its text form carries
+  numrange: [`'[1.10,2.20)'::numrange`, `'(,)'::numrange`],
+  tsrange: [`'[2026-01-01 00:00:00,2026-02-01 00:00:00)'::tsrange`],
+  tstzrange: [`'[2026-01-01 00:00:00+00,2026-02-01 00:00:00+00)'::tstzrange`],
+  daterange: [`'[2026-01-01,2026-02-01)'::daterange`],
 
   // ── arrays (derived from each scalar's `typarray`) ─────────────────────────
   'bool[]': [`'{t,f,NULL}'::bool[]`],
@@ -140,10 +171,26 @@ const FIXTURES: Readonly<Record<string, readonly string[]>> = {
   'time[]': [`'{04:05:06.789}'::time[]`],
   'timetz[]': [`'{04:05:06+05:30}'::timetz[]`],
   'timestamp[]': [`array['2026-08-14 12:00:00.123456'::timestamp, null]`],
+  'interval[]': [`array['1 day 02:03:04'::interval, '-1 mons'::interval, null]`],
+  'char[]': [`array['a'::"char", null]`],
+  'macaddr[]': [`array['08:00:2b:01:02:03'::macaddr]`],
+  'macaddr8[]': [`array['08:00:2b:01:02:03:04:05'::macaddr8]`],
+  'bit[]': [`array['101'::bit(3)]`],
+  'varbit[]': [`array['10101'::varbit]`],
+  'pg_lsn[]': [`array['16/B374D848'::pg_lsn]`],
   'timestamptz[]': [`array['2026-08-14 06:30:00.123456+00'::timestamptz, null]`],
   'jsonb[]': [`array['{"a":1}'::jsonb]`],
   'json[]': [`array['{"a": 1}'::json]`],
   'bytea[]': [`array['\\x00ff'::bytea, null]`],
+  'tsvector[]': [`array[to_tsvector('english', 'a fat cat')]`],
+  'tsquery[]': [`array[websearch_to_tsquery('english', 'cat')]`],
+  'jsonpath[]': [`array['$.a'::jsonpath]`],
+  'int4range[]': [`array['[1,5)'::int4range, 'empty'::int4range, null]`],
+  'int8range[]': [`array['[1,5)'::int8range]`],
+  'numrange[]': [`array['[1.10,2.20)'::numrange]`],
+  'tsrange[]': [`array['[2026-01-01 00:00:00,2026-02-01 00:00:00)'::tsrange]`],
+  'tstzrange[]': [`array['[2026-01-01 00:00:00+00,2026-02-01 00:00:00+00)'::tstzrange]`],
+  'daterange[]': [`array['[2026-01-01,2026-02-01)'::daterange]`],
 }
 
 /** `select <expr>` — the raw RowDescription + wire text an ordinary query yields. */
@@ -182,9 +229,16 @@ describe('R5 — decodeJson is required, and depth 0 === depth 3 for every built
     const shipped = builtinCodecs().map((c) => c.name)
     const missing = shipped.filter((n) => !(n in FIXTURES))
     expect(missing).toEqual([])
-    // 25 scalars + 25 array codecs derived from `typarray`
-    expect(shipped.length).toBe(50)
-    expect(new Set(shipped).size).toBe(50)
+    // 41 scalars + 41 array codecs derived from `typarray`. WS3 added nine scalars — tsvector,
+    // tsquery, jsonpath and the six built-in range types — so `03` §2.9's `tsvector` and `range`
+    // operator classes have a real codec to be gated on and a real OID to be differentiated
+    // against. `vector` and `citext` are deliberately absent: extension types, per-database OIDs,
+    // `resolveDynamic` path (09 §3.2 deviation 3).
+    // The WS-audit added seven more: `interval` (the last structured decoding in §4.5's table)
+    // plus the string-like set `"char"` / macaddr / macaddr8 / bit / varbit / pg_lsn, which were
+    // decoding as untyped raw text with no `typeClass` and no `sqlName`.
+    expect(shipped.length).toBe(82)
+    expect(new Set(shipped).size).toBe(82)
   })
 
   for (const [name, exprs] of Object.entries(FIXTURES)) {
@@ -223,6 +277,74 @@ describe('R5 — decodeJson is required, and depth 0 === depth 3 for every built
       const d3 = registry.jsonPlanFor([codec])[0]!(await atDepth3(expr, cast))
       expect(d3).toBeNull()
     }
+  })
+})
+
+/**
+ * The four NAMED ALTERNATES (`ALTERNATE_CODECS`) — R5 applies to them too.
+ *
+ * They were outside this file's loop because they are registered by NAME only (they share an OID
+ * with a default), so `registry.forOid` cannot reach them and `planFor` never selects one. That
+ * gap hid a real R5 violation: `timestamptz:string` is DEFINED as the verbatim wire text, but its
+ * `jsonEncode` was 'native', and `json_build_object` renders a timestamptz as
+ * `2026-08-14T06:30:00.123456+00:00` where the wire says `2026-08-14 06:30:00.123456+00`. Depth 0
+ * and depth 3 returned two different strings for the same datum — exactly the "no dehydration
+ * tax" promise R5 exists to keep. The fix is `jsonEncode: 'text'`, which this loop now pins.
+ *
+ * Depth 0 here calls the alternate's own `decodeText` (it is reachable only by name), but the
+ * OID assertion is kept: the alternate must still claim the OID the server actually reports.
+ */
+const ALTERNATE_FIXTURES: Readonly<Record<string, readonly string[]>> = {
+  // NOT 2^53+1: `int8:number` is documented as throwing above MAX_SAFE_INTEGER (that is why
+  // `int8` is the default), so the fixture is a value it is allowed to carry.
+  'int8:number': ['1259::int8', "'-9007199254740991'::int8"],
+  'int8:string': ["'9223372036854775807'::int8", "'-9223372036854775808'::int8"],
+  'numeric:number': ['1.10::numeric(10,2)', "'-2.5'::numeric"],
+  'timestamptz:string': [
+    // µs precision and a non-UTC offset — the two reasons this codec exists.
+    `'2026-08-14 06:30:00.123456+00'::timestamptz`,
+    `'2026-08-14 06:30:00.123456+09'::timestamptz`,
+    // and the value the default codec REFUSES, which is the other reason it exists
+    `'infinity'::timestamptz`,
+  ],
+}
+
+describe('R5 — the named alternates are pinned at both depths too', () => {
+  it('covers every codec in ALTERNATE_CODECS', () => {
+    const shipped = ALTERNATE_CODECS.map((c) => c.name)
+    expect(shipped.filter((n) => !(n in ALTERNATE_FIXTURES))).toEqual([])
+    expect(shipped.length).toBe(4)
+  })
+
+  for (const [name, exprs] of Object.entries(ALTERNATE_FIXTURES)) {
+    it(`${name}: identical at depth 0 and depth 3`, async () => {
+      const codec = registry.byName(name)!
+      expect(codec, `no codec registered under the name ${name}`).toBeDefined()
+      const cast = codec.jsonEncode === 'text' ? '::text' : ''
+      const ctx = { typmod: -1, registry, serverParameters: conn.serverParameters }
+
+      for (const expr of exprs) {
+        const r = await conn.execute({ text: `select ${expr} as v`, params: [] })
+        // the alternate claims the OID the server really reports for this expression
+        expect(r.fields[0]!.dataTypeID, `${name} :: ${expr}`).toBe(codec.oid)
+        const d0 = codec.decodeText(String(r.rows[0]![0]), ctx)
+
+        const d3 = registry.jsonPlanFor([codec])[0]!(await atDepth3(expr, cast))
+        expect(d3, `${name} :: ${expr}`).toEqual(d0)
+      }
+    })
+  }
+
+  it('NEGATIVE CONTROL: without the ::text cast, timestamptz:string returns a DIFFERENT string', async () => {
+    // This is the bug the loop above now prevents: the JSON spelling is not the wire spelling,
+    // and a codec whose contract is "verbatim wire text" cannot absorb the difference.
+    const expr = `'2026-08-14 06:30:00.123456+00'::timestamptz`
+    const native = await atDepth3(expr, '')
+    const withCast = await atDepth3(expr, '::text')
+    expect(native).not.toBe(withCast)
+    expect(String(native)).toMatch(/T.*\+00:00$/)
+    expect(String(withCast)).toMatch(/ .*\+00$/)
+    expect(registry.byName('timestamptz:string')!.jsonEncode).toBe('text')
   })
 })
 

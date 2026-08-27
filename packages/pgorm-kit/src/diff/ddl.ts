@@ -124,6 +124,36 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR): BuildResul
         hazards: ["BC102"],
         phase: PHASE.rename,
       });
+    } else if (from.kind === "constraint" && to.kind === "constraint") {
+      // Only the NAME differs (the differ paired them by rollup), so PostgreSQL's
+      // catalog-only rename replaces what used to be a DROP + ADD — which for a PK
+      // fails outright while a dependent FK exists, and for an FK costs a full
+      // VALIDATE scan.
+      statements.push(simple(
+        `ALTER TABLE ${quoteQualified(from.schema, from.table)} RENAME CONSTRAINT ${quoteIdent(from.name)} TO ${quoteIdent(to.name)}`,
+        {
+          verb: "alter",
+          kind: "constraint",
+          produces: [id(to)],
+          consumes: [id({ kind: "table", schema: to.schema, name: to.table })],
+          destroys: [id(from)],
+          hazards: ["BC104"],
+          phase: PHASE.rename,
+        },
+      ));
+    } else if (from.kind === "index" && to.kind === "index") {
+      statements.push(simple(
+        `ALTER INDEX ${quoteQualified(from.schema, from.name)} RENAME TO ${quoteIdent(to.name)}`,
+        {
+          verb: "alter",
+          kind: "index",
+          produces: [id(to)],
+          consumes: [id({ kind: "schema", schema: to.schema })],
+          destroys: [id(from)],
+          hazards: ["BC104"],
+          phase: PHASE.rename,
+        },
+      ));
     } else {
       diagnostics.push({
         code: "unsupported_rename",
@@ -193,15 +223,34 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR): BuildResul
           }
           case "sequence": {
             const p = f.payload as unknown as SequencePayload;
-            statements.push(simple(sequenceDDL(f.id, p, "create"), {
+            // `CREATE SEQUENCE … OWNED BY t.id` CONSUMES the column that the
+            // CREATE TABLE produces, so the table gets ordered first - but a
+            // `serial` table's own DEFAULT `nextval('t_id_seq')` needs the
+            // sequence to exist, and the plan died with `relation "t_id_seq"
+            // does not exist`. Ownership is therefore a separate statement:
+            // the CREATE consumes only its schema, the ALTER consumes the column.
+            statements.push(simple(sequenceDDL(f.id, p, "create", false), {
               verb: "create",
               kind: "sequence",
               produces: [id(f.id)],
-              consumes: [id({ kind: "schema", schema: f.id.schema }), ...(p.ownedBy ? [p.ownedBy] : [])],
+              consumes: [id({ kind: "schema", schema: f.id.schema })],
               phase: PHASE.createSequence,
               lockClass: "none",
               idempotent: true,
             }));
+            if (p.ownedBy) {
+              statements.push(simple(
+                `ALTER SEQUENCE ${quoteQualified(f.id.schema, f.id.name)} ${ownedByClause(p.ownedBy)}`,
+                {
+                  verb: "alter",
+                  kind: "sequence",
+                  consumes: [id(f.id), p.ownedBy],
+                  phase: PHASE.alterSequence,
+                  lockClass: "none",
+                  idempotent: true,
+                },
+              ));
+            }
             break;
           }
           case "table": {
@@ -274,7 +323,10 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR): BuildResul
             break;
           }
           case "constraint": {
-            statements.push(...addConstraint(f, desired));
+            // A constraint on a table THIS plan creates cannot fail on existing
+            // data and cannot block anybody: the table is provably empty
+            // (design/06 §3.4, "unless the table is proven empty").
+            statements.push(...addConstraint(f, desired, createdTables.has(parentTableId(f.id)!)));
             break;
           }
           case "index": {
@@ -291,7 +343,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR): BuildResul
         const { before, after } = d;
         switch (after.id.kind) {
           case "column":
-            statements.push(...alterColumn(before, after, desired));
+            statements.push(...alterColumn(before, after, desired, diagnostics));
             break;
           case "index":
             // PostgreSQL cannot ALTER an index's structure: drop and rebuild.
@@ -303,7 +355,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR): BuildResul
             if (b.definition === a.definition && !b.validated && a.validated) {
               statements.push(validateConstraint(after));
             } else {
-              statements.push(dropConstraint(before, current), ...addConstraint(after, desired));
+              statements.push(dropConstraint(before, current), ...addConstraint(after, desired, false));
             }
             break;
           }
@@ -480,11 +532,17 @@ function simple(
   };
 }
 
-function sequenceDDL(sid: StableId, p: SequencePayload, mode: "create" | "alter"): string {
+function sequenceDDL(
+  sid: StableId,
+  p: SequencePayload,
+  mode: "create" | "alter",
+  includeOwnedBy = true,
+): string {
   const name = quoteQualified(sid.schema, (sid as { name: string }).name);
   const head = mode === "create" ? `CREATE SEQUENCE IF NOT EXISTS ${name}` : `ALTER SEQUENCE ${name}`;
-  const owned = p.ownedBy ? ownedByClause(p.ownedBy) : "OWNED BY NONE";
-  return `${head} AS ${p.dataType} INCREMENT BY ${p.increment} MINVALUE ${p.minValue} MAXVALUE ${p.maxValue} START WITH ${p.start} CACHE ${p.cache} ${p.cycle ? "CYCLE" : "NO CYCLE"} ${owned}`;
+  const body = `${head} AS ${p.dataType} INCREMENT BY ${p.increment} MINVALUE ${p.minValue} MAXVALUE ${p.maxValue} START WITH ${p.start} CACHE ${p.cache} ${p.cycle ? "CYCLE" : "NO CYCLE"}`;
+  if (!includeOwnedBy) return body;
+  return `${body} ${p.ownedBy ? ownedByClause(p.ownedBy) : "OWNED BY NONE"}`;
 }
 
 function ownedByClause(encodedColumn: string): string {
@@ -493,28 +551,12 @@ function ownedByClause(encodedColumn: string): string {
   return `OWNED BY ${quoteQualified(c.schema, c.table)}.${quoteIdent(c.name)}`;
 }
 
-function addConstraint(f: Fact, desired: SchemaIR): Statement[] {
+function addConstraint(f: Fact, desired: SchemaIR, onFreshTable = false): Statement[] {
   const p = f.payload as unknown as ConstraintPayload;
   const c = f.id as StableId & { kind: "constraint" };
   const table = quoteQualified(c.schema, c.table);
   const refs = desired.outgoingEdges(f.id).map((e) => id(e.to));
-  // A FOREIGN KEY needs the referenced side's uniqueness guarantee to already
-  // exist ("there is no unique constraint matching given keys for referenced
-  // table"). pg_depend on the target TABLE does not imply it, so the edge is
-  // synthesized against whatever provides uniqueness there.
-  const uniquenessRefs =
-    p.contype === "f"
-      ? desired
-          .outgoingEdges(f.id)
-          .filter((e) => e.kind === "depends" && e.to.kind === "table")
-          .flatMap((e) => desired.childrenOf(e.to))
-          .filter(
-            (x) =>
-              (x.id.kind === "constraint" && (x.payload["contype"] === "p" || x.payload["contype"] === "u")) ||
-              (x.id.kind === "index" && x.payload["unique"] === true),
-          )
-          .map((x) => id(x.id))
-      : [];
+  const uniquenessRefs = p.contype === "f" ? uniquenessProviders(desired, f.id) : [];
   const base = {
     verb: "alter" as const,
     kind: "constraint",
@@ -561,9 +603,32 @@ function addConstraint(f: Fact, desired: SchemaIR): Statement[] {
       ...base,
       sql: `ALTER TABLE ${table} ADD CONSTRAINT ${quoteIdent(c.name)} ${p.definition}${suffix}`,
       lockClass: "accessExclusive",
-      hazards: p.contype === "p" || p.contype === "u" ? ["LK104", "MF101"] : [],
+      hazards: !onFreshTable && (p.contype === "p" || p.contype === "u") ? ["LK104", "MF101"] : [],
     },
   ];
+}
+
+/**
+ * Whatever supplies the uniqueness a FOREIGN KEY on `fk` binds to.
+ *
+ * On the ADD side it is an ordering requirement ("there is no unique constraint
+ * matching given keys for referenced table"); on the DROP side it is the mirror
+ * image - dropping the PK/UNIQUE while an FK still points at it fails with
+ * "cannot drop constraint … because other objects depend on it". `pg_depend` on the
+ * target TABLE implies neither, so the relationship is synthesized here and used by
+ * both directions.
+ */
+function uniquenessProviders(ir: SchemaIR, fk: StableId): string[] {
+  return ir
+    .outgoingEdges(fk)
+    .filter((e) => e.kind === "depends" && e.to.kind === "table")
+    .flatMap((e) => ir.childrenOf(e.to))
+    .filter(
+      (x) =>
+        (x.id.kind === "constraint" && (x.payload["contype"] === "p" || x.payload["contype"] === "u")) ||
+        (x.id.kind === "index" && x.payload["unique"] === true),
+    )
+    .map((x) => id(x.id));
 }
 
 function validateConstraint(f: Fact): Statement {
@@ -596,8 +661,13 @@ function dropConstraint(f: Fact, current: SchemaIR): Statement {
     consumes: [],
     destroys: [id(f.id)],
     // Dropping the constraint is what stops this table referencing the target,
-    // so it must precede the target's destruction.
-    releases: [id({ kind: "table", schema: c.schema, name: c.table }), ...referenced],
+    // so it must precede the target's destruction — including the destruction of
+    // the PK/UNIQUE that provides the uniqueness this FK binds to.
+    releases: [
+      id({ kind: "table", schema: c.schema, name: c.table }),
+      ...referenced,
+      ...(p.contype === "f" ? uniquenessProviders(current, f.id) : []),
+    ],
     transactionality: "transactional",
     lockClass: "accessExclusive",
     idempotent: true,
@@ -611,7 +681,11 @@ function dropConstraint(f: Fact, current: SchemaIR): Statement {
 function createIndex(f: Fact, desired: SchemaIR): Statement {
   const p = f.payload as unknown as IndexPayload;
   const i = f.id as StableId & { kind: "index" };
-  const sql = p.definition.replace("%ID%", quoteIdent(i.name));
+  // A replacement STRING makes `$&`, `$\u0060`, `$'` and `$$` expansion patterns, and `$`
+  // is a legal identifier character: an index named `x$&y` produced malformed DDL,
+  // and one named `%ID%x` created an index literally called "idx%ID%x". A
+  // replacement FUNCTION has no such syntax.
+  const sql = p.definition.replace("%ID%", () => quoteIdent(i.name));
   return {
     sql,
     verb: "create",
@@ -652,7 +726,12 @@ function dropIndex(f: Fact): Statement {
   };
 }
 
-function alterColumn(before: Fact, after: Fact, desired: SchemaIR): Statement[] {
+function alterColumn(
+  before: Fact,
+  after: Fact,
+  desired: SchemaIR,
+  diagnostics: Diagnostic[],
+): Statement[] {
   const b = before.payload as unknown as ColumnPayload;
   const a = after.payload as unknown as ColumnPayload;
   const c = after.id as StableId & { kind: "column" };
@@ -691,6 +770,20 @@ function alterColumn(before: Fact, after: Fact, desired: SchemaIR): Statement[] 
         ? mk(`ALTER TABLE ${table} ALTER COLUMN ${col} SET NOT NULL`, { idempotent: true, hazards: ["LK107", "MF104"] })
         : mk(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP NOT NULL`, { idempotent: true }),
     );
+  }
+  // A generated column cannot be converted in place: PostgreSQL offers only
+  // DROP EXPRESSION (stored -> plain), never plain -> stored, and PG18's VIRTUAL
+  // (`attgenerated = 'v'`) is not expressible by `columnClause` at all. Emitting
+  // nothing here made the transition silently vanish from the plan.
+  if (b.generated !== a.generated || a.generated === "v") {
+    diagnostics.push({
+      code: "unsupported_alter",
+      severity: "error",
+      message:
+        `column ${c.schema}.${c.table}.${c.name}: generated ${b.generated ?? "none"} -> ` +
+        `${a.generated ?? "none"} cannot be altered in place`,
+      subject: id(after.id),
+    });
   }
   if (b.identity !== a.identity) {
     out.push(

@@ -46,6 +46,7 @@ export {
   text,
   timestamptz,
   uuid,
+  varchar,
 } from './column.js'
 export type {
   AnyCol,
@@ -79,7 +80,7 @@ export type {
   Updateable,
 } from './table.js'
 
-export { defineRelations, defineSchema } from './relations.js'
+export { defineRelations, defineSchema, resolveRelations } from './relations.js'
 export type {
   AnyHandle,
   AnySchema,
@@ -92,6 +93,9 @@ export type {
   RelOut,
   RelsAt,
   RelsRecord,
+  ResolvedRelation,
+  ResolvedRelations,
+  ResolvedThrough,
   Schema,
   SelAt,
   TableOf,

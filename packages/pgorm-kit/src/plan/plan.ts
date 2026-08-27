@@ -4,6 +4,7 @@ import type { RenameRecord } from "../diff/delta.js";
 import type { Segment } from "../diff/order.js";
 import type { LockClass, Statement, Transactionality } from "../diff/statement.js";
 import { canonicalize, sha256 } from "../ir/hash.js";
+import type { DumpOracleVerdict } from "../prove/pg-dump.js";
 
 export const ENGINE = { name: "pgorm-kit", version: "0.0.0-spike", backend: "in-house", irVersion: 1 } as const;
 
@@ -38,10 +39,14 @@ export interface Proof {
   readonly status: "passed" | "failed" | "skipped";
   readonly at?: string;
   readonly shadow?: string;
+  /** which tier of design/06 §3.2 actually provisioned the shadow */
+  readonly provisioning?: "template" | "materialized";
   readonly driftDeltas?: number;
   readonly deltas?: readonly string[];
   readonly error?: string;
   readonly durationMs?: number;
+  /** independent witness: PostgreSQL's own serializer (see prove/pg-dump.ts) */
+  readonly dumpOracle?: DumpOracleVerdict;
 }
 
 export interface Plan {
@@ -61,16 +66,53 @@ export interface Plan {
   readonly renames: readonly RenameRecord[];
   readonly hazards: readonly PlanHazard[];
   readonly unmodeled: readonly { readonly kind: string; readonly count: number }[];
+  /**
+   * design/06 §3.6 — a destructive change cannot be generated silently. This lands
+   * in `.plan.json`, so it shows up as a diff line in the pull request; that IS the
+   * review interface. Excluded from `planId` for the same reason `generated` is: it
+   * carries a wall-clock timestamp and an operator name.
+   */
+  readonly acknowledged: Acknowledgement | null;
   readonly proof: Proof;
 }
 
+export interface Acknowledgement {
+  /** hazard subjects (encoded StableIds) the operator signed off on */
+  readonly dataLoss: readonly string[];
+  readonly by: string;
+  readonly reason: string;
+  readonly at: string;
+  /** blanket `--allow-data-loss`, rather than a per-subject list */
+  readonly blanket: boolean;
+}
+
+export interface AcknowledgeInput {
+  readonly dataLoss?: readonly string[];
+  readonly by?: string;
+  readonly reason?: string;
+  /** `--allow-data-loss`: acknowledge every error-severity hazard in this plan */
+  readonly allowDataLoss?: boolean;
+}
+
+/**
+ * design/06 §3.4, complete. A code absent from this table used to silently default to
+ * `warn`, which is the wrong direction for the DS/MF/TX families: an unlisted DS105 was
+ * a destructive change reported as an advisory.
+ */
 const HAZARD_SEVERITY: Record<string, "error" | "warn"> = {
-  DS101: "error", DS102: "error", DS103: "error", DS104: "error", DS106: "error",
-  MF101: "error", MF103: "error", MF104: "error", MF105: "error", MF106: "error",
-  BC101: "warn", BC102: "warn", BC103: "warn",
-  LK101: "warn", LK102: "warn", LK104: "warn", LK107: "warn", LK108: "warn", LK110: "warn", LK112: "warn",
+  DS101: "error", DS102: "error", DS103: "error", DS104: "error", DS105: "error", DS106: "error",
+  MF101: "error", MF102: "error", MF103: "error", MF104: "error", MF105: "error", MF106: "error",
+  BC101: "warn", BC102: "warn", BC103: "warn", BC104: "warn",
+  LK101: "warn", LK102: "warn", LK103: "warn", LK104: "warn", LK105: "warn", LK106: "warn",
+  LK107: "warn", LK108: "warn", LK109: "warn", LK110: "warn", LK111: "warn", LK112: "warn",
+  TX101: "error", TX102: "error", TX201: "error",
   EN101: "error", EN102: "error",
 };
+
+/** An unknown code is a bug in the emitter, not an advisory — it must not be silent. */
+export function hazardSeverity(code: string): "error" | "warn" {
+  return HAZARD_SEVERITY[code] ?? "error";
+}
 
 export interface BuildPlanInput {
   readonly seq: number;
@@ -85,9 +127,34 @@ export interface BuildPlanInput {
   readonly by?: string;
   readonly shadowTier?: 1 | 2 | 3 | 4;
   readonly proof?: Proof;
+  readonly acknowledge?: AcknowledgeInput;
+}
+
+/**
+ * A migration name becomes a FILENAME, and `writePlan` used to join it into the output
+ * directory unchecked - `name: "../../escaped"` wrote outside `outDir`. The alphabet is
+ * deliberately narrower than "safe": migration ids are also matched by the runner's
+ * reconciler and sorted lexicographically, so case and punctuation are liabilities.
+ */
+export const MIGRATION_NAME = /^[a-z0-9_]+$/;
+
+export class InvalidMigrationIdError extends Error {
+  readonly code = "PGORM_INVALID_MIGRATION_ID";
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidMigrationIdError";
+  }
 }
 
 export function migrationId(seq: number, name: string): string {
+  if (!Number.isInteger(seq) || seq < 0) {
+    throw new InvalidMigrationIdError(`migration seq must be a non-negative integer, received ${String(seq)}`);
+  }
+  if (!MIGRATION_NAME.test(name)) {
+    throw new InvalidMigrationIdError(
+      `migration name ${JSON.stringify(name)} must match ${String(MIGRATION_NAME)}`,
+    );
+  }
   return `${String(seq).padStart(4, "0")}_${name}`;
 }
 
@@ -115,30 +182,52 @@ export function buildPlan(input: BuildPlanInput): Plan {
     hazards: s.hazards,
   }));
 
-  const hazards: PlanHazard[] = [];
+  const ack = input.acknowledge;
+  const signedOff = new Set(ack?.dataLoss ?? []);
+  const blanket = ack?.allowDataLoss === true;
+  const isAcknowledged = (severity: "error" | "warn", subject: string): boolean =>
+    severity !== "error" || blanket || signedOff.has(subject);
+
+  const raw: PlanHazard[] = [];
   statements.forEach((s, index) => {
     for (const code of s.hazards) {
-      hazards.push({
+      const severity = hazardSeverity(code);
+      const subject = s.destroys[0] ?? s.produces[0] ?? s.consumes[0] ?? "";
+      raw.push({
         code,
-        severity: HAZARD_SEVERITY[code] ?? "warn",
+        severity,
         statement: index,
-        subject: s.destroys[0] ?? s.produces[0] ?? s.consumes[0] ?? "",
+        subject,
         message: `${code} on: ${s.sql.split("\n")[0]}`,
-        acknowledged: false,
+        acknowledged: isAcknowledged(severity, subject),
       });
     }
   });
   for (const d of input.diagnostics) {
     if (d.severity !== "error") continue;
-    hazards.push({
+    raw.push({
       code: d.code,
       severity: "error",
       statement: -1,
       subject: d.subject ?? "",
       message: d.message,
-      acknowledged: false,
+      acknowledged: isAcknowledged("error", d.subject ?? ""),
     });
   }
+  const hazards: readonly PlanHazard[] = raw;
+  const acknowledgedSubjects = [
+    ...new Set(raw.filter((h) => h.severity === "error" && h.acknowledged).map((h) => h.subject)),
+  ].sort();
+  const acknowledged: Acknowledgement | null =
+    ack === undefined || (!blanket && signedOff.size === 0)
+      ? null
+      : {
+          dataLoss: acknowledgedSubjects,
+          by: ack.by ?? input.by ?? "spike",
+          reason: ack.reason ?? (blanket ? "--allow-data-loss" : "hints-file acknowledgement"),
+          at: new Date().toISOString(),
+          blanket,
+        };
 
   const txmode: Plan["txmode"] =
     input.segments.every((s) => s.transactional)
@@ -165,9 +254,11 @@ export function buildPlan(input: BuildPlanInput): Plan {
     statements,
     renames: input.renames,
     hazards,
+    // The count travels on the diagnostic; parsing it back out of the human-readable
+    // message with a regex made the plan's census hostage to message wording.
     unmodeled: input.diagnostics
       .filter((d) => d.code === "unmodeled_kind")
-      .map((d) => ({ kind: d.subject ?? "?", count: Number(/^(\d+)/.exec(d.message)?.[1] ?? 0) })),
+      .map((d) => ({ kind: d.subject ?? "?", count: d.count ?? 0 })),
   };
 
   // planId deliberately excludes `generated` and `proof`, so the same logical
@@ -178,6 +269,7 @@ export function buildPlan(input: BuildPlanInput): Plan {
     ...core,
     planId,
     generated: { at: new Date().toISOString(), by: input.by ?? "spike", interactive: false },
+    acknowledged,
     proof: input.proof ?? { status: "skipped" },
   };
 }
@@ -195,14 +287,28 @@ export interface RenderInput {
 
 /** The `.sql` is the executable artifact and must be runnable by psql. */
 export function renderSql(r: RenderInput): string {
+  // Declared, not assumed: an intentionally long-running build carries
+  // `statement: null`, so a blanket `statement=30s` in the header was a lie the
+  // runner did not tell. `0` is PostgreSQL's spelling of "no timeout".
+  const uniform = (pick: (s: PlanStatement) => string | null): string => {
+    const seen = new Set(r.statements.map((s) => pick(s) ?? "0"));
+    return seen.size === 1 ? [...seen][0]! : "per-statement";
+  };
+  const lock = r.statements.length ? uniform((s) => s.timeouts.lock) : "3s";
+  const statement = r.statements.length ? uniform((s) => s.timeouts.statement) : "30s";
   const lines: string[] = [
     `-- pg-orm:migration ${r.id}`,
     `-- pg-orm:plan      ${r.id}.plan.json`,
     `-- pg-orm:from      ${r.from}`,
     `-- pg-orm:to        ${r.to}`,
     `-- pg-orm:txmode    ${r.txmode}`,
-    `-- pg-orm:timeout   lock=3s statement=30s`,
+    `-- pg-orm:timeout   lock=${lock} statement=${statement}`,
     `-- pg-orm:requires-pg ${r.pgMin}`,
+    "",
+    // Every identifier the emitter writes is schema-qualified, and extraction ran
+    // under the same search_path, so pinning it makes the file mean the same thing
+    // under psql as it does under the runner (design/06 §5.3).
+    "SET search_path = pg_catalog;",
     "",
   ];
   for (const seg of r.segments) {

@@ -1,0 +1,115 @@
+# The tiers of design/08 §4, wired as jobs (design/09 §2.2 WS-L).
+#
+#   unit   tier 0 — no I/O at all, three Node majors. Must stay under 5 s.
+#   live   tier 1 — PGlite, on ubuntu / macos / windows. **No Docker**, which is the whole point:
+#                   `git clone && pnpm i && pnpm test:live` works on a first-time contributor's
+#                   laptop, including Windows, where Postgres tooling usually gives up.
+#   pg     tier 2 — a real server. PG 17 on every PR; 15/16/17/18 nightly (see ci-nightly.yml
+#                   when WS7 lands). Everything guarded by requiresConcurrency() runs only here.
+#   types  the compile-time budgets (design/04 §3.5, design/03 Appendix B). Its own job because it
+#          compiles ~40 generated programs on two TypeScript versions and takes ~25 s, and because
+#          a budget that only exists in a JSON file is not a gate.
+#
+# One env var selects the target everywhere: PGORM_TEST_URL set ⇒ that server, unset ⇒ PGlite.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PGORM_FUZZ_CASES: '10000'
+
+jobs:
+  unit:
+    name: unit (tier 0) · node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.12', '24', '26']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm typecheck
+
+  types:
+    name: type budgets (design/04 §3.5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Marginal instantiations per query at 25 and 300 tables on TS 5.9.3 + 7.0.2, the
+      # schema-size-independence ratio, the design/04 §3.5 headline, and the package .d.ts size.
+      # Exits non-zero on any breach; the three-way print (design/04 / here / budget) is in the log.
+      - run: pnpm bench:types
+      # The diagnostic goldens (design/04 §4). `pnpm type-errors` re-records after a deliberate change.
+      - run: pnpm type-errors:check
+
+  live:
+    name: live (tier 1, PGlite) · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # No services: block. PGlite boots one PostgreSQL 18.3 per test file, in-process.
+      - run: pnpm test:live
+
+  pg:
+    name: pg (tier 2) · PostgreSQL 17
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: pgorm
+          POSTGRES_PASSWORD: pgorm
+          POSTGRES_DB: pgorm
+          # The harness asserts UTC rather than SET-ting it (design/02 §4.7), so the server has
+          # to be started in it — every timestamptz golden is spelled in the session zone.
+          TZ: UTC
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pgorm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGORM_TEST_URL: postgres://pgorm:pgorm@127.0.0.1:5432/pgorm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `pg_dump` for @pgorm/kit's round-trip oracle; the client version must be >= the server's.
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client-17
+      - run: pnpm test:pg

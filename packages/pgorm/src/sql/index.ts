@@ -1,5 +1,5 @@
 export { sql, isFragment, toNode, asExpr } from './fragment.js'
-export type { AnyFragment, Fragment, SqlTag } from './fragment.js'
+export type { AnyFragment, Fragment, SqlTag, TypedFragment } from './fragment.js'
 export {
   MAX_IDENT_BYTES,
   quoteIdentPart,
@@ -16,8 +16,11 @@ export {
   InvalidFragmentError,
   UnsafeLiteralError,
   UnsupportedNodeError,
+  DecodePlanError,
   TooManyParametersError,
+  NoCodecError,
+  NullOperandError,
+  BuilderError,
+  SchemaError,
 } from './errors.js'
 export type { IdentRejectReason, PgOrmErrorCode } from './errors.js'
-export { spikeCodecs, encodeTextArray } from './codec.js'
-export type { Codec, TypeClass, JsonEncode } from './codec.js'

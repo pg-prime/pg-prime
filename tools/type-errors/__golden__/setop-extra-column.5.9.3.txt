@@ -1,0 +1,1 @@
+setop-extra-column.ts(7,15): error TS2339: Property 'execute' does not exist on type 'OrmTypeError<"union branch 2 has an extra column \"kind\" that branch 1 does not select">'.

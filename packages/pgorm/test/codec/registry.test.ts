@@ -9,7 +9,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { makeHarness, type Harness } from '../driver/_harness.js'
+import { makeHarness, type Harness } from '../live/_harness.js'
 import { createRegistry, enumCodec, PgDecodeError, textCodec } from '../../src/codec/index.js'
 import type { AnyCodec } from '../../src/codec/index.js'
 import type { PgConnection } from '../../src/driver/index.js'
@@ -75,10 +75,31 @@ describe('planFor — the hot path', () => {
 
   it('an UNREGISTERED OID passes the raw text through rather than guessing', async () => {
     const registry = createRegistry()
-    // `interval` has no codec in this spike's built-in set
-    const r = await conn.execute({ text: `select '1 day'::interval as i`, params: [] })
-    expect(registry.forOid(r.fields[0]!.dataTypeID)).toBeUndefined()
-    expect(registry.planFor(r.fields)[0]!(r.rows[0]![0]!)).toBe('1 day')
+    // `point` (OID 600) has no codec: §4.5's geometric family is still unimplemented. (This used
+    // to be `interval`, which the WS-audit registered — see the `interval` cases in r5-golden.)
+    const r = await conn.execute({ text: `select '(1,2)'::point as p`, params: [] })
+    expect(r.fields[0]!.dataTypeID).toBe(600)
+    expect(registry.forOid(600)).toBeUndefined()
+    expect(registry.planFor(r.fields)[0]!(r.rows[0]![0]!)).toBe('(1,2)')
+  })
+
+  it('the unknown-OID hook names the column, once per RowDescription and not per row', async () => {
+    const registry = createRegistry()
+    const seen: { oid: number; column: string }[] = []
+    registry.onUnknownOid((info) => seen.push(info))
+    const r = await conn.execute({
+      text: `select '(1,2)'::point as p, 1::int4 as known from generate_series(1,3)`,
+      params: [],
+    })
+    expect(r.rows).toHaveLength(3)
+    const plan = registry.planFor(r.fields)
+    for (const row of r.rows) row.map((v, i) => plan[i]!(v))
+    // one entry: the point column, named — NOT three, and not the int4 column
+    expect(seen).toEqual([{ oid: 600, column: 'p' }])
+
+    registry.onUnknownOid(undefined)
+    registry.planFor(r.fields)
+    expect(seen).toHaveLength(1)
   })
 
   it('binds typmod per column, so two numerics in one row get their own context', async () => {

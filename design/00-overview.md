@@ -1,60 +1,99 @@
-# pg-orm-ts — Design Overview & Decision Record
+# pgorm — Design Overview & Decision Record
 
-**Date:** 2026-08-14
-**Status:** Round-2 synthesis. Eight design agents produced `design/01`–`08`; this doc records the unified architecture, reconciles cross-doc conflicts, and lists the decisions awaiting user sign-off. Research basis: `../research/SUMMARY.md`.
+**Living document.** Last reconciled **2026-08-25**. Design round completed 2026-08-14; this file
+is the entry point, the decision record, and the honest status of what is actually built.
+Research basis: [`../research/SUMMARY.md`](../research/SUMMARY.md).
 
 ## Document map
 
 | Doc | Owns | Headline decision |
 |---|---|---|
-| [01-features.md](./01-features.md) | Scope | Tiered feature spec; v1 has two XL items (unified builder, diff engine); explicit "never" list |
-| [02-driver.md](./02-driver.md) | Driver seam | Structural `PgDriver`/`PgConnection`, zero deps *and* zero peer deps; text-only decoding v1; per-query parser neutralization via `pg`'s `query.types` |
-| [03-query-builder.md](./03-query-builder.md) | Query engine | Immutable AST → single-pass compiler → `{sql, binds, shape}`; scope-lambda references; LATERAL `json_agg` nesting with per-codec JSON casts (no dehydration tax) |
-| [04-type-system.md](./04-type-system.md) | Types | Hybrid: runtime builders + flat `ColMeta` payload flattened once per table; no whole-schema type param → schema-size-independent query cost (measured 1.00 ratio vs Kysely 2.43) |
-| [05-schema-api.md](./05-schema-api.md) | Schema surface | `pgTable(name, cols, extras[])` heterogeneous extras; `defineRelations` w/ FK inference; functions/triggers = structural signature + body-hash repeatables; `renamedFrom` fires iff old-exists-and-new-doesn't |
-| [06-migrations.md](./06-migrations.md) | Migration engine | **Adopt `@supabase/pg-delta`** — pinned, behind a ~400-LOC `DiffBackend` port; no plan written to disk until proven on a shadow clone; M/R/O/U object tiers; idempotency-linted `txmode none` files |
-| [07-runtime.md](./07-runtime.md) | Execution | `unnamedExtended` default (pooler-safe *is* the fast mode on `pg`); 40001 retry on-by-default at RR/serializable only; `IndeterminateCommitError` outside `ConnectionError`; declared (not detected) `poolerMode` |
-| [08-architecture.md](./08-architecture.md) | Packaging | 4 packages (`pgorm`, `pgorm-kit`, `@pgorm/testing`, `create-pgorm`); tsgo + oxlint, unbundled ESM; PGlite default test tier w/ multi-session ban; closed 12-item 1.0 list, ≤3 RCs/≤8 weeks |
+| [01-features.md](./01-features.md) | Scope | Tiered feature spec; explicit "never" list; v1 has two XL items (unified builder, diff engine) |
+| [02-driver.md](./02-driver.md) | Driver seam | Structural `PgDriver`/`PgConnection`, zero deps *and* zero peer deps; text-only decoding in v1 |
+| [03-query-builder.md](./03-query-builder.md) | Query engine | Immutable AST → single-pass compiler → `{sql, binds, shape}`; `LEFT JOIN LATERAL` + `json_agg` nesting with per-codec JSON casts |
+| [04-type-system.md](./04-type-system.md) | Types | Runtime builders + flat `ColMeta` flattened once per table; no whole-schema type parameter, so query cost is schema-size-independent |
+| [05-schema-api.md](./05-schema-api.md) | Schema surface | `pgTable(name, cols, extras[])`; `defineRelations` with FK inference; functions/triggers as body-hash repeatables |
+| [06-migrations.md](./06-migrations.md) | Migration engine | In-house differ over a fact-base IR; nothing reaches disk unproven (D6); witnessed by `pg_dump` (D10) |
+| [07-runtime.md](./07-runtime.md) | Execution | `unnamedExtended` default; 40001 retry at RR/serializable only; declared (not detected) `poolerMode` |
+| [08-architecture.md](./08-architecture.md) | Packaging | 4 packages; tsgo + oxlint; unbundled ESM; PGlite default test tier with a multi-session ban |
+| [09-query-builder-implementation-plan.md](./09-query-builder-implementation-plan.md) | Build plan | Sequenced workstreams to get from the four spikes to a working builder; per-workstream test contracts and exit gates |
 
-## Load-bearing verified facts (from this round's hands-on work)
+## Where the implementation actually is
 
-- **npm:** `pg-orm-ts` is dead (unpublished 2026-08-04; npm forbids reuse). `pgorm`/`pgorm-kit`/`@pgorm` verified available today. Claim promptly.
-- **pg-delta alpha.39** has a reproducible enum-ordering correctness bug — caught by its own `provePlan`. Hence the prove-before-write rule (D6 in 06).
-- **Binary result format is unusable through `pg`** — `pg-protocol` UTF-8-decodes every DataRow field (corruption measured live). Text decode only in v1; seam stays wired.
-- **TypeScript 7 (native, Go) is `latest`** and drops the JS compiler API — typescript-eslint, typedoc, and `@ark/attest` all break on it. Toolchain in 08 routes around this; attest job pins TS 5.9.
-- **PGlite advisory locks lie** (`pg_try_advisory_lock` returns true where real PG returns false) — single-backend; multi-session tests must run on real PG.
-- Type budget measured, not estimated: 100-table headline scenario checks in 1.11 s on TS 5.9 / 0.231 s on TS 7, 137,778 instantiations — gates set at ≤2.0 s / ≤0.5 s / ≤200k, with a schema-size-independence ratio gate of ≤1.15.
+Four spikes exist and are green. **They are not yet connected to each other**, so there is no
+usable ORM: `schema/` does not import `compile/`, `compile/` does not import `driver/`, and two
+different `Codec` types coexist (`sql/codec.ts` carries a self-described spike-local one).
 
-## Reconciliations (conflicts between docs, resolved)
+| Area | State |
+|---|---|
+| Schema DSL | 11 column types, 8 modifiers, table extras, relations. Type budget gated |
+| Codecs | 29 built-ins, `decodeJson` required and golden-tested at depth 0 and 3 |
+| Driver | `execute` · `stream` (real cursors) · `describe` · `cancel` · error taxonomy. No transactions, no COPY |
+| SQL + compiler | `sql` tag with `ident`/`lit`/`join`/`unsafeRaw`; SELECT and INSERT compile. **UPDATE and DELETE do not** — the AST nodes exist, the compiler throws |
+| Migration engine | The most complete subsystem. Extract → IR → diff → ordered DDL → prove → apply → re-extract, end to end on 8 object kinds, 21 phases, 21 hazard codes |
+| Packaging | Nothing is consumable: no entry point, no `exports`, no build. `@pgorm/testing` and `create-pgormjs` are README-only |
 
-**R1 — Column nullability default.** 05's examples use `.notNull()` (nullable-by-default); 04 decided **NOT NULL by default, `.nullable()` opts in** — nullable-as-union is free at the type level while `.notNull()` costs a distributive `Exclude` per column, and it removes Drizzle's #1 footgun. **04 wins; 05's examples to be amended.** DDL-vs-TS split (`$` law) is unaffected. *(User sign-off requested — most user-visible DX decision in the project.)*
+**428 tests green** (168 runtime offline, 203 runtime live, 57 kit); workspace typecheck clean.
+**Type budget, measured on the real implementation:** 137,778 instantiations, 1.11 s on TS 5.9 /
+0.231 s on TS 7, schema-size-independence ratio **1.00** against a 1.15 gate.
+**Dependencies:** `pgormjs` has zero runtime deps and zero peer deps — verified, `src/` contains no
+non-relative imports at all. `@pgorm/kit` depends on `pg` + `@types/pg`. 7 devDeps at the root.
 
-**R2 — TS floor.** 04 proved 5.4 works (all probes pass on 5.4.5/5.9.3/7.0.2); 08 recommends 5.9. **Recommend 5.9**: budgets are defined on 5.9/7, the support matrix halves, and lowering a floor later is non-breaking while raising one is. The `types@<5.9` gate is built and verified. *(User sign-off.)*
+## Decisions of record
 
-**R3 — `sql` fragment typing.** 03's stricter form is final: the tag takes **no type parameter**; a result-typed fragment requires `.as(codec)` — a bare cast is a compile error. This subsumes 04's `sql<T>`-with-codec framing.
+1. **Names.** Runtime `pgormjs` · CLI `@pgorm/kit` · helpers `@pgorm/testing` · scaffolder
+   `create-pgormjs`. Bare `pgorm` is permanently unpublishable — npm's similarity rule rejects it
+   against the squatted 2015 `pg-orm`, and **a 404 does not prove a name is available**. Only
+   `pgormjs@0.0.0` is published so far; the other three are unclaimed.
+2. **TypeScript.** Build with tsgo (TS 7); **consumer floor 5.9**. The floor is what a *user* needs
+   to typecheck against our `.d.ts`, enforced by a `types@<5.9` export gate. Lowering a floor later
+   is non-breaking; raising one is not.
+3. **License: MPL-2.0.** Forks of our files stay open; applications that merely import are
+   untouched. Apache/MIT fail the requirement, GPL/AGPL scare library adopters.
+4. **Nullability: NOT NULL by default**, `.nullable()` opts in. Nullable-as-union is free at the
+   type level; `.notNull()` would cost a distributive `Exclude` per column. Removes Drizzle's
+   most-reported footgun.
+5. **Views default to `securityInvoker: true`** — a PG-only tool that ships RLS cannot default to a
+   view that silently bypasses it. `pull` annotates introspected legacy views with their real setting.
+6. **Decode defaults:** `int8`→`bigint`, `numeric`→`string`, `date`→branded `'YYYY-MM-DD'` string,
+   `timestamptz`→`Date`.
+7. **The diff engine is ours.** pg-delta was evaluated, then rejected as a dependency; it served as
+   a dev-time differential oracle for one release and was **removed entirely on 2026-08-25**,
+   superseded by D10. Building our own is M/L rather than XL because Tier-R repeatables remove the
+   worst-behaved objects from the differ, annotation-first renames remove rename inference, and the
+   prove gate catches ordering bugs before a plan reaches disk.
+8. **The proof is witnessed by PostgreSQL itself (06 D10).** After the shadow clone converges on
+   our IR, the clone and the desired database are dumped with `pg_dump` and compared. Our IR proof
+   is self-referential — a catalog attribute the extractor does not model is invisible to both
+   sides of its own equality — and `pg_dump` shares no code with us. Zero dependencies.
 
-**R4 — `cachedDescribe` justification.** 07 kept it opt-in as the precondition for binary results; 02 killed binary v1. `cachedDescribe` remains opt-in, justified only by decode-plan reuse, and becomes interesting again if a binary-capable adapter lands.
+## Reconciliations between docs — all resolved
 
-**R5 — Nested JSON rehydration (the #1 cross-doc risk, per 04).** The differentiator claim "a column types and decodes identically at any nesting depth" holds only if 03's compiler emits per-codec JSON casts *and* every codec implements `decodeJson`. **Contract adopted:** `decodeJson` is a required `Codec` member (not optional), plus a CI golden test decoding every built-in codec at depth 0 and depth 3 and asserting identical values. No `ShallowDehydrate` fallback types will be written — if the test fails, the build fails.
+| | Conflict | Resolution |
+|---|---|---|
+| R1 | 05 showed nullable-by-default, 04 decided NOT NULL by default | 04 won; **05 and 03 examples converted 2026-08-25**. One consequence is still open: composite-type attributes cannot carry `NOT NULL` in PG, so a bare attribute would type non-null unsoundly — see 05 §3 |
+| R2 | TS floor 5.4 (04) vs 5.9 (08) | 5.9 |
+| R3 | `sql` fragment typing | The tag takes **no type parameter**; result typing requires `.as(codec)`. A bare cast is a compile error |
+| R4 | `cachedDescribe` justification after binary was cut | Stays opt-in, justified by decode-plan reuse alone. Binary is out of v1: `pg-protocol` UTF-8-decodes every DataRow field and corrupts payloads (measured) |
+| R5 | Nested JSON rehydration — *the largest type-level risk in the design* | **Closed.** `decodeJson` is a required `Codec` member and a golden test asserts identical values at depth 0 and depth 3. No degradation types were written |
+| R6 | Migration lock primitive | Session advisory lock + heartbeat lease, because a `txmode none` file has no transaction to scope `pg_advisory_xact_lock` to |
+| R7 | 01's scope questions | RLS/policies move **into v1** as Tier-R repeatables; perf bar ≤1.15× raw `pg` median / ≤1.30× p99; 4 packages |
 
-**R6 — Migration lock.** 06's session-advisory-lock + heartbeat lease supersedes the research sketch's `pg_advisory_xact_lock` (which can't scope a transactionless CIC file). 07's `poolerMode` and 06's two-transaction `pg_backend_pid()` probe agree on transaction-pooler detection.
+## Superseded
 
-**R7 — Scope amendments to 01.** RLS/policies move **into v1** as Tier-R repeatables (06 showed repeatables need no differ, making this cheaper than deferring). 01's three open questions are answered by siblings: pg-delta → adopt-pinned (06); perf bar → ≤1.15× raw `pg` median / ≤1.30× p99 (08's 1.0 list); package split → 4 packages (08).
+- **06 D1** — "adopt `@supabase/pg-delta` behind a `DiffBackend` port". Reversed by decision 7.
+  06 §1 now keeps only the evidence that outlived it: the enum-ordering bug (our fixture #1), the
+  missing data-dependent-failure hazard class, and the over-conservative rewrite flag.
+- **08 §1.3** — the three-way name evaluation. Decided; only the 404-is-not-availability lesson kept.
+- **08 §6.5** — Apache-2.0. Superseded by MPL-2.0 (decision 3).
 
-## Sign-off outcomes (user, 2026-08-14)
+## What is actually next
 
-1. **Name: REVISED 2026-08-14 (late) — flagship is `pgormjs`.** Bare `pgorm` proved permanently unpublishable: npm's similarity rule rejects it against the squatted 2015 `pg-orm` ("Package name too similar to existing package pg-orm") — a 404 availability check cannot detect this class of block. User chose bare `pgormjs` (matches the GitHub org `pgormjs`; verified clear of hyphen-variant collisions). Final naming: runtime `pgormjs` · CLI `@pgorm/kit` · test helpers `@pgorm/testing` · scaffolder `create-pgormjs` (`npm create pgormjs`). The `@pgorm` npm org and GitHub org `pgormjs` are both owned by the user.
-2. **TS: build on TS 7 internally, consumer floor 5.9.** Clarified: the floor is not a devDependency question — it's the oldest TypeScript version *consumers* can use to typecheck their apps against our published `.d.ts`. We compile and typecheck with tsgo (TS 7); the `types@<5.9` export gate turns older consumers' failures into a one-sentence error. A TS-7-only floor was rejected: too much of the consumer base and tooling is still on 5.x/6.x, and lowering a floor later is non-breaking while raising one is.
-3. **License: MPL-2.0.** User requirement: open source, and forks must stay open source. Apache/MIT fail that (permissive → closed forks allowed). GPL/AGPL satisfy it but are rejected for a library: linking semantics scare adopters away from bundling an ORM into their apps. **MPL-2.0 is the fit** — file-level copyleft: any modified copy of our files must be published under MPL, while apps importing the library are untouched. Recorded as decided; revisit only if the user wants strong copyleft at the cost of adoption.
-4. **Nullability: APPROVED — NOT NULL by default**, `.nullable()` opts in (R1 stands; 05's examples to be amended).
-5. **Views: `securityInvoker: true` stays the default** (delegated decision). Rationale: this is a PG-only tool that ships RLS as a v1 feature; a view that silently bypasses RLS is a data leak, and the divergence from PG's default is one documented line plus an explicit `securityInvoker: false` escape. The `pull` command annotates introspected legacy views with their actual setting so adoption never flips behavior.
-6. **Decode defaults: APPROVED** — `int8`→`bigint`, `numeric`→`string`, `date`→branded `'YYYY-MM-DD'` string, `timestamptz`→`Date`.
-7. **Diff engine: PIVOT — build our own; pg-delta becomes a dev-time differential-testing oracle** (user asked "can we have our own pg diff tool?" — yes, and the design makes it cheaper than research assumed). 06's D1 superseded (amendment noted there); D2–D12 stand unchanged. Why own-diff is now M/L rather than XL: (a) the Tier-R repeatable model removes functions/views/triggers/policies — the objects with the worst diff semantics — from the differ entirely; (b) annotation-first `renamedFrom` removes rename *inference*, pg-delta's main advantage; (c) the prove-on-shadow-clone gate (D6) catches any ordering/correctness bug before a plan reaches disk, which is exactly how pg-delta's own enum bug was caught. What remains to build: `pg_catalog` extraction for ~12 M-tier object kinds into 06's fact-base IR, dependency-ordered DDL emission, and hazard classification. pg-delta (pinned, devDependency only) runs in CI as a second opinion over the fixture corpus — disagreements become test cases, and its enum-ordering repro is fixture #1.
-
-## Week-1 empirical tasks (carried from the docs)
-
-- ~~Live-PG test: bind parameters in `DECLARE … CURSOR` over extended protocol~~ **ANSWERED YES** (spike, PG 17.11): `.stream()` is zero-dep, `pg-cursor` struck entirely. Boundaries: cursors are transaction-scoped (25P01 outside), FETCH count cannot be a bind param (inlined validated integer).
-- **User:** create the `@pgorm` npm org + publish placeholder `pgorm`/`pgorm-kit`/`create-pgorm` (time-sensitive).
-- Spike the in-house diff engine: catalog extraction for tables/columns/constraints/indexes/enums into the fact-base IR, diff + emit for a 3-table fixture, proven on a shadow clone; wire pg-delta as the CI differential oracle with the enum-ordering repro as fixture #1.
-- Stand up the type-budget CI harness (04's numbers as the initial baselines) before the first `table()` implementation lands.
-- Fuzz harness skeleton for `sql.ident` with the dual oracle (`format('%I')` + temp-table roundtrip; 03).
+1–3. **The builder track is sequenced in [09](./09-query-builder-implementation-plan.md)**: unify the
+   two `Codec` types and wire `schema/` → `compile/` (WS2, and nothing else can start before it),
+   then the `Query<S,O>` type engine, the `Ref` operator surface, the runtime builders including
+   UPDATE and DELETE, and relation accessors. That plan also carries the three unresolved 03-vs-04
+   API forks, to be settled by measurement rather than fiat.
+4. Package entry points and a build, so any of this is installable.
+5. CI. There is none: every gate in these documents is currently run by hand.
+6. Claim `@pgorm/kit`, `@pgorm/testing`, `create-pgormjs` on npm.

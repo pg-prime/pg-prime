@@ -13,7 +13,7 @@
 
 | # | Decision |
 |---|---|
-| D1 | **Adopt `@supabase/pg-delta` as a pinned, CLI-only, optional dependency behind our own `DiffBackend` port.** Not vendored, not forked. Our IR is ours. |
+| D1 | ~~Adopt `@supabase/pg-delta` behind a `DiffBackend` port.~~ **SUPERSEDED** by 00-overview sign-off 7: we build the differ in-house. pg-delta served as a dev-time differential oracle for one release and has since been removed from the tree entirely, replaced by the D10 `pg_dump` witness. See §1. |
 | D2 | The IR is a **fact base**: a flat, content-addressed set of facts + dependency edges. Hierarchy is a view. **A fact's name lives in its id, never in its hashed payload.** |
 | D3 | **Provenance is metadata, not state** — it never enters the fingerprint. |
 | D4 | Object kinds split into four tiers: **Managed-diffed**, **Managed-repeatable**, **Observed-never-written**, **Unmodeled-but-diagnosed**. Functions/views/triggers/RLS ship in **v1 as repeatables**, not as diffed objects. |
@@ -22,152 +22,60 @@
 | D7 | Runner uses **session advisory lock + heartbeat lease**, not `pg_advisory_xact_lock` — because `txmode none` files have no enclosing transaction. Plus active transaction-pooler detection. |
 | D8 | `txmode none` ⟹ **every statement must be idempotent** (enforced by lint rule TX201). This makes crash-resume unconditionally safe and dissolves the CIC partial-application problem. |
 | D9 | Up-only. No down migrations, in any tier, in v1. |
+| D10 | **The shadow-clone proof is witnessed by `pg_dump`, not only by our own IR.** After apply, the clone and the desired database are dumped schema-only, canonicalized and compared as a statement multiset. Zero npm dependencies; `pg_dump` is spawned as a subprocess through an injectable argv. *(Added 2026-08-25 — see §3.9.)* |
 
 ---
 
-## 1. The build-vs-buy call: `@supabase/pg-delta`
+## 1. Why the differ is ours (and what pg-delta taught us)
 
-### 1.1 What I actually did
+This section originally argued for adopting `@supabase/pg-delta` behind a port. That decision was
+reversed (00-overview sign-off 7) and pg-delta is no longer a dependency. What follows is only the
+part that still constrains the design — the evidence, not the recommendation.
 
-```
-npm i @supabase/pg-delta@alpha        # NOTE: @alpha is mandatory — see 1.4
-docker run postgres:17-alpine
-extract(srcPool) → plan(a, b, {renames}) → apply(plan, pool) → provePlan(plan, clone, desired)
-```
+**Why building our own turned out to be M/L rather than XL:**
 
-Two databases with tables, identity columns, an enum, an FK, a unique constraint, a view, a
-`plpgsql` function, a trigger, RLS enabled, a policy, and a table comment. The desired state
-renamed a column, added a `NOT NULL` column, added a defaulted column, added an enum value *and
-used it in a column default*, added a CHECK, and added an index.
+- The Tier-R repeatable model (D4) removes functions, views, triggers and policies — the objects
+  with the worst diff semantics — from the differ entirely.
+- Annotation-first `renamedFrom` (D5) removes rename *inference*, which was pg-delta's main
+  advantage over a naive differ.
+- The prove-on-shadow-clone gate (D6) catches ordering and correctness bugs before a plan reaches
+  disk, which is exactly how pg-delta's own bug was caught.
 
-### 1.2 What is genuinely excellent
+### 1.1 The enum-ordering bug — now our fixture #1
 
-**The IR.** `FactBase` is a flat relation of `Fact { id: StableId, parent?: StableId, payload }`
-plus typed `DependencyEdge { from, to, kind: "depends"|"owner"|"memberOfExtension"|"managedBy" }`.
-`StableId` is **structured, not stringly-typed** — a discriminated union over 33 kinds with
-per-kind identity arity (`{kind:"column", schema, table, name}`,
-`{kind:"function", schema, name, args[]}`, `{kind:"acl", target: StableId, grantee, column?}`).
-The encoding to string exists in exactly one file. Their doctrine, verbatim from `core/fact.ts`:
-
-> Every addressable thing is its own fact with a parent *relation*; hierarchy is a view. Payloads
-> are identity-free: a fact's own name lives in its id, never in what is hashed.
-
-That single rule is what makes rename detection a hash lookup instead of a heuristic. It is the
-best idea in the package and we take it wholesale.
-
-**Provenance is explicitly not state.** `FactSource = "liveDb" | "sqlFiles" | "snapshot"`, with the
-comment "it never enters the rollup hash, so two bases with identical facts compare equal
-regardless of source." Exactly the property we need for TS-schema-vs-catalog comparison.
-
-**Rename detection is structural and it works.** Measured: with `renames: "off"` the plan was
-`DROP COLUMN first_name` + `ADD COLUMN name text NOT NULL` (`destructiveActions: 1`). With
-`renames: "auto"` it emitted `ALTER TABLE "public"."users" RENAME COLUMN "first_name" TO "name"`
-and `destructiveActions: 0`, having classified the candidate `status: "unambiguous"`. The
-three-valued verdict — `unambiguous | ambiguous | nearMiss` — with a `reason` on near-misses is
-better than anything shipped by Prisma, Drizzle, or MikroORM, all three of which emit drop+add.
-
-**Three-valued transactionality.** `transactional | nonTransactional | commitBoundaryAfter`. The
-third value exists for `ALTER TYPE … ADD VALUE`, which *is* transactional but whose new value is
-unusable until commit. `segmentActions()` unconditionally closes a segment after such an action.
-I had planned a two-valued `txmode`; this is strictly better and we adopt it.
-
-**Per-action safety metadata.** Every action carries `produces/consumes/destroys/releases` fact
-ids, a vetted `lockClass` (5 levels, "reported, never certified"), `dataLoss: none|destructive`,
-`rewriteRisk: boolean`, and `newSegmentBefore`.
-
-**The proof loop is beyond the state of the art.** `provePlan` does three things no ORM ships:
-(1) apply to a clone, re-extract, assert zero drift deltas; (2) seed rows and verify data
-preservation with per-table `contentMode: fingerprint | count | none`; (3) **observe `relfilenode`
-and fail the proof if a table was physically rewritten under an action that did not declare
-`rewriteRisk`**. Safety metadata is *verified*, not asserted.
-
-**Scale and craft.** 61,896 lines of TypeScript across 254 files, **131 test files**, dependencies
-are only `debug`, `pg`, `pg-connection-string`. MIT. Node ≥20. Doc comments cite the PostgreSQL
-behaviour and the review that motivated each invariant. `COVERAGE.md` documents deliberate
-exclusions and diagnoses them as `unmodeled_kind` rather than dropping them — the
-"catalog-completeness check" the research flagged as the survey's best idea.
-
-### 1.3 The correctness bug I found
-
-The plan orders a statement **before** the statement that makes it legal:
+Evaluating alpha.39 on a two-database fixture produced a plan that ordered a statement **before**
+the statement that makes it legal:
 
 ```
 [3] ALTER TABLE "public"."orders" ALTER COLUMN "status" SET DEFAULT 'refunded'::public.order_status
-[4] ALTER TYPE "public"."order_status" ADD VALUE 'refunded' AFTER 'paid'
+[4] ALTER TYPE  "public"."order_status" ADD VALUE 'refunded' AFTER 'paid'
 ```
 
-Applying it fails, reproducibly:
-
-```
-status: failed  appliedActions: 0
-error: { actionIndex: 2,
-         sql: "ALTER TABLE \"public\".\"orders\" ALTER COLUMN \"status\" SET DEFAULT 'refunded'::public.order_status",
-         message: "invalid input value for enum public.order_status: \"refunded\"" }
-```
+It fails reproducibly with `invalid input value for enum public.order_status: "refunded"`.
 
 **Root cause:** `pg_depend` records a dependency on the *type*, not on an individual enum label.
 The type exists on both sides, so no edge is generated and the topological sort has nothing to
-order on. This is a structural blind spot, not a typo.
+order on. A structural blind spot, not a typo.
 
-Two secondary findings from the same run:
+Our answer is the synthesized `evaluates` edge (§3.7, `ir/fact.ts`), and the repro is
+`fixtures/diff/enum-ordering` — the first fixture in the corpus, covered by `test/enum.test.ts`.
 
-- `ADD COLUMN "name" text NOT NULL` was emitted against a non-empty table with
-  `dataLoss: "none"` and no warning; it failed at apply with *"column \"name\" of relation
-  \"users\" contains null values"*. **pg-delta has no MF-class (data-dependent failure) hazard
-  model at all.** Its safety model is lock/rewrite/data-loss, not will-this-fail.
+### 1.2 Two secondary findings that shaped our hazard model
+
+- `ADD COLUMN "name" text NOT NULL` against a non-empty table was emitted with `dataLoss: "none"`
+  and no warning; it failed at apply. pg-delta has **no data-dependent-failure hazard class** —
+  its safety model is lock/rewrite/data-loss, not *will this fail*. Ours has the MF class (§3.4)
+  precisely because of this.
 - `ADD COLUMN "country" text NOT NULL DEFAULT 'US'::text` was flagged `rewriteRisk: true`. Since
-  PG 11 a non-volatile default uses `attmissingval` and does **not** rewrite. Over-conservative,
-  and harmless (the proof only fails on *undeclared* rewrites), but it means `rewriteRisk` is not
-  a signal we can surface to users unfiltered.
+  PG 11 a non-volatile default uses `attmissingval` and does not rewrite. Over-conservative — and
+  the reason our BC class distinguishes *declared* from *suspected* rewrites.
 
-**The decisive mitigating fact:** `provePlan` caught its own engine's bug — `ok: false` with the
-exact `applyError`. The failure mode is *loud, at generate time, on a throwaway clone*. That is
-the cheapest possible place for an alpha diff engine to be wrong.
+### 1.3 The mitigating fact that became a design rule
 
-### 1.4 The risks, stated plainly
-
-| Risk | Evidence |
-|---|---|
-| **Violent API churn.** `MIGRATION.md`: *"a clean-room rebuild… the CLI, the public API, and every persisted artifact format are new — nothing carries over."* That landed at alpha.34 — **five days ago.** | 39 alpha releases since 2025-12-26; alpha.35→39 in the last **three days**; alpha.39 published **today** |
-| **`npm i @supabase/pg-delta` installs nothing.** The `latest` dist-tag points at `0.0.0`, a **449-byte stub**. Only `@alpha` resolves to real code. | `npm view` dist-tags |
-| Internal versioning unsettled | package `1.0.0-alpha.39` but `plan.engineVersion === "0.3.0"` |
-| Supabase-shaped priorities | `policy/`, `baseline/`, `integrations/` exist to hide Supabase's managed `auth`/`storage` schemas |
-| Not a safe-migration generator | It faithfully reproduces desired state. `CREATE INDEX CONCURRENTLY` is opt-in via a `concurrentIndexes` param; timeouts are applied **per-segment**, with no CIC/VALIDATE exemption. Lock-safe *rewriting* is not its job |
-| Its input is a database, not our IR | `extract()` takes a `Pool`. Desired state must be materialized into a shadow DB regardless |
-| Cosmetic-but-real noise | `dangling_edge` warnings for sequences depending on `public` when `public` is not itself extracted |
-
-### 1.5 VERDICT — adopt as a pinned dependency behind a port
-
-> **Adopt `@supabase/pg-delta` as an exact-pinned, CLI-only, optional dependency, consumed
-> exclusively through our own `DiffBackend` interface. Vendor nothing. Fork nothing. Own the IR.**
-
-Rationale:
-
-1. **Reimplementing it is 6–12 months** for 33 object kinds of catalog introspection, DDL
-   rendering, and topological ordering. That is the entire v1 budget spent on the part of the
-   problem that is *least* differentiating. Nobody adopts an ORM because its `pg_class` query is
-   hand-written.
-2. **Its weaknesses are precisely the layer we were always going to build**: hazard linting
-   (it has none of the MF class), lock-safe rewriting, the versioned-file workflow, the runner,
-   baselining, the CLI. We are not buying our product; we are buying the plumbing under it.
-3. **D6 neutralizes the alpha risk.** Mandatory proof-before-write converts "the diff engine is
-   sometimes wrong" from a production incident into a `generate` failure. I verified this
-   empirically on a real bug.
-4. **The port makes the churn survivable.** Exactly one file (`backends/pg-delta.ts`, projected
-   ~400 LOC) knows pg-delta's types. An alpha.40 rewrite is a one-file repair, caught by our
-   differential test corpus, not a refactor.
-5. **Optional + CLI-only means zero runtime cost.** `@supabase/pg-delta` is an
-   `optionalDependency` of `@pg-orm/cli`, never of the ORM runtime. A user who only queries never
-   installs it. This preserves the minimal-deps promise where it matters.
-
-Rejected alternatives are in §9.
-
-**Exit strategy (deliberate, not aspirational):** our native backend grows kind-by-kind behind the
-same port, validated by **differential testing** — run both backends over the corpus, assert
-identical post-apply fingerprints. When the native backend covers Tier M+R with zero corpus
-divergence, pg-delta demotes to a test oracle. No flag day, no rewrite.
-
----
+pg-delta's own `provePlan` caught pg-delta's bug: loud, at generate time, on a throwaway clone.
+That is the cheapest possible place for a diff engine to be wrong, and it is why D6 is
+unconditional here rather than an opt-in flag. D10 extends the same idea one step further, to a
+witness that is not our code at all (§3.9).
 
 ## 2. The IR
 
@@ -548,6 +456,50 @@ to-be-dropped column makes the plan fail proof, at author time. That is the whol
 one IR for both lanes.
 
 ---
+
+### 3.9 The `pg_dump` witness (D10)
+
+D6's proof is **self-referential**: it extracts with our extractor, diffs with our differ and
+hashes with our canonicalizer. If `catalog/extract.ts` does not model an attribute, then the
+differ never plans for it *and the proof cannot notice*, because both sides of the equality are
+blind in the same way. That is silent semantic loss passing a green gate — precisely the class
+of bug the pg-delta oracle was hired to catch, and it is catchable for free.
+
+`pg_dump` is PostgreSQL's own serializer. It models the entire DDL surface by definition and
+shares no code with us. After the clone converges on our IR, both databases are dumped
+(`--schema-only --no-owner --no-privileges`, restricted to the managed schemas) and compared.
+
+Three implementation facts, each learned the hard way:
+
+1. **Line-diffing a dump is wrong.** A `;` inside a dollar-quoted function body is not a
+   statement boundary and a `--` inside a string literal is not a comment. `sql/statements.ts`
+   is a real lexer; canonicalization collapses whitespace in CODE only, because PostgreSQL
+   stores a function body verbatim.
+2. **pg_dump ≥ 17.6 emits `\restrict <random-token>`.** Left in, the oracle reports a
+   difference on every single run. They are psql meta-commands, not SQL, and are stripped.
+3. **Column order is unrepairable.** `ADD COLUMN` can only append, so a column declared in the
+   middle of a table always lands last. Reporting that as drift would demand something no
+   engine can deliver, so `tableReorderKey` classifies "same columns, different order" into its
+   own `reordered` bucket: recorded in the plan, never blocking.
+
+Comparison is an order-independent **multiset** — the dump's emission order encodes dependency
+order, which is a property of the plan, and ordering is already gated by the apply step.
+
+Modes: `off` / `warn` / `strict`, default **`warn`**. Strict blocks the plan from disk. The
+default is not strict because Tier-R objects (D4) are not diffed yet, so a desired database
+carrying a view or trigger legitimately differs from the clone; flipping the default to
+`strict` is the natural gate to close once repeatables land.
+
+Unavailability — no `pg_dump` on PATH, or one older than the server — is `skipped`, never
+`failed`: that is an environment gap, not evidence about the plan. The launcher argv is
+injectable (`PGORM_PG_DUMP`, `PGORM_PG_DUMP_URI`) so a containerized server can be reached
+without `src/` knowing that Docker exists.
+
+**Status on the fixture corpus (2026-08-25):** acceptance, enum-ordering, multi-schema up and
+down all pass `strict`. `evolve` passes with one classified reordering (`public.customers`,
+from `full_name`). `fixtures/diff/unmodeled` is the negative control: two databases differing
+only by `WITH (fillfactor=70)` — a `TablePayload` blind spot — where the differ emits zero
+statements, the IR proof reports zero drift, and the witness catches it.
 
 ## 4. File formats
 
@@ -1108,16 +1060,17 @@ down migrations as a production mechanism.
 
 ---
 
-## 10. Open questions for the team lead
+## 10. Resolutions
 
-1. **Pin policy for pg-delta.** I propose an **exact** pin (`1.0.0-alpha.39`, no caret) plus a
-   scheduled bump job gated on the differential corpus. Given ~5 releases/week and a total API
-   rewrite 5 days ago, a caret range would break users at random. Confirm.
-2. **Does `verify` require Docker in CI?** Testcontainers is the default and the best experience,
-   but it excludes CI runners without a Docker socket. Fallback is Tier-1 `SHADOW_DATABASE_URL`.
-   I propose Docker-preferred with an explicit env-var fallback, and `verify` **fails** rather than
-   silently skipping when neither is available.
-3. **Tier R vs Tier M for views.** I have put views in Tier R (repeatable) for v1. If we want
-   `verify` to catch "a view references a column you dropped" *as a diff* rather than as an apply
-   error, views need to move to Tier M earlier. The shadow load catches it either way; this is
-   about error quality, not correctness.
+1. **Pin policy for pg-delta** — moot. pg-delta is no longer a dependency in any form (removed
+   2026-08-25); the corpus is now checked by the D10 `pg_dump` witness, which is versioned with
+   PostgreSQL itself rather than with an alpha on a five-releases-a-week cadence.
+2. **Does `verify` require Docker in CI?** Docker-preferred with an explicit `SHADOW_DATABASE_URL`
+   fallback, and `verify` **fails** rather than silently skipping when neither is available. The
+   same rule now governs the D10 witness, with one deliberate exception: an unavailable `pg_dump`
+   reports `skipped`, because a missing client binary is an environment gap rather than evidence
+   about the plan.
+3. **Tier R vs Tier M for views.** Views stay in **Tier R** for v1. The shadow load catches a view
+   referencing a dropped column either way; moving views to Tier M buys better error attribution,
+   not correctness, and it costs the differ its cheapest simplification. Revisit when Tier R ships
+   and we can measure how often the apply-time error is the confusing one.

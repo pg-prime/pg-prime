@@ -1,5 +1,11 @@
 # Schema Migration Tooling for PostgreSQL — Landscape Survey & Design Recommendation
 
+> **Historical snapshot — 2026-08-14. Not maintained.**
+> This is a point-in-time study of software we do not control; version numbers, APIs and bug
+> reports below were accurate on that date and will drift. It is kept as the provenance for the
+> decisions in [`../design/`](../design/), not as a current reference. Conclusions that survived
+> review are carried into [`SUMMARY.md`](./SUMMARY.md) and cited from the design docs.
+
 **Research date: 2026-08-14** · Target: `pg-orm-ts` (Postgres-only, TypeScript, type-safe, minimal runtime deps)
 All claims below were verified against live sources in August 2026; URLs are inline. Where a claim is inferred
 rather than sourced it is marked *(inference)*.

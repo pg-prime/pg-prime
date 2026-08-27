@@ -22,7 +22,7 @@
 ## 0. The five-minute version
 
 ```ts
-import { createDb } from 'pg-orm-ts'
+import { createDb } from 'pgormjs'
 import * as schema from './schema.js'
 
 export const db = createDb({
@@ -862,7 +862,7 @@ to:
 And, more importantly, matching becomes type-safe and refactor-proof:
 
 ```ts
-import { isUniqueViolation, isForeignKeyViolation } from 'pg-orm-ts'
+import { isUniqueViolation, isForeignKeyViolation } from 'pgormjs'
 
 try { await db.insert(users).values(v) }
 catch (e) {
@@ -1362,12 +1362,31 @@ export interface ExplainResult {
 
 ---
 
-## 9. Open questions and dependencies on other agents
+## 9. Open questions — status
 
-1. ~~**`DECLARE … CURSOR` with bind parameters over the extended protocol**~~ **RESOLVED (spike, 2026-08-14, PG 17.11): YES.** `DECLARE c CURSOR FOR SELECT … WHERE x = $1` accepts Bind parameters (single and multiple mixed-type params, unnamed and named modes) — see `packages/pgorm/test/driver/cursor.test.ts`. `.stream()` is therefore zero-dep; `pg-cursor` is not needed even as an optional peer. Boundaries pinned by the same tests: `DECLARE` outside a transaction fails with 25P01 (streams are transaction-scoped, or `WITH HOLD` pins the connection), `FETCH FORWARD $1` fails with 42601 (the count is inlined as an ORM-validated integer), and the simple protocol cannot carry `$1` at all (42P02).
-2. **Agent 02**: I need `PgConnection` to expose (a) a way to send a protocol `Close` for a named statement (for §2.4's eviction; `DEALLOCATE` is not an acceptable substitute), (b) `stream()`, (c) a cancel path with a control-connection provider, (d) `PgResult.fields` with `dataTypeID`/`dataTypeModifier`/`tableID`/`columnID` (already in the research sketch), and (e) `getTransactionStatus()` passthrough. If (a) is not expressible on `pg` without reaching into internals, §2.4's fallback (evict-by-forgetting, recycle at `maxLifetimeSeconds`) applies and should be recorded as a known limitation.
-3. **Agent 05 (codecs)**: `cachedDescribe` + binary result formats are coupled to the codec table having verified binary decoders. Until then binary stays behind a flag, and `unnamedExtended` remains the default.
-4. **Agent 04 (query builder)**: `compile()` vs `prepare()` is a public naming decision that lands in the builder's surface. The distinction (client-side freeze vs server-side named statement) must not be blurred the way Drizzle blurs it.
-5. **Agent 06 (migrations)**: I own the runtime side of the migration/running-app interaction (§5.5) — the `schemaChanged` event, cache flushing, the `RECONNECT` guidance, and the refusal to migrate over a pooled connection without `directConnection`. The lock primitive is `pg_advisory_xact_lock` in every mode.
-6. **`statementTimeout: '30s'` as a default** is the most opinionated call in this document. It is right for OLTP and will surprise someone running a 45-second analytics query. Mitigations: `null` disables it, `.timeout()` overrides per statement, streaming and COPY exempt themselves, and it is stated in the startup log line. Worth a second opinion from the team lead.
-7. **Should `cachedDescribe` be the v1 default?** The wire shape is identical to `unnamedExtended`, so there is no pooler risk; the only risk is cache-invalidation correctness. If §2.2's invalidation set proves solid in testing, promoting it is a free win and I would rather do it in v1 than ship a mode nobody turns on.
+1. ~~**`DECLARE … CURSOR` with bind parameters over the extended protocol**~~ — **RESOLVED**
+   (spike, PG 17.11): yes. `.stream()` is zero-dep and `pg-cursor` is struck entirely. Boundaries
+   pinned by `test/driver/cursor.test.ts`: cursors are transaction-scoped (`25P01` outside),
+   `FETCH FORWARD $1` is `42601` so the count is inlined as a validated integer, and the simple
+   protocol cannot carry `$1` at all (`42P02`).
+2. **Driver surface requests to 02** — **delivered**: protocol `Close` for named statements,
+   `stream()`, a cancel path with a control-connection provider, `PgResult.fields` with
+   `dataTypeID`/`dataTypeModifier`/`tableID`/`columnID`, and `transactionStatus`. The `DEALLOCATE`
+   fallback was not needed.
+3. **`cachedDescribe` + binary results** — binary is **out of v1**: `pg-protocol` UTF-8-decodes
+   every DataRow field, which corrupts binary payloads (measured live). Text decode only; the seam
+   stays wired. `unnamedExtended` remains the default.
+4. **`compile()` vs `prepare()` naming** — **open.** Lands with the fluent builder, which does not
+   exist yet. The distinction (client-side freeze vs server-side named statement) must not be
+   blurred the way Drizzle blurs it.
+5. **Migration/running-app interaction** — design holds; **unimplemented.** Note one correction
+   from 06: the migration lock is a **session** advisory lock plus a heartbeat lease, not
+   `pg_advisory_xact_lock`, because a `txmode none` file has no enclosing transaction to scope it
+   (00-overview R6). `pg_advisory_xact_lock` remains right for the *runtime* side described here.
+6. **`statementTimeout: '30s'` as a default** — **open**, and still the most opinionated call in
+   this document. Unchanged mitigations: `null` disables, `.timeout()` overrides per statement,
+   streaming and COPY exempt themselves, and it is stated in the startup log line. No executor
+   exists yet, so this has never been exercised.
+7. **Should `cachedDescribe` be the v1 default?** — **open.** Deferred until there is an executor
+   to measure it with. The wire shape is identical to `unnamedExtended`, so there is no pooler
+   risk; the only question is cache-invalidation correctness.

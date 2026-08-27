@@ -1,0 +1,1 @@
+groupby-relation-guard.ts(7,21): error TS2741: Property '[OUT]' is missing in type 'OrmTypeError<"relation projection on \"u\" needs its primary key in groupBy(): add t.u.id, or move the relation into a subquery">' but required in type 'Projectable'.

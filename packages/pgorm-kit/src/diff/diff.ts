@@ -1,5 +1,4 @@
 import type { Diagnostic } from "../catalog/extract.js";
-import { contentHash } from "../ir/hash.js";
 import type { Fact, SchemaIR } from "../ir/fact.js";
 import { encodeId, type StableId } from "../ir/stable-id.js";
 import type { Delta, RenameHint, RenameRecord } from "./delta.js";
@@ -40,11 +39,13 @@ export function diffIR(currentIn: SchemaIR, desired: SchemaIR, options: DiffOpti
   const cur = byId(current);
   const des = byId(desired);
 
+  // `contentHashOf` is memoised on the IR: hashing the payload inline here AND
+  // again inside `rollupOf` hashed every fact on both sides twice per diff.
   for (const [key, after] of des) {
     const before = cur.get(key);
     if (!before) {
       deltas.push({ op: "create", id: after.id, fact: after });
-    } else if (contentHash(before.payload) !== contentHash(after.payload)) {
+    } else if (current.contentHashOf(key) !== desired.contentHashOf(key)) {
       deltas.push({ op: "alter", id: after.id, before, after });
     }
   }

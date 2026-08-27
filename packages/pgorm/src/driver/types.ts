@@ -146,19 +146,37 @@ export interface PgQuery {
    */
   readonly mode?: PgExecMode
 
-  /** Required iff `mode === 'named'`. ≤ 63 bytes (PG identifier limit). */
+  /**
+   * Required iff `mode === 'named'`. Must be a plain identifier, ≤ 63 bytes (PG's NAMEDATALEN - 1)
+   * and free of NUL: the name reaches the wire as a protocol C-string, so an embedded NUL would
+   * silently truncate it and the statement parsed would not be the statement closed.
+   */
   readonly statementName?: string
 
   /** `'text'` is the only value an adapter is REQUIRED to support and the only one v1 emits (§4.4). */
   readonly resultFormat?: 'text' | 'binary'
 
-  /** Cap on rows fetched via the portal in one Execute. `undefined` = all rows. */
+  /**
+   * Cap on rows fetched via the portal in one Execute. `undefined` = all rows.
+   *
+   * The portal is CLOSED at the cap, so for a row-returning DML statement (`INSERT … RETURNING`)
+   * the rows beyond the cap are never produced — the statement is stopped, not merely truncated.
+   * `maxRows: 0` still runs the statement (side effects, notices and the command tag are real)
+   * and returns no rows.
+   */
   readonly maxRows?: number
 
   /** Aborts the query. Adapters that can MUST issue a real CancelRequest, not just drop the promise. */
   readonly signal?: AbortSignal
 
-  /** Milliseconds. Adapter-enforced client-side deadline. Distinct from server `statement_timeout`. */
+  /**
+   * Milliseconds. Adapter-enforced client-side deadline. Distinct from server `statement_timeout`:
+   * it gives up on READING, it does not stop the statement — the pg adapter therefore retires the
+   * connection when it fires (§5.4). Use `signal` when the SERVER should stop working.
+   *
+   * `0` is NOT "no deadline": pg reads `query_timeout` as falsy and falls back to whatever the
+   * Pool was constructed with. Omit the field for "no deadline".
+   */
   readonly timeoutMs?: number
 }
 
@@ -301,6 +319,12 @@ export interface PgDriverErrorData {
   readonly sql?: string
   readonly adapter: string
   readonly cause?: unknown
+  /**
+   * Present when this statement was aborted and the CANCEL REQUEST ITSELF failed (no spare
+   * connection inside the deadline, `pg_cancel_backend` refused, …). Without it a failed cancel
+   * is indistinguishable from a successful one that the backend ignored.
+   */
+  readonly cancelError?: string
 }
 
 /** Every field of the protocol's ErrorResponse, normalised. Field letters in comments. */

@@ -1,0 +1,1 @@
+cte-name-taken.ts(7,4): error TS2339: Property 'fromCte' does not exist on type 'OrmTypeError<"a CTE named \"recent\" is already declared on this query — pick another name">'.

@@ -1,5 +1,6 @@
+import { SchemaError } from '../sql/errors.js'
 import { COLS, INS, META, NAME, REFS, RELS, SEL, SRC, UPD } from './symbols.js'
-import { kit } from './column.js'
+import { checkName, kit } from './column.js'
 import type { AnyCol, ColumnKit, ColumnRuntime } from './column.js'
 import type { TableExtra } from './extras.js'
 import type { RefRuntime, RefsOfCols } from './ref.js'
@@ -27,6 +28,13 @@ export interface TableRuntime {
 
 /**
  * A table.
+ *
+ * `R` is always `{}` for a `pgTable(...)` and the `[RELS]` slot is always the empty record:
+ * relations live on the **schema** (`defineSchema(tables, rels)`), never on the table, because a
+ * fully-cyclic graph cannot be declared table-by-table without thunks (design/04 §1.5). Both are
+ * kept — rather than deleted — so that `Table<N, C>` stays structurally assignable to `AnyTable`,
+ * whose `[RELS]` slot the query layer reads through `RelsAtH`, and so an extension pack that does
+ * attach relations to a table has a slot to put them in. Nothing in this package writes it.
  *
  * The row shapes and the column-reference object are *properties of an
  * instantiated interface*: TypeScript computes an instantiated type's property
@@ -132,37 +140,81 @@ export function pgTable<N extends string, B extends Record<string, AnyCol>>(
   options?: TableOptions,
 ): Table<N, ColsOf<B>> {
   const casing = options?.casing ?? snakeCase
+  checkName(name, `pgTable("${name}") table name`)
+  if (options?.schema !== undefined) checkName(options.schema, `pgTable("${name}") schema name`)
+
   const record = (typeof columns === 'function' ? columns(kit) : columns) as unknown as Record<
     string,
-    { $: ColumnRuntime }
+    { $?: ColumnRuntime } | undefined
   >
+  // `{ __proto__: text() }` sets the *prototype* — the key is not an own property, so the column
+  // would vanish silently and the table would ship one column short. A record whose prototype is
+  // not `Object.prototype` is the only way that literal can manifest, so reject it here rather
+  // than emit DDL for a table the schema file does not describe.
+  const proto = Object.getPrototypeOf(record)
+  if (proto !== Object.prototype) {
+    throw new SchemaError(
+      `pgorm: pgTable("${name}") was given a column record with a non-standard prototype. The ` +
+        `usual cause is a \`__proto__:\` key, which JavaScript applies to the prototype instead ` +
+        `of creating a column. "__proto__" is reserved, like a leading "$".`,
+    )
+  }
 
-  const refs: Record<string, unknown> = {}
+  // Null-prototype, so a column literally keyed `['__proto__']` lands as an own property here too
+  // instead of silently retargeting the object's prototype.
+  const refs: Record<string, unknown> = Object.create(null) as Record<string, unknown>
   const runtimes: RefRuntime[] = []
+  const dbNames = new Map<string, string>()
 
   for (const key of Object.keys(record)) {
     if (key.startsWith('$')) throw new Error(`pgorm: column key "${key}" may not start with "$"`)
-    const col = record[key]!.$
-    const rt: RefRuntime = { table: name, key, dbName: col.ddl.dbName ?? casing(key), column: col }
+    if (key === '__proto__') {
+      throw new SchemaError(`pgorm: column key "__proto__" is reserved in pgTable("${name}").`)
+    }
+    const col = record[key]?.$
+    // `pgTable('r', { id: 'text' })` used to die at `record[key]!.$` with a bare `TypeError:
+    // Cannot read properties of undefined`. The column DSL is the whole point of the package, so
+    // handing it something that is not a column deserves a sentence naming the key.
+    if (col === undefined || typeof col.ddl !== 'object' || col.ddl === null) {
+      throw new SchemaError(
+        `pgorm: pgTable("${name}").${key} is not a column. Write \`${key}: t.text()\` (or any ` +
+          `other column builder), not a bare value.`,
+      )
+    }
+    const dbName = col.ddl.dbName ?? casing(key)
+    checkName(dbName, `pgTable("${name}").${key} column name "${dbName}"`)
+    const taken = dbNames.get(dbName)
+    if (taken !== undefined) {
+      throw new SchemaError(
+        `pgorm: pgTable("${name}") maps both "${taken}" and "${key}" to the DB column ` +
+          `"${dbName}" (casing strategy: ${options?.casing ? 'custom' : 'snakeCase'}). One of ` +
+          `the two would be unreachable — rename it, or pass an explicit name to the builder.`,
+      )
+    }
+    dbNames.set(dbName, key)
+    const rt: RefRuntime = Object.freeze({ table: name, key, dbName, column: col })
     runtimes.push(rt)
-    refs[key] = { [SRC]: name, [NAME]: key, [META]: col, $: rt }
+    refs[key] = Object.freeze({ [SRC]: name, [NAME]: key, [META]: col, $: rt })
   }
 
-  const refsObj = refs as RefsOfCols<N, ColsOf<B>>
-  const extraNodes = extras ? [...extras(refsObj)] : []
+  // Frozen: a `Table` is the schema's single source of truth for DDL, the migration IR and every
+  // compiled query, and all three memoise off it. A mutation after declaration would desync them
+  // silently, so it fails loudly instead.
+  const refsObj = Object.freeze(refs) as RefsOfCols<N, ColsOf<B>>
+  const extraNodes = Object.freeze(extras ? [...extras(refsObj)] : [])
 
-  const runtime = new TableImpl(name, options?.schema, runtimes, extraNodes)
+  const runtime = new TableImpl(name, options?.schema, Object.freeze(runtimes), extraNodes)
 
-  return {
+  return Object.freeze({
     [NAME]: name,
     [COLS]: undefined,
     [REFS]: refsObj,
     [SEL]: undefined,
     [INS]: undefined,
     [UPD]: undefined,
-    [RELS]: {},
+    [RELS]: Object.freeze({}),
     $: runtime,
-  } as unknown as Table<N, ColsOf<B>>
+  }) as unknown as Table<N, ColsOf<B>>
 }
 
 /** design/04 §1.3 spelling. */

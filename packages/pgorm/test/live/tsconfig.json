@@ -1,0 +1,21 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "./**/*.ts",
+    "../driver/**/*.ts",
+    "../codec/**/*.ts",
+    "../pg/**/*.ts",
+    "../live-query/**/*.ts",
+    "../../src/codec/**/*.ts",
+    "../../src/compile/**/*.ts",
+    "../../src/driver/**/*.ts",
+    "../../src/query/**/*.ts",
+    "../../src/schema/**/*.ts"
+  ]
+}

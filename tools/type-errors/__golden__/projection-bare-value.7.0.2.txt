@@ -1,0 +1,1 @@
+projection-bare-value.ts(6,59): error TS2322: Type 'string' is not assignable to type 'Projectable'.

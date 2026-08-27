@@ -1,0 +1,2 @@
+execute-before-select.ts(5,30): error TS2349: This expression is not callable.
+  Type 'OrmTypeError<"this query has no projection yet: call .select(…) or .selectAll(…) before .execute()">' has no call signatures.

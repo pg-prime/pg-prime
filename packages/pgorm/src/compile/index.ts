@@ -1,6 +1,7 @@
 export { compile, compileExpr } from './compiler.js'
-export { buildDecoder } from './decode.js'
+export { buildDecoder, defaultDecodeContext } from './decode.js'
 export { planSelect, planReturning, codecOf, jsonCast } from './hoist.js'
 export * from './nodes.js'
 export type * from './ast.js'
+export { paramTypesOf } from './contract.js'
 export type { Bind, Compiled, CompiledMeta, FieldPlan, JsonPlan, ResultShape } from './contract.js'

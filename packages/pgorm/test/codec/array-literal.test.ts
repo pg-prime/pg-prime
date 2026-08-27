@@ -12,7 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { makeHarness, type Harness } from '../driver/_harness.js'
+import { makeHarness, type Harness } from '../live/_harness.js'
 import { parseArrayLiteral, writeArrayLiteral } from '../../src/codec/index.js'
 import { createRegistry } from '../../src/codec/index.js'
 import type { PgConnection } from '../../src/driver/index.js'

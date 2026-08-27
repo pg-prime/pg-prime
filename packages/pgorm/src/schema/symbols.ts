@@ -34,5 +34,10 @@ export const OUT = Symbol.for('pgorm.OUT')
 export const SRC = Symbol.for('pgorm.SRC')
 /** Sentinel-error message carrier (design/04 §4.1). */
 export const ERR = Symbol.for('pgorm.ERR')
-/** Brand key for the `date` codec's `'YYYY-MM-DD'` string. */
+/**
+ * Reserved. Was the brand key of the schema layer's own `DateString`; `DateString` is now an alias
+ * of the codec layer's `PgDateString` (one brand, `src/schema/types.ts`), so nothing reads this.
+ * Kept exported because removing a `Symbol.for` key from the public surface is a breaking change
+ * for anyone who wrote it into a structural type, and it costs one interned symbol.
+ */
 export const DATE_BRAND = Symbol.for('pgorm.DATE_BRAND')

@@ -1,4 +1,5 @@
-import type { ERR, DATE_BRAND } from './symbols.js'
+import type { PgDateString } from '../codec/types.js'
+import type { ERR } from './symbols.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility types (design/04 §3.3)
@@ -24,27 +25,45 @@ export interface OrmTypeError<M extends string> {
   readonly [ERR]: M
 }
 
-/** The `date` codec's TS type: a branded `'YYYY-MM-DD'` string, never a `Date`. */
-export type DateString = string & { readonly [DATE_BRAND]: 'date' }
+/**
+ * The `date` codec's TS type: a branded `'YYYY-MM-DD'` string, never a `Date`.
+ *
+ * **One brand, defined once.** This used to be its own `string & { [DATE_BRAND]: 'date' }`, which
+ * made it a *different* nominal type from the codec layer's `PgDateString` — so `val('…')`,
+ * `` sql`…`.as(dateCodec) ``, `rangeLower(daterange)` and `fromValues({ d: dateCodec })` all
+ * produced values the compiler refused to put in a `date()` column (three confirmed TS2345/TS2322
+ * sites). A codec IS the definition of a column's TS type (design/04 §1.4), so the schema layer
+ * re-exports the codec's brand rather than minting a second one.
+ */
+export type DateString = PgDateString
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The column carrier (design/04 §1.1)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The flat, four-field generic payload every column carries.
+ * The flat, five-field generic payload every column carries.
  *
  * - `t`  — the TS type *as read*; already includes `| null` when nullable, so
  *          `SelectRow` needs zero conditionals.
  * - `pg` — pg type name literal; drives operator operand tables + codec identity.
  * - `opt`— optional at INSERT (nullable | has default | identity-by-default).
  * - `ro` — never insertable/updatable (GENERATED ALWAYS).
+ * - `pk` — part of the table's primary key, **as declared per column**.
+ *
+ * `pk` exists for exactly one consumer: design/03 §2.3's `GROUP BY` guard, which may only offer a
+ * relation row-set accessor on an alias whose parent row is still identifiable. It is deliberately
+ * *incomplete*: a composite key declared table-level (`primaryKey(t.a, t.b)` in the extras
+ * callback) is runtime-only and leaves every `pk` false. The guard is written to read that as
+ * "cannot prove it is ungrouped" and allow, so an unmodelled key can never produce a false
+ * rejection — see `PkOf` in `src/query/types.ts`.
  */
 export interface ColMeta {
   readonly t: unknown
   readonly pg: string
   readonly opt: boolean
   readonly ro: boolean
+  readonly pk: boolean
 }
 
 /** A record of column metas — the flattened payload a `Table` carries. */

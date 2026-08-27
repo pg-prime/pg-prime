@@ -1,0 +1,2 @@
+column-nullable-after-pk.ts(3,40): error TS2349: This expression is not callable.
+  Type 'OrmTypeError<".nullable() after .primaryKey(): a primary key column is NOT NULL by definition">' has no call signatures.

@@ -16,7 +16,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { makeHarness, makePool, type Harness } from '../driver/_harness.js'
+import { makeHarness, makePool, type Harness } from '../live/_harness.js'
 import { createRegistry, dateCodec } from '../../src/codec/index.js'
 import type { PgConnection } from '../../src/driver/index.js'
 

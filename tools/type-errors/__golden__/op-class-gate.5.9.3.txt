@@ -1,0 +1,3 @@
+op-class-gate.ts(7,49): error TS2345: Argument of type 'Ref<"users", "balance", { t: string; pg: "numeric"; opt: true; ro: false; pk: false; }>' is not assignable to parameter of type 'TextOperand'.
+  The types of '[META].pg' are incompatible between these types.
+    Type '"numeric"' is not assignable to type 'TextPg'.

@@ -564,6 +564,11 @@ That promise is only keepable by neutralising every adapter's parsers. Confirmed
 
 ### 4.2 `Codec<TIn, TOut>`
 
+> **AS BUILT (WS3): a third type parameter, `N`.** Every built-in keeps its `name` as a *literal*
+> (`typeof textCodec` is `Codec<string, string, 'text'>`), which is what lets
+> `` sql`…`.as(codec) `` republish it as the PG type-class slot `03` §2.9's operator gates read.
+> `AnyCodec` is `Codec<never, unknown, string>`, so nothing else changes. See `09` §3.3.
+
 ```ts
 /**
  * A codec is the ONLY place a PostgreSQL type meets a TypeScript type.
@@ -571,9 +576,9 @@ That promise is only keepable by neutralising every adapter's parsers. Confirmed
  *  TIn  — what a user may pass as a parameter / insert value  (accepts a superset, e.g. bigint | number | string)
  *  TOut — what a SELECT of this column yields                 (exactly one type, no unions unless the DB has one)
  */
-export interface Codec<TIn, TOut> {
+export interface Codec<TIn, TOut, N extends string = string> {
   /** Stable identifier, used in error messages, config overrides and the schema DSL. e.g. 'int8', 'numeric:number'. */
-  readonly name: string
+  readonly name: N
 
   /**
    * The OID this codec claims. `undefined` for codecs bound to a user-defined type whose OID is
@@ -593,6 +598,12 @@ export interface Codec<TIn, TOut> {
    *  - return `Uint8Array`  → binary format (currently only `bytea`)
    *  - return `null`        → SQL NULL
    * MUST NOT throw for values inside the declared TIn; MUST throw `PgEncodeError` outside it.
+   *
+   * AS BUILT (WS3): `null` never reaches here either — the compiler's `bindValue` short-circuits
+   * it, exactly as the registry short-circuits it on the way back. Both halves of the seam then
+   * keep non-nullable signatures and one place, not fifty, knows that SQL NULL is not a value of
+   * any type. Until WS3 nothing short-circuited the outbound direction, so every built-in threw
+   * `PgEncodeError` on a null parameter and no nullable value could be sent at all.
    */
   encode(value: TIn): PgParam
 
@@ -654,6 +665,18 @@ export interface CodecRegistry {
 
   /** True once every requested dynamic type has an OID. Queries are blocked until then. */
   readonly resolved: boolean
+
+  /**
+   * ADDED IN WS2 (`09` §3.2). Bumped by every `register`, hence by `resolveDynamic`. Consumers that
+   * memoise a *derived* view of the registry store this alongside the cached value and recompute
+   * when it moves. There is one such consumer — `metaOf` in `src/query/meta.ts`.
+   *
+   * It is load-bearing, not defensive: a `TableMeta` built before `resolveDynamic` carries a
+   * *pending* enum codec whose `oid` is `undefined`; after resolution the registry holds one with
+   * this database's real OID. Without the generation check the stale meta survives and
+   * `assertShape` compares a live `dataTypeID` against nothing.
+   */
+  readonly generation: number
 }
 
 export interface DynamicTypeRequest {
@@ -695,6 +718,19 @@ Derivation rules, all verified against a live catalogue:
 ⚠️ **`typdelim` is not always `,`** — verified: `box` and `_box` use `;`. The array text parser must take the
 delimiter from the catalogue, not hard-code a comma. Every hand-rolled PG array parser that assumes `,`
 is wrong for geometry columns.
+
+**The untyped parameter (WS2).** `unknownCodec` is the codec on a bare `${value}` hole in the `sql`
+tag when the caller supplies none. It has `oid: undefined` — so it is registered by NAME only and can
+never win a `forOid` lookup — and `paramOid: 0`, the protocol's own "unspecified, infer from
+context". **Measured** (`test/live-query/codec-seam.test.ts`): OID 0 and OID 705 (`unknown`) resolve
+*identically* across twelve parameter positions, including the two PostgreSQL refuses to infer at all
+(`select $1 is null` and `select json_build_object($1, 1)`, both `42P18`). So the choice is a
+protocol-spelling preference, not a behavioural one; the test is pinned so a future server that
+diverges tells us. This matters because §4.6's domain rule above deliberately widens `paramOid` to
+705 — that widening buys the domain's own cast, not different inference.
+
+`Codec` also carries `arrayOid` (the OID of the array type whose element is this codec, `text` →
+1009), which is what lets the compiler type an `array[...]` expression without a registry round trip.
 
 ### 4.4 Binary vs text — DECIDED: **text only in v1**
 
@@ -834,10 +870,10 @@ some OIDs are version-dependent (the multirange array OIDs in particular).
 | 2249 | 2287 | `record` | `("a,b""c",5)` | `unknown[]` | anonymous records: no field names available |
 | 2950 | 2951 | `uuid` | `550e8400-…` (lowercased by PG) | `string` | measured: PG normalises case |
 | 3220 | 3221 | `pg_lsn` | | `string` | |
-| 3614/3615 | 3643/3645 | `tsvector`/`tsquery` | `'fox':3 'quick':2` | `string` | |
+| 3614/3615 | 3643/3645 | `tsvector`/`tsquery` | `'fox':3 'quick':2` | `string` | shipped WS3, so `03` §2.9's `tsvector` class has a codec to gate on |
 | **3802** | 3807 | `jsonb` | `{"a": 1}` | `unknown` | ⚠️ **PG reformats jsonb** (key order, whitespace) — measured. Never compare text |
-| 4072 | 4073 | `jsonpath` | | `string` | |
-| 3904/3906/3908/3910/3912/3926 | +1 each | ranges | `[1,5)`, `empty`, `(,6)` | `PgRange<T>` | ⚠️ `pg-types@2.2.0` leaves these as raw strings — one of the gaps we close |
+| 4072 | 4073 | `jsonpath` | `$.a[*] > 1` | `string` | shipped WS3 — the declared parameter type of `jsonb @?` and `jsonb @@` |
+| 3904/3906/3908/3910/3912/3926 | +1 each | ranges | `[1,5)`, `empty`, `(,6)` | ~~`PgRange<T>`~~ → **`string`** | **AS BUILT (WS3)**: the canonical *text* form, not an object. `'empty'` has no lower or upper and `'(,)'` has neither bound, so a `{lower, upper}` shape cannot represent what the text form says — the same call as `date` → `'YYYY-MM-DD'` (00 sign-off #6), for the same reason. Reconsider only with a total representation. `pg-types@2.2.0` leaving them raw is still a gap we close, because we *decode and gate* them: `03` §2.9's range operators take a range-classed operand |
 | 4451/4532/4533/4534/4535/4536 | 6150–6157 | multiranges | `{[1,5),[10,20)}` | `PgRange<T>[]` | PG 14+. Array OIDs are version-dependent → generate them |
 | — | — | user enum / domain / composite | | union / base / object | §4.6 — **this is the moat** |
 
@@ -902,6 +938,17 @@ fingerprint. OIDs of user types are *not* stable across databases (dev vs prod v
 never baked into generated code — only names are. A label/attribute mismatch between the TS schema and
 `pg_catalog` is a **hard error at connect**, not a runtime surprise: this is the `migrate verify` story
 extended to types.
+
+> **AS BUILT (WS4, `09` §3.4) — a user type's SQL spelling must be schema-qualified.**
+> A codec has two names, and this section only ever discusses one of them. `name` is the registry
+> key and is the bare `mood`, because that is what the schema DSL writes and what `metaOf` looks up.
+> `sqlName` is what the *compiler* splices into a cast, and it must be `"public"."mood"` — quoted
+> and qualified — because nothing guarantees the type is on `search_path`.
+>
+> Found by a bulk insert: `03` §2.6 emits `$1::<sqlName>` on the first VALUES row, and an
+> unqualified `user_role` raised `42704 type "user_role" does not exist` against every namespaced
+> test schema and every production schema that is not `public`. `resolveDynamic` now qualifies both
+> the enum and the domain branch, and the derived array codec inherits `"ns"."mood"[]` for free.
 
 ### 4.7 Session GUCs the codecs depend on — asserted, not assumed
 
@@ -1249,18 +1296,21 @@ pool policy.
 
 ---
 
-## 9. Open coordination points
+## 9. Coordination points — status
 
-| # | With | Question |
+These were handoffs between the design agents. Marked against what the driver spike actually built.
+
+| # | Point | Status |
 |---|---|---|
-| 1 | **07 runtime/transactions** | Exec-mode *policy* is yours. Recommendation stands: default `'unnamed'` + a process-wide `sql → { paramTypes, fields }` description cache (pgx's `CacheDescribe`), invalidated on `0A000`/`42P18`/`42804`. `'named'` opt-in, LRU per physical connection, cleanup via `closeStatement`, permanent downgrade after N failures. Hyperdrive is the exception where `'named'` should be the default |
-| 2 | **07** | `PgDriverErrorData` → your error classes. Confirm you want `position` as a number and notices as data rather than events |
-| 3 | **03 schema DSL** | `Codec.sqlName` + `Codec.name` are the DSL's contract with this layer. `bigint`-by-default for `int8` and `string`-by-default for `numeric`/`date` must be reflected in `$inferSelect` |
-| 4 | **05/06 migrations** | You need `mode: 'simple'` (multi-statement bodies, `CREATE INDEX CONCURRENTLY` outside a transaction), `PgResult.notices` (`RAISE NOTICE`), and `route: 'direct'`. All present |
-| 5 | **codegen / typed SQL** | `describe()` + `pg_attribute.attnotnull` is the nullability source. It is `capabilities.describe`-gated, and **PGlite cannot supply typmod/tableID/columnID** — CI type-generation must run against a real PG |
-| 6 | Build | The built-in OID map is *generated* from `pg_type`, not hand-written, and asserted against a PG 15/16/17/18 matrix in CI. Multirange array OIDs in particular are version-dependent |
+| 1 | Exec-mode policy owned by 07 | **Settled.** `unnamedExtended` is the default (pooler-safe *is* the fast mode on `pg`); `cachedDescribe` stays opt-in, justified by decode-plan reuse alone now that binary results are out of v1 (00-overview R4) |
+| 2 | `PgDriverErrorData` shape | **Built.** `src/driver/errors.ts`; `position` is a number and notices are data, not events |
+| 3 | `Codec.pgType` + `Codec.name` as the DSL contract | **Built.** 29 built-in codecs; the signed-off decode defaults hold — `int8`→`bigint`, `numeric`→`string`, `date`→branded string, `timestamptz`→`Date` |
+| 4 | Migration needs: simple mode, notices, direct route | **Present**, though the kit currently drives `pg` directly rather than through this seam — the two spikes are still unwired |
+| 5 | `describe()` + `attnotnull` as the nullability source | **Built** and `capabilities.describe`-gated. The PGlite caveat stands: no typmod/tableID/columnID, so type generation must run against real PG |
+| 6 | OID map generated from `pg_type`, not hand-written | **Open.** The table is generated, but the PG 15/16/17/18 matrix assertion is not wired — there is no CI |
 
----
+**Still genuinely open:** `copyIn`/`copyOut` are declared in `capabilities` as `false` and not
+implemented; there is no transaction API on the driver at all (only a `transactionStatus` getter).
 
 ## Appendix — verification log (2026-08-14)
 

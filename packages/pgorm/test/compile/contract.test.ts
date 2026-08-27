@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { compile } from '../../src/compile/compiler.js'
+import { paramTypesOf } from '../../src/compile/contract.js'
 import { buildDecoder } from '../../src/compile/decode.js'
 import type { Expr } from '../../src/compile/ast.js'
 import {
@@ -20,7 +21,7 @@ import {
   select,
   table,
 } from '../../src/compile/nodes.js'
-import { spikeCodecs } from '../../src/sql/codec.js'
+import { boolCodec, int4Codec, int8Codec, textCodec, timestamptzCodec, varcharCodec } from '../../src/codec/index.js'
 import { TooManyParametersError } from '../../src/sql/errors.js'
 import { sql, toNode } from '../../src/sql/fragment.js'
 import { p, postsFrom, u, usersFrom, usersTable } from '../sql/_helpers.js'
@@ -29,7 +30,7 @@ describe('purity and immutability', () => {
   const q = select({
     projection: [projection('id', u('id'))],
     from: usersFrom,
-    where: eq(u('email'), param('a@b.c', spikeCodecs.citext)),
+    where: eq(u('email'), param('a@b.c', varcharCodec)),
   })
 
   it('compiling twice yields byte-identical output', () => {
@@ -58,14 +59,33 @@ describe('binds', () => {
   it('a value bind carries the ENCODED wire value, not the JavaScript value', () => {
     const c = compile(
       select({
-        projection: [projection('a', param(true, spikeCodecs.bool))],
-        where: eq(u('createdAt'), param(new Date('2020-03-04T05:06:07Z'), spikeCodecs.timestamptz)),
+        projection: [projection('a', param(true, boolCodec))],
+        where: eq(u('createdAt'), param(new Date('2020-03-04T05:06:07Z'), timestamptzCodec)),
       }),
     )
     expect(c.binds).toEqual([
-      { k: 'value', encoded: 't' },
-      { k: 'value', encoded: '2020-03-04T05:06:07.000Z' },
+      { k: 'value', encoded: 't', oid: 16 },
+      { k: 'value', encoded: '2020-03-04 05:06:07.000Z', oid: 1184 },
     ])
+  })
+
+  /**
+   * WS2: a bind carries the codec's `paramOid` so `Parse` can DECLARE the parameter's type. It is
+   * what turns `where "amount" > $1` from a `42P18 indeterminate_datatype` gamble into a resolved
+   * operator, and it is the array `paramTypesOf` hands the driver.
+   */
+  it('paramTypesOf is positional and spells "no declared type" as 0, never as 705', () => {
+    const c = compile(
+      select({
+        projection: [projection('a', param('x', textCodec))],
+        where: eq(u('id'), param(1n, int8Codec)),
+        limit: placeholder('n', int4Codec),
+      }),
+    )
+    expect(paramTypesOf(c.binds)).toEqual([25, 20, 23])
+
+    const untyped = compile(select({ projection: [projection('a', param('x'))] }))
+    expect(paramTypesOf(untyped.binds)).toEqual([0])
   })
 
   it('a placeholder becomes a slot bind and is listed in meta.placeholders', () => {
@@ -73,15 +93,15 @@ describe('binds', () => {
       select({
         projection: [projection('id', u('id'))],
         from: usersFrom,
-        where: eq(u('email'), placeholder('email', spikeCodecs.citext)),
-        limit: placeholder('n', spikeCodecs.int4),
+        where: eq(u('email'), placeholder('email', varcharCodec)),
+        limit: placeholder('n', int4Codec),
       }),
     )
     expect(c.sql).toContain('where "users"."email" = $1')
     expect(c.sql).toContain('limit $2')
     expect(c.binds).toEqual([
-      { k: 'slot', name: 'email', codec: spikeCodecs.citext },
-      { k: 'slot', name: 'n', codec: spikeCodecs.int4 },
+      { k: 'slot', name: 'email', codec: varcharCodec },
+      { k: 'slot', name: 'n', codec: int4Codec },
     ])
     expect(c.meta.placeholders).toEqual(['email', 'n'])
   })
@@ -90,8 +110,8 @@ describe('binds', () => {
     const c = compile(
       select({
         projection: [projection('a', toNode(sql`${1} + ${2} + ${3}`))],
-        where: eq(u('id'), param(4n, spikeCodecs.int8)),
-        limit: param(5, spikeCodecs.int4),
+        where: eq(u('id'), param(4n, int8Codec)),
+        limit: param(5, int4Codec),
       }),
     )
     const ns = [...c.sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]))
@@ -101,7 +121,7 @@ describe('binds', () => {
 
   it('throws TooManyParametersError above the int16 wire ceiling', () => {
     const items: Expr[] = []
-    for (let i = 0; i <= 65536; i++) items.push(param(i, spikeCodecs.int4))
+    for (let i = 0; i <= 65536; i++) items.push(param(i, int4Codec))
     expect(() =>
       compile(select({ projection: [projection('a', toNode(sql.join(items.map(() => sql`${1}`))))] })),
     ).toThrow(TooManyParametersError)
@@ -152,7 +172,7 @@ describe('the decoder is positional (rowMode: array)', () => {
   })
 
   it('handles the scalar fast path', () => {
-    const decode = buildDecoder<bigint>({ k: 'scalar', idx: 0, codec: spikeCodecs.int8 })
+    const decode = buildDecoder<bigint>({ k: 'scalar', idx: 0, codec: int8Codec })
     expect(decode([['7'], ['8']])).toEqual([7n, 8n])
   })
 
@@ -170,7 +190,7 @@ describe('the injection audit surface is closed', () => {
     const nasty = "'; drop table users; --"
     const c = compile(
       select({
-        projection: [projection('a', param(nasty, spikeCodecs.text))],
+        projection: [projection('a', param(nasty, textCodec))],
         from: usersFrom,
         where: eq(u('email'), toNode(sql`${nasty}`)),
       }),
@@ -183,7 +203,7 @@ describe('the injection audit surface is closed', () => {
   it('the compiled SQL is exactly ONE statement', () => {
     const c = compile(
       select({
-        projection: [projection('a', param("a;b;c", spikeCodecs.text))],
+        projection: [projection('a', param("a;b;c", textCodec))],
         from: usersFrom,
       }),
     )

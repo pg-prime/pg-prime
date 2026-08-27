@@ -44,10 +44,11 @@
 // baseline-differenced number is still reported, as `…VsZeroBaseline`, together
 // with the fixed registry cost it was contaminated by.
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { generate } from './gen.mjs'
+import { COMPILERS, measure } from './tsc.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..')
@@ -56,15 +57,46 @@ const QUICK = argv.includes('--quick')
 const GATE = !argv.includes('--no-gate')
 const REPEATS = argv.includes('--repeats') ? Number(argv[argv.indexOf('--repeats') + 1]) : undefined
 
-const COMPILERS = {
-  '5.9.3': join(ROOT, 'node_modules', 'typescript59', 'bin', 'tsc'),
-  '7.0.2': join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc'),
-}
-
 /** Usage counts for the marginal pair. `2U − U`, so every fixed cost cancels. */
 const U = 50
 /** Distinct tables the usages touch — held constant across every schema size. */
 const DISTINCT = 25
+
+/**
+ * Real *queries*, built by calling the query surface — as opposed to the query-SHAPED type usages
+ * above, which cost ~40 instantiations against a real query's ~90-210. These are what design/04
+ * §3.5's three per-query lines are actually about, and as of WS1 they are gated here rather than
+ * parked in a `_notGatedHere` block.
+ *
+ * `QU` is smaller than `U` for the same wall-clock reason forks.mjs uses 25: a real query is ~40×
+ * the type work. Only 25 and 300 tables are measured — 300 for the absolute ceiling, 25 for the
+ * denominator of the schema-size-independence ratio, which is the line design/04 §3.5 calls "the
+ * single most important in the table".
+ */
+const QU = 25
+const QSIZES = [25, 300]
+const QSHAPES = {
+  1: { budget: 'instantiationsPerDistinctQuerySimpleSelect', label: 'simple select (4 cols, 1 where)' },
+  2: { budget: 'instantiationsPerDistinctQueryJoinAggSqlNest', label: 'join + aggregate + sql + nest' },
+  3: { budget: 'instantiationsPerDistinctQueryWithRelationProjection', label: 'select + relation projection' },
+  // ── WS-L E19: the two shapes the audit measured and nothing gated ─────────
+  //
+  // Both are ~10-40× the type work of shape 1, so they run at `count: 5` rather than `QU: 25`.
+  // The metric is still a difference of two non-zero counts at a fixed schema size, so every
+  // fixed cost cancels exactly as it does above — only the denominator changes.
+  5: {
+    budget: 'instantiationsPerDistinctQuery20ChainedJoins',
+    label: '20 chained joins',
+    count: 5,
+  },
+  6: {
+    budget: 'instantiationsPerDistinctQueryNestedRelation4Deep',
+    label: 'relation projection, 4 levels deep',
+    count: 5,
+  },
+}
+/** Queries per marginal-pair step, per shape. */
+const countOf = (shape) => QSHAPES[shape].count ?? QU
 
 const SCENARIOS = [
   // ── declaration cost ──────────────────────────────────────────────────────
@@ -89,56 +121,26 @@ const SCENARIOS = [
   { name: 'q100cold', tables: 100, cols: 12, rels: 2, rows: true, usages: U, distinct: 2 * U },
   // ── design/04 §3.5 headline: 100t × 12c, 200 relations, all row shapes, 200 queries
   { name: 'headline', tables: 100, cols: 12, rels: 2, rows: true, usages: 200, distinct: 100, repeats: 3 },
+  // ── the three per-query budget lines, one marginal pair per (shape, size) ──
+  ...Object.keys(QSHAPES).flatMap((shape) =>
+    QSIZES.flatMap((t) =>
+      [1, 2].map((mult) => ({
+        name: `qs${shape}t${t}u${mult * countOf(shape)}`,
+        tables: t,
+        cols: 12,
+        rels: 2,
+        rows: true,
+        usages: 0,
+        queries: {
+          arm: 'decided',
+          shape: Number(shape),
+          count: mult * countOf(shape),
+          distinct: DISTINCT,
+        },
+      })),
+    ),
+  ),
 ]
-
-const NUM = /^([A-Za-z][A-Za-z /]*?):\s+([\d.]+)(s|K)?\s*$/
-
-function parseDiagnostics(text) {
-  const m = {}
-  for (const line of text.split('\n')) {
-    const hit = NUM.exec(line)
-    if (!hit) continue
-    const [, label, value, unit] = hit
-    m[label.trim()] = { value: Number(value), unit: unit ?? '' }
-  }
-  const get = (k) => m[k]?.value
-  return {
-    instantiations: get('Instantiations'),
-    types: get('Types'),
-    symbols: get('Symbols'),
-    checkTime: get('Check time'),
-    totalTime: get('Total time'),
-    memoryMb: get('Memory used') !== undefined ? Math.round(get('Memory used') / 1024) : undefined,
-  }
-}
-
-function runTsc(tscPath, dir) {
-  let out
-  try {
-    out = execFileSync(
-      process.execPath,
-      [tscPath, '-p', join(dir, 'tsconfig.json'), '--noEmit', '--extendedDiagnostics', '--pretty', 'false'],
-      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] },
-    )
-  } catch (e) {
-    out = `${e.stdout ?? ''}${e.stderr ?? ''}`
-  }
-  const errors = out.split('\n').filter((l) => /error TS\d+/.test(l))
-  if (errors.length) throw new Error(`${dir} did not typecheck:\n${errors.slice(0, 5).join('\n')}`)
-  const parsed = parseDiagnostics(out)
-  if (parsed.instantiations === undefined) throw new Error(`${dir}: no --extendedDiagnostics output:\n${out.slice(0, 400)}`)
-  return parsed
-}
-
-/** Best-of-N on check time; instantiation counts are deterministic. */
-function measure(tscPath, dir, repeats) {
-  let best = null
-  for (let i = 0; i < repeats; i++) {
-    const r = runTsc(tscPath, dir)
-    if (!best || r.checkTime < best.checkTime) best = r
-  }
-  return best
-}
 
 const results = {}
 // `--quick` drops only the 300-table scenarios (~60 % of the wall time); every
@@ -230,8 +232,64 @@ for (const v of Object.keys(COMPILERS)) {
       from25to100: round(perTable, 1),
       ratio: round(perTable / perTableSmall, 3),
     },
+
+    /** The three design/04 §3.5 per-query lines, gated as of WS1. */
+    perQuery: Object.fromEntries(
+      Object.entries(QSHAPES).map(([shape, spec]) => {
+        const m = {}
+        const n = countOf(shape)
+        for (const t of QSIZES) {
+          m[t] = (I(`qs${shape}t${t}u${2 * n}`, v) - I(`qs${shape}t${t}u${n}`, v)) / n
+        }
+        return [
+          spec.budget,
+          {
+            label: spec.label,
+            at25Tables: round(m[25], 1),
+            at300Tables: round(m[300], 1),
+            schemaSizeIndependenceRatio300: round(m[300] / m[25], 3),
+          },
+        ]
+      }),
+    ),
   }
 }
+
+// ── .d.ts size (design/03 Appendix B) ───────────────────────────────────────
+// A whole-package declaration emit, summed. Gated from WS1 even though the number cannot be final
+// until WS3 adds the operator runtime and WS4 the builders — the point of adding the gate early is
+// that a surface which explodes the emit gets caught the week it does it, not the week before 1.0.
+function packageDtsBytes() {
+  const out = join(HERE, '.gen', '__dts')
+  rmSync(out, { recursive: true, force: true })
+  mkdirSync(out, { recursive: true })
+  execFileSync(
+    process.execPath,
+    [
+      COMPILERS['5.9.3'],
+      '-p', join(ROOT, 'packages', 'pgorm', 'tsconfig.json'),
+      '--outDir', out, '--emitDeclarationOnly', '--pretty', 'false',
+    ],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+  let total = 0
+  const files = []
+  const walk = (dir, rel) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walk(p, `${rel}${e.name}/`)
+      else if (e.name.endsWith('.d.ts')) {
+        const size = statSync(p).size
+        total += size
+        files.push([`${rel}${e.name}`, size])
+      }
+    }
+  }
+  walk(out, '')
+  files.sort((a, b) => b[1] - a[1])
+  return { total, files: Object.fromEntries(files) }
+}
+const dts = packageDtsBytes()
 
 // ── gates — every numeric line, on BOTH compilers ────────────────────────────
 const budget = JSON.parse(readFileSync(join(HERE, 'budget.json'), 'utf8'))
@@ -257,8 +315,21 @@ for (const v of Object.keys(COMPILERS)) {
   check('headline instantiations', v, I('headline', v), budget.headline.instantiations)
   check('headline check time (s)', v, results.headline[v].checkTime, budget.headline.checkTimeSeconds[v])
   check('headline peak memory (MB)', v, results.headline[v].memoryMb, budget.headline.peakMemoryMb)
+
+  // ── WS1: the three per-query lines, now gated (design/09 §3.1) ────────────
+  for (const spec of Object.values(QSHAPES)) {
+    const pq = d.perQuery[spec.budget]
+    check(`per-query ${spec.label} (300t)`, v, pq.at300Tables, budget[spec.budget])
+    check(`per-query ${spec.label} 300t/25t`, v, pq.schemaSizeIndependenceRatio300, budget.schemaSizeIndependenceRatio)
+  }
 }
 
+check('package .d.ts bytes', '—', dts.total, budget.packageDtsBytes)
+
+console.log('')
+console.log(`package .d.ts: ${(dts.total / 1024).toFixed(1)} KB across ${Object.keys(dts.files).length} files ` +
+  `(budget ${(budget.packageDtsBytes / 1024).toFixed(0)} KB); largest: ` +
+  Object.entries(dts.files).slice(0, 3).map(([f, b]) => `${f} ${(b / 1024).toFixed(1)}KB`).join(', '))
 console.log('')
 for (const c of checks) {
   console.log(
@@ -320,6 +391,7 @@ const report = {
   scenarios: Object.fromEntries(scenarios.map((s) => [s.name, { ...s, repeats: REPEATS ?? s.repeats ?? 1 }])),
   results,
   derived,
+  dts,
   budget,
   checks,
   ok: checks.every((c) => c.ok),

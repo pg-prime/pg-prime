@@ -26,8 +26,8 @@ import {
   projection,
   select,
 } from '../../src/compile/nodes.js'
-import { spikeCodecs } from '../../src/sql/codec.js'
-import { connect } from './_pg.js'
+import { int4Codec } from '../../src/codec/index.js'
+import { connect, planProbe } from '../live/_harness.js'
 import { makeFixture } from './fixture.js'
 
 let client: pg.Client
@@ -106,7 +106,7 @@ const feed = compile<Feed>(
           from: postsFrom,
           where: and(eq(p('author_id'), u('id')), isTrue(p('published'))),
           orderBy: [desc(p('created_at'))],
-          limit: param(3, spikeCodecs.int4),
+          limit: param(3, int4Codec),
         }),
       }),
     ],
@@ -118,7 +118,9 @@ const feed = compile<Feed>(
 
 describe('the LATERAL nesting golden, executed for real', () => {
   it('PostgreSQL accepts the compiled SQL', async () => {
-    await expect(client.query(`explain (generic_plan) ${feed.sql}`)).resolves.toBeDefined()
+    for (const stmt of planProbe(feed.sql)) {
+      await expect(client.query(stmt)).resolves.toBeDefined()
+    }
   })
 
   it('uses LEFT JOIN LATERAL, not a correlated scalar subquery', () => {
@@ -200,7 +202,7 @@ describe('the Kysely CVE corpus, live and inert', () => {
         select({
           projection: [projection('v', jsonGetText(u('meta'), payload))],
           from: usersFrom,
-          limit: param(1, spikeCodecs.int4),
+          limit: param(1, int4Codec),
         }),
       )
       expect(q.sql).toBe(
@@ -220,7 +222,7 @@ describe('the Kysely CVE corpus, live and inert', () => {
       select({
         projection: [projection('v', jsonPathText(u('meta'), ['billing', 'country']))],
         from: usersFrom,
-        limit: param(1, spikeCodecs.int4),
+        limit: param(1, int4Codec),
       }),
     )
     expect((await run(legit))[0]?.v).toBe('DE')
@@ -230,7 +232,7 @@ describe('the Kysely CVE corpus, live and inert', () => {
         select({
           projection: [projection('v', jsonPathText(u('meta'), ['billing', payload]))],
           from: usersFrom,
-          limit: param(1, spikeCodecs.int4),
+          limit: param(1, int4Codec),
         }),
       )
       const [row] = await run(q)

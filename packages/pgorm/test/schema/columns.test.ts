@@ -150,10 +150,14 @@ describe('column refs (the pre-computed [REFS] slot)', () => {
       pg: 'text'
       opt: false
       ro: false
+      pk: false
     }>()
     expectTypeOf<R['tags'][typeof META]['pg']>().toEqualTypeOf<'text[]'>()
     expectTypeOf<R['views'][typeof META]['pg']>().toEqualTypeOf<'int8'>()
     expectTypeOf<R['role'][typeof META]['pg']>().toEqualTypeOf<'member_role'>()
+    // `pk` is declared per column and is what design/03 §2.3's GROUP BY guard reads.
+    expectTypeOf<R['id'][typeof META]['pk']>().toEqualTypeOf<true>()
+    expectTypeOf<R['email'][typeof META]['pk']>().toEqualTypeOf<false>()
   })
 })
 

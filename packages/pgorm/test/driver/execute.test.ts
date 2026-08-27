@@ -8,7 +8,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { makeHarness, type Harness } from './_harness.js'
+import {
+  makeHarness,
+  requiresConcurrency,
+  requiresRealPostgres,
+  type Harness,
+} from '../live/_harness.js'
 import { assertSessionGucs } from '../../src/driver/index.js'
 import type { PgConnection, PgDriverErrorData } from '../../src/driver/index.js'
 
@@ -201,16 +206,23 @@ describe('D12 — errors cross the seam as plain data', () => {
 })
 
 describe('§5.4 — timeoutMs is a client deadline, not a cancellation', () => {
-  it('rejects with kind "timeout", leaves the connection usable, and the query KEEPS RUNNING', async () => {
+  // Both of these watch one session from another. On PGlite they would pass for the wrong reason:
+  // `pg_stat_activity` there reports the one backend's last statement, so the "the server is still
+  // running it" assertion holds even if the timeout had cancelled the query. design/08 §4.2.
+  requiresConcurrency()('rejects with kind "timeout", RETIRES the connection, and the query KEEPS RUNNING', async () => {
     const victim = await h.driver.acquire()
     const observer = await h.driver.acquire()
     try {
       const pid = victim.backendPid!
       expect(pid).toBeGreaterThan(0)
 
+      // `connectionUnusable` is TRUE, and that is the whole point: pg gave up client-side while
+      // the statement stayed on the socket. Handing that client back to the pool makes the next
+      // borrower wait behind our `pg_sleep(3)` for reasons they can never diagnose. This test used
+      // to paper over it with `release(victim, { dispose: true })` in its own teardown.
       await expect(
         victim.execute({ text: 'select pg_sleep(3)', params: [], timeoutMs: 250 }),
-      ).rejects.toMatchObject({ pgorm: { kind: 'timeout', connectionUnusable: false } })
+      ).rejects.toMatchObject({ pgorm: { kind: 'timeout', connectionUnusable: true } })
 
       // the client gave up; the SERVER did not — this is why `signal` exists separately
       const still = await observer.execute({
@@ -221,28 +233,51 @@ describe('§5.4 — timeoutMs is a client deadline, not a cancellation', () => {
       })
       expect(still.rows[0]![0]).toBe('1')
 
-      expect(victim.usable).toBe(true)
-      expect((await victim.execute({ text: 'select 1', params: [] })).rows).toEqual([['1']])
+      expect(victim.usable).toBe(false)
+      // and nothing else may be put on that socket behind the statement still running on it
+      await expect(victim.execute({ text: 'select 1', params: [] })).rejects.toMatchObject({
+        pgorm: { connectionUnusable: true },
+      })
     } finally {
       await h.driver.release(observer)
-      await h.driver.release(victim, { dispose: true })
+      // a plain release: the adapter itself knows this one must not go back into rotation
+      await h.driver.release(victim)
     }
   })
 
-  it('an AbortSignal issues a REAL cancel and the query comes back 57014', async () => {
+  // `pglite-socket` answers a CancelRequest with `handleData: CancelRequest received, ignoring
+  // (not supported)` — there is no second backend to signal — so the query simply completes.
+  requiresRealPostgres('PGlite ignores CancelRequest (pglite-socket has no backend to signal)')(
+    'an AbortSignal issues a REAL cancel and the query comes back 57014',
+    async () => {
+      const victim = await h.driver.acquire()
+      try {
+        const ac = new AbortController()
+        const p = victim.execute({ text: 'select pg_sleep(5)', params: [], signal: ac.signal })
+        setTimeout(() => ac.abort(), 200)
+        const d = await seamError(p)
+        expect(d.kind).toBe('cancelled')
+        expect(d.server?.sqlstate).toBe('57014')
+        // 57014 is NOT tagged 'server', so agent 07's retry logic can never retry a user cancel
+        expect((await victim.execute({ text: 'select 1', params: [] })).rows).toEqual([['1']])
+      } finally {
+        await h.driver.release(victim)
+      }
+    },
+  )
+
+  it('the give-up RETIRES the connection: the statement is still on that socket', async () => {
+    // Runs on PGlite too — it is about what the ADAPTER does with a client whose statement did
+    // not finish, not about a second session watching the first.
     const victim = await h.driver.acquire()
-    try {
-      const ac = new AbortController()
-      const p = victim.execute({ text: 'select pg_sleep(5)', params: [], signal: ac.signal })
-      setTimeout(() => ac.abort(), 200)
-      const d = await seamError(p)
-      expect(d.kind).toBe('cancelled')
-      expect(d.server?.sqlstate).toBe('57014')
-      // 57014 is NOT tagged 'server', so agent 07's retry logic can never retry a user cancel
-      expect((await victim.execute({ text: 'select 1', params: [] })).rows).toEqual([['1']])
-    } finally {
-      await h.driver.release(victim)
-    }
+    const d = await seamError(
+      victim.execute({ text: 'select pg_sleep(3)', params: [], timeoutMs: 200 }),
+    )
+    expect(d.kind).toBe('timeout')
+    expect(d.connectionUnusable).toBe(true)
+    expect(victim.usable).toBe(false)
+    // a plain release must NOT hand a busy client back to the pool
+    await h.driver.release(victim)
   })
 
   it('a pre-aborted signal never reaches the wire', async () => {

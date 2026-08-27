@@ -1,15 +1,20 @@
 /**
- * Live-PostgreSQL support for the diff-engine spike.
+ * Live-PostgreSQL support for the diff engine.
  *
- * Every test in this package needs a real server: the whole thesis of the
- * design (§3.2, §9) is that a differ which does not round-trip through
- * PostgreSQL manufactures phantom diffs, so there is nothing meaningful to
- * assert against a mock. Bring one up with:
+ * Every test in this package needs a real server, and specifically a real *server* rather than
+ * PGlite: it creates and drops databases and shells out to `pg_dump`, neither of which the
+ * embedded build offers. That is why `@pgorm/kit` keeps its own admin harness while `pgormjs`
+ * runs tier 1 on PGlite (design/09 §2.2).
+ *
+ * It reads the same **one env var** as the rest of the repo:
+ *
+ *   PGORM_TEST_URL=postgres://user:pass@host:port/db   (the database part is ignored; it connects
+ *                                                       to `postgres` and creates scratch ones)
+ *
+ * Unset, it falls back to the spike container:
  *
  *   docker run -d --name pgorm-spike-diff -p 54329:5432 \
  *     -e POSTGRES_PASSWORD=postgres postgres:17-alpine
- *
- * Override with PGORM_SPIKE_{HOST,PORT,USER,PASSWORD}.
  */
 
 import { readFile } from "node:fs/promises";
@@ -22,11 +27,22 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(here, "../../../..");
 export const FIXTURES = join(REPO_ROOT, "fixtures", "diff");
 
+function fromUrl(url: string): Omit<ConnInfo, "database"> {
+  const u = new URL(url);
+  return {
+    host: u.hostname,
+    port: Number(u.port || 5432),
+    user: decodeURIComponent(u.username) || "postgres",
+    password: decodeURIComponent(u.password),
+  };
+}
+
+const TEST_URL = process.env["PGORM_TEST_URL"];
+
 export const ADMIN: ConnInfo = {
-  host: process.env["PGORM_SPIKE_HOST"] ?? "127.0.0.1",
-  port: Number(process.env["PGORM_SPIKE_PORT"] ?? 54329),
-  user: process.env["PGORM_SPIKE_USER"] ?? "postgres",
-  password: process.env["PGORM_SPIKE_PASSWORD"] ?? "postgres",
+  ...(TEST_URL
+    ? fromUrl(TEST_URL)
+    : { host: "127.0.0.1", port: 54329, user: "postgres", password: "postgres" }),
   database: "postgres",
 };
 
@@ -42,10 +58,37 @@ export async function withAdmin<T>(fn: (c: pg.Client) => Promise<T>): Promise<T>
   }
 }
 
+/**
+ * Drop a scratch database this SUITE owns.
+ *
+ * `src/db/pg.ts` deliberately refuses to terminate sessions on, or force-drop, anything
+ * that is not a `pgorm_shadow_*` database it provisioned itself — that gate is the fix
+ * for `generate` killing an unrelated client on the live target. The test harness owns
+ * its own `pgorm_*` scratch databases and may reclaim one a previous run left a socket
+ * on, so it does that here, explicitly, and only as a FALLBACK after the plain drop has
+ * already failed.
+ */
+async function reclaimScratchDatabase(admin: pg.Client, name: string): Promise<void> {
+  if (!name.startsWith("pgorm_")) throw new Error(`refusing to reclaim ${name}: not a scratch database`);
+  await admin.query(
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+    [name],
+  );
+  await admin.query(`DROP DATABASE IF EXISTS "${name.replace(/"/g, '""')}"`);
+}
+
+async function dropScratch(admin: pg.Client, name: string): Promise<void> {
+  try {
+    await dropDatabase(admin, name);
+  } catch {
+    await reclaimScratchDatabase(admin, name);
+  }
+}
+
 /** Create a scratch database, optionally seeded from a fixture .sql file. */
 export async function makeDatabase(name: string, fixture?: string): Promise<ConnInfo> {
   await withAdmin(async (admin) => {
-    await dropDatabase(admin, name);
+    await dropScratch(admin, name);
     await createDatabase(admin, name);
   });
   const conn = dbConn(name);
@@ -54,7 +97,7 @@ export async function makeDatabase(name: string, fixture?: string): Promise<Conn
 }
 
 export async function destroyDatabase(name: string): Promise<void> {
-  await withAdmin((admin) => dropDatabase(admin, name));
+  await withAdmin((admin) => dropScratch(admin, name));
 }
 
 export async function serverAvailable(): Promise<boolean> {

@@ -1,5 +1,9 @@
 # pg-orm-ts — Research Summary (Team Lead Synthesis)
 
+> **Historical snapshot — 2026-08-14.** Distilled from the deep-dives in this directory. The
+> design decisions these fed into, and their current status, live in
+> [`../design/00-overview.md`](../design/00-overview.md), which is the maintained document.
+
 **Date:** 2026-08-14
 **Goal:** Design input for a PostgreSQL-only, type-safe TypeScript ORM with first-class migrations and minimal runtime dependencies. Multi-DB abstraction is an explicit non-goal.
 **Method:** Six parallel research agents (Prisma, MikroORM, Drizzle, Kysely, PG drivers, migration tooling), each verifying against primary sources — npm registry, installed package source, GitHub issues, official docs — as of today.

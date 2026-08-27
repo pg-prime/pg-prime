@@ -31,11 +31,43 @@ export class PgDecodeError extends Error {
   readonly codec: string
   readonly raw: unknown
   constructor(codec: string, raw: unknown, detail: string) {
-    super(`pgorm: cannot decode ${codec} value ${JSON.stringify(raw)}: ${detail}`)
+    super(`pgorm: cannot decode ${codec} value ${describeRaw(raw)}: ${detail}`)
     this.name = 'PgDecodeError'
     this.codec = codec
     this.raw = raw
   }
+}
+
+/** Longest raw excerpt an error message may carry. A wire value can be megabytes. */
+const MAX_RAW_CHARS = 200
+
+/**
+ * `JSON.stringify` cannot be used here for two independent reasons, both reachable from a decode
+ * failure and both measured: it THROWS on a `bigint` (so the error about a bad value would be
+ * replaced by a `TypeError` about the error), and it materialises the whole value — a 10 MB
+ * `bytea` hex string produced a 10 MB exception message. This formatter is total and bounded.
+ */
+function describeRaw(raw: unknown): string {
+  let s: string
+  if (typeof raw === 'string') {
+    // slice BEFORE quoting: never build a copy of a multi-megabyte wire value
+    s = JSON.stringify(raw.length > MAX_RAW_CHARS ? `${raw.slice(0, MAX_RAW_CHARS)}…` : raw)
+  } else if (typeof raw === 'bigint') {
+    s = `${raw}n`
+  } else if (raw instanceof Uint8Array) {
+    s = `<${raw.length} bytes>`
+  } else if (raw === null || typeof raw !== 'object') {
+    s = String(raw)
+  } else {
+    let json: string | undefined
+    try {
+      json = JSON.stringify(raw)
+    } catch {
+      json = undefined
+    }
+    s = json ?? Object.prototype.toString.call(raw)
+  }
+  return s.length > MAX_RAW_CHARS ? `${s.slice(0, MAX_RAW_CHARS)}…` : s
 }
 
 export class PgEncodeError extends Error {
@@ -59,7 +91,17 @@ function typeOf(v: unknown): string {
 // Codec
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Drives operator-method dispatch in the query builder (03 §2.9). */
+/**
+ * The PostgreSQL type family a codec belongs to.
+ *
+ * ⚠️ It does NOT drive operator-method dispatch, which is what this docblock claimed until the
+ * WS-audit checked: `03` §2.9's gate is a *type-level* one over `Codec['name']` literals
+ * (`NumPg`, `StrPg`, … in `src/query/ops.ts`), so nothing reads `typeClass` at runtime for
+ * dispatch. What it is really for is the two places that need a family rather than a name:
+ * `arrayCodec` (a `json`-classed element is a LEAF, so `jsonb[]` can carry an array-valued
+ * element) and consumers that group codecs for display/diagnostics. Keep it accurate; do not
+ * grow a second dispatch mechanism on it without also making `03` read it.
+ */
 export type TypeClass =
   | 'boolean'
   | 'number'
@@ -85,8 +127,13 @@ export type TypeClass =
  * `9007199254740992`; and `numeric(10,2)` `1.10` becomes the JSON number `1.10` → `1.1`, losing
  * the scale that `numeric(10,2)` exists to carry.
  *
- * (03 also allows a custom `(e: Expr) => Expr` wrapper. `Expr` belongs to agent 03; this spike
- * carries the two cases the built-ins need.)
+ * **Deviation from 03 §7, decided in WS2:** that sketch also allows a custom `(e: Expr) => Expr`
+ * wrapper. It is not implemented and the union deliberately has two members, because a codec that
+ * builds compiler AST inverts the layering — `src/compile` depends on `src/codec`, so the reverse
+ * edge would be a cycle. Anything the wrapper could express is already expressible as a codec with
+ * `jsonEncode: 'text'` whose `decodeJson` parses the text spelling, which is exactly how `int8`,
+ * `numeric` and every array of them work. If a case ever needs more, the cheap extension is a
+ * `{ cast: string }` member (a named SQL cast the compiler applies), not a function.
  */
 export type JsonEncode = 'native' | 'text'
 
@@ -104,10 +151,22 @@ export interface CodecContext {
 /**
  *  TIn  — what a user may pass as a parameter / insert value (a superset, e.g. `bigint | number | string`)
  *  TOut — what a SELECT of this column yields (exactly one type)
+ *  N    — the codec's own `name`, kept as a LITERAL on every built-in (see below)
+ *
+ * **Why `N` exists (WS3).** `03` §2.9's operator gate reads a PG type-class off `[META]['pg']`,
+ * which only a schema `Ref` carries — so `` sql`lower(x)`.as(textCodec) `` could not be a
+ * class-specific operand. `09` §3.0 records that hole and requires WS3 to close it. It closes
+ * here: `.as(c)` reads `c['name']` and republishes it as the fragment's `pg` slot, so a fragment
+ * and a column reach the gate through the same door.
+ *
+ * `name` and not `sqlName`, which is what `09` §3.0 guessed: `int4`'s `sqlName` is `'integer'`
+ * and `int8`'s is `'bigint'`, neither of which is in the `NumPg` gate. `name` is the field that
+ * already agrees with `ColMeta['pg']` by construction, because `metaOf` resolves a column by
+ * `registry.byName(ddl.pgType)` — the same string on both sides.
  */
-export interface Codec<TIn = never, TOut = unknown> {
+export interface Codec<TIn = never, TOut = unknown, N extends string = string> {
   /** Stable identifier: error messages, config overrides, schema DSL. e.g. 'int8', 'numeric:number'. */
-  readonly name: string
+  readonly name: N
 
   /** The OID this codec claims. `undefined` until `resolveDynamic` fills it in for a user type. */
   readonly oid: number | undefined
@@ -127,7 +186,14 @@ export interface Codec<TIn = never, TOut = unknown> {
   readonly jsonEncode: JsonEncode
 
   /** Element codec, for array codecs. */
-  readonly arrayOf?: Codec<never, unknown>
+  readonly arrayOf?: Codec<never, unknown, string>
+
+  /**
+   * OID of the ARRAY type whose element is this codec (`text` → 1009). Present on every built-in
+   * scalar; `undefined` for a codec we cannot name an array for. Read by `arrayCodecOf` so the
+   * compiler can type an `array[...]` expression without a registry round-trip.
+   */
+  readonly arrayOid?: number
 
   /**
    * Encode a JS value to the wire.
@@ -157,10 +223,12 @@ export interface Codec<TIn = never, TOut = unknown> {
 }
 
 /** Heterogeneous codec bucket. Method params are bivariant, so concrete codecs assign freely. */
-export type AnyCodec = Codec<never, unknown>
+export type AnyCodec = Codec<never, unknown, string>
 
-export type CodecIn<C> = C extends Codec<infer I, unknown> ? I : never
-export type CodecOut<C> = C extends Codec<never, infer O> ? O : never
+export type CodecIn<C> = C extends Codec<infer I, unknown, string> ? I : never
+export type CodecOut<C> = C extends Codec<never, infer O, string> ? O : never
+/** The codec's name as a literal — an indexed access, never a conditional (04 §1.3 rule 1). */
+export type CodecPg<C extends AnyCodec> = C['name']
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Registry
@@ -205,6 +273,15 @@ export interface CodecRegistry {
 
   /** True once every requested dynamic type has an OID. Queries are blocked until then. */
   readonly resolved: boolean
+
+  /**
+   * Bumped by every `register` / `resolveDynamic`. Consumers that memoise a *derived* view of the
+   * registry — `metaOf` in `src/query/meta.ts` is the only one today — store this alongside the
+   * cached value and recompute when it moves. Without it, a `TableMeta` built before
+   * `resolveDynamic` keeps an enum codec whose `oid` is `undefined` forever, and `assertShape`
+   * then compares a real `dataTypeID` against nothing.
+   */
+  readonly generation: number
 }
 
 export interface DynamicTypeRequest {

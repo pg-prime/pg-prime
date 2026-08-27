@@ -90,18 +90,34 @@ function needsQuoting(s: string, delimiter: string): boolean {
   )
 }
 
-/** Write an array literal. Elements are already-encoded text (or `null` for SQL NULL). */
+/**
+ * Write an array literal. Elements are already-encoded text (or `null` for SQL NULL).
+ *
+ * `isLeaf` decides whether a JS array is a NESTED array or a single element that merely happens
+ * to be an array. Only the ELEMENT CODEC knows: `jsonb[]` carrying `[[1, 2]]` is a one-element
+ * array whose element is the JSON document `[1,2]` (`{"[1,2]"}`), not the 2-D array `{{1,2}}`
+ * that `Array.isArray` alone would produce. Default: every array nests, which is right for every
+ * scalar element type.
+ *
+ * `undefined` is NOT silently a NULL: it is handed to `encodeLeaf`, so a codec that must reject
+ * it (`arrayCodec`, `unknownCodec`) can, while the default leaf encoder keeps the old behaviour
+ * for callers that only ever pass strings.
+ */
 export function writeArrayLiteral(
   values: readonly (string | null | readonly unknown[])[],
   delimiter = ',',
-  encodeLeaf: (v: unknown) => string | null = (v) => (v === null ? null : String(v)),
+  encodeLeaf: (v: unknown) => string | null = (v) => (v === null || v === undefined ? null : String(v)),
+  isLeaf: (v: readonly unknown[]) => boolean = () => false,
 ): string {
   const part = (v: unknown): string => {
-    if (v === null || v === undefined) return 'NULL'
-    if (Array.isArray(v)) return `{${v.map(part).join(delimiter)}}`
+    if (v === null) return 'NULL'
+    if (Array.isArray(v) && !isLeaf(v)) return `{${Array.from(v, part).join(delimiter)}}`
     const s = encodeLeaf(v)
     if (s === null) return 'NULL'
     return needsQuoting(s, delimiter) ? `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : s
   }
-  return `{${values.map(part).join(delimiter)}}`
+  // `Array.from`, not `.map`: `.map` SKIPS holes, so a sparse `[1, , 3]` joined to '{1,,3}' —
+  // a literal PostgreSQL rejects. `Array.from` visits a hole as `undefined`, which `encodeLeaf`
+  // then gets to reject with a real error naming the codec.
+  return `{${Array.from(values, part).join(delimiter)}}`
 }

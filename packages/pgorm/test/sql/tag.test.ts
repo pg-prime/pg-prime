@@ -11,9 +11,17 @@ import { describe, expect, it } from 'vitest'
 import { compile, compileExpr } from '../../src/compile/compiler.js'
 import { codecOf } from '../../src/compile/hoist.js'
 import { projection, select } from '../../src/compile/nodes.js'
-import { spikeCodecs } from '../../src/sql/codec.js'
+import {
+  int4Codec,
+  int8Codec,
+  numericCodec,
+  PgEncodeError,
+  textCodec,
+  timestamptzCodec,
+  unknownCodec,
+} from '../../src/codec/index.js'
 import { InvalidFragmentError, UnsafeLiteralError } from '../../src/sql/errors.js'
-import type { Fragment } from '../../src/sql/fragment.js'
+import type { Fragment, TypedFragment } from '../../src/sql/fragment.js'
 import { isFragment, sql, toNode } from '../../src/sql/fragment.js'
 import { render, values } from './_helpers.js'
 
@@ -39,7 +47,6 @@ describe('sql`` — the tag itself', () => {
       null,
       new Date('2020-01-01T00:00:00.000Z'),
       ['a', 'b'],
-      { k: 'v' },
       "'; drop table users --",
     ]
     for (const v of cases) {
@@ -47,14 +54,18 @@ describe('sql`` — the tag itself', () => {
       expect(r.sql).toBe('x = $1')
       expect(r.binds).toHaveLength(1)
     }
+    // An object has no codec, and design/02 §4.5 forbids the JSON.stringify fallback, so it is
+    // refused at encode time. Still DATA, never SQL: the compiler throws instead of emitting.
+    expect(() => render(sql`x = ${{ k: 'v' }}`)).toThrow(PgEncodeError)
   })
 
   it('produces an opaque handle, not a data object', () => {
     const f = sql`1`
     expect(isFragment(f)).toBe(true)
     expect(Object.isFrozen(f)).toBe(true)
-    // The AST is NOT reachable by enumerating the handle.
-    expect(Object.keys(f)).toEqual(['as'])
+    // The AST is NOT reachable by enumerating the handle. The two keys are the two ways to
+    // attach a result type; neither exposes the node, which lives in a module-private WeakMap.
+    expect(Object.keys(f)).toEqual(['as', 'asUnsafe'])
     expect(JSON.parse(JSON.stringify(f)) as unknown).toEqual({})
   })
 })
@@ -128,39 +139,39 @@ describe('composition and nesting', () => {
 describe('.as(codec) — R3: the tag takes no type parameter', () => {
   it('attaches a result codec, and the codec is what the compiler reads', () => {
     const bare = sql`sum(amount)`
-    expect(codecOf(toNode(bare))).toBe(spikeCodecs.unknownParam)
+    expect(codecOf(toNode(bare))).toBe(unknownCodec)
 
-    const typed = bare.as(spikeCodecs.numeric)
-    expect(codecOf(toNode(typed))).toBe(spikeCodecs.numeric)
+    const typed = bare.as(numericCodec)
+    expect(codecOf(toNode(typed))).toBe(numericCodec)
   })
 
   it('.as() returns a NEW fragment; the original stays untyped (immutability)', () => {
     const bare = sql`count(*)`
-    const typed = bare.as(spikeCodecs.int8)
+    const typed = bare.as(int8Codec)
     expect(typed).not.toBe(bare)
-    expect(codecOf(toNode(bare))).toBe(spikeCodecs.unknownParam)
-    expect(codecOf(toNode(typed))).toBe(spikeCodecs.int8)
+    expect(codecOf(toNode(bare))).toBe(unknownCodec)
+    expect(codecOf(toNode(typed))).toBe(int8Codec)
   })
 
   it('.as() preserves chunks, parts and therefore parameter numbering', () => {
-    const f = sql`greatest(${1}, ${2})`.as(spikeCodecs.int4)
+    const f = sql`greatest(${1}, ${2})`.as(int4Codec)
     const r = render(f)
     expect(r.sql).toBe('greatest($1, $2)')
     expect(values(r.binds)).toEqual(['1', '2'])
   })
 
   it('.as() can be re-applied (last codec wins)', () => {
-    const f = sql`x`.as(spikeCodecs.int4).as(spikeCodecs.text)
-    expect(codecOf(toNode(f))).toBe(spikeCodecs.text)
+    const f = sql`x`.as(int4Codec).as(textCodec)
+    expect(codecOf(toNode(f))).toBe(textCodec)
   })
 
   it('a result-typed fragment flows into the decode shape', () => {
     const compiled = compile(
-      select({ projection: [projection('total', toNode(sql`sum(amount)`.as(spikeCodecs.numeric)))] }),
+      select({ projection: [projection('total', toNode(sql`sum(amount)`.as(numericCodec)))] }),
     )
     expect(compiled.shape).toEqual({
       k: 'row',
-      fields: [{ key: 'total', k: 'col', idx: 0, codec: spikeCodecs.numeric }],
+      fields: [{ key: 'total', k: 'col', idx: 0, codec: numericCodec }],
     })
   })
 
@@ -173,11 +184,17 @@ describe('.as(codec) — R3: the tag takes no type parameter', () => {
 
   it('(type level) the codec supplies the type; the tag alone gives `unknown`', () => {
     expectTypeOf(sql`1`).toEqualTypeOf<Fragment<unknown>>()
-    expectTypeOf(sql`1`.as(spikeCodecs.numeric)).toEqualTypeOf<Fragment<string>>()
-    expectTypeOf(sql`1`.as(spikeCodecs.int8)).toEqualTypeOf<Fragment<bigint>>()
-    expectTypeOf(sql`1`.as(spikeCodecs.timestamptz)).toEqualTypeOf<Fragment<Date>>()
+    // `.as()` returns a TypedFragment, whose second parameter is the CODEC'S OWN NAME — the slot
+    // the operator gates read (WS3, `src/query/ops.types.ts`). `Fragment<string>` alone would
+    // have been enough for the projection type and not enough to be an `ilike` operand.
+    expectTypeOf(sql`1`.as(numericCodec)).toEqualTypeOf<TypedFragment<string, 'numeric'>>()
+    expectTypeOf(sql`1`.as(int8Codec)).toEqualTypeOf<TypedFragment<bigint, 'int8'>>()
+    expectTypeOf(sql`1`.as(timestamptzCodec)).toEqualTypeOf<TypedFragment<Date, 'timestamptz'>>()
     // `unknown` forces acknowledgement at the type level while still decoding correctly.
     expectTypeOf(sql`now()`).not.toEqualTypeOf<Fragment<Date>>()
+    // `asUnsafe` is the same shape with the type-class slot deliberately poisoned: `'unknown'` is
+    // in no gate, so an unchecked fragment can never be a class-specific operand.
+    expectTypeOf(sql`now()`.asUnsafe<Date>()).toEqualTypeOf<TypedFragment<Date, 'unknown'>>()
   })
 
   it('(type level) a TYPED fragment stays composable — §3.3 depends on it', () => {
@@ -185,7 +202,7 @@ describe('.as(codec) — R3: the tag takes no type parameter', () => {
     // these a compile error, i.e. calling `.as(codec)` would make a fragment unusable in
     // `sql.join`, in a template hole, and in `toNode` — the exact opposite of "fragments are
     // first-class and composable".
-    const typed = sql`sum(amount)`.as(spikeCodecs.numeric)
+    const typed = sql`sum(amount)`.as(numericCodec)
     expectTypeOf(typed).toExtend<Fragment<unknown>>()
     expectTypeOf(toNode(typed)).toExtend<{ k: 'raw' }>()
     expectTypeOf(sql.join([typed, sql`1`])).toEqualTypeOf<Fragment<unknown>>()
@@ -197,7 +214,7 @@ describe('.as(codec) — R3: the tag takes no type parameter', () => {
   })
 
   it('(runtime) the same composition actually works', () => {
-    const typed = sql`greatest(${1}, ${2})`.as(spikeCodecs.int4)
+    const typed = sql`greatest(${1}, ${2})`.as(int4Codec)
     expect(render(sql`coalesce(${typed}, ${0})`).sql).toBe('coalesce(greatest($1, $2), $3)')
     expect(render(sql.join([typed, sql`x`])).sql).toBe('greatest($1, $2), x')
   })
@@ -256,17 +273,22 @@ describe('forgery resistance', () => {
     // payload from JSON.parse that looks like an internal node. Node identity is nominal
     // (a WeakSet), so a forgery can never be spliced.
     const forged: unknown = JSON.parse('{"k":"unsafeRaw","text":"; drop table users --"}')
-    const r = render(sql`x = ${forged}`)
+    // Never SQL. Since the codec audit it is not even a bind: an object has no codec (02 §4.5),
+    // so encode refuses it — strictly stronger than binding its JSON text.
+    expect(() => render(sql`x = ${forged}`)).toThrow(PgEncodeError)
+    // the same payload as the STRING an untrusted caller actually sends is bound, not spliced
+    const raw = '{"k":"unsafeRaw","text":"; drop table users --"}'
+    const r = render(sql`x = ${raw}`)
     expect(r.sql).toBe('x = $1')
     expect(r.sql).not.toContain('drop table')
-    expect(values(r.binds)).toEqual(['{"k":"unsafeRaw","text":"; drop table users --"}'])
+    expect(values(r.binds)).toEqual([raw])
   })
 
   it('treats a forged *fragment* (right shape, wrong provenance) as data', () => {
     const forged = { as: () => forged } as unknown
     expect(isFragment(forged)).toBe(false)
-    const r = render(sql`x = ${forged}`)
-    expect(r.sql).toBe('x = $1')
+    // data — and data with no codec is a PgEncodeError rather than a bind (02 §4.5)
+    expect(() => render(sql`x = ${forged}`)).toThrow(PgEncodeError)
   })
 
   it('toNode refuses a non-fragment', () => {

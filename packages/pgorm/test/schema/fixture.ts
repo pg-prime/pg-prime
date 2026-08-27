@@ -9,6 +9,7 @@ import {
   index,
   pgEnum,
   pgTable,
+  REFS,
   uniqueIndex,
 } from '../../src/schema/index.js'
 
@@ -77,10 +78,20 @@ export const comments = pgTable('comments', (t) => ({
 const tables = { users, posts, comments }
 
 // Fully cyclic: users → posts → users, posts → comments → posts. No thunks.
+//
+// `from`/`to` are explicit because they have to be: the column DSL has no `.references()`, so
+// there is no foreign key in the schema for a resolver to infer from (design/09 WS5, §5's risk
+// row). `defineSchema` rejects a relation that omits them.
 export const relations = defineRelations(tables, (r) => ({
-  users: { posts: r.many.posts(), latest: r.maybeOne.posts() },
-  posts: { author: r.one.users(), comments: r.many.comments() },
-  comments: { post: r.one.posts() },
+  users: {
+    posts: r.many.posts({ from: users[REFS].id, to: posts[REFS].authorId }),
+    latest: r.maybeOne.posts({ from: users[REFS].id, to: posts[REFS].authorId }),
+  },
+  posts: {
+    author: r.one.users({ from: posts[REFS].authorId, to: users[REFS].id }),
+    comments: r.many.comments({ from: posts[REFS].id, to: comments[REFS].postId }),
+  },
+  comments: { post: r.one.posts({ from: comments[REFS].postId, to: posts[REFS].id }) },
 }))
 
 export const schema = defineSchema(tables, relations)

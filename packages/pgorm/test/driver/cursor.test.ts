@@ -21,7 +21,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { makeHarness, type Harness } from './_harness.js'
+import { makeHarness, type Harness } from '../live/_harness.js'
 import type { PgConnection } from '../../src/driver/index.js'
 
 let h: Harness
@@ -232,5 +232,22 @@ describe('PgConnection.stream() — built on the answer above, zero dependencies
     })
     expect(r.rows.map((row) => row[0])).toEqual(['1', '2', '3', '4', '5'])
     expect(r.rowCount).toBe(5)
+  })
+
+  it('refuses to stream inside a FAILED transaction instead of BEGINning blindly', async () => {
+    await conn.execute({ text: 'begin', params: [] })
+    await conn.execute({ text: 'select 1/0', params: [] }).catch(() => {})
+    expect(conn.transactionStatus).toBe('E')
+    try {
+      const iterator = conn.stream({ text: 'select id from cur_t', params: [] }, 2)[
+        Symbol.asyncIterator
+      ]()
+      // an adapter error, not a raw 25P02 escaping un-normalised from the internal BEGIN
+      await expect(iterator.next()).rejects.toMatchObject({ pgorm: { kind: 'adapter' } })
+      // …and the caller's failed transaction is still theirs to roll back
+      expect(conn.transactionStatus).toBe('E')
+    } finally {
+      await conn.execute({ text: 'rollback', params: [] })
+    }
   })
 })

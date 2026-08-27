@@ -47,6 +47,16 @@ Why this shape:
 * **`pg` is a string literal**, so the operator layer can pattern-match `'jsonb'`, `'tsvector'`, `'int4range'` without a 150-member union lookup table. (Drizzle's `codecs.d.ts` `unionsTypeTable` is 34 KB of `.d.ts` for exactly this job — **SKIP**, per research.)
 * Only four fields, so every modifier rebuild is 3 indexed accesses + 1 literal.
 
+> **AMENDED 2026-08-26 — a fifth field, `pk` (09 §3.1).** `readonly pk: boolean`, set by
+> `.primaryKey()`, exists for exactly one consumer: design/03 §2.3's `GROUP BY` guard, which may
+> only offer a relation row-set accessor on an alias whose parent row is still identifiable. It is
+> deliberately *incomplete* — a composite key declared with the table-level `primaryKey(a, b)`
+> extra is runtime-only and leaves every `pk` false — and the guard reads that as "cannot prove it
+> is ungrouped" and allows, so an unmodelled key can never produce a false rejection. Measured
+> cost of the extra field: **3.0 instantiations per column declaration** (budget 8; it was 3.0
+> before), and +4 marginal instantiations per query across the whole of WS1, of which this is a
+> part too small to isolate.
+
 ### 1.2 The column builder
 
 ```ts
@@ -233,7 +243,19 @@ export declare function nest<P extends Record<string, Projectable>>(p: P): Expr<
 export declare function nestNullable<P extends Record<string, Projectable>>(p: P): Expr<Project<P> | null>
 ```
 
+> **AMENDED 2026-08-26 — `nestNullable` needs `Project`'s pre-join variant (09 §3.1).** The
+> signature above produces `author: { id: UserId | null } | null`, because by the time the callback
+> runs the refs have *already* been nulled by the scope. design/03 §2.2's PORT is the other one:
+> `author: { id: UserId } | null` — sound *and* useful, since after `if (row.author)` the field is
+> not still nullable. So `nestNullable` returns `Expr<ProjectPreJoin<P> | null>`, one conditional
+> per key that reads `[META]['t']` (the column's own type, which a left join does not touch) and
+> falls through to `[OUT]` for anything without a `[META]`. It is the only conditional in the
+> projection algebra and it is instantiated only by `nestNullable`. Plain `nest` is unchanged and
+> stays per-field, which is the honest answer when the row exists and one column is null.
+
 If we allowed bare nested object literals, `Project` would need `P[K] extends Projectable ? … : Project<P[K]>` — a conditional **plus** recursion on the single hottest type in the library. Requiring `nest({...})` costs the user 6 characters and keeps the hot path linear.
+
+> **CONFIRMED 2026-08-26 — fork F2 (09 §3.0).** Measured against 03 §2.2's bare-literal spelling: the recursive `Project` costs **+21.7 % / +16.1 % / +18.1 %** on the three query shapes and +4.8 % / +9.3 % whole-program. The six characters are worth 16–22 % of every projection in the program.
 
 ### 2.2 Expressions and `sql` with a real codec
 
@@ -255,6 +277,10 @@ export declare function eq<A extends Projectable>(a: A, b: A[typeof OUT] | ExprO
 ```
 
 For the PG operators where the operand type is *not* the column type (`jsonb ? text`, `tsvector @@ tsquery`, `anyrange && anyrange`, `vector <-> vector`), the operand is selected from `M['pg']` via a small per-operator table. This is the Kysely "operand typed from column rather than operator" **SKIP (fix it)** verdict; it is finite and writable because we have exactly one dialect.
+
+> **CONFIRMED 2026-08-26 — fork F1 (09 §3.0)**, free functions beat 03 §2.9's methods by +3.0 % whole-program (methods cost nothing per query but +105 instantiations per table, one-time, which does not amortise).
+>
+> **But the sentence above is load-bearing and was under-specified.** "The operand is selected from `M['pg']` via a small per-operator table" must be *structural*, not merely a table of operand types: without a gate on `M['pg']` itself, four of seven nonsense operator/column pairings compile (`jsonContains` on `text`, `hasKey` on `int4`, `@@` on `text`, a range operator on `timestamptz`) — which is the very Kysely defect this paragraph claims to fix. `src/query/ops-free.ts` implements the gate as a per-class operand interface (`ilike(a: TextRef, …)` where `TextRef` requires `[META]['pg']` to be a text type). With it, all seven are rejected.
 
 ### 2.3 Query scope: the reason per-query cost is flat
 
@@ -332,6 +358,8 @@ const rows: {
 ```
 
 Agent 03 compiles the picker to `LEFT JOIN LATERAL (…) ON TRUE` + `json_agg`; the type layer neither knows nor cares. The relation namespace is a **separate callback parameter** (`(t, r) => …`) rather than merged into the refs object, specifically to avoid an intersection.
+
+> **SUPERSEDED 2026-08-26 — fork F3 decided against this (09 §3.0).** The stated reason does not survive measurement. The intersection `RefsAt<H> & RelPickers<H>` is instantiated once per (alias, table) and cached; the second parameter instead forces `RelsNs<S>` to be instantiated on **every** `select`, including the majority that project no relation. 03 §2.3's on-scope spelling (`(t) => ({ posts: t.u.posts(…) })`) is cheaper or equal on every shape and both compilers — −1.1 % to −4.2 % per query, −0.4 % / −2.0 % whole-program — and is what `src/query/types.ts` ships as `ScopeOf<S>`. The accepted cost is relation/column name collision, which 03 §4.1 already requires `defineSchema` to reject.
 
 ### 2.5 `Loaded<>` — a signature that demands a loaded relation
 
@@ -575,6 +603,30 @@ error TS2741: Property 'out' is missing in type
 
 The sentence is right there. ~20 lines of implementation. Apply to: array/range/JSON operator misuse, aggregate-without-`groupBy`, `tx` handle used outside its scope, relation name not on this table, `RETURNING` on a view.
 
+> **AMENDED 2026-08-26 — two things WS1 measured about this mechanism (09 §3.1).**
+>
+> **(a) A named alias hides the sentence.** Wrapping the message in a tidy generic alias is the
+> first thing anyone will do, and it defeats the entire mechanism, because TypeScript prints the
+> alias *unexpanded*:
+>
+> ```
+> type GroupByNeedsParentKey<A, K> = OrmTypeError<`…sentence…`>
+>   → Property 'nope' does not exist on type 'GroupByNeedsParentKey<"u", "id">'.
+> OrmTypeError<GroupByNeedsParentKeyMsg<'u', 'id'>>       // inlined at the use site
+>   → Property 'nope' does not exist on type 'OrmTypeError<"relation projection on \"u\" needs …">'.
+> ```
+>
+> So `src/query/errors.ts` exports **message strings** and the use site wraps them; it never
+> exports an `OrmTypeError<…>` alias, and `src/query/types.ts` never references one.
+>
+> **(b) Resolve in *return* position, not in a parameter.** Intersecting the sentinel into a
+> parameter (`q: RowSource<O2> & SetBranch<…>`) fails at the call site, which reads better — and
+> costs **926 characters on TS 5.9.3, 1 319 on 7.0.2**, because TypeScript prints the whole
+> argument type twice and a `Query` carries its entire `Schema<…>` type argument. Return position
+> is 143 characters on one line. Same for a *blocked* callable (a guarded relation accessor): keep
+> the signature and move the error to the return type, or the lambda loses its contextual type and
+> `noImplicitAny` adds two TS7006 lines of noise per call.
+
 **2. The `types@<5.4` export-map gate (PORT) — built and verified end-to-end.**
 
 ```jsonc
@@ -626,6 +678,10 @@ Every ORM's type system lies somewhere. Ours lies in exactly these places, each 
 | 6 | **Result rehydration inside `json_agg`.** | The types promise `Date`/`bigint`/`numeric` survive a nested relation projection. That promise is only true if agent 02/03's mapper applies codecs to the JSON payload (§3.4). **Top cross-agent risk.** If it slips, we must ship Kysely-style `ShallowDehydrateValue` degradation types instead — a visible product regression. | **Contract, unresolved** |
 | 7 | **Casts defeat everything.** `Loaded<>` is type-level only; `as any` erases it. | Same caveat MikroORM documents. Accepted, documented, lint-suggested (`no-explicit-any` on ORM results). | Accepted |
 | 8 | **Views and matviews.** | Non-insertable at the type level: view tables carry `ro: true` on every column, so `Insertable` and `Updateable` are `{}` and `insertInto(view)` fails to compile. (kysely-codegen gets this wrong; kanel gets it right.) | Designed |
+| 9 | **`eq(a, b)` compares TS types, not PG type classes.** `uuid = text` compiles. | Both decode to `string`, and gating on the PG type would also reject `int4 = int8`, which PostgreSQL accepts. The check belongs to the compile seam (WS2/WS3 resolve each operand's codec against `RowDescription`), not to the operand type. A 42883 at prepare time, never a wrong value. Pinned in `test/query/types/join.probe.ts`. | Measured, WS1 (09 §3.1) |
+| 10 | **`eq(a, b)` is asymmetric**: it types `b` from `a`, so a branded FK typechecks in one direction only. | Deliberate — it is the same rule that makes `eq(t.u.views, 'not a bigint')` an error. The modelling fix is to brand both ends of the key (`t.uuid().$type<UserId>()` on the FK too), which is what `references()` should encourage. Pinned in `join.probe.ts`. | Measured, WS1 |
+| 11 | **A CTE column keeps its codec but loses its PG type class.** A class-gated operator degrades to a shape-only check inside a CTE. | Recovering the class needs the projection record `P` on `Query`, i.e. a fourth type parameter threaded through every method — a per-query cost paid by every query to fix a CTE-only gap. The TS type stays exact, so no decoded value can be wrong; only the operator can be, and PostgreSQL rejects it. Pinned in `cte.probe.ts`; revisit in WS4. | Measured, WS1 |
+| 12 | **The `GROUP BY` guard is one-directional, table-keyed, and blind to table-level composite keys.** | All three deviations point the same way — permissive — so an unmodelled key can never produce a *false rejection*. See 09 §3.1 and `group-by-guard.probe.ts`. | Measured, WS1 |
 
 ---
 
@@ -646,16 +702,31 @@ Every ORM's type system lies somewhere. Ours lies in exactly these places, each 
 
 ---
 
-## 7. Open items and contracts with other agents
+## 7. Contracts — status
 
-1. **[BLOCKING — agent 02/03] JSON rehydration.** The nested-relation result types (§2.4) are only truthful if the `json_agg` result mapper applies per-column codecs to the nested payload. Without it, `Date` comes back as `string` and we must ship degradation types instead. This is the largest unresolved type-level risk in this document.
-2. **[agent 02] Codec `pgType` must be a string literal** on every built-in codec. It is the join key between the type layer, the operator operand tables, and the migration diff engine's type identity.
-3. **[agent 03] Relation `on:` spec.** `RelMeta` carries `kind`/`opt`/`to` for typing; the FK columns, `through` table and per-parent `limit`/`orderBy` live in the runtime `JoinSpec` and must not enter the type parameters.
-4. **[agent 05/tx] Transaction handle typing.** The plan is a distinct `Tx<Sc>` type where `Db<Sc>`'s methods are absent, plus Kysely's type-level savepoint-stack tuple and `never`-returning illegal methods (kysely.md §1.5 — PORT). Design owned elsewhere; the invariance and sentinel machinery here is available to it.
-5. **[me, next]** Per-operator operand tables (`jsonb ? text`, `tsvector @@ tsquery`, range `&&`, `vector <->`), CTE typing that widens `Sources`, window functions, set operations, and the `unsafeRef`/`$if` overload implementations. Budget headroom in §3.5 is sized for these; each lands with its own attest baseline.
-6. **Optimisation backlog:** 33 instantiations per declared relation is the largest per-entity line item. First move if the schema budget tightens is replacing the `many()`/`one()` helper generics with a constrained plain literal.
+1. **JSON rehydration** — *was* the largest unresolved type-level risk in this document.
+   **RESOLVED.** `decodeJson` is a **required** member of `Codec`, not optional (00-overview R5),
+   and a golden test decodes every built-in codec at depth 0 and depth 3 and asserts identical
+   values (`test/codec/r5-golden.test.ts`). No degradation types were written; if the test fails,
+   the build fails.
+2. **`Codec.pgType` must be a string literal** — holds across all 29 built-ins.
+3. **Relation `on:` spec** — holds as designed: `RelMeta` carries `kind`/`opt`/`to`; FK columns,
+   `through` and per-parent `limit`/`orderBy` stay in the runtime `JoinSpec`, out of the type
+   parameters. Not yet exercised by a builder.
+4. **Transaction handle typing** (`Tx<Sc>` with absent `Db<Sc>` methods, savepoint-stack tuple) —
+   **open, unstarted.** There is no transaction API anywhere in the tree.
+5. **Per-operator operand tables, CTE typing, window functions, set operations** — **open.** The
+   compiler emits aggregates, `OVER`, `CASE` and CTEs at the AST level, but none of it is typed:
+   there is no fluent builder, so no operand dispatch exists yet. The measured budget headroom is
+   still sized for these.
+6. **Optimisation backlog** — unchanged. 33 instantiations per declared relation is the largest
+   per-entity line item; first move if the budget tightens is replacing the `many()`/`one()`
+   helper generics with a constrained plain literal.
 
----
+**Budget status:** measured on the real implementation, not the prototype — 137,778 instantiations,
+1.11 s on TS 5.9, 0.231 s on TS 7, schema-size-independence ratio **1.00** against a 1.15 gate.
+The per-construct `@ark/attest` baselines named in §3.6 remain unwired: attest cannot run on TS 7,
+and it has been removed from the dependency tree.
 
 ## Appendix — reproducing the measurements
 

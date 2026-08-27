@@ -26,7 +26,7 @@ import {
   select,
   table,
 } from '../../src/compile/nodes.js'
-import { spikeCodecs } from '../../src/sql/codec.js'
+import { arrayCodecOf, int4Codec, int8Codec, numericCodec, textCodec, timestamptzCodec, unknownCodec } from '../../src/codec/index.js'
 import { sql, toNode } from '../../src/sql/fragment.js'
 import {
   p,
@@ -38,6 +38,9 @@ import {
   usersFrom,
   usersTable,
 } from '../sql/_helpers.js'
+
+/** `text[]` — the codec the spike called `textArray`. */
+const textArrayCodec = arrayCodecOf(textCodec)
 
 const vals = (c: { binds: readonly { k: string }[] }) =>
   c.binds.map((b) => (b as { encoded?: unknown }).encoded)
@@ -54,10 +57,10 @@ describe('§2.1 — select / where / order / limit', () => {
         from: usersFrom,
         where: and(
           isNull(u('deletedAt')),
-          inAny(u('role'), param(['admin', 'owner'], spikeCodecs.textArray)),
+          inAny(u('role'), param(['admin', 'owner'], textArrayCodec)),
         ),
         orderBy: [desc(u('createdAt')), asc(u('id'))],
-        limit: param(20, spikeCodecs.int4),
+        limit: param(20, int4Codec),
       }),
     )
 
@@ -70,7 +73,10 @@ describe('§2.1 — select / where / order / limit', () => {
         'limit $2',
       ].join('\n'),
     )
-    expect(vals(compiled)).toEqual(['{"admin","owner"}', '20'])
+    // WS2: the real `text[]` codec quotes an element only when PostgreSQL's own literal grammar
+    // requires it (`test/codec/array-literal.test.ts` pins the rule against a live server); the
+    // spike quoted unconditionally. `{admin,owner}` is byte-for-byte what PG emits for this value.
+    expect(vals(compiled)).toEqual(['{admin,owner}', '20'])
     expect(compiled.meta.kind).toBe('select')
     expect(compiled.meta.reads).toEqual([{ schema: 'public', name: 'users' }])
     expect(compiled.meta.writes).toEqual([])
@@ -87,8 +93,8 @@ describe('§2.1 — select / where / order / limit', () => {
     expect(compiled.shape).toEqual({
       k: 'row',
       fields: [
-        { key: 'id', k: 'col', idx: 0, codec: spikeCodecs.int8 },
-        { key: 'amount', k: 'col', idx: 1, codec: spikeCodecs.numeric },
+        { key: 'id', k: 'col', idx: 0, codec: int8Codec },
+        { key: 'amount', k: 'col', idx: 1, codec: numericCodec },
       ],
     })
   })
@@ -99,13 +105,13 @@ describe('predicates', () => {
     compile(select({ projection: [projection('id', p('id'))], from: postsFrom, where }))
 
   it('eq / gt / gte against a parameter', () => {
-    expect(q(eq(p('id'), param(1n, spikeCodecs.int8))).sql).toContain(
+    expect(q(eq(p('id'), param(1n, int8Codec))).sql).toContain(
       'where "posts"."id" = $1',
     )
-    expect(q(gt(p('amount'), param('100.00', spikeCodecs.numeric))).sql).toContain(
+    expect(q(gt(p('amount'), param('100.00', numericCodec))).sql).toContain(
       'where "posts"."amount" > $1',
     )
-    expect(q(gte(p('createdAt'), param(new Date(0), spikeCodecs.timestamptz))).sql).toContain(
+    expect(q(gte(p('createdAt'), param(new Date(0), timestamptzCodec))).sql).toContain(
       'where "posts"."created_at" >= $1',
     )
   })
@@ -143,7 +149,7 @@ describe('predicates', () => {
 
   it('in (list) emits one parameter per item', () => {
     const c = q(
-      inList(p('id'), [param(1n, spikeCodecs.int8), param(2n, spikeCodecs.int8), param(3n, spikeCodecs.int8)]),
+      inList(p('id'), [param(1n, int8Codec), param(2n, int8Codec), param(3n, int8Codec)]),
     )
     expect(c.sql).toContain('where "posts"."id" in ($1, $2, $3)')
     expect(vals(c)).toEqual(['1', '2', '3'])
@@ -156,10 +162,10 @@ describe('predicates', () => {
   })
 
   it('= any($1) is the bulk form: one parameter, no plan-cache pollution', () => {
-    const c = q(inAny(p('id'), param(['1', '2', '3'], spikeCodecs.textArray)))
+    const c = q(inAny(p('id'), param(['1', '2', '3'], textArrayCodec)))
     expect(c.sql).toContain('where "posts"."id" = any($1)')
     expect(c.binds).toHaveLength(1)
-    expect(q(inAny(p('id'), param([], spikeCodecs.textArray), true)).sql).toContain(
+    expect(q(inAny(p('id'), param([], textArrayCodec), true)).sql).toContain(
       'where "posts"."id" <> all($1)',
     )
   })
@@ -203,7 +209,7 @@ describe('order by / limit / offset / distinct / locking', () => {
 
   it('limit and offset are parameters, in emission order', () => {
     const c = compile(
-      select({ ...base, limit: param(10, spikeCodecs.int4), offset: param(20, spikeCodecs.int4) }),
+      select({ ...base, limit: param(10, int4Codec), offset: param(20, int4Codec) }),
     )
     expect(c.sql.endsWith('limit $1\noffset $2')).toBe(true)
     expect(vals(c)).toEqual(['10', '20'])
@@ -236,7 +242,7 @@ describe('sql fragments inside the projection', () => {
       select({
         projection: [
           projection('id', u('id')),
-          projection('lowered', toNode(sql`lower(${u('email')})`.as(spikeCodecs.text))),
+          projection('lowered', toNode(sql`lower(${u('email')})`.as(textCodec))),
           projection('untyped', toNode(sql`now()`)),
         ],
         from: usersFrom,
@@ -251,9 +257,9 @@ describe('sql fragments inside the projection', () => {
     expect(c.shape).toEqual({
       k: 'row',
       fields: [
-        { key: 'id', k: 'col', idx: 0, codec: spikeCodecs.int8 },
-        { key: 'lowered', k: 'col', idx: 1, codec: spikeCodecs.text },
-        { key: 'untyped', k: 'col', idx: 2, codec: spikeCodecs.unknownParam },
+        { key: 'id', k: 'col', idx: 0, codec: int8Codec },
+        { key: 'lowered', k: 'col', idx: 1, codec: textCodec },
+        { key: 'untyped', k: 'col', idx: 2, codec: unknownCodec },
       ],
     })
   })
@@ -263,8 +269,8 @@ describe('sql fragments inside the projection', () => {
       select({
         projection: [projection('d', toNode(sql`${p('amount')} - ${'1.5'}`))],
         from: postsFrom,
-        where: gt(p('amount'), param('0', spikeCodecs.numeric)),
-        limit: param(1, spikeCodecs.int4),
+        where: gt(p('amount'), param('0', numericCodec)),
+        limit: param(1, int4Codec),
       }),
     )
     expect(c.sql).toBe(

@@ -36,8 +36,9 @@
  */
 
 import type { Expr, IdentPart, RawNode, RawPart, RawSpliceNode } from '../compile/ast.js'
-import { isAstNode, mkNode, param, raw, lit as litNode } from '../compile/nodes.js'
-import type { Codec } from './codec.js'
+import { isAstNode, isRawPart, mkNode, nodeKindOf, param, raw, lit as litNode } from '../compile/nodes.js'
+import type { AnyCodec, CodecOut, CodecPg } from '../codec/index.js'
+import type { META, OUT, SRC } from '../schema/symbols.js'
 import { InvalidFragmentError, UnsafeLiteralError } from './errors.js'
 import { quoteIdentPath } from './ident.js'
 
@@ -49,8 +50,18 @@ export interface Fragment<T = unknown> {
   /**
    * Attach a codec. This is the *only* way to give a fragment a result type; a bare cast is
    * a compile error by construction (R3).
+   *
+   * Generic in the **codec**, not just its output type, so the result can republish the codec's
+   * `name` as a PG type-class slot — see {@link TypedFragment}.
    */
-  as<U>(codec: Codec<U>): Fragment<U>
+  as<C extends AnyCodec>(codec: C): TypedFragment<CodecOut<C>, CodecPg<C>>
+  /**
+   * Greppable, lintable escape hatch: a result type with **no codec and no decode guarantee**.
+   * The value decodes dynamically by OID (03 §3.2), so it is still *correct*; what you give up
+   * is the compile-time link between the declared type and the decoder, which is why the name
+   * says so. `pg` is `'unknown'`, so an `asUnsafe` fragment is not a class-specific operand.
+   */
+  asUnsafe<U>(): TypedFragment<U, 'unknown'>
   /**
    * Phantom. Never present at runtime.
    *
@@ -67,17 +78,50 @@ export interface Fragment<T = unknown> {
   readonly __out?: T
 }
 
+/**
+ * A fragment that has been given a codec — and therefore a **place in the operator type system**.
+ *
+ * This is WS3's answer to the one hole `09` §3.0 left open when fork F1 was decided: `03` §2.9's
+ * gates read `[META]['pg']`, which only a schema `Ref` carries, so `` sql`lower(x)`.as(textCodec) ``
+ * could not be a `text`-class operand and `` sql`…`.as(tsvectorCodec) `` could not be a `tsvector`
+ * one. A method surface had the identical hole (an expression has no methods), so closing it here
+ * closes it for the design, not just for the arm that won.
+ *
+ * Three slots, all phantom — none of them exists at runtime:
+ *
+ *  - `[OUT]` makes a typed fragment `Projectable`, so it can be a projection value and an operand.
+ *    A *bare* `` sql`…` `` deliberately still is not: you cannot put one in a projection without
+ *    choosing a codec (04 §2.2).
+ *  - `[META].pg` is the codec's own `name`, which is the same string a column's `ColMeta['pg']`
+ *    carries, because `metaOf` resolves a column by `registry.byName(ddl.pgType)`.
+ *  - `[SRC]` makes it an `Expr`, so it composes anywhere a built expression does (03 §3.3).
+ */
+export interface TypedFragment<T, P extends string = string> extends Fragment<T> {
+  readonly [OUT]: T
+  readonly [META]: { readonly pg: P }
+  readonly [SRC]: string
+}
+
 /** Any fragment, whatever its result type. The parameter position for composition helpers. */
 export type AnyFragment = Fragment<unknown>
 
 const FRAGMENT_NODES = new WeakMap<object, RawNode>()
 
-function mkFragment<T>(node: RawNode): Fragment<T> {
-  const handle: Fragment<T> = Object.freeze({
-    as<U>(codec: Codec<U>): Fragment<U> {
-      return mkFragment<U>(raw(node.chunks, node.parts, codec as Codec))
+function mkFragment<T>(node: RawNode): TypedFragment<T> {
+  const handle = Object.freeze({
+    as<C extends AnyCodec>(codec: C): TypedFragment<CodecOut<C>, CodecPg<C>> {
+      return mkFragment(raw(node.chunks, node.parts, codec)) as TypedFragment<
+        CodecOut<C>,
+        CodecPg<C>
+      >
     },
-  })
+    // No codec: `raw.resultCodec` stays `null`, which is what tells the decoder to resolve the
+    // column dynamically from its `RowDescription` OID. The type is the caller's assertion; the
+    // *value* is still decoded by us and is still right.
+    asUnsafe<U>(): TypedFragment<U, 'unknown'> {
+      return mkFragment(raw(node.chunks, node.parts, null)) as TypedFragment<U, 'unknown'>
+    },
+  }) as TypedFragment<T>
   FRAGMENT_NODES.set(handle, node)
   return handle
 }
@@ -138,12 +182,30 @@ function tag(strings: TemplateStringsArray, ...values: readonly unknown[]): Frag
   const parts: RawPart[] = []
   for (let i = 0; i < values.length; i++) {
     const v = values[i]
+    if (v === undefined) {
+      // `undefined` reaching the DATA branch became `param(undefined)`, which `unknownCodec`
+      // encodes as SQL NULL: a mistyped property name (`row.usr_id`) compiled to `= NULL`, which
+      // is never true, and the query returned zero rows with no error anywhere. `null` is still
+      // accepted, because it is the *explicit* spelling of the same intent.
+      throw new InvalidFragmentError(
+        `sql\`\`: the value interpolated at hole ${i} is undefined. If a SQL NULL is meant, ` +
+          'write null; undefined is almost always a misspelled property or a missing await.',
+      )
+    }
     if (isFragment(v)) {
       // Nested fragment: its node becomes a part. The compiler splices chunks and renumbers
       // parameters — no string round-trip, and no positional state on the fragment.
       parts.push(toNode(v))
     } else if (isAstNode(v)) {
-      // A ref / expression built by the query layer.
+      // A ref / expression built by the query layer. Not every registered node is one: an order
+      // item or a statement reached the emitter and failed there as "node kind 'undefined'",
+      // pointing at the compiler instead of at this hole.
+      if (!isRawPart(v)) {
+        throw new InvalidFragmentError(
+          `sql\`\`: the value interpolated at hole ${i} is an internal ` +
+            `'${nodeKindOf(v)}' node, which cannot stand in an expression position.`,
+        )
+      }
       parts.push(v)
     } else {
       // Everything else is DATA. This is the branch that must never grow a special case.
@@ -159,8 +221,10 @@ function ident(...args: readonly unknown[]): Fragment<unknown> {
   // Two accepted call shapes, neither of which splits a string on '.':
   //   ident('public', 'users')   ident(['public', 'users'])
   // There is deliberately NO shape that turns one string into several identifiers.
+  // Copied, never aliased: the node freezes what it is given, and freezing an array the caller
+  // still holds is a side effect on their data.
   const parts: readonly unknown[] =
-    args.length === 1 && Array.isArray(args[0]) ? (args[0] as readonly unknown[]) : args
+    args.length === 1 && Array.isArray(args[0]) ? [...(args[0] as readonly unknown[])] : args
   // Validates every part and throws InvalidIdentifierError on rejection, at the call site.
   const quoted = quoteIdentPath(parts)
   const node: IdentPart = mkNode({
@@ -213,13 +277,23 @@ function lit(v: number | bigint | boolean | null): Fragment<unknown> {
  * dependencies *and* zero `@types` dependencies, so the package must not require
  * `@types/node` to typecheck, and must not throw in a browser/worker runtime.
  */
-const IS_PRODUCTION =
-  (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[
-    'NODE_ENV'
-  ] === 'production'
+let isProduction: boolean | undefined
+
+/**
+ * Resolved on first use and cached, rather than at module-evaluation time: a bundler that hoists
+ * this module above the app's own configuration would otherwise pin `false` forever and keep
+ * paying for a stack capture per `unsafeRaw` in production.
+ */
+function inProduction(): boolean {
+  isProduction ??=
+    (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[
+      'NODE_ENV'
+    ] === 'production'
+  return isProduction
+}
 
 function captureOrigin(): string | undefined {
-  if (IS_PRODUCTION) return undefined
+  if (inProduction()) return undefined
   const stack = new Error('unsafeRaw').stack
   if (stack === undefined) return undefined
   // Skip "Error: unsafeRaw", captureOrigin, unsafeRaw -> the caller is line 3.
@@ -242,9 +316,13 @@ function unsafeRaw(text: string): Fragment<unknown> {
 
 const EMPTY = mkFragment(raw([''], [], null))
 
+/** Fragments carry no positional state (see the module docblock), so one instance serves every
+ *  `join()` call rather than a fresh allocation per call. */
+const DEFAULT_SEPARATOR = mkFragment(raw([', '], [], null))
+
 function join(
   fragments: readonly Fragment<unknown>[],
-  separator: Fragment<unknown> = mkFragment(raw([', '], [], null)),
+  separator: Fragment<unknown> = DEFAULT_SEPARATOR,
 ): Fragment<unknown> {
   if (fragments.length === 0) return EMPTY
   const parts: RawPart[] = []

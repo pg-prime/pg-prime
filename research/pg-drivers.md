@@ -1,5 +1,11 @@
 # PostgreSQL Driver Landscape for Node/TypeScript — Research & Recommendation
 
+> **Historical snapshot — 2026-08-14. Not maintained.**
+> This is a point-in-time study of software we do not control; version numbers, APIs and bug
+> reports below were accurate on that date and will drift. It is kept as the provenance for the
+> decisions in [`../design/`](../design/), not as a current reference. Conclusions that survived
+> review are carried into [`SUMMARY.md`](./SUMMARY.md) and cited from the design docs.
+
 **Project:** `pg-orm-ts` (PostgreSQL-only, type-safe TS ORM, minimal runtime deps, first-class migrations)
 **Question:** How should the ORM talk to PostgreSQL?
 **Date:** 2026-08-14

@@ -36,7 +36,7 @@ TS-code-as-schema, compiled to a canonical **schema IR** that migrations, intros
 
 | Feature | Tier | Acceptance criterion (v1: "done means…") |
 |---|---|---|
-| `defineTable` fluent column builders, chained `.notNull().default().primaryKey()` | **v1** | A 40-column table compiles with full autocomplete; column order in the IR is stable and deterministic. |
+| `defineTable` fluent column builders, chained `.nullable().default().primaryKey()` | **v1** | A 40-column table compiles with full autocomplete; column order in the IR is stable and deterministic. |
 | `$inferSelect` / `$inferInsert` / `$inferUpdate` on every table | **v1** | The three shapes are derivable from a table value with no import of a generated file. |
 | `.$type<T>()` cast escape hatch (jsonb, branded ids) | **v1** | `jsonb().$type<Config>()` narrows select/insert/filter without affecting the emitted DDL. |
 | Extra-config **array** form: `(t) => [index(...), check(...), unique(...)]` | **v1** | Table-level objects are declared in one array; the deprecated object form does not exist. |
@@ -383,207 +383,39 @@ Why this one and not the diff engine: diff-engine bugs are *bounded and detectab
 
 ## 12. Cross-check — every research PORT/ADAPT item is placed
 
-No silent drops. Grouped where a single decision covers several verbatim rows; **rejections are marked ✗ with a reason**.
+This was a one-time audit: every PORT/ADAPT item across the six research documents was walked and
+assigned to a tier above. **162 items, no silent drops** — `prisma.md` 39 · `mikroorm.md` 28 · `drizzle.md` 25 · `kysely.md` 30 · `pg-drivers.md` 15 · `migrations.md` 25.
 
-### 12.1 `prisma.md`
+The full item-by-item matrix has been removed as redundant: each row's payload was a pointer back
+to §3–§10 of this document, which is where the decisions actually live and stay maintained. Only
+one item was rejected outright, and its reasoning is not recorded anywhere else:
 
-| Research item | Verdict there | Placed |
+| Research item | Verdict | Reason |
 |---|---|---|
-| Declarative reviewable schema as SoT; compile to deterministic IR | PORT | §3 v1 (schema IR) |
-| Bidirectional relations with `onDelete`/`onUpdate`; `@map`/`@@map` decoupling | PORT | §3 v1 |
-| `Unsupported` → registerable codec API; extensions as a core concept | ADAPT | §3 v1 (`definePgType`, extensions) |
-| Partial + expression indexes; `CHECK`; `EXCLUDE`; generated columns | PORT day one | §3 v1 |
-| Views + matviews as read models; triggers/functions as *ownership* not bodies | PORT / ADAPT | §3 v1 (typed read-only entities; `sql/` lane) |
-| RLS policies in the schema | PORT | §3 v1 via `sql/` lane; typed DSL v1.x |
-| `externalTables` / `@@ignore` ownership markers | PORT | §3 v1 (provenance tags) |
-| Exact `select`/`include` narrowing — but by inference, not emission | PORT / ADAPT | §5 v1, §4 v1 |
-| Zero codegen except describe-cache + migration artifacts | ADAPT | §4 (`never` on codegen-as-primary; TypedSQL v1.x) |
-| TypedSQL + committed describe cache + composable builder for dynamic cases | PORT / ADAPT | §4 v1.x (cache); §5 v1 (builder covers dynamic today) |
-| `BigInt` / `numeric` as per-column codec choice | ADAPT | §4 v1 (`int8`→`bigint`, `numeric`→`string`), pluggable v1.x |
-| `strictUndefinedChecks` unflagged; `omit` | ADAPT / PORT | §4 `never` (undefined always an error); §5 v1 (`omit`) |
-| Nested writes; relation filters `some`/`every`/`none`/`is`/`isNot` | PORT | §6 v1.x; §5 v1 |
-| Composable predicate values instead of `undefined`-spreading | ADAPT | §5 v1 (expression builder + object form) |
-| LATERAL + `json_agg` as default, with an escape hatch | PORT / ADAPT | §5 v1 (only strategy in v1; escape hatch deferred to v1.x — **narrowed deliberately**, PG-only means no fallback is needed) |
-| `_count` with filters; grouped selection allowed; `DISTINCT ON` over in-memory distinct | PORT / SKIP | §5 v1 |
-| `upsert` on `ON CONFLICT` + `upsertMany` day one | ADAPT | §6 v1 |
-| CTEs / windows / `UNION` / recursive in the SQL lane | PORT into builder | §5 v1 |
-| Streaming results (Promise + AsyncIterable) | PORT | §5 v1.x (adapter `stream()` slot in v1) |
-| Cursor pagination with composite keys | PORT | §5 v1 |
-| `$extends` → query interception + SQL-expressible computed fields | ADAPT | §5 v1 (`onQuery`); computed fields v1.x; full plugin API v2 |
-| Interactive tx with isolation; savepoints; serializable retry helper; no 5s default timeout | PORT / ADAPT / SKIP | §7 v1 |
-| Inspectable query plan object before execution | PORT | §5 v1 (`.compile()`) |
-| Plain hand-editable SQL files; `migrate diff --from/--to`; dev/deploy split | PORT | §8 v1 |
-| Shadow-DB technique without the requirement; baselining as one command | ADAPT | §8 v1 (4-tier fallback; `migrate baseline`) |
-| Ledger with checksums; `resolve --applied` recovery; advisory lock w/ configurable timeout | PORT / ADAPT | §8 v1 |
-| Drift detection gated on ownership markers | ADAPT | §8 v1 + §3 provenance tags |
-| Best-effort `down.sql` for local iteration | ADAPT | §8 **v1.x, dev-loop only** — v1 is up-only per baseline; `deploy` refuses it |
-| Precheck/execute/postcheck with idempotent retry | PORT high value | §8 v1.x (v1 ships resumable `txmode none` + plan validation, which covers the acute case) |
-| Additive/destructive/data classification; declarative op list compiled to **SQL** | PORT / ADAPT | §8 v1 |
-| Hash-graph history (branch-mergeable) | PORT | §8 v1.x (v1: journal ordering + duplicate-timestamp merge) |
-| First-class data migrations / backfill placeholders | PORT | §8 v1.x (v1 emits backfill stubs in the volatile-default rewrite) |
-| Real rename support (annotation or prompt), never drop+add | build it | §8 v1 |
-| CIC outside a transaction | PORT | §8 v1 (`txmode none` + lock-aware generation) |
-| Rename-preserving introspection (`db pull`) | PORT | §10 v1 |
-| `db push` renamed and fenced | PORT w/ fence | §10 v1 |
-| No native binaries/WASM; driver adapters; extension packs; TS config file | PORT | §9 v1, §3 v1, §10 v1 |
-| Emit only what must be emitted, gitignorable + CI-reproducible without a DB | ADAPT | §4 (`never` on required codegen); §8 v1 (plan artifacts are committed and DB-free) |
-| Machine-readable error codes with suggested fixes | PORT | §9/§10 v1 |
+| Shell out to Atlas / migra / pg-schema-diff / pgschema | ✗ | §8 `never`. Atlas paywalls exactly our object set (triggers, functions, RLS); migra is deprecated and models a thin subset; all of them add a Python or Go runtime dependency. Retained as **design references** for the hazard taxonomy and the fingerprinted plan artifact. |
 
-### 12.2 `mikroorm.md`
+Two of those tools stayed relevant after the fact. `pg-schema-diff` is the closest independent
+implementation of this design's hazard-classification and temp-database-validation ideas, and is
+the sanest external second opinion if one is ever wanted again. The need it would serve is
+otherwise met by 06 D10, which uses `pg_dump` — PostgreSQL's own serializer, no runtime dependency,
+and it models the whole DDL surface rather than a subset.
 
-| Research item | Verdict there | Placed |
-|---|---|---|
-| `Loaded<T, Hint>` populate-state typing; `LazyRef<T>` type-only marker | PORT | §4 v1 |
-| `defineEntity` fluent builder + `InferEntity` | PORT | §3 v1 (`defineTable` + inference) |
-| Migration snapshot files (generate N+1 while N pending) | PORT | §8 v1 |
-| `migration:check` CI gate | PORT | §8 v1 (`migrate check`) |
-| `migration:rollup` | PORT | §8 v1.x (checkpoints) |
-| Migrations with no EM access, SQL only; in-house runner (no umzug) | PORT | §8 v1 (structurally enforced) |
-| PG operator set (`$ilike`/`$overlap`/`$contains`/`$hasKey`) | PORT | §5 v1 |
-| `$some`/`$none`/`$every`/`$size` collection operators → `EXISTS` | PORT | §5 v1 |
-| Pessimistic lock matrix (`FOR UPDATE SKIP LOCKED`) | PORT | §5 v1 |
-| Filters (soft-delete, tenancy) applied to `JOIN ON` | PORT | §5 **v1.x** — correctness-critical, and half-done it is a data leak; `applyFilters()` opt-in is `never` |
-| Cursor pagination (Relay shape, `includeCount:false` default) | PORT | §5 v1 |
-| Virtual entities (SQL → typed shape) | PORT | §5 v1.x (v1: `sql` tag with a row codec covers it) |
-| `Opt` / `RequiredNullable` brands | PORT | §4 v1 |
-| Per-parent relation limiting via LATERAL | ADAPT | §5 v1 (`with: { posts: { limit } }`) |
-| Two loading strategies instead of three | ADAPT | §5 — **narrowed to one (LATERAL) in v1**; second strategy only if a benchmark demands it |
-| Explicit tx + isolation + savepoints (minus Spring propagation) | ADAPT | §7 v1 |
-| Explicit `serialize()` with fields/exclude/forceObject | ADAPT | §6 v1.x (v1 guarantees JSON-safe results) |
-| Matviews + `REFRESH` first-class | ADAPT | §3 v1 |
-| Tagged-template raw SQL with reusable fragments as the *primary* escape hatch | ADAPT | §5 v1 |
-| Own diff engine against `pg_catalog` + `--verbose` diff explainer | ADAPT | §8 v1 |
-| Entity generator with an extensibility hook | ADAPT, post-v1 | §10 v1.x |
-| Embeddables, JSON mode only | ADAPT | §3 v1.x |
-| Optimistic locking as explicit `.ifVersion(n)` | ADAPT | §6 v1 |
-| Own PG-only AST → SQL QueryBuilder (no Kysely dependency) | ADAPT | §5 v1 (operation-node IR) |
-| Seeders thin; Factory+faker as a separate package | ADAPT | §10 v1.x; faker `never` in core |
-| Four lifecycle hooks + a query-level logging hook | ADAPT | §6 v1.x (hooks); §10 v1 (`onQuery`) |
-| §8.2 explicit UoW payback: `insertMany`/`updateMany`/bulk upsert | design | §6 v1 |
-| §8.2 `saveGraph(root)` topological write; scoped read-dedup session | design | §6 v1.x |
+## 13. Resolutions
 
-### 12.3 `drizzle.md`
+All four items are decided; recorded so they are not re-opened.
 
-| Research item | Verdict there | Placed |
-|---|---|---|
-| `$inferSelect`/`$inferInsert`; `.$type<T>()`; column-builder chaining; extra-config array form | PORT | §3 v1 |
-| Shallower/nominal table type (cut error spew + instantiation cost) | ADAPT | §4 v1 (budget instrument) |
-| `pgView`/`pgMaterializedView`/`pgSequence`/`pgEnum`/`pgSchema`; policies/roles/privileges/`COMMENT ON` | PORT | §3 v1 (typed DSL for the first group; policies/roles via `sql/` lane in v1, typed v1.x) |
-| pgvector + PostGIS helpers | PORT | §3 v1 (pgvector) / v1.x (PostGIS) |
-| Ranges/multiranges/tsvector/tsquery/xml/money/bit builders | PORT differentiator | §3 v1 |
-| Triggers/functions/domains/composites/partitions/exclusions/`CREATE EXTENSION` | PORT differentiator | §3 v1 (`EXCLUDE` + extensions in the typed DSL; the rest via the `sql/` lane, structured diffing v1.x) |
-| `text({enum})` must emit a real constraint | ADAPT | §3 `never` on the lying form; native `pgEnum` in v1 |
-| `pgTableCreator` → first-class schema/namespace concept | ADAPT | §3 v1 (`defineSchema`); per-table prefixing v2 |
-| Core CRUD + joins + CTE + set ops + `$dynamic()` | PORT | §5 v1 |
-| Nested-select-shape join nullability | PORT | §5 v1 |
-| RQB v2 LATERAL + `json_agg`; `defineRelations` graph with `from`/`to`/`through`/`optional` | PORT | §5 v1, §3 v1 |
-| Object-literal `where` with the mass-assignment fix | ADAPT | §5 v1 (symbol-keyed operators + `unsafeFromJson`) |
-| **Unify the two query APIs** | ADAPT — the differentiator | §5 v1 (relation projection on any query) |
-| `sql<T>` must carry a real decoder; `sql.raw` → `unsafeRaw` | ADAPT | §4 v1, §5 v1 |
-| `.prepare()` + `sql.placeholder()` | PORT | §5 **v1.x** (v1 ships compiled-SQL caching, which captures most of the win pooler-safely) |
-| Transactions with isolation/access mode/savepoints; retry on serialization failure | PORT | §7 v1 |
-| `tx` vs `db` prevented at the type level | ADAPT | §7 v1 |
-| `generate`/`migrate`/`push`/`pull`/`check`/`export` verb set | PORT | §10 v1 |
-| `missing_hints` decision protocol + `--explain`, never hangs in CI | PORT — highest value | §8 v1 |
-| Programmatic SDK with the same envelope | PORT | §10 v1 |
-| MCP wrapper over the JSON envelope | ADAPT | §10 v2 (envelope itself is v1) |
-| Per-migration transactions + no-transaction escape | ADAPT | §8 v1 |
-| Advisory lock; `CREATE INDEX CONCURRENTLY`; consent before dropping any named object; topological sort of the full dependency graph | PORT the fix | §8 v1, §3 v1 |
-| Best-effort `down.sql` | PORT as differentiator | §8 **v1.x, dev-only** — baseline is up-only; a production `down` is `never` |
-| Data migrations first-class: typed, batched, resumable, separate ledger | ADAPT | §8 v1.x |
-
-### 12.4 `kysely.md`
-
-| Research item | Verdict there | Placed |
-|---|---|---|
-| `ColumnType<S,I,U>`; `Generated`/`GeneratedAlways`/`JSONColumnType`; derived optionality; `never`-erasure; `Selectable`/`Insertable`/`Updateable` | PORT | §4 v1 |
-| Tuple-wrapping; `DrainOuterGeneric`; readable type errors; version-gated type errors | PORT | §4 v1 |
-| Type-level savepoint stack; `never`-returning illegal methods | PORT | §7 v1 |
-| `ShallowDehydrateValue` JSON round-trip degradation | PORT | §4 v1 |
-| `AnyColumn`/`AnyColumnWithTable` scope unions | PORT | §5 v1 (expression-builder scoping) |
-| `.as()` combinators primary, alias strings as sugar | ADAPT | §5 v1 |
-| `$if` literal-condition overloads; invariant `O`; dynamic refs must not default to `{}` | ADAPT / fix | §4 v1 |
-| `ExpressionBuilder` callable+namespace; `and`/`or`/`not` both forms; CTEs widening the schema | PORT | §5 v1 |
-| `jsonArrayFrom`/`jsonObjectFrom`; subquery-vs-`LEFT JOIN LATERAL` choice; `json_agg` vs `jsonb_agg` | PORT / ADAPT | §5 v1 (relation projection owns the choice) |
-| `excluded` virtual table; `onConflict` breadth; `RETURNING` reusing `SelectExpression` | PORT | §6 v1 |
-| `sql` tag always-parameterised with `unknown` default and explicit `ref`/`lit`/`raw` | PORT | §5 v1 |
-| `InferResult` + `.compile()` split; `$call` | PORT | §5 v1 |
-| Transaction API (`setIsolationLevel`, `setAccessMode`) | PORT | §7 v1 |
-| **ALS-backed ambient transaction context as first-class** | ADAPT | §7 **v1.x, opt-in, transaction-propagation only** — explicit handles stay canonical; ALS for entity state is `never` (§6). This is the one place the two research docs disagreed; resolved here. |
-| Expression-level fragments generic over table | fix Kysely's worst gap | §5 v1 |
-| Exact aggregate types; per-operator operand table; PG operator strings | fix / PORT | §4 v1, §5 v1 |
-| `innerJoinLateral`/`leftJoinLateral` | PORT | §5 v1 |
-| Introspection as bootstrap + drift check; deterministic output; drift check that actually fails | PORT / fix | §10 v1 (`pull`), §8 v1 (`check`, fingerprints) |
-| Emitting `Selectable`/`Insertable`/`Updateable` variants; views/matviews non-insertable | PORT | §4 v1, §3 v1 |
-| Composite types, domains, ranges, routines in introspection | PORT | §8 v1 (IR + catalog completeness diagnostics) |
-| Ephemeral-PGlite codegen (unclaimed opportunity) | PORT | §9 v1.x + §8 v1 (`--shadow=pglite` option; internal test suite from day one) — **not** shipped as a codegen product, since our types don't need a DB |
-| PG advisory-lock migration locking with `lock_timeout` | PORT | §8 v1 |
-| Transactional DDL by default; filename-ordered migrations; Migrator as a library | PORT | §8 v1 |
-| Per-migration schema snapshot **types** | ADAPT, differentiator | §4 v2 |
-| Diffing as editable generated migrations + destructive linting + CONCURRENTLY advice; DDL builder breadth | ADAPT | §8 v1 |
-| Zero runtime deps; structural driver interface; `sideEffects:false`; provenance; ESM-only | PORT | §9 v1, §10 v1 |
-| Sanitizers are security-critical, fuzz them | fix | §10 v1 |
-| Operation-node IR + visitor transformer | PORT | §5 v1 (IR); visitor plugin API v2 |
-| Two-hook plugin interface **plus a type-level channel** | ADAPT | §5 v2 |
-| Schema qualification as a typed first-class concept (not `WithSchemaPlugin`) | ADAPT | §3 v1 |
-
-### 12.5 `pg-drivers.md`
-
-| Research item | Verdict there | Placed |
-|---|---|---|
-| Thin adapter interface (4 driver + 2 connection methods); structural `PgLikePool`; `pg` as sole v1 adapter | PORT | §9 v1 |
-| Array row mode | PORT | §9 v1 |
-| ORM-owned codec registry replacing driver parsers; never mutate globals; OID override table | PORT | §4 v1, §9 v1 |
-| User enum/domain/composite OIDs resolved from the schema catalogue | PORT (the moat) | §4 v1 |
-| pgx-style explicit exec modes with a pooler-safe default | PORT | §9 v1 |
-| `describe()` (Parse+Describe+Sync) on the adapter | PORT | §9 v1 |
-| `RemoteCallback` one-function escape hatch | PORT | §9 v1 |
-| Two-URL model routed by feature | PORT | §9 v1 |
-| Runtime defaults: no reset query, TLS require, pool sizing guidance, `pg_advisory_xact_lock` | PORT | §9 v1, §8 v1 |
-| Instrumented-`Client` injection seam for tracing/metrics | PORT | §10 v1 (`onQuery` is the sanctioned surface) |
-| Binary result format for the hot numeric/temporal subset | ADAPT | §9 v1.x |
-| `LISTEN`/`NOTIFY` and `COPY`, documented session-pooling-only | ADAPT | §9 v1.x, §6 v1.x |
-| PGlite adapter for our own fast test suite | deferred/internal | §9 v1.x (internal from day one) |
-| `postgres.js` adapter published as an interface, community-owned | deferred | §9 v1.x |
-| Own wire client | revisit post-v1 | §9 v2 / probably never |
-
-### 12.6 `migrations.md`
-
-| Research item | Verdict there | Placed |
-|---|---|---|
-| TS DSL + `sql/` raw-DDL directory in one desired-state model, one canonical IR | recommendation | §3 v1 |
-| Provenance tags + catalog completeness check as diagnostics | steal from pg-delta | §3 v1 |
-| `pg_catalog`-only introspection, PG15 floor | v1 | §8 v1 |
-| Diff engine over the IR (evaluate `@supabase/pg-delta` first) | v1 | §8 v1 + §13 open decision |
-| 4-tier shadow fallback (env URL → CREATE DATABASE → temp schema → offline) | v1 | §8 v1 |
-| `.sql` + `.plan.json` with from/to fingerprints; apply refuses on fingerprint mismatch | v1 | §8 v1 |
-| No per-migration full snapshots; checkpoints instead | v1 / v1.1 | §8 `never` (snapshots) + v1.x (checkpoints) |
-| Filename = timestamp + slug; journal ordering; duplicate timestamps merge | v1 | §8 v1 |
-| Header directives (`txmode`, `nolint`, `checkpoint`, `timeout`) | v1 | §8 v1 |
-| `renamedFrom` annotations + structured non-interactive failure | v1 | §8 v1 |
-| Linter: ~15 Squawk rules + Atlas DS/MF/BC severities, `nolint` escape | v1 | §8 v1 |
-| Lock-safe generation: CIC, FK/CHECK `NOT VALID`+`VALIDATE`, `SET NOT NULL`, UNIQUE-via-index, volatile defaults | v1 | §8 v1 |
-| Timeout preamble + retry-on-lock-timeout | v1 | §8 v1 |
-| Plan validation against the shadow DB before writing | v1 | §8 v1 |
-| Destructive ops require acknowledgement recorded in the plan | v1 | §8 v1 |
-| Runner: direct connection, `pg_advisory_xact_lock`, per-file tx, ledger schema, checksum drift policy, resumable `txmode none` | v1 | §8 v1 |
-| `migrate baseline`; `migrate verify`; `migrate lint`; `migrate plan --against=<fingerprint>` | v1 | §8 v1 (the `--against` form is folded into fingerprint checking) |
-| Up-only, no down in v1 | v1 | §8 v1 |
-| Views/matviews/functions/triggers as **repeatable** migrations before attempting true diffing | v1.1 | §3/§8 **v1** — pulled forward; it is what makes v1's DDL-coverage claim true |
-| RLS policies in the IR | v1.1 | §3 v1 via `sql/` lane; typed DSL v1.x |
-| `migrate doctor`; import from drizzle-kit/Prisma; data-migration lane; optional dev-only `down` | v1.1/v2 | §8 v1.x |
-| Partitions, grants/roles, publications, `--format pgroll`, multi-schema fan-out, PG19 `REPACK` | v3/speculative | §3 v1.x–v2, §8 v1.x–v2 |
-| graphile-migrate idempotent model for functions/triggers | ADAPT | §8 v1 (repeatable lane) |
-| Shell out to Atlas / migra / pg-schema-diff / pgschema | ✗ | §8 `never` (Atlas Pro paywall on exactly our objects; migra deprecated; Python/Go runtime deps) — retained as **design references** for hazard taxonomy and the fingerprinted plan artifact |
-| `--shadow=docker` (testcontainers) | recommendation | §8 v1 (used by `migrate verify`) |
-
-**Items explicitly rejected rather than tiered:** the four "shell out to an external differ" options (reason above); Prisma's drop+add rename plan (replaced with real renames); Prisma's `select`/`include` exclusivity, in-memory `distinct`, three-null JSON, `Decimal` instances, and 5s tx timeout (all `never`, §4–§7); MikroORM's `applyFilters()` opt-in, `flushMode: AUTO`, `$re`, `EntitySchema`, decorators, `ts-morph`, Spring propagation, polymorphic/STI/TPT, and any Kysely runtime dependency (all `never`); Drizzle's snapshot JSON, `_journal.json`/`kit up` format upgrades, `.mapWith()`, codec union table, bundled Redis cache, closed-source Studio, and six-dialect packaging (all `never`); Kysely's `SqlBool`, `CamelCasePlugin`, `ParseJSONResultsPlugin`, corrective plugins, thin `DatabaseIntrospector`, and the full `Dialect` abstraction (all `never`); `Bun.sql` and global `setTypeParser` (§9 `never`).
-
----
-
-## 13. Open decisions needing the lead's sign-off
-
-1. **`@supabase/pg-delta`: adopt, fork, or reference?** Recommendation: **prototype in week 1 against our v1 object set; adopt only as a CLI-side optional dependency, never in the runtime package.** Default plan is our own diff engine seeded by pg-delta's data model and catalog queries (MIT, attributable). Decision rule: adopt only if the prototype round-trips ≥90% of the v1 object list with deterministic output; otherwise reference-only.
-2. **Relation-projection depth cap.** If the type budget (§11.5) cannot absorb unbounded depth, do we ship a documented depth limit in v1 or slip? Recommendation: **ship the cap, document it, raise it in 1.x.**
-3. **The performance bar, stated numerically.** "Near-raw-driver" needs a number before it can be a release gate. Recommendation: **≤1.15× raw `pg` p99 on a single-row indexed lookup; ≤1.3× on a 1k-row relation-projected read.** Needs sign-off because it constrains the compiled-SQL cache design.
-4. **Package layout.** One package (`pg-orm-ts`) with subpath exports, or runtime + CLI split? Recommendation: **split** — the CLI may take dependencies the runtime may not, and "zero runtime dependencies" must remain literally true of the thing that ships to production.
+1. **`@supabase/pg-delta`: adopt, fork, or reference?** — **None of the three.** We build the diff
+   engine in-house (00-overview sign-off 7). pg-delta ran as a dev-time differential oracle for one
+   release and was removed on 2026-08-25, superseded by the `pg_dump` witness (06 D10), which
+   covers PostgreSQL's entire DDL surface instead of an alpha's modelled subset — and costs no
+   dependency.
+2. **Relation-projection depth cap.** — **No cap needed.** The type budget absorbs depth: the
+   marginal cost of one more usage is flat at 25, 100 and 300 tables (measured ratio **1.00**
+   against a 1.15 gate), because no whole-schema type parameter is threaded through the builder.
+   Revisit only if the ratio regresses once the fluent builder lands.
+3. **The performance bar, stated numerically.** — **≤1.15× raw `pg` median, ≤1.30× p99.** Carried
+   into 08's 1.0 release list as a gate. Not yet measurable: there is no executor to benchmark.
+4. **Package layout.** — **Four packages**: `pgormjs` (runtime, zero deps and zero peer deps),
+   `@pgorm/kit` (CLI, may take dependencies the runtime may not), `@pgorm/testing`,
+   `create-pgormjs`. "Zero runtime dependencies" stays literally true of the artefact that ships to
+   production; verified — `packages/pgorm/src` has no non-relative imports at all.

@@ -1,0 +1,1 @@
+if-drops-column.ts(8,61): error TS2339: Property 'execute' does not exist on type 'OrmTypeError<"$if(boolean, …) would drop the already-selected column \"id\": select() replaces the projection, so the branch must re-select every column the query already has">'.

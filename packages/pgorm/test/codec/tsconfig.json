@@ -5,7 +5,7 @@
   },
   "include": [
     "./**/*.ts",
-    "../driver/_harness.ts",
+    "../live/_harness.ts",
     "../../src/codec/**/*.ts",
     "../../src/driver/**/*.ts"
   ]

@@ -36,7 +36,7 @@
  * The limit is measured in **UTF-8 bytes**, not code units and not code points.
  */
 
-import { InvalidIdentifierError } from './errors.js'
+import { InvalidIdentifierError, UnsafeLiteralError } from './errors.js'
 
 /** `NAMEDATALEN - 1`. The maximum number of UTF-8 bytes PostgreSQL stores in a `name`. */
 export const MAX_IDENT_BYTES = 63
@@ -175,14 +175,24 @@ export function quoteIdentPath(parts: readonly unknown[]): string {
  * NUL and lone surrogates are rejected rather than mangled, same as identifiers.
  */
 export function quoteStringLiteral(s: string): string {
+  // The package's own hierarchy, with a `code`, rather than TypeError/RangeError: a consumer
+  // catching `PgOrmError` should not have to know that one quoter throws host errors.
   if (typeof s !== 'string') {
-    throw new TypeError(`quoteStringLiteral: expected a string, received ${typeof s}`)
+    throw new UnsafeLiteralError(
+      `quoteStringLiteral: expected a string, received ${typeof s}`,
+    )
   }
   if (hasNul(s)) {
-    throw new RangeError('quoteStringLiteral: string contains U+0000')
+    throw new UnsafeLiteralError(
+      'quoteStringLiteral: string contains U+0000, which cannot be transmitted in the ' +
+        'PostgreSQL wire protocol',
+    )
   }
   if (hasLoneSurrogate(s)) {
-    throw new RangeError('quoteStringLiteral: string contains an unpaired UTF-16 surrogate')
+    throw new UnsafeLiteralError(
+      'quoteStringLiteral: string contains an unpaired UTF-16 surrogate, which has no UTF-8 ' +
+        'encoding',
+    )
   }
   const quoted = s.replaceAll("'", "''")
   return s.includes('\\') ? `E'${quoted.replaceAll('\\', '\\\\')}'` : `'${quoted}'`

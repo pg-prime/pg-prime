@@ -1,0 +1,33 @@
+{
+  "_source": "design/04 §4 + D9. `node tools/type-errors/record.mjs` re-records; the test fails on any drift.",
+  "_gatedOn": ["5.9.3", "7.0.2"],
+
+  "sentence": {
+    "_why": "D9 as it applies to OUR branded messages: the sentence inside OrmTypeError<'…'> is the thing a user reads, and it must fit on one terminal line.",
+    "maxLines": 1,
+    "maxChars": 300
+  },
+
+  "diagnostic": {
+    "_why": "The whole tsc output for one mistake. D9's evidence is 'ours is 1 line, 293 chars' for E1; the default here allows TypeScript's own one- or two-line elaboration (which is usually the useful part — see op-class-gate) but not a cascade.",
+    "maxLines": 3,
+    "maxChars": 450,
+    "exceptions": {
+      "invariance-rebind": {
+        "maxLines": 5,
+        "maxChars": 1250,
+        "_why": "The worst diagnostic in the surface, and knowingly so. TypeScript prints both `Query<…>` operands, each carrying the whole `Schema<…>` type argument, and then reports TS2719 ('two different types with this name') because after truncation they print identically. Lines 3-5 ARE the actionable part: `Property 'email' is missing in type '{ id: UserId; }'`. Kept because the alternative — covariant `O` — produces NO diagnostic at all and a silently wrong result type (kysely.md §1.8 pattern 3); `$if` and `$call` exist so this is reachable only by writing the pattern deliberately."
+      }
+    }
+  },
+
+  "design04Section4": {
+    "_why": "design/04 §4's own head-to-head, so drift against the published claim is visible. Totals across E1+E2+E3, `tsc --pretty false`, TS 5.9.3.",
+    "cases": ["e1-misspelled-column", "e2-wrong-operand-type", "e3-generated-always-insert"],
+    "design04": { "lines": 3, "chars": 641 },
+    "kysely_0_29_5": { "lines": 10, "chars": 1402 },
+    "drizzle_0_45_2": { "lines": 14, "chars": 3226 },
+    "maxLines": 3,
+    "maxChars": 950
+  }
+}

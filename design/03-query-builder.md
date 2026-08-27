@@ -1,5 +1,10 @@
 # 03 — Query Building Engine
 
+> **Amended 2026-08-25 — nullability inverted.** Examples here originally used `.notNull()`;
+> sign-off 4 made **NOT NULL the default** with `.nullable()` opting in. The `.notNull()` calls
+> have been dropped; a column that is meant to be nullable in these examples would carry
+> `.nullable()`. See 05 §0.
+
 **Agent:** 03 (query builder / compiler / `sql` tag)
 **Date:** 2026-08-14
 **Status:** DESIGN DECISIONS — not a survey. Every section below is a commitment, or an explicit punt.
@@ -227,6 +232,21 @@ export type FrameBound = { k: 'unbounded preceding' } | { k: 'current row' }
 
 Node count: 5 statements + 5 from-items + 1 join + 24 expressions + 4 clause types ≈ **39**. Every node is a frozen object literal; there are no node classes and no methods, which keeps them cheap to allocate and trivial to structurally share when a builder method returns a new tree.
 
+
+> **AS BUILT (WS4, `09` §3.4).** The node set grew four members, all of them things this section
+> declared in prose and the spike had not implemented: `SelectNode.windows` (a `WINDOW` clause),
+> `FuncNode.columns` (`unnest($1, $2) as "v"("a","b")` — the bulk-update source), and
+> `ProjectionItem.group` + `GroupPlan`, which is fork F2's `nest({...})`. A group is the one
+> projection item that is **not** 1:1 with a result column: it contributes `n` columns and one
+> `FieldPlan`, so `hoist.ts` threads a column index through the walk rather than taking it from the
+> loop counter. `GroupPlan.sentinel` carries the NOT NULL witness that decides whether a
+> `nestNullable` object is `null` — see §2.2's note.
+>
+> `update`, `delete`, `setop`, `with`, `on conflict`, the `values` and set-returning-function FROM
+> items and the `unnest` insert source were all declared here and are now implemented; `case`,
+> `row` and `array` remain declared-not-implemented and fail with `UnsupportedNodeError` naming the
+> kind.
+
 ### 1.3 The compiler contract
 
 ```ts
@@ -251,8 +271,18 @@ export interface Compiled<Row> {
 }
 
 export type Bind =
-  | { k: 'value'; encoded: string | Uint8Array | null }
+  | { k: 'value'; encoded: string | Uint8Array | null; oid: number | undefined }
   | { k: 'slot'; name: string; codec: Codec }
+
+/**
+ * WS2 addition. `oid` is the codec's `paramOid` — the type this `$n` is DECLARED as in `Parse`.
+ * `paramTypesOf(binds)` produces the positional array the driver sends, spelling "no declared
+ * type" as `0` ("unspecified, infer from context"); measured indistinguishable from 705.
+ *
+ * It is not cosmetic. With no declared type PostgreSQL coerces an untyped `$n` to whatever the
+ * other operand is, which hides operand-type nonsense until the day a codec changes. Declaring the
+ * type is what turned the compiler fuzz's plan-only oracle into one that can fail (`09` §3.2).
+ */
 
 /** Decode plan. Indexes are positions in the driver's array row. */
 export type ResultShape =
@@ -301,6 +331,18 @@ const rows = await byEmail.execute({ email: 'a@b.c' })  // no AST walk, no compi
 **Deliberately *not* implemented: a global structural-fingerprint cache.** Computing a fingerprint of an AST costs the same order as compiling it, and a fingerprint cache keyed on anything less than the full tree is a correctness bug waiting to happen (wrong SQL for a similar-looking query is the worst possible failure mode). If profiling later shows compile time matters in a real workload, the answer is `.prepare()`, which is explicit and exact.
 
 **Param-count ceiling.** The wire protocol caps parameters at 65535 (int16). The compiler tracks the bind count and, on overflow, throws a typed `TooManyParametersError` naming the offending statement and suggesting `strategy: 'unnest'` (§2.6). Bulk helpers auto-chunk before they can hit it.
+
+> **AS BUILT (WS4, `09` §3.4).** (a) ships: `.compile()` memoises on the builder *instance*, and so
+> does `.toAst()`. Neither can go stale, because a builder method returns a **new** instance over a
+> new frozen state record — copying a dozen pointers, never the AST, whose nodes are frozen at
+> construction and therefore shareable by reference. `toAst()` is pure and deterministic: scope
+> lambdas run at *call* time, exactly once, so two `.compile()` calls cannot produce two queries.
+>
+> The param-count error now says `compiled insert uses 65538 bind parameters …` — naming the
+> statement kind, because the fix differs by kind (an INSERT wants `strategy: 'unnest'`; a SELECT
+> with a huge list already gets `= any($1)`).
+>
+> (b) `.prepare()` and (c) the description cache are WS6's and are not built.
 
 ### 1.5 Type-level machinery (risk #1 mitigation)
 
@@ -351,23 +393,23 @@ Setup used by every example below (declaration surface is agent 05's; shown only
 // schema.ts
 export const users = table('users', {
   id:        int8().generatedAlwaysAsIdentity().primaryKey(),
-  email:     citext().notNull().unique(),
-  name:      text().notNull(),
-  role:      pgEnum(userRole)().notNull(),
-  tags:      text().array().notNull().default([]),
-  meta:      jsonb<UserMeta>().notNull().default({}),
-  createdAt: timestamptz().notNull().defaultNow(),
+  email:     citext().unique(),
+  name:      text(),
+  role:      pgEnum(userRole)(),
+  tags:      text().array().default([]),
+  meta:      jsonb<UserMeta>().default({}),
+  createdAt: timestamptz().defaultNow(),
   deletedAt: timestamptz(),
 })
 
 export const posts = table('posts', {
   id: int8().generatedAlwaysAsIdentity().primaryKey(),
-  authorId: int8().notNull().references(() => users.id),
-  title: text().notNull(),
-  body: tsvectorBacked(text()).notNull(),
-  amount: numeric(12, 2).notNull(),
-  published: bool().notNull().default(false),
-  createdAt: timestamptz().notNull().defaultNow(),
+  authorId: int8().references(() => users.id),
+  title: text(),
+  body: tsvectorBacked(text()),
+  amount: numeric(12, 2),
+  published: bool().default(false),
+  createdAt: timestamptz().defaultNow(),
 })
 
 export const relations = defineRelations({
@@ -412,6 +454,32 @@ Notes on shape:
 - `in([])` compiles to `false`, by construction. (Kysely ships a plugin for this; it should not need a plugin — kysely.md §5.1.)
 - Comparison RHS accepts a value, a ref, or an expression: `u.createdAt.gt(otherRef)` needs no separate `whereRef`.
 
+> **AS BUILT (WS4, `09` §3.4).** The example above predates two decisions and is kept for its
+> *shape*. As shipped:
+>
+> ```ts
+> const rows = await db
+>   .from(db.h.users)                                   // a HANDLE, not the bare table — see below
+>   .select(({ users: u }) => ({ id: u.id, email: u.email, joined: u.createdAt }))
+>   .where(({ users: u }) => and(isNull(u.deletedAt), inList(u.role, ['admin', 'owner'])))
+>   .orderBy(({ users: u }) => [desc(u.createdAt), asc(u.id)])
+>   .limit(20)
+>   .execute()
+> ```
+>
+> Operators are free functions (fork F1, §2.9's amendment), so `u.deletedAt.isNull()` is
+> `isNull(u.deletedAt)` and `u.role.in([...])` is `inList(u.role, [...])`. And `db.h.users` rather
+> than `users`: WS1 typed the builder against a *handle* — a `[SCHEMA]` + `[NAME]` pair — because
+> relations live on the schema and a bare `pgTable(...)` would silently have none. `pgOrm({ schema })`
+> puts the handles on `db.h`, so a query file still needs one import.
+>
+> Everything else holds byte for byte: the compiled SQL is Appendix A's, `in([])` is the constant
+> `false`, and a comparison's right-hand side takes a value, a ref or an expression. `u.$all` is
+> spelled `.selectAll('users')` (every column of one alias, nullable as a whole when that alias was
+> left-joined); a `{ ...u.$all }` spread would have to be a runtime record, and the builder's scope
+> objects are cached per `(table, alias)` precisely so that they are not rebuilt per query.
+> Repeated `.where()` conjoins and repeated `.orderBy()` appends — see `09` §3.4 decision 3.
+
 ### 2.2 Joins
 
 ```ts
@@ -435,11 +503,29 @@ const rows = await db
 
 Left-join nullability propagates to the **whole nested literal object**, not to each field individually (`author: {…} | null` when `users` is left-joined). Drizzle gets this right and almost everyone else gets it wrong; drizzle.md §7 marks it **PORT**. Nested object literals in the projection are *grouping only* — they compile to plain columns and are assembled by the decoder positionally, with zero SQL cost. Relations (§2.3) are a different, explicitly-marked mechanism.
 
+> **AMENDED 2026-08-26 — fork F2 decided against this spelling (09 §3.0).** Grouping is written `author: nest({ id: u.id, name: u.name })`, per 04 §2.1, not as a bare literal. Bare literals force `Project<P>` to be conditional *and* recursive, and measured that costs **+16 % to +22 %** on every projection in the program (and +4.8 % / +9.3 % whole-program). Semantics are unchanged, including the whole-object left-join nullability above — `nestNullable({…})` is the left-joined form. Six characters, 16–22 %.
+
+> **AS BUILT (WS4, `09` §3.4).** Whole-object left-join nullability needs a *witness* at runtime,
+> and the witness is a column the schema declares NOT NULL: if it is null in the result row, the
+> LEFT JOIN found nothing and the whole object is `null`. Drizzle's rule — "the object is null when
+> every field is null" — agrees on every single-alias group and is wrong the moment one group spans
+> two left-joined aliases, which is why `GroupPlan.sentinel` exists (R10 M6 survived without it).
+> A group projecting no NOT NULL column falls back to the all-null rule, which is the honest answer
+> there. `nest({...})` deliberately does not do any of this: a grouped ref off a left-joined alias
+> is `T | null` per field, because the row exists and that one column is null.
+>
+> **Lateral joins**: derived tables ship (`.from(db.from(posts).select(…).as('recent'))`), and
+> `.innerJoinLateral` / `.leftJoinLateral` do not — the emitter handles `lateral`, the builder has
+> no method for it yet. `right` / `full` / `cross` joins likewise: the emitter has all four, `Query`
+> offers `innerJoin` and `leftJoin`, which is what this section shows.
+
 Lateral joins are first-class: `.innerJoinLateral(sub, alias, on)` / `.leftJoinLateral(...)`, where `sub` is a select builder that may reference outer scope refs.
 
 ### 2.3 Relational projection — the differentiator
 
 **This is D2.** A relation accessor lives on the table scope next to the columns, and returns an *expression* usable anywhere in a projection. Because it is an expression, it composes with everything else in the same query: aggregates, window functions, `GROUP BY`, CTEs, set operations, `RETURNING`.
+
+> **CONFIRMED 2026-08-26 — fork F3 decided in favour of this spelling (09 §3.0).** 04 §2.4 proposed a second lambda parameter (`(t, r) => r.u.posts(…)`) "specifically to avoid an intersection". Measured, that reason does not survive: the intersection is instantiated once per (alias, table) and cached, while the second parameter forces `RelsNs<S>` on **every** `select`, including the majority that project no relation. On-scope is cheaper or equal on every shape and both compilers (−1.1 % to −4.2 % per query, −0.4 % / −2.0 % whole-program). The price is that a relation may now collide with a column name — §4.1's "fail loudly on a relation/column name collision" is what pays for this fork and is owed by WS5.
 
 ```ts
 const feed = await db
@@ -471,6 +557,23 @@ const feed = await db
   .limit(20)
   .execute()
 ```
+
+> **AS BUILT 2026-08-26 (WS5, `09` §3.5).** Four spelling deltas in the sketch above, each with a
+> reason that is not about relations:
+> - **`u.posts.many(q)`, `u.posts.count()`** — the accessor is an *object*, not a callable. `09`'s
+>   own goal line says so; WS1 had shipped a callable picker and every probe, golden and bench arm
+>   moved with it. A to-many has no `.one()` and a to-one has no `.many()`: `RelAccessor` splits on
+>   `kind` before either interface is instantiated.
+> - **`over(fn.rank(), w => …)`** rather than `fn.rank().over(…)` — fork F1 (§2.8's amendment).
+> - **the sub-query lambda takes bare refs**, not `({ posts: p })`. A relation sub-query has exactly
+>   one source, so an alias key would be a destructure for nothing; the refs come with the child's
+>   *own* relation accessors merged in, which is fork F3 held one level down and what makes
+>   `p.comments.count()` read as one expression.
+> - **`.limit(3)` inside the relation is a bind**, `$1`, exactly as the compiled SQL below shows.
+>
+> `...u.$all` is not implemented; `.all()` is its relation-side equivalent and is what `09` WS5's
+> goal line asks for. A `$`-prefixed member on every scope object is a decision about the *column*
+> surface, and it is not this section's to make.
 
 Result type (exact, no `Partial`, no dehydration):
 
@@ -546,6 +649,16 @@ order by "users"."created_at" desc
 limit $2
 ```
 
+> **AS BUILT 2026-08-26 (WS5, `09` §3.5).** This is the emitted SQL, with the lateral aliases
+> generated rather than named: `pc` → `_r0`, `rev` → `_r1`, `lp` → `_r2`, `cc` → `_r3`, `au` → `_r4`.
+> An accessor cannot name its own lateral — it does not know how many siblings precede it — so
+> `planSelect` assigns them left to right and shares one number between the occurrences CSE
+> collapsed. `test/query/__sql__/feed.sql` is this query, byte for byte, compiled from the builder.
+>
+> One other difference: `commentCount` is cast where it is *used* (`"_r3"."v"::text`, inside
+> `json_build_object`) rather than where it is produced (`count(*)::text as "v"`). Same value, and
+> it falls out of the existing per-codec JSON cast rather than needing a second rule.
+
 Five design points, each deliberate:
 
 1. **`LEFT JOIN LATERAL … ON TRUE`, not a correlated scalar subquery in the select list.** Kysely's `jsonArrayFrom` emits the latter and never uses its own `leftJoinLateral`; kysely.md §2.3 flags this as an opportunity left on the table, because for large fan-outs `LEFT JOIN LATERAL` plans better. Drizzle RQB v2 uses lateral. We use lateral, and expose `{ strategy: 'lateral' | 'subquery' }` per relation projection for the rare case where the planner prefers the other.
@@ -568,6 +681,26 @@ Five design points, each deliberate:
 
 6. **Identical relation subexpressions are emitted once.** `revenue: u.posts.sum(p => p.amount)` and the `rank()` window that orders by the same expression share one `rev` lateral, because the compiler keys hoisted laterals on a structural digest of `(relation, predicate, projection)`. This is the *only* place the compiler does common-subexpression elimination, and it is confined to nodes the compiler itself generated — never to user expressions, where deduplication could change semantics (volatile functions, `random()`, `nextval()`).
 
+> **AS BUILT 2026-08-26 (WS5, `09` §3.5).** Point 6 is implemented as a *mark plus a digest*, and
+> the two halves are deliberately in different layers. `.count()` / `.sum(f)` produce an ordinary
+> correlated subquery node carrying `hoist: true`; nothing else in the library sets that flag,
+> which is how "confined to nodes the compiler itself generated" is held literally rather than by
+> convention. `planSelect` then walks every clause of the select — projection, where, group by,
+> having, windows, order by — lifting each marked node into a `LEFT JOIN LATERAL … ON TRUE`.
+> Walking the WHERE clause is safe because a left lateral on `true` neither adds nor removes a
+> parent row.
+>
+> The digest is computed **in the compiler, from the node**, not by the relation layer, so it
+> cannot disagree with the tree that is actually emitted. It includes encoded parameter *values*:
+> `sum(amount + 1)` and `sum(amount + 2)` differ only in a bind, and that is exactly the case where
+> sharing would return one answer to two questions. It returns "not shareable" for a `sql`
+> fragment, for a volatile function, and for **any node kind it does not recognise** — so a node
+> added later can stop being deduplicated, never start.
+>
+> Unhoisted, the same node is still a valid correlated subquery, which is what lets a relation
+> aggregate work in a `RETURNING` list where there is no FROM clause to hang a lateral on. The flag
+> can change the plan; it cannot change the answer.
+
 **Relation filters** (`some` / `every` / `none`) compile to `EXISTS` / `NOT EXISTS`, ported from MikroORM's `$some`/`$none`/`$every` (mikroorm.md §4.1), with the null-safety that `every` requires:
 
 ```ts
@@ -576,6 +709,21 @@ Five design points, each deliberate:
 ```
 
 **Aggregates + `GROUP BY` + nesting.** Relation accessors that produce a *row set* (`.many()`, `.one()`) require the parent row to be identifiable. After `.groupBy()`, the scope type only exposes relation accessors on a table whose primary key is in the grouping list; otherwise the accessor's type resolves to `OrmTypeError<'…relation projection requires the parent primary key in GROUP BY…'>`. Relation *aggregates* (`.count()`, `.sum()`) are scalar subqueries and are always available. This is the one place where the unified API needs a guard rail, and it is a compile-time one.
+
+> **AMENDED 2026-08-26 — WS1 built this, and it reaches less far than the sentence above (09 §3.1).**
+> Three qualifications, each pinned by a probe in `test/query/types/group-by-guard.probe.ts`:
+> **(a) it is one-directional.** `.groupBy(…).select(…)` is guarded, as written; `.select(…).groupBy(…)`
+> — the order §2.7's own example uses — is not, because `Query` does not carry the projection record
+> and adding a fourth type parameter to carry it would put a distributed conditional over every
+> projection in the program. WS4 owes the runtime check; PostgreSQL catches it meanwhile.
+> **(b) it is keyed on the table name, not the alias**, because `[SRC]` on a pre-computed ref *is*
+> the table name — so a self-join lets a grouped `p.id` unlock a second alias onto `posts`.
+> **(c) a composite key declared with the table-level `primaryKey(a, b)` extra is invisible** to the
+> type system, and the guard reads that as "cannot prove it is ungrouped" and allows. All three
+> deviations are in the permissive direction on purpose: an unmodelled key must never produce a
+> false rejection. `ColMeta` gained a fifth field, `pk`, to carry per-column keys.
+> The guard costs an *ungrouped* query nothing, because `.groupBy()` returns a separate
+> `GroupedQuery` stage and that is where its conditionals live.
 
 **`Loaded`-style typing.** The projection form is already exact (Prisma-grade narrowing), so `Loaded` is not load-bearing for inference — but it is load-bearing for *signatures*, which is MikroORM's real insight (mikroorm.md §3.2). We ship it as a derived alias so a function can demand a load state:
 
@@ -591,7 +739,7 @@ function render(u: Feed) { u.posts[0].author.name }   // checked, sync, no undef
 `and` / `or` / `not` are free functions (tree-shakeable, no `eb` parameter to thread), and take arrays or varargs:
 
 ```ts
-import { and, or, not, exists, coalesce, fn, asc, desc } from 'pg-orm-ts'
+import { and, or, not, exists, coalesce, fn, asc, desc } from 'pgormjs'
 
 .where(({ users: u }) => and(
   u.deletedAt.isNull(),
@@ -656,6 +804,28 @@ await db
 
 Full PG `ON CONFLICT` coverage: `.columns()`, `.expressions()` (expression indexes), `.constraint(name)`, index predicate `.where()`, `.doNothing()`, `.doUpdate()`, and `DO UPDATE … WHERE` via `.whereUpdate()`.
 
+> **AS BUILT (WS4, `09` §3.4).** All seven ship, and the two `where`s are two methods on purpose:
+> `.where()` is the **partial-index predicate** (which unique index is the arbiter — omit it against
+> a partial index and PostgreSQL raises 42P10), `.whereUpdate()` is `DO UPDATE … WHERE` (whether to
+> write *this* row). Calling `.where()` without a target, or `.whereUpdate()` without a
+> `.doUpdate()`, is a named error rather than a silently misplaced clause. `excluded` is the target
+> table's own refs under PostgreSQL's pseudo-alias, so every operator works on it —
+> `set.tags.concat(excluded.tags)` above is `arrayConcat(set.tags, excluded.tags)` (fork F1).
+>
+> An insert's column list is the **table's declaration order**, filtered to the keys present, so
+> `values({ role, email })` and `values({ email, role })` are one prepared statement and not two.
+
+> **AS BUILT 2026-08-26 (WS5, `09` §3.5).** Relations in a `RETURNING` list work, with one
+> qualification the sketch below does not show: `RETURNING` has no FROM clause, so there is nothing
+> to hang a `LEFT JOIN LATERAL` on. A relation **aggregate** needs no change — a correlated
+> subquery is valid there — but a relation **projection** must be asked for as
+> `p.author.one(…, { strategy: 'subquery' })`, and the error names the option if it is missing.
+>
+> The reason this needed finding rather than assuming: `RETURNING` emits the target's own columns
+> unqualified, and until WS5 that setting leaked into the correlated subquery, turning
+> `comments.post_id = posts.id` into `post_id = id` — two columns of `comments`, silently counting
+> zero. Well-formed SQL, no error, wrong number. `09` §3.5 finding 1.
+
 Update and delete, with `RETURNING` reusing the *same* projection machinery as `select` (so relations, aggregates, and `sql` fragments all work in `RETURNING` — kysely.md §2.5 marks this **PORT**):
 
 ```ts
@@ -711,6 +881,22 @@ where "products"."id" = "v"."id"
 
 **Bulk delete** is `deleteFrom(t).where(t => t.id.in(ids))`, which compiles to `= any($1)` rather than an `IN (…)` list — one parameter, no plan-cache pollution from varying list lengths. This is a small, real PG-only win that every list-based builder gives up.
 
+> **AS BUILT (WS4, `09` §3.4).** The thresholds are exactly as written — `unnest` above
+> `rows × columns > 30 000`, chunks of 5 000 — and both boundaries are pinned to the row, through a
+> *one-column* insert so that `rows` is `cells` and the comparison is reachable (a three-column test
+> straddles 30 000 and 30 003, and R10 M9 walked straight through it). Chunks run on one connection
+> inside one `BEGIN … COMMIT`, and open none of their own inside `db.transaction(...)`.
+>
+> Two spellings differ from the sketch. The casts come from `codec.sqlName`, so a bulk insert of an
+> `int8` column emits `::bigint[]`, not `::int8[]` (WS2's finding, and the reason Appendix A is now
+> generated). And a row that omits a key the other rows set is a **named error**, not a `DEFAULT`
+> and not a NULL: those are two different intentions and quietly picking one is how a bulk insert
+> writes NULLs over a `defaultNow()`.
+>
+> `fromValues` ships in both strategies. Its `unnest` form is
+> `from unnest($1::bigint[], $2::numeric[]) as "v"("id","price")` — one FROM item rather than the
+> `(select * from unnest(…)) as v(…)` above, which is the same relation with one less subquery.
+
 ### 2.7 CTEs, including writable
 
 `.with()` widens the scope for the remainder of the chain (Kysely's model, and correct), and — unlike Kysely — **codecs flow through the CTE** because the CTE's row shape is our own `ResultShape`, not a string-parsed column list.
@@ -745,6 +931,36 @@ await db
 
 `MATERIALIZED` / `NOT MATERIALIZED` hints are one option on `.with()` — a PG-only planner lever that costs us one token and that no TS builder exposes ergonomically.
 
+> **AMENDED 2026-08-26 — WS1 typed this (09 §3.1).** Two things the sketch above leaves open.
+> **Where `cte` comes from:** `.with()` returns an executor carrying the declared CTEs, so they are
+> reachable as `d.cte.recent` (an ordinary handle, usable with the ordinary `.innerJoin`), and
+> `.fromCte('recent', 'r')` is the sugar that keeps the single-CTE case one chain. **How the CTE is
+> modelled:** as a handle over a *synthetic one-table schema*, so `RefsAt`, `ScopeOf`, `innerJoin`,
+> `leftJoin` and all ~60 operators work on it unchanged and **no** "is this alias a CTE?" conditional
+> exists anywhere on the hot path. The claim in this section holds — codecs do flow through, so
+> `recent.amount` still reads `string` for a `numeric` and `bigint` for an `int8` — with one measured
+> limit: the *PG type class* does not flow through (`pg` is `any` on a CTE ref), so a class-gated
+> operator degrades to a shape-only check there. Recovering it needs the projection record on the
+> `Query` type; revisited in WS4. Pinned in `test/query/types/cte.probe.ts`.
+
+> **AS BUILT (WS4, `09` §3.4).** `.with()` has a runtime, and the type-class limit above was
+> revisited and **kept**: recovering the class needs a fourth `Query` type parameter threaded
+> through every method, which is the one shape `04` §1.3 rules out. WS4 found the second
+> consequence and wrote it down next to the first — an aggregate whose result type is a *function
+> of* the operand's PG type cannot narrow over a CTE column, so `fn.sum(r.amount)` types as
+> `string | number | bigint | null` where the same call on the base table is exactly
+> `string | null`. The decoded value is exact either way.
+>
+> Writable CTEs work because a `CteNode` holds a `Statement` and an insert/update/delete builder's
+> `toAst()` is one; a writable CTE's columns are its `RETURNING` list, with real codecs. One thing
+> worth knowing and easy to get backwards: **a data-modifying CTE runs even when nothing references
+> it** — PostgreSQL executes it exactly once and to completion regardless — so an unused writable
+> CTE is not free. `MATERIALIZED` / `NOT MATERIALIZED` is `{ materialized: boolean }` on `.with()`.
+>
+> Recursive CTEs are not offered: `.with(name, f)` cannot hand `f` a handle to the CTE it is
+> defining without a second signature, and no `03` §2 example needs one. The emitter already
+> spells `with recursive`.
+
 ### 2.8 Set operations, window functions, subqueries
 
 ```ts
@@ -753,7 +969,7 @@ const all = db.from(users).select(({ users: u }) => ({ id: u.id, kind: lit('user
   .unionAll(db.from(orgs).select(({ orgs: o }) => ({ id: o.id, kind: lit('org') })))
   .orderBy(r => asc(r.id))
   .limit(50)
-// mismatch => OrmTypeError<'union branch 2 has no column "kind"'>
+// mismatch => OrmTypeError<'union branch 2 has no column "kind"'>   [built in WS1; see below]
 
 // ── window functions, inline or named
 const ranked = await db.from(posts)
@@ -778,9 +994,82 @@ const ranked = await db.from(posts)
 .from(db.from(posts).select(…).as('recent'))                                 // derived table
 ```
 
+> **AMENDED 2026-08-26 — WS1 built the set-op check, and *where* it resolves is load-bearing (09 §3.1).**
+> The sentence is produced in **return** position — a mismatched branch makes the call resolve to
+> `OrmTypeError<'…'>`, so the diagnostic lands on the next thing done with it (`.execute()`,
+> `.orderBy()`, an assignment). Checking in parameter position instead was built first and measured:
+> TypeScript then prints the whole `Query<…>` argument twice, once in the TS2345 headline and once in
+> the "Property `[ERR]` is missing" elaboration, and a `Query` carries its entire `Schema<…>` type
+> argument — **926 characters on TS 5.9.3 and 1 319 on 7.0.2**, against design/04 D9's 300. Return
+> position gives 143 characters on one line, on both compilers. The branch number is a real count, so
+> `a.union(b).union(c)` blames branch 3. `union` / `unionAll` / `intersect` / `intersectAll` /
+> `except` / `exceptAll` all ship, and the result is a narrower `SetQuery` stage carrying only
+> `orderBy` / `limit` / `offset` / `execute` — PostgreSQL applies those to the whole set-op result and
+> there is no scope left to filter or join against, so they are absent rather than present-and-wrong.
+> Exact text: `tools/type-errors/__golden__/setop-*.txt`.
+
 `DISTINCT ON` ships in v1 (`.distinctOn(({posts:p}) => [p.authorId]).orderBy(…)`) — it is PG-only, extremely useful for "latest row per group", and free for us. So does row locking: `.forUpdate({ of: ['posts'], wait: 'skip locked' })`, which is what makes queue workloads possible.
 
+> **AS BUILT (WS4, `09` §3.4).** Everything in this section ships. Three spellings differ, and the
+> first is a decision rather than a detail:
+>
+> ```ts
+> const ranked = await db.from(db.h.posts)
+>   .select(({ posts: p }) => ({
+>     id:    p.id,
+>     n:     over(fn.rowNumber(), w => w.partitionBy(p.authorId).orderBy(desc(p.createdAt))),
+>     total: over(fn.sum(p.amount), 'byAuthor'),
+>     run:   over(fn.sum(p.amount), w => w
+>              .partitionBy(p.authorId).orderBy(asc(p.createdAt))
+>              .rows({ from: 'unbounded preceding', to: 'current row' })),
+>     dense: over(fn.denseRank(), 'byAuthor'),
+>   }))
+>   .window('byAuthor', ({ posts: p }) => ({ partitionBy: [p.authorId], orderBy: [desc(p.amount)] }))
+>   .execute()
+> ```
+>
+> **`over(x, w)`, not `x.over(w)`** — fork F1's measurement applies unchanged (a method on an
+> expression costs +105 instantiations per table where the free function costs zero), and it applies
+> harder at runtime, because an `Expr` *is* a frozen AST node: `.over()` would mean a wrapper
+> allocation per aggregate on the hot path. A frame offset (`{ preceding: 3 }`) is emitted as a
+> literal, never a parameter: it is part of the plan's shape, and parameterising it would re-cost
+> the plan for every distinct window size.
+>
+> **`lit('user')` is `val('user', codecs.text)`.** `lit` takes non-strings only (D7 — a string in a
+> query position is always a parameter), so the set-op example above could not have compiled.
+>
+> **A one-column subquery is still a record**: `.select(({ bans: b }) => ({ userId: b.userId }))`,
+> not the bare-ref shorthand. One mechanism, and `.asScalar()` reads the result codec off it. It
+> refuses a projection that is not exactly one column.
+>
+> `forUpdate({ wait: 'skip locked' })` is proven on tier 2 against PostgreSQL 17.11 with two real
+> backends (`test/pg/locking.test.ts`): `skip locked` returns the other rows immediately, `nowait`
+> raises `55P03`, and the default blocks until the holder commits. It cannot be tested on PGlite,
+> which multiplexes every connection onto one backend and would pass a completely broken
+> implementation.
+
 ### 2.9 PG operator vocabulary
+
+> **AMENDED 2026-08-26 — fork F1 decided against methods (09 §3.0).** Operators are **free
+> functions** (`ilike(u.email, '%@acme.com')`, per 04 §2.2), not methods. Measured, the methods
+> cost **exactly zero** per query — and so do gated free functions — but **+105 instantiations per
+> table**, one-time, which nets to **+3.0 %** across a whole program at both 2 and 8 queries per
+> table. Methods do emit a 43 % smaller operator `.d.ts` (4 462 B vs 7 853 B), but that tiebreaker
+> ranks below instantiation count and neither figure threatens Appendix B's 400 KB.
+>
+> **Everything else in this section stands, and one part of it is now mandatory rather than
+> incidental: the type-class gate.** A free-function surface typed the obvious way loses exactly
+> the defect this section exists to fix — of seven nonsense operator/column pairings, **four
+> compiled** (`jsonContains` on `text`, `hasKey` on `int4`, `@@` on `text`, a range operator on
+> `timestamptz`). So each class-specific free function takes a *class-gated* operand whose
+> `[META]['pg']` must be in that class, which is 04 §2.2's own "operand selected from `M['pg']` via
+> a small per-operator table" made structural. `src/query/ops-free.ts` ships the gates.
+>
+> Two accepted DX costs: `contains` must be spelled `arrayContains` / `jsonContains` /
+> `rangeContains`, and an import list cannot narrow to the column's class the way `u.email.` would
+> have. One open item for WS3: the gate reads `[META]`, which only a `Ref` carries, so a
+> `` sql`…`.as(codec) `` fragment cannot yet be a class-specific operand — a method surface has the
+> identical hole, so it is not a cost of this decision, but it must be closed.
 
 Operators are **methods on refs, gated by the codec's type class**, not a stringly-typed operator union. This fixes the Kysely defect documented in kysely.md §5.2(3): Kysely types the right-hand operand from the *column's* type rather than the *operator's* semantics, so `jsonb ? key` (which takes `text`), `tsvector @@ tsquery`, and range `&&` are all typed wrong or accidentally right. A per-operator operand table is finite and writable for one dialect — so we write it, once, as method signatures.
 
@@ -790,17 +1079,125 @@ Type-class dispatch is a single indexed access, which keeps the type cost flat:
 type Ref<C extends Codec> = BaseOps<C> & OpsByClass<C>[TypeClassOf<C>]
 ```
 
-| Class | Methods | SQL |
-|---|---|---|
-| all | `eq neq lt lte gt gte isNull isNotNull in inQuery between isDistinctFrom coalesce cast asc desc` | `= <> < <= > >= is null …` |
-| text/citext | `like ilike notLike notILike startsWith regex(~) iregex(~*) notRegex similarTo` | `like ilike ^@ ~ ~*` |
-| array `T[]` | `overlaps(T[]) contains(T[]) containedBy(T[]) has(T) hasAll(T[]) length concat any all` | `&& @> <@ = any() array_length` |
-| jsonb | `get(k) getText(k) path(string[]) pathText(string[]) contains(J) containedBy(J) hasKey(string) hasAnyKey(string[]) hasAllKeys(string[]) jsonPathExists(jp) jsonPathMatch(jp) concat delete` | `-> ->> #> #>> @> <@ ? ?\| ?& @? @@ \|\| -` |
-| tsvector | `matches(TsQuery) rank(q) rankCd(q)` | `@@ ts_rank ts_rank_cd` |
-| range | `overlaps(R) contains(R\|T) containedBy(R) strictlyLeft strictlyRight adjacent union intersection lower upper` | `&& @> <@ << >> -\|- + *` |
-| numeric/int | `add sub mul div mod abs` | arithmetic, result codec preserved |
-| net (inet/cidr) | `containsNet containedByNet overlapsNet` | `>> << &&` |
-| vector (pgvector) | `l2 cosine innerProduct l1 hamming jaccard` | `<-> <=> <#> <+>` |
+> **REGENERATED 2026-08-26 (WS3).** The table below is produced from `src/query/ops.manifest.ts`
+> by `packages/pgorm/test/query/ops-table.test.ts`, which fails CI if the two disagree. Edit the
+> manifest, then run `PGORM_UPDATE_DOCS=1 pnpm test -- ops-table`. Two corrections it forced on the
+> hand-written version it replaced: `avg` is **not** always `numeric` (it is `float8` for `float4`
+> and `float8` operands), and the json/jsonb accessors are the *only* members of that row that
+> accept a `json` operand — everything else there is jsonb-only.
+
+<!-- ops-table:start — generated from src/query/ops.manifest.ts; do not edit -->
+
+| Class | Function | SQL | Result codec |
+|---|---|---|---|
+| **all** | `eq` | `a = $n` | bool |
+|  | `neq` | `a <> $n` | bool |
+|  | `lt` | `a < $n` | bool |
+|  | `lte` | `a <= $n` | bool |
+|  | `gt` | `a > $n` | bool |
+|  | `gte` | `a >= $n` | bool |
+|  | `isNull` | `a is null` | bool |
+|  | `isNotNull` | `a is not null` | bool |
+|  | `isDistinctFrom` | `a is distinct from $n` | bool |
+|  | `isNotDistinctFrom` | `a is not distinct from $n` | bool |
+|  | `between` | `a between $n and $n` | bool |
+|  | `inList` | `a = any($n)  ·  [] ⇒ false` | bool |
+|  | `notInList` | `a <> all($n)  ·  [] ⇒ true` | bool |
+|  | `inQuery` | `a in (select …)` | bool |
+|  | `coalesce` | `coalesce(a, $n)` | a's codec |
+|  | `cast` | `a::<codec.sqlName>` | the given codec |
+|  | `val` | `$n` | the given codec |
+| **text / citext** | `like` | `a like $n` | bool |
+|  | `ilike` | `a ilike $n` | bool |
+|  | `notLike` | `a not like $n` | bool |
+|  | `notILike` | `a not ilike $n` | bool |
+|  | `startsWith` | `a ^@ $n` | bool |
+|  | `regex` | `a ~ $n` | bool |
+|  | `iregex` | `a ~* $n` | bool |
+|  | `notRegex` | `a !~ $n` | bool |
+|  | `notIRegex` | `a !~* $n` | bool |
+|  | `similarTo` | `a similar to $n` | bool |
+|  | `concat` | `a \|\| $n` | text |
+| **array `T[]`** | `overlaps` | `a && $n` | bool |
+|  | `arrayContains` | `a @> $n` | bool |
+|  | `arrayContainedBy` | `a <@ $n` | bool |
+|  | `has` | `$n = any(a)` | bool |
+|  | `hasAll` | `a @> $n` | bool |
+|  | `arrayLength` | `array_length(a, 1)` | int4 |
+|  | `arrayConcat` | `a \|\| $n` | a's codec |
+|  | `anyOf` | `any(a)` | a's element codec |
+|  | `allOf` | `all(a)` | a's element codec |
+| **json / jsonb** | `jsonGet` | `a -> $n` | a's json codec |
+|  | `jsonGetText` | `a ->> $n` | text |
+|  | `jsonPath` | `a #> $n` | a's json codec |
+|  | `jsonPathText` | `a #>> $n` | text |
+|  | `jsonContains` | `a @> $n` | bool |
+|  | `jsonContainedBy` | `a <@ $n` | bool |
+|  | `hasKey` | `a ? $n` | bool |
+|  | `hasAnyKey` | `a ?\| $n` | bool |
+|  | `hasAllKeys` | `a ?& $n` | bool |
+|  | `jsonPathExists` | `a @? $n` | bool |
+|  | `jsonPathMatch` | `a @@ $n` | bool |
+|  | `jsonConcat` | `a \|\| $n` | jsonb |
+|  | `jsonDelete` | `a - $n` | jsonb |
+|  | `jsonDeletePath` | `a #- $n` | jsonb |
+| **numeric / int** | `add` | `a + $n` | a's codec |
+|  | `sub` | `a - $n` | a's codec |
+|  | `mul` | `a * $n` | a's codec |
+|  | `div` | `a / $n` | a's codec |
+|  | `mod` | `a % $n` | a's codec |
+|  | `abs` | `abs(a)` | a's codec |
+| **tsvector** | `matches` | `a @@ q` | bool |
+|  | `tsRank` | `ts_rank(a, q)` | float4 |
+|  | `tsRankCd` | `ts_rank_cd(a, q)` | float4 |
+| **range** | `rangeOverlaps` | `a && $n` | bool |
+|  | `rangeContains` | `a @> $n` | bool |
+|  | `rangeContainedBy` | `a <@ $n` | bool |
+|  | `strictlyLeft` | `a << $n` | bool |
+|  | `strictlyRight` | `a >> $n` | bool |
+|  | `adjacent` | `a -\|- $n` | bool |
+|  | `rangeUnion` | `a + $n` | a's codec |
+|  | `rangeIntersection` | `a * $n` | a's codec |
+|  | `rangeLower` | `lower(a)` | a's subtype |
+|  | `rangeUpper` | `upper(a)` | a's subtype |
+| **net (inet / cidr)** | `containsNet` | `a >> $n` | bool |
+|  | `containedByNet` | `a << $n` | bool |
+|  | `overlapsNet` | `a && $n` | bool |
+| **vector (pgvector)** | ~~`l2`~~ | `a <-> $n` | float8 |
+|  | ~~`cosine`~~ | `a <=> $n` | float8 |
+|  | ~~`innerProduct`~~ | `a <#> $n` | float8 |
+|  | ~~`l1`~~ | `a <+> $n` | float8 |
+|  | ~~`hamming`~~ | `a <~> $n` | float8 |
+|  | ~~`jaccard`~~ | `a <%> $n` | float8 |
+| **boolean / ordering** | `and` | `(a and b and …)  ·  () ⇒ true` | bool |
+|  | `or` | `(a or b or …)  ·  () ⇒ false` | bool |
+|  | `not` | `not a` | bool |
+|  | `isTrue` | `a is true` | bool |
+|  | `isNotTrue` | `a is not true` | bool |
+|  | `isFalse` | `a is false` | bool |
+|  | `isNotFalse` | `a is not false` | bool |
+|  | `exists` | `exists (select …)` | bool |
+|  | `notExists` | `not exists (select …)` | bool |
+|  | `asc` | `a asc [nulls first\|last]` | — |
+|  | `desc` | `a desc [nulls first\|last]` | — |
+| **aggregates & full text** | `fn.count` | `count(*) · count(a)` | int8 |
+|  | `fn.sum` | `sum(a)` | int2/int4 ⇒ int8 · int8/numeric ⇒ numeric · float4 ⇒ float4 · float8 ⇒ float8 |
+|  | `fn.avg` | `avg(a)` | float4/float8 ⇒ float8 · everything else ⇒ numeric |
+|  | `fn.min` | `min(a)` | a's codec |
+|  | `fn.max` | `max(a)` | a's codec |
+|  | ~~`fn.rank`~~ | `rank()` | int8 |
+|  | `fn.toTsvector` | `to_tsvector($n::regconfig, a)` | tsvector |
+|  | `fn.toTsquery` | `to_tsquery($n::regconfig, $n)` | tsquery |
+|  | `fn.plaintoTsquery` | `plainto_tsquery($n::regconfig, $n)` | tsquery |
+|  | `fn.phrasetoTsquery` | `phraseto_tsquery($n::regconfig, $n)` | tsquery |
+|  | `fn.websearchToTsquery` | `websearch_to_tsquery($n::regconfig, $n)` | tsquery |
+
+Struck-through rows are declared but have no live differential yet:
+
+- `fn.rank` — WS4 — `rank()` is legal only inside OVER (…), which the emitter does not build yet.
+- `l2`, `cosine`, `innerProduct`, `l1`, `hamming`, `jaccard` — WS5 — `vector` is a pgvector EXTENSION type: per-database OID, resolveDynamic path, and not present in PGlite, so neither a codec nor a live differential exists yet.
+
+<!-- ops-table:end -->
 
 ```ts
 .where(({ users: u, posts: p }) => and(
@@ -817,6 +1214,31 @@ type Ref<C extends Codec> = BaseOps<C> & OpsByClass<C>[TypeClassOf<C>]
 Full-text gets the small set of helpers that make it usable without leaving the API: `toTsvector`, `toTsquery`, `plaintoTsquery`, `phrasetoTsquery`, `websearchToTsquery`, `tsRank`, `tsRankCd`. Text-search *configuration* management, `ts_headline`, and dictionary handling are v2 (§6).
 
 Every operator method returns an expression carrying its own **result codec**, so `count()` is `bigint` and `sum(numeric)` is `string` — one exact type, no generic to supply. Kysely returns `string | number | bigint` for these because it cannot know the driver (kysely.md §5.2(2)); PG-only plus owned codecs makes it exact. Likewise `SqlBool = boolean | 0 | 1` does not exist here; a boolean is a `boolean`.
+
+> **AS BUILT (WS3), and how the claim above is kept honest.** Every row of the table is executed as
+> `select <expr>` against a live server and its `RowDescription.dataTypeID` is compared to the
+> operator's own result codec — so the exactness is *confirmed*, not asserted. That is how the two
+> corrections above were found, and how `ts_rank` was found to be `float4` (`real`) rather than
+> `float8`. A second differential runs each predicate against hand-written SQL over a seeded
+> fixture and compares id sets, with an expected row count so a two-sided empty result cannot pass.
+> Both are table-driven from the same manifest; see `09` §3.3.
+>
+> Three notes on the vocabulary as shipped:
+>
+> - **`contains` is spelled three ways** (`arrayContains` / `jsonContains` / `rangeContains`), the
+>   accepted DX cost of `09` §3.0's F1 decision.
+> - **`json` and `jsonb` are separate gates.** The four accessors take either; the other ten
+>   operators are jsonb-only, because `json @> json` is not an operator PostgreSQL has. The
+>   accessors also return the operand's *own* json codec — `json -> k` is OID 114, `jsonb -> k` is
+>   3802.
+> - **`val(value, codec)` was added.** Without it a class-gated operator has no literal operand: a
+>   value in a `sql` hole is an untyped `$n` and `.as(codec)` types the fragment's result, not the
+>   hole, so `int4range && $1` had no unique resolution.
+>
+> `eq(a, null)` is a **compile error** and a runtime `NullOperandError`, not a rewrite to `IS NULL`
+> — a rewrite would make the emitted SQL depend on a runtime value, so one call site would mint two
+> prepared statements. `isNull(a)` and `isDistinctFrom(a, b)` say each of the two things a caller
+> might mean. Reasoning in `09` §3.3.
 
 ---
 
@@ -845,10 +1267,28 @@ The research verdict is unambiguous. Drizzle's docs say outright that `sql<T>` "
 const frag = sql`lower(${users.email})`          // Fragment<unknown>
 
 // Typing requires a codec, which supplies BOTH the TS type and the decoder.
-const lowered = sql`lower(${u.email})`.as(codecs.text)          // Fragment<string>
-const total   = sql`sum(${p.amount})`.as(codecs.numeric)        // Fragment<string>
-const hit     = sql`${p.body} @@ ${q}`.as(codecs.bool)          // Fragment<boolean>
+const lowered = sql`lower(${u.email})`.as(codecs.text)      // TypedFragment<string, 'text'>
+const total   = sql`sum(${p.amount})`.as(codecs.numeric)    // TypedFragment<string, 'numeric'>
+const hit     = sql`${p.body} @@ ${q}`.as(codecs.bool)      // TypedFragment<boolean, 'bool'>
 ```
+
+> **AS BUILT (WS3).** `.as(codec)` returns a `TypedFragment<T, P>`, where `P` is the **codec's own
+> `name`** — the same string a column's `ColMeta['pg']` carries, because `metaOf` resolves a
+> column's codec by `registry.byName(ddl.pgType)`. That second parameter is what closes the one
+> item `09` §3.0 left open when fork F1 was decided: §2.9's operator gates read `[META]['pg']`,
+> which only a `Ref` carried, so a fragment could not be a class-specific operand. Now it can, and
+> a method surface would have had the identical hole, so the closure is the design's, not the arm's.
+>
+> Three phantom slots, none present at runtime: `[OUT]` (so a typed fragment is `Projectable`),
+> `[META].pg` (the gate), `[SRC]` (so it is an `Expr` and composes per §3.3). A **bare**
+> `` sql`…` `` still has none of them, which is `04` §2.2's "you physically cannot put it in a
+> projection without choosing a codec", unchanged.
+>
+> `asUnsafe<T>()` returns `TypedFragment<T, 'unknown'>`: the same shape with the type-class slot
+> deliberately poisoned, since `'unknown'` is in no gate. The value still decodes correctly by OID.
+>
+> Not `sqlName`, which `09` §3.0 guessed: `int4`'s `sqlName` is `'integer'` and `int8`'s is
+> `'bigint'`, and neither is in the `NumPg` gate.
 
 **The codec is verified, not trusted.** In dev mode (`NODE_ENV !== 'production'`, or `{ assertShape: true }`) the executor compares each declared codec's OID against the `dataTypeID` the server reported in `RowDescription` — metadata `pg` already hands us and which our `PgResult` is required to carry (pg-drivers.md §4.4). A mismatch throws:
 
@@ -968,6 +1408,29 @@ export interface RelationMeta {
 }
 ```
 
+> **AS BUILT 2026-08-26 (WS5, `09` §3.5).** `RelationMeta` ships as **two** structures, split at
+> the same seam `metaOf` already draws. The interface above carries `ColumnMeta`, and therefore
+> codecs, and therefore a registry — but an enum's OID is per-database (`02` §4.6), so binding one
+> at `defineSchema` time would freeze whatever the default registry held before `resolveDynamic`
+> ran. So `ResolvedRelation` (`src/schema/relations.ts`) resolves *structure* — target table,
+> column keys, junction, defaults — once and eagerly at definition time, where a mistake is a
+> thrown sentence; `src/query/relations.ts` resolves *codecs* per registry, where the generation
+> counter can invalidate them.
+>
+> `from`/`to` are **mandatory**. Inference from a foreign key is not deferred, it is not currently
+> possible: the column DSL has no `.references()`, so there is no foreign key in a `pgTable(...)`
+> for a resolver to read. The error names the exact call to write.
+>
+> `defineSchema` throws on five things, all at definition time so the failure lands on the import
+> of the schema file rather than on the first query that touches the relation: hard ask #1's
+> name collision, a relation pointing at a table the registry does not have, a missing `from`/`to`,
+> a `from`/`to` arity mismatch, and a column reference belonging to the wrong table.
+>
+> One row of the table below reads differently in practice. `.count()` / `.sum(f)` are described as
+> "a correlated scalar subquery", and that is what they *are* — but §2.3's own compiled SQL shows
+> them hoisted into laterals, and §2.3 point 6 needs a named value to share. The subquery is what
+> goes *inside* the lateral; both statements are true.
+
 Everything the compiler does with a relation is derived from this and nothing else:
 
 | Accessor | Uses | Emits |
@@ -1004,6 +1467,13 @@ const r2 = await db.from(users).select(({ users: u }) => ({
 })).execute()
 // r2: Loaded<typeof users, { posts: true }>[]
 ```
+
+> **AS BUILT 2026-08-26 (WS5, `09` §3.5).** Form (b)'s `u.posts.all()` ships; `...u.$all` does not
+> — a projection still names its columns, or reaches for `selectAll(alias)` at the top level. The
+> `Loaded` claim itself is what matters here and it holds unchanged: a projection that loaded
+> `posts` is assignable to `Loaded<typeof users, 'posts'>` with no cast, no `Collection` and no
+> `Ref`, which is pinned by `test/query/types/relations.probe.ts` passing a builder result straight
+> into a function that demands the load state.
 
 `Loaded<T, H>` is a derived alias over the relation graph, used to *declare* load state in function signatures — MikroORM's insight, which converts "did someone populate this?" from a runtime `undefined` into a compile error (mikroorm.md §3.2):
 
@@ -1085,6 +1555,31 @@ export interface Codec<T = unknown> {
 }
 ```
 
+> **AS BUILT (WS2, 2026-08-26 — `design/09` §3.2).** The shipped interface is
+> `Codec<TIn, TOut>` in `src/codec/types.ts`, and it differs from this sketch in five ways, four of
+> them anticipated by `09` WS2's contract:
+>
+> - `pgType` is **`sqlName`**, and it is also what the DDL emitter uses. One consumer in the
+>   compiler: the first-row `::type` cast of a multi-row `VALUES`.
+> - `oid` is `number | undefined` — a user type's OID is resolved per physical database
+>   (`02` §4.6), so it is `undefined` until `resolveDynamic`. A second field, **`paramOid`**, is
+>   the OID sent in `Parse`; it differs from `oid` where we deliberately widen (domains → 705).
+> - `decodeText`/`decodeJson` take a **`CodecContext`** (typmod, registry, session parameters,
+>   column name). `buildDecoder(shape, ctx)` binds it once per plan, never per row.
+> - `TIn` and `TOut` split. The **AST does not carry the split**: every node slot is
+>   `AnyCodec = Codec<never, unknown>`, because nothing reads a node's TypeScript type. `TIn`/`TOut`
+>   discrimination lives in `src/query/types.ts`.
+> - **`jsonEncode` has two members, not three.** The custom `(e: Expr) => Expr` wrapper above is
+>   **not implemented and will not be**: a codec that builds compiler AST inverts the layering
+>   (`src/compile` depends on `src/codec`), and every case it could express is already a codec with
+>   `jsonEncode: 'text'` whose `decodeJson` parses the text spelling — which is how `int8`,
+>   `numeric` and every array of them work. If a case ever needs more, the cheap extension is a
+>   `{ cast: string }` member, not a function.
+>
+> The seam that produces a `ColumnMeta` from a `pgTable` column is `metaOf` in
+> `src/query/meta.ts`, memoised per `(registry, table)`. It is also where the pre-quoted identifiers
+> demanded two paragraphs down are computed.
+
 **Agent 05 — relations.** `RelationMeta` as specified in §4.1; relation/column name collisions rejected at definition time; composite keys as arrays; m2m via `through`. Also: columns must expose a pre-quoted identifier string computed once at schema-build time (the compiler must never quote a schema identifier on the hot path).
 
 **Agent 06 — driver.** `execute(sql, params, { rowMode: 'array', name? })` returning `{ rows: unknown[][], fields: PgField[], rowCount }`, with `fields[].dataTypeID` **required** (it powers §3.2's assertion and dynamic decode) and `describe()` optional-but-expected (it powers the description cache in §1.4(c)). Default statement mode unnamed; `{ statement: 'named' }` is our opt-in pass-through.
@@ -1095,7 +1590,14 @@ export interface Codec<T = unknown> {
 
 ## Appendix A — Compiled SQL reference
 
-Every example in §2 with its exact output, to be pinned as compiler snapshot tests (no database required — the compiler is pure).
+Every example in §2 with its exact output.
+
+> **REGENERATED 2026-08-26 (WS4).** This block is no longer hand-written: it is produced by
+> `test/query/appendix-a.test.ts`, which builds each statement through the public API and
+> compares the compiled SQL byte for byte. `PGORM_UPDATE_DOCS=1 pnpm test -- appendix-a`
+> rewrites it. The compiler is pure, so no database is involved.
+
+<!-- appendix-a:start — generated from test/query/appendix-a.test.ts; do not edit -->
 
 ```sql
 -- §2.1 select/where/order/limit
@@ -1104,41 +1606,47 @@ from "public"."users" as "users"
 where ("users"."deleted_at" is null and "users"."role" = any($1))
 order by "users"."created_at" desc, "users"."id" asc
 limit $2
+-- params: ["{admin,owner}","20"]
 
 -- §2.5 upsert with partial-index predicate + EXCLUDED + DO UPDATE WHERE
 insert into "public"."users" ("email", "name", "role") values ($1, $2, $3)
 on conflict ("email") where "users"."deleted_at" is null
-do update set "name" = "excluded"."name",
-              "tags" = "users"."tags" || "excluded"."tags",
-              "updated_at" = now()
+do update set "name" = "excluded"."name", "tags" = "users"."tags" || "excluded"."tags", "updated_at" = now()
 where "users"."updated_at" < "excluded"."updated_at"
 returning "id" as "id"
+-- params: ["a@b.c","Ada","admin"]
 
--- §2.6 bulk insert, unnest strategy (2 params for 50k rows)
+-- §2.6 bulk insert, unnest strategy (2 params for any row count)
 insert into "public"."events" ("kind", "at")
 select * from unnest($1::text[], $2::timestamptz[])
+-- params: ["{click}","{\"2026-01-01 00:00:00.000Z\"}"]
 
 -- §2.6 bulk update from values
 update "public"."products" as "products"
 set "price" = "v"."price", "updated_at" = now()
-from (values ($1::int8, $2::numeric), ($3, $4)) as "v"("id", "price")
+from (values ($1::bigint, $2::numeric), ($3, $4)) as "v"("id", "price")
 where "products"."id" = "v"."id"
+-- params: ["1","9.99","2","4.50"]
 
--- §2.7 writable CTE feeding an INSERT ... SELECT
+-- §2.7 writable CTE feeding an INSERT … SELECT
 with "moved" as (
-  delete from "public"."staging" as "staging" where "staging"."ready"
+  delete from "public"."staging" as "staging"
+  where "staging"."ready"
   returning "payload" as "payload", "at" as "at"
 )
 insert into "public"."live" ("payload", "at")
-select "moved"."payload", "moved"."at" from "moved"
+select "moved"."payload" as "payload", "moved"."at" as "at"
+from "moved" as "moved"
 returning "id" as "id"
 
 -- §2.9 jsonb path as a PARAMETER (the CVE class, designed out)
 select "users"."id" as "id"
 from "public"."users" as "users"
 where ("users"."meta" #>> $1) = $2
--- params: [['billing','country'], 'DE']
+-- params: ["{billing,country}","DE"]
 ```
+
+<!-- appendix-a:end -->
 
 ## Appendix B — Type-perf and fuzz budgets (CI gates from day one)
 

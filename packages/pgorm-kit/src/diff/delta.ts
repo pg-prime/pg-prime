@@ -25,6 +25,11 @@ export interface RenameRecord {
   readonly kind: string;
   readonly from: string;
   readonly to: string;
-  readonly source: "annotation";
+  /**
+   * `annotation` is the only authority (D5). `cascade` is not inference: it is the
+   * auto-named constraint or index that PostgreSQL declined to rename along with the
+   * table or column an annotation already renamed, matched unambiguously by rollup.
+   */
+  readonly source: "annotation" | "cascade";
   readonly confidence: "unambiguous";
 }

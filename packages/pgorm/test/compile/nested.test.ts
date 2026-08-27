@@ -26,7 +26,16 @@ import {
   select,
   subquery,
 } from '../../src/compile/nodes.js'
-import { spikeCodecs } from '../../src/sql/codec.js'
+import {
+  arrayCodecOf,
+  builtinCodecs,
+  int4Codec,
+  int8Codec,
+  numericCodec,
+  textCodec,
+  timestamptzCodec,
+  varcharCodec,
+} from '../../src/codec/index.js'
 import { c, commentsFrom, p, postsFrom, u, usersFrom } from '../sql/_helpers.js'
 
 const vals = (x: { binds: readonly { k: string }[] }) =>
@@ -43,7 +52,7 @@ const latestPosts = select({
   from: postsFrom,
   where: and(eq(p('authorId'), u('id')), isTrue(p('published'))),
   orderBy: [desc(p('createdAt'))],
-  limit: param(3, spikeCodecs.int4),
+  limit: param(3, int4Codec),
 })
 
 const feed = select({
@@ -55,7 +64,7 @@ const feed = select({
   from: usersFrom,
   where: isNull(u('deletedAt')),
   orderBy: [desc(u('createdAt'))],
-  limit: param(20, spikeCodecs.int4),
+  limit: param(20, int4Codec),
 })
 
 describe('the LATERAL nesting golden', () => {
@@ -95,8 +104,8 @@ describe('the LATERAL nesting golden', () => {
     expect(compiled.shape).toEqual({
       k: 'row',
       fields: [
-        { key: 'id', k: 'col', idx: 0, codec: spikeCodecs.int8 },
-        { key: 'email', k: 'col', idx: 1, codec: spikeCodecs.citext },
+        { key: 'id', k: 'col', idx: 0, codec: int8Codec },
+        { key: 'email', k: 'col', idx: 1, codec: varcharCodec },
         {
           key: 'latestPosts',
           k: 'json',
@@ -108,10 +117,10 @@ describe('the LATERAL nesting golden', () => {
               k: 'obj',
               nullable: false,
               fields: [
-                { key: 'id', plan: { k: 'leaf', codec: spikeCodecs.int8 } },
-                { key: 'title', plan: { k: 'leaf', codec: spikeCodecs.text } },
-                { key: 'amount', plan: { k: 'leaf', codec: spikeCodecs.numeric } },
-                { key: 'createdAt', plan: { k: 'leaf', codec: spikeCodecs.timestamptz } },
+                { key: 'id', plan: { k: 'leaf', codec: int8Codec } },
+                { key: 'title', plan: { k: 'leaf', codec: textCodec } },
+                { key: 'amount', plan: { k: 'leaf', codec: numericCodec } },
+                { key: 'createdAt', plan: { k: 'leaf', codec: timestamptzCodec } },
               ],
             },
           },
@@ -274,7 +283,7 @@ describe('nesting inside nesting, and to-one inside to-many', () => {
     expect(outer.shape).toEqual({
       k: 'row',
       fields: [
-        { key: 'id', k: 'col', idx: 0, codec: spikeCodecs.int8 },
+        { key: 'id', k: 'col', idx: 0, codec: int8Codec },
         {
           key: 'posts',
           k: 'json',
@@ -286,16 +295,16 @@ describe('nesting inside nesting, and to-one inside to-many', () => {
               k: 'obj',
               nullable: false,
               fields: [
-                { key: 'id', plan: { k: 'leaf', codec: spikeCodecs.int8 } },
-                { key: 'commentCount', plan: { k: 'leaf', codec: spikeCodecs.int8 } },
+                { key: 'id', plan: { k: 'leaf', codec: int8Codec } },
+                { key: 'commentCount', plan: { k: 'leaf', codec: int8Codec } },
                 {
                   key: 'author',
                   plan: {
                     k: 'obj',
                     nullable: false,
                     fields: [
-                      { key: 'id', plan: { k: 'leaf', codec: spikeCodecs.int8 } },
-                      { key: 'name', plan: { k: 'leaf', codec: spikeCodecs.text } },
+                      { key: 'id', plan: { k: 'leaf', codec: int8Codec } },
+                      { key: 'name', plan: { k: 'leaf', codec: textCodec } },
                     ],
                   },
                 },
@@ -307,8 +316,8 @@ describe('nesting inside nesting, and to-one inside to-many', () => {
                       k: 'obj',
                       nullable: false,
                       fields: [
-                        { key: 'id', plan: { k: 'leaf', codec: spikeCodecs.int8 } },
-                        { key: 'body', plan: { k: 'leaf', codec: spikeCodecs.text } },
+                        { key: 'id', plan: { k: 'leaf', codec: int8Codec } },
+                        { key: 'body', plan: { k: 'leaf', codec: textCodec } },
                       ],
                     },
                   },
@@ -387,10 +396,21 @@ describe('hoist internals', () => {
 
   it('jsonCast honours every jsonEncode mode', () => {
     const e = u('id')
-    expect(jsonCast(e, spikeCodecs.text)).toBe(e) // native: untouched
-    expect(jsonCast(e, spikeCodecs.int8)).toMatchObject({ k: 'cast', to: 'text' })
-    expect(jsonCast(e, spikeCodecs.numeric)).toMatchObject({ k: 'cast', to: 'text' })
-    const custom = { ...spikeCodecs.text, jsonEncode: (x: typeof e) => x }
-    expect(jsonCast(e, custom as never)).toBe(e)
+    expect(jsonCast(e, textCodec)).toBe(e) // native: untouched
+    expect(jsonCast(e, int8Codec)).toMatchObject({ k: 'cast', to: 'text' })
+    expect(jsonCast(e, numericCodec)).toMatchObject({ k: 'cast', to: 'text' })
+    expect(jsonCast(e, arrayCodecOf(int8Codec))).toMatchObject({ k: 'cast', to: 'text' })
+  })
+
+  /**
+   * `jsonCast` is two branches with no `default`, which is only total because `JsonEncode` has
+   * exactly two members. 03 §7 sketched a third — a custom `(e: Expr) => Expr` wrapper — which
+   * WS2 decided against (a codec building compiler AST inverts the layering; see `JsonEncode` in
+   * `src/codec/types.ts`). This is the guard on that decision: if a codec ever ships a third mode,
+   * `jsonCast` would silently treat it as 'native' and R5 would break for that type in silence.
+   */
+  it('every shipped codec declares one of the two jsonEncode modes', () => {
+    const modes = new Set(builtinCodecs().map((c) => c.jsonEncode as string))
+    expect([...modes].sort()).toEqual(['native', 'text'])
   })
 })

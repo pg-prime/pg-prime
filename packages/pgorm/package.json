@@ -12,9 +12,11 @@
     "dist"
   ],
   "scripts": {
-    "test": "vitest run test/schema test/sql test/compile",
-    "test:live": "vitest run test/driver test/codec test/fuzz",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/schema/tsconfig.json && tsc --noEmit -p test/driver/tsconfig.json && tsc --noEmit -p test/codec/tsconfig.json && tsc --noEmit -p test/sql-compile.tsconfig.json"
+    "test": "vitest run --project unit",
+    "test:live": "vitest run --project unit --project live",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/schema/tsconfig.json && tsc --noEmit -p test/query/tsconfig.json && tsc --noEmit -p test/live/tsconfig.json && tsc --noEmit -p test/sql-compile.tsconfig.json",
+    "test:pg": "vitest run",
+    "test:watch": "vitest --project unit"
   },
   "repository": {
     "type": "git",

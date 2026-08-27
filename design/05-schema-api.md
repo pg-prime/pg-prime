@@ -7,6 +7,13 @@
 
 ---
 
+> **Amended 2026-08-25 — nullability inverted.** This document originally showed
+> `.notNull()` on every required column. Sign-off 4 (00-overview R1) made **NOT NULL the
+> default**, with `.nullable()` opting in: nullable-as-union is free at the type level while
+> `.notNull()` costs a distributive `Exclude` per column, and it removes Drizzle's most-reported
+> footgun. Every example below has been converted. One consequence is still open — see composite
+> types in §3.
+
 ## 0. Decisions at a glance
 
 | # | Question | Decision |
@@ -14,7 +21,7 @@
 | D1 | Definition style | Fluent builders returning plain frozen values. `pgTable(name, columns, extras?)` with a **columns callback** `(t) => ({...})` and an **extras callback returning an array** `(t) => [...]`. No decorators, no DSL, no codegen. |
 | D2 | Column access | `users.email` works (intersection with the column record), but metadata lives behind a single `$` key (`users.$.name`, `users.$.ir`). `$`-prefixed column names are rejected. |
 | D3 | Type inference | Free type functions `Row<T>` / `Insert<T>` / `Update<T>`. No `$inferSelect` property on the value. |
-| D4 | The `$` law | **A method or key prefixed with `$` never affects DDL or the migration IR.** `.default()` emits `DEFAULT`; `.$default()` is a TS-side factory. `.notNull()` emits `NOT NULL`; `.$required()` only changes the TS type. This is a hard, teachable invariant. |
+| D4 | The `$` law | **A method or key prefixed with `$` never affects DDL or the migration IR.** `.default()` emits `DEFAULT`; `.$default()` is a TS-side factory. `` emits `NOT NULL`; `.$required()` only changes the TS type. This is a hard, teachable invariant. |
 | D5 | Table extras | One heterogeneous array of tagged nodes: constraints, indexes, **and** table options (`partitionBy.range(...)`, `unlogged()`, `rls.enable()`, `comment(...)`, `renamedFrom(...)`, `dropColumn(...)`). Extensible by extension packs without an API change. |
 | D6 | Relations | **Separate `defineRelations(tables, r => ...)`**, Drizzle-RQB-v2-shaped — plus **FK inference**: `r.one.orgs()` with no args resolves from the declared FK when unambiguous. Explicit `from`/`to` only for ambiguity, non-FK joins, and `through` (m2m). |
 | D7 | Functions / triggers | **Declared inline in TS** with `sql` bodies and structured metadata. **Signature is diffed structurally; body is content-hashed and applied as a repeatable `CREATE OR REPLACE`.** Declared functions become callable, typed expressions in the query builder. |
@@ -42,7 +49,7 @@ Read this section top to bottom; the rest of the document is reference.
 import {
   sql, pgSchema, pgExtension, pgDomain, pgEnum, pgCompositeType,
   uuid, text, timestamptz, citext,
-} from 'pg-orm-ts/pg';
+} from 'pgormjs/pg';
 
 // ─── extensions (managed: we emit CREATE EXTENSION and order everything after it)
 export const pgcrypto  = pgExtension('pgcrypto');
@@ -75,19 +82,19 @@ export const postalAddress = pgCompositeType('postal_address', {
 export const pk = () => uuid().primaryKey().default(sql`gen_random_uuid()`);
 
 export const timestamps = () => ({
-  createdAt: timestamptz().notNull().default(sql`now()`),
-  updatedAt: timestamptz().notNull().default(sql`now()`),
+  createdAt: timestamptz().default(sql`now()`),
+  updatedAt: timestamptz().default(sql`now()`),
 });
 
 export const softDelete = () => ({
-  deletedAt: timestamptz(),
+  deletedAt: timestamptz().nullable(),
 });
 ```
 
 ### 1.2 `db/schema/functions.ts` — SQL functions as first-class, callable objects
 
 ```ts
-import { sql, pgFunction, uuid } from 'pg-orm-ts/pg';
+import { sql, pgFunction, uuid } from 'pgormjs/pg';
 import { audit } from './_shared.js';
 
 /** BEFORE UPDATE trigger body. */
@@ -146,7 +153,7 @@ export const logMembershipChange = pgFunction('log_membership_change', {
 ```ts
 import {
   sql, pgTable, index, uniqueIndex, check, comment, rls,
-} from 'pg-orm-ts/pg';
+} from 'pgormjs/pg';
 import { email, postalAddress, pk, timestamps, softDelete } from './_shared.js';
 
 export type UserPrefs = {
@@ -156,19 +163,18 @@ export type UserPrefs = {
 
 export const users = pgTable('users', (t) => ({
   id:          pk(),
-  email:       t.domain(email).notNull().unique(),
-  displayName: t.text().notNull(),
-  avatarUrl:   t.text(),
+  email:       t.domain(email).unique(),
+  displayName: t.text(),
+  avatarUrl:   t.text().nullable(),
 
   // jsonb with a compile-time narrowing that must be assignable to the codec type
-  prefs: t.jsonb().$type<UserPrefs>().notNull()
-          .default({ theme: 'system', digest: 'weekly' }),
+  prefs: t.jsonb().$type<UserPrefs>().default({ theme: 'system', digest: 'weekly' }),
 
   // text[] with a literal default; multi-dim via .array(2)
-  tags: t.text().array().notNull().default([]),
+  tags: t.text().array().default([]),
 
   // composite type column → { line1: string|null, ... } with $required() narrowing
-  address: t.composite(postalAddress),
+  address: t.composite(postalAddress).nullable(),
 
   // generated tsvector: the expression callback is late-bound to this table's columns
   searchDoc: t.tsvector().generatedAlwaysAs((c) => sql`
@@ -196,20 +202,20 @@ export const users = pgTable('users', (t) => ({
 ### 1.4 `db/schema/orgs.ts`
 
 ```ts
-import { sql, pgTable, index, check, rls, comment } from 'pg-orm-ts/pg';
+import { sql, pgTable, index, check, rls, comment } from 'pgormjs/pg';
 import { email, pk, timestamps } from './_shared.js';
 
 export const orgs = pgTable('orgs', (t) => ({
   id:   pk(),
-  slug: t.text().notNull().unique(),
-  name: t.text().notNull(),
+  slug: t.text().unique(),
+  name: t.text(),
 
   // .oneOf() gives a TS union AND emits a CHECK constraint. Drizzle's
   // text({ enum: [...] }) gives you only the (unenforced) union.
-  plan: t.text().oneOf(['free', 'pro', 'enterprise']).notNull().default('free'),
+  plan: t.text().oneOf(['free', 'pro', 'enterprise']).default('free'),
 
-  seatLimit:    t.integer().notNull().default(5),
-  billingEmail: t.domain(email),
+  seatLimit:    t.integer().default(5),
+  billingEmail: t.domain(email).nullable(),
 
   ...timestamps(),
 }), (t) => [
@@ -225,19 +231,19 @@ export const orgs = pgTable('orgs', (t) => ({
 ```ts
 import {
   sql, pgTable, primaryKey, foreignKey, exclude, index, rls,
-} from 'pg-orm-ts/pg';
+} from 'pgormjs/pg';
 import { memberRole, btreeGist, timestamps } from './_shared.js';
 import { users } from './users.js';
 import { orgs } from './orgs.js';
 
 export const memberships = pgTable('memberships', (t) => ({
-  orgId:  t.uuid().notNull().references(() => orgs.id,  { onDelete: 'cascade' }),
-  userId: t.uuid().notNull().references(() => users.id, { onDelete: 'cascade' }),
-  role:   t.enum(memberRole).notNull().default('member'),
+  orgId:  t.uuid().references(() => orgs.id,  { onDelete: 'cascade' }),
+  userId: t.uuid().references(() => users.id, { onDelete: 'cascade' }),
+  role:   t.enum(memberRole).default('member'),
 
   // self-referential FK to a *different* table than the row's own — and the
   // second FK to `users`, which is why relations must disambiguate (§4.3)
-  invitedBy: t.uuid().references(() => users.id, { onDelete: 'set null' }),
+  invitedBy: t.uuid().nullable().references(() => users.id, { onDelete: 'set null' }),
 
   ...timestamps(),
 }), (t) => [
@@ -250,10 +256,10 @@ export const memberships = pgTable('memberships', (t) => ({
 
 /** Time-bounded seat reservations: the exclusion-constraint showcase. */
 export const seatHolds = pgTable('seat_holds', (t) => ({
-  orgId:  t.uuid().notNull(),
-  userId: t.uuid().notNull(),
-  during: t.tstzrange().notNull(),
-  reason: t.text(),
+  orgId:  t.uuid(),
+  userId: t.uuid(),
+  during: t.tstzrange(),
+  reason: t.text().nullable(),
 }), (t) => [
   foreignKey({
     columns:        [t.orgId, t.userId],
@@ -273,17 +279,17 @@ export const seatHolds = pgTable('seat_holds', (t) => ({
 ### 1.6 `db/schema/audit.ts` — partitioning, identity, non-public schema
 
 ```ts
-import { sql, primaryKey, index, partitionBy, partitions, pgPartition } from 'pg-orm-ts/pg';
+import { sql, primaryKey, index, partitionBy, partitions, pgPartition } from 'pgormjs/pg';
 import { audit } from './_shared.js';
 
 export const membershipEvents = audit.table('membership_events', (t) => ({
   id:        t.bigint().generatedAlwaysAsIdentity({ start: 1, increment: 1 }),
-  orgId:     t.uuid().notNull(),
-  userId:    t.uuid().notNull(),
-  action:    t.text().notNull(),
-  actor:     t.text().notNull(),
-  payload:   t.jsonb().notNull(),
-  createdAt: t.timestamptz().notNull().default(sql`now()`),
+  orgId:     t.uuid(),
+  userId:    t.uuid(),
+  action:    t.text(),
+  actor:     t.text(),
+  payload:   t.jsonb(),
+  createdAt: t.timestamptz().default(sql`now()`),
 }), (t) => [
   primaryKey(t.id, t.createdAt),      // partition key must be in every unique key
   partitionBy.range(t.createdAt),
@@ -305,7 +311,7 @@ export const membershipEvents2026 = pgPartition('membership_events_2026', {
 ### 1.7 `db/schema/triggers.ts`
 
 ```ts
-import { sql, pgTrigger } from 'pg-orm-ts/pg';
+import { sql, pgTrigger } from 'pgormjs/pg';
 import { setUpdatedAt, logMembershipChange } from './functions.js';
 import { users } from './users.js';
 import { orgs } from './orgs.js';
@@ -335,7 +341,7 @@ export const membershipsAudit = pgTrigger('memberships_audit', {
 ### 1.8 `db/schema/views.ts`
 
 ```ts
-import { sql, pgMaterializedView, pgView, uniqueIndex, count, eq } from 'pg-orm-ts/pg';
+import { sql, pgMaterializedView, pgView, uniqueIndex, count, eq } from 'pgormjs/pg';
 import { orgs } from './orgs.js';
 import { memberships } from './memberships.js';
 
@@ -361,8 +367,8 @@ export const orgSeatUsage = pgMaterializedView('org_seat_usage')
 /** Declared columns + raw SQL, for anything the builder can't express. */
 export const orgHealth = pgView('org_health')
   .columns((t) => ({
-    orgId:  t.uuid().notNull(),
-    status: t.text().oneOf(['ok', 'over_seats', 'dormant']).notNull(),
+    orgId:  t.uuid(),
+    status: t.text().oneOf(['ok', 'over_seats', 'dormant']),
   }))
   .as(sql`
     SELECT u.org_id,
@@ -378,7 +384,7 @@ export const orgHealth = pgView('org_health')
 ### 1.9 `db/schema/security.ts` — roles, RLS policies, grants
 
 ```ts
-import { sql, pgRole, pgPolicy, grant } from 'pg-orm-ts/pg';
+import { sql, pgRole, pgPolicy, grant } from 'pgormjs/pg';
 import { currentOrgId } from './functions.js';
 import { orgs } from './orgs.js';
 import { users } from './users.js';
@@ -425,7 +431,7 @@ export const appUserGrants = [
 ### 1.10 `db/schema/relations.ts`
 
 ```ts
-import { defineRelations } from 'pg-orm-ts';
+import { defineRelations } from 'pgormjs';
 import * as tables from './tables.js';   // barrel re-exporting users, orgs, memberships, …
 
 export const relations = defineRelations(tables, (r) => ({
@@ -475,7 +481,7 @@ export const relations = defineRelations(tables, (r) => ({
 ### 1.11 `db/schema/index.ts` — the registry
 
 ```ts
-import { defineSchema } from 'pg-orm-ts';
+import { defineSchema } from 'pgormjs';
 
 import * as shared     from './_shared.js';
 import * as functions  from './functions.js';
@@ -500,7 +506,7 @@ export const schema = defineSchema({
 });
 
 // Types come out as free type functions:
-import type { Row, Insert, Update } from 'pg-orm-ts';
+import type { Row, Insert, Update } from 'pgormjs';
 export type User      = Row<typeof usersMod.users>;
 export type NewUser   = Insert<typeof usersMod.users>;
 export type UserPatch = Update<typeof usersMod.users>;
@@ -659,7 +665,7 @@ DDL-affecting (no `$`):
 
 | Modifier | Emits |
 |---|---|
-| `.notNull()` | `NOT NULL` |
+| `.nullable()` | drops the default `NOT NULL` |
 | `.primaryKey()` | single-column `PRIMARY KEY` |
 | `.unique(name?, { nullsNotDistinct? })` | `UNIQUE` constraint |
 | `.default(v)` | `DEFAULT <literal>` — structurally compared |
@@ -814,7 +820,7 @@ type Address = Infer<typeof postalAddress>;
 // { line1: string; line2: string | null; city: string; country: string }
 ```
 
-PG composite attributes cannot carry `NOT NULL`, so `.notNull()` is a compile error here; `.$required()` is the TS-only narrowing. Attribute add/drop/rename/retype all diff individually (`ALTER TYPE … ADD/DROP/RENAME/ALTER ATTRIBUTE`). Composite columns encode/decode through the record wire format, not string munging.
+PG composite attributes cannot carry `NOT NULL`. **OPEN (consequence of the nullability inversion, see §0):** under NOT-NULL-by-default a bare `text()` attribute would type as non-null while PostgreSQL still permits null — unsound. Either composite attributes invert too (bare = nullable, `.$required()` narrows, as the examples here assume), or `.nullable()` becomes mandatory on them. Needs a decision before the composite builder is implemented. Attribute add/drop/rename/retype all diff individually (`ALTER TYPE … ADD/DROP/RENAME/ALTER ATTRIBUTE`). Composite columns encode/decode through the record wire format, not string munging.
 
 ### 3.5 `pgSequence`
 
@@ -838,7 +844,7 @@ Two authoring forms, one IR node:
 pgView('active_users').as((q) => q.from(users).where((u) => isNull(u.deletedAt)).select(...))
 
 // (b) declared columns + raw SQL — for anything the builder can't express
-pgView('org_health').columns((t) => ({ orgId: t.uuid().notNull(), status: t.text().notNull() })).as(sql`…`)
+pgView('org_health').columns((t) => ({ orgId: t.uuid(), status: t.text() })).as(sql`…`)
 
 // (c) it exists but we don't manage it
 pgView('legacy_report').columns((t) => ({ ... })).existing()
@@ -1132,7 +1138,7 @@ Both compile into an IR node with `provenance: 'raw'`. Raw objects are **never s
 ```ts
 export const authUsers = externalTable('auth.users', (t) => ({
   id:    t.uuid().primaryKey(),
-  email: t.text().notNull(),
+  email: t.text(),
 }));
 
 // FKs may reference it; queries may join it; the diff engine ignores it entirely
@@ -1175,7 +1181,7 @@ Why not file-glob discovery:
 The CLI reads `pg-orm.config.ts`:
 
 ```ts
-import { defineConfig } from 'pg-orm-ts/config';
+import { defineConfig } from 'pgormjs/config';
 import { schema } from './db/schema/index.js';
 
 export default defineConfig({
@@ -1192,17 +1198,17 @@ Column builders are importable as free functions **and** available on the `t` pa
 
 ```ts
 export const timestamps = () => ({
-  createdAt: timestamptz().notNull().default(sql`now()`),
-  updatedAt: timestamptz().notNull().default(sql`now()`),
+  createdAt: timestamptz().default(sql`now()`),
+  updatedAt: timestamptz().default(sql`now()`),
 });
-export const softDelete = () => ({ deletedAt: timestamptz() });
+export const softDelete = () => ({ deletedAt: timestamptz().nullable() });
 export const pk        = () => uuid().primaryKey().default(sql`gen_random_uuid()`);
-export const tenant    = () => ({ orgId: uuid().notNull().references(() => orgs.id, { onDelete: 'cascade' }) });
+export const tenant    = () => ({ orgId: uuid().references(() => orgs.id, { onDelete: 'cascade' }) });
 
 // composed
 export const invoices = pgTable('invoices', (t) => ({
   ...pk(), ...tenant(), ...timestamps(), ...softDelete(),
-  total: t.numeric({ precision: 12, scale: 2 }).notNull(),
+  total: t.numeric({ precision: 12, scale: 2 }),
 }));
 ```
 
@@ -1225,14 +1231,14 @@ Derived from the builder chain, not hand-written (Kysely's `ColumnType<S, I, U>`
 
 | Chain | `Row` | `Insert` | `Update` |
 |---|---|---|---|
-| `text()` | `string \| null` | `string \| null \| undefined` | `string \| null \| undefined` |
-| `text().notNull()` | `string` | `string` (required) | `string \| undefined` |
-| `text().notNull().default('x')` | `string` | `string \| undefined` (Opt) | `string \| undefined` |
+| `text()` | `string` | `string` (required) | `string \| undefined` |
+| `text().nullable()` | `string \| null` | `string \| null \| undefined` | `string \| null \| undefined` |
+| `text().default('x')` | `string` | `string \| undefined` (Opt) | `string \| undefined` |
 | `text().$default(() => 'x')` | `string \| null` | `string \| undefined` (Opt, filled client-side) | `…` |
 | `int().generatedAlwaysAsIdentity()` | `number` | **absent** | **absent** |
 | `int().generatedByDefaultAsIdentity()` | `number` | `number \| undefined` | `number \| undefined` |
 | `tsvector().generatedAlwaysAs(…)` | `TsVector` | **absent** | **absent** |
-| `text().$required()` | `string \| null` | `string \| null` (present, may be null) | `…` |
+| `text().nullable().$required()` | `string \| null` | `string \| null` (present, may be null) | `…` |
 
 `Row<T>` / `Insert<T>` / `Update<T>` are the public names; `Selectable`/`Insertable`/`Updateable` aliases exist for Kysely refugees. Nothing brand-shaped ever leaks into application code: `Row<typeof users>` is a plain object type with no `ColumnType<>` in sight (kysely-codegen #63's long-standing complaint).
 
@@ -1285,7 +1291,13 @@ These are user-visible guarantees, identical on every adapter:
 
 - `$` is reserved: `$`-prefixed **column keys** are a definition-time error; `$`-prefixed **methods** are TS-only (D4); the table's metadata lives at `users.$`.
 - Table objects expose columns directly (`users.email`) *and* `users.$.columns.email`. A column literally named `$` or colliding with `$` is rejected with a message pointing at the casing option.
-- Relation names live in a separate namespace from column names; a relation named `email` on a table with an `email` column is legal (they never appear in the same position).
+- ~~Relation names live in a separate namespace from column names; a relation named `email` on a table with an `email` column is legal (they never appear in the same position).~~
+  > **AMENDED 2026-08-26 (WS5, `09` §3.5).** They *do* appear in the same position. Fork F3 (`09`
+  > §3.0) put relation accessors on the table scope next to the columns — measured cheaper than
+  > `04` §2.4's second lambda parameter on every shape and both compilers — and the price of that
+  > win is exactly this sentence. `defineSchema` now rejects a relation whose name matches a column
+  > of the same table, with a message saying one would hide the other. That is `03` §4.1's first
+  > hard ask, and it is what fork F3 owes.
 
 ### 6.7 Extension packs
 

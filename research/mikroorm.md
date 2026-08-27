@@ -1,5 +1,11 @@
 # MikroORM — Research Notes for `pg-orm-ts`
 
+> **Historical snapshot — 2026-08-14. Not maintained.**
+> This is a point-in-time study of software we do not control; version numbers, APIs and bug
+> reports below were accurate on that date and will drift. It is kept as the provenance for the
+> decisions in [`../design/`](../design/), not as a current reference. Conclusions that survived
+> review are carried into [`SUMMARY.md`](./SUMMARY.md) and cited from the design docs.
+
 **Researched:** 2026-08-14
 **Subject version:** MikroORM **v7.1.11** (`latest`, published 2026-08-06)
 **Context:** Evaluating what to PORT / ADAPT / SKIP for a PostgreSQL-only, type-safe, minimal-dependency TypeScript ORM with first-class migrations. Multi-DB abstraction is an explicit non-goal for us.

@@ -5,9 +5,13 @@ import { relations, schema, users } from './fixture.js'
 
 describe('defineRelations', () => {
   it('records name-keyed relation nodes and produces zero DDL', () => {
-    expect(relations.users.posts).toEqual({ kind: 'many', opt: false, to: 'posts', config: undefined })
-    expect(relations.users.latest).toEqual({ kind: 'one', opt: true, to: 'posts', config: undefined })
-    expect(relations.posts.author).toEqual({ kind: 'one', opt: false, to: 'users', config: undefined })
+    expect(relations.users.posts).toMatchObject({ kind: 'many', opt: false, to: 'posts' })
+    expect(relations.users.latest).toMatchObject({ kind: 'one', opt: true, to: 'posts' })
+    expect(relations.posts.author).toMatchObject({ kind: 'one', opt: false, to: 'users' })
+    // The config is carried at *runtime* and is deliberately absent from the type — design/04
+    // §7.3, and the reason `.config` below is reached through `Object.keys` and not through a
+    // property access, which does not compile.
+    expect(Object.keys(relations.posts.author)).toContain('config')
     // no relation ever contributes a table extra
     expect(users.$.extras.some((e) => e.node === 'index')).toBe(true)
   })

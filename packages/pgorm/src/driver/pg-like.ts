@@ -14,8 +14,11 @@ export interface PgLikePool {
   connect(): Promise<PgLikePoolClient>
   end(): Promise<void>
   /**
-   * pg-pool exposes the resolved config here; we read host/port/user/database to build a
-   * cancel connection. Verified present on both pg and Neon (`Pool_2.options`).
+   * pg-pool exposes the resolved config here. We read exactly ONE key — `max`, for
+   * `capabilities.maxConnections`. (An earlier draft claimed host/port/user were read from here
+   * to build a cancel connection; they never were. Opening our own socket would mean owning a
+   * credential, which design/02 §3 forbids — the protocol cancel path goes through
+   * `PgDriverConfig.createCancelClient` instead.)
    */
   readonly options?: Record<string, unknown>
   readonly totalCount?: number
@@ -33,12 +36,30 @@ export interface PgLikeClient {
   /** Submittable overload. This is pg's real extension seam (§5.2); Neon re-exports it verbatim. */
   query<T extends PgLikeSubmittable>(submittable: T): T
   on(event: 'notice' | 'notification' | 'error' | 'end', listener: (arg: never) => void): unknown
-  removeListener?(event: string, listener: (arg: never) => void): unknown
+  /**
+   * REQUIRED. The adapter keeps an `error` listener on every checked-out client (pg-pool removes
+   * its own idle listener at checkout, and pg emits `error` unconditionally — an unhandled one is
+   * a process exit), so it MUST be able to take it off again at release.
+   */
+  removeListener(event: string, listener: (arg: never) => void): unknown
   /** Present on pg >= 8.21. Optional so a minimal duck-type still satisfies us. */
   getTransactionStatus?(): 'I' | 'T' | 'E'
   readonly processID?: number
+  /** The in-flight query object, if the driver exposes one. Only used to aim a protocol cancel. */
+  readonly activeQuery?: unknown
   /** Private-ish, but stable since pg 6 and required for describe/copy/close (§5.2). */
   readonly connection?: PgLikeConnection
+}
+
+/**
+ * What `PgDriverConfig.createCancelClient` must return: an UNCONNECTED client that knows how to
+ * open its own socket and send a protocol CancelRequest for another client's backend. `pg.Client`
+ * satisfies this structurally (`Client.prototype.cancel(target, activeQuery)`), which is the whole
+ * point — the caller hands us `() => new Client(sameConfig)` and never a credential of ours.
+ */
+export interface PgLikeCancelClient {
+  cancel(client: PgLikeClient, query?: unknown): void
+  end?(): Promise<void> | void
 }
 
 export interface PgLikeQueryConfig {
@@ -68,7 +89,8 @@ export interface PgLikeResult {
   rows: unknown[]
   fields: readonly PgLikeField[]
   rowCount: number | null
-  command: string
+  /** `null` for an EmptyQueryResponse — pg never sets it, so the seam must not claim `string`. */
+  command: string | null
 }
 
 export interface PgLikeField {
@@ -133,8 +155,9 @@ export interface PgDriverConfig {
   directPool?: PgLikePool
   /**
    * Only needed to enable protocol-level `cancel()`, which requires opening a *second* socket.
-   * If omitted we fall back to `pg_cancel_backend(pid)` over a pooled connection, and if
-   * `directPool` is also absent, `capabilities.cancel` is `false`.
+   * When present, `capabilities.cancel` is `'protocol'` and an aborted statement is cancelled
+   * without borrowing a pooled connection. If omitted we fall back to `pg_cancel_backend(pid)`
+   * over a pooled connection.
    */
-  createCancelClient?: () => PgLikeClient
+  createCancelClient?: () => PgLikeCancelClient
 }

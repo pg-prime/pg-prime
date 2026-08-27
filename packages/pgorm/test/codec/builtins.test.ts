@@ -8,7 +8,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { makeHarness, type Harness } from '../driver/_harness.js'
+import { makeHarness, type Harness } from '../live/_harness.js'
 import { createRegistry, PgDecodeError, PgEncodeError } from '../../src/codec/index.js'
 import {
   boolCodec,
@@ -164,9 +164,11 @@ describe('timestamptz → Date, timestamp → verbatim string', () => {
     expect((d as Date).getUTCFullYear()).toBe(0)
   })
 
-  it('a Date parameter is encoded as unambiguous UTC ISO-8601, never a local-offset string', async () => {
+  it('a Date parameter is encoded as unambiguous UTC, never a local-offset string', async () => {
     const d = new Date('2026-08-14T06:30:00.123Z')
-    expect(timestamptzCodec.encode(d)).toBe('2026-08-14T06:30:00.123Z')
+    // byte-exact wire text: UTC calendar fields, a space separator and a `Z` zone. NOT
+    // `toISOString()` — see the year-10000 case below for why that spelling cannot be used.
+    expect(timestamptzCodec.encode(d)).toBe('2026-08-14 06:30:00.123Z')
     const [out] = await row('select $1::timestamptz', [timestamptzCodec.encode(d)], [1184])
     expect((out as Date).getTime()).toBe(d.getTime())
   })

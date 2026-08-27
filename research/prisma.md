@@ -1,5 +1,11 @@
 # Prisma ORM — Research Dossier for `pg-orm-ts`
 
+> **Historical snapshot — 2026-08-14. Not maintained.**
+> This is a point-in-time study of software we do not control; version numbers, APIs and bug
+> reports below were accurate on that date and will drift. It is kept as the provenance for the
+> decisions in [`../design/`](../design/), not as a current reference. Conclusions that survived
+> review are carried into [`SUMMARY.md`](./SUMMARY.md) and cited from the design docs.
+
 **Date of research: 2026-08-14**
 **Versions verified against npm registry on 2026-08-14.**
 

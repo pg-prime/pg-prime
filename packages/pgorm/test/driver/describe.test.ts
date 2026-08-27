@@ -15,7 +15,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { makeHarness, type Harness } from './_harness.js'
+import { makeHarness, type Harness } from '../live/_harness.js'
 import type { PgConnection } from '../../src/driver/index.js'
 
 let h: Harness

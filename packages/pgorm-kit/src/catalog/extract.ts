@@ -26,6 +26,8 @@ export interface Diagnostic {
   readonly severity: "info" | "warning" | "error";
   readonly message: string;
   readonly subject?: string;
+  /** structured population count, for census diagnostics (`unmodeled_kind`) */
+  readonly count?: number;
 }
 
 export interface ExtractResult {
@@ -49,12 +51,49 @@ SELECT n.nspname AS schema
 FROM pg_namespace n
 WHERE n.nspname = ANY($1)`;
 
+/**
+ * Relations no Tier-M family may emit a fact for.
+ *
+ * Applied to EVERY family, not just `pg_class`: excluding an extension's table while
+ * still emitting its columns and indexes leaves orphan facts, and an orphan column
+ * diffs into `ALTER TABLE … ADD COLUMN` on a table the plan never creates.
+ *
+ *  - `deptype = 'e'`  — owned by an extension (declare-only, design/06 §2.2).
+ *  - `relkind = 'p'` / `relispartition` / `pg_inherits` — partitioning and inheritance
+ *    are not modelled yet (§2.2 lists them as Tier M, the spike does not implement
+ *    them); emitting a partition as a plain table generates DDL that cannot converge,
+ *    so they are excluded AND reported as an error diagnostic. BOTH ends of a
+ *    `pg_inherits` row are excluded: a parent is not an ordinary table either, since
+ *    every DDL on it cascades to children the IR cannot see.
+ */
+const EXCLUDED_RELS = `
+  SELECT x.oid FROM pg_class x
+  WHERE EXISTS (SELECT 1 FROM pg_depend d
+                WHERE d.classid = 'pg_class'::regclass AND d.objid = x.oid AND d.deptype = 'e')
+     OR x.relkind = 'p'
+     OR x.relispartition
+     OR EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = x.oid OR i.inhparent = x.oid)`;
+
 const Q_TABLES = `
 SELECT n.nspname AS schema, c.relname AS name, c.relkind, c.relpersistence, c.relrowsecurity
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r','p') AND n.nspname = ANY($1)
-  AND c.oid NOT IN (SELECT d.objid FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.deptype = 'e')`;
+  AND c.oid NOT IN (${EXCLUDED_RELS})`;
+
+/** Tier-M gaps that must never converge silently (design/06 §2.2 completeness rule). */
+const Q_PARTITIONING = `
+SELECT n.nspname AS schema, c.relname AS name,
+       CASE WHEN c.relkind = 'p' THEN 'partitionedTable'
+            WHEN c.relispartition THEN 'partition'
+            WHEN EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid) THEN 'inheritanceChild'
+            ELSE 'inheritanceParent' END AS kind
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = ANY($1) AND c.relkind IN ('r','p')
+  AND (c.relkind = 'p' OR c.relispartition
+       OR EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid OR i.inhparent = c.oid))
+ORDER BY n.nspname, c.relname`;
 
 const Q_COLUMNS = `
 SELECT n.nspname AS schema, c.relname AS "table", a.attname AS name, a.attnum,
@@ -78,6 +117,7 @@ LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
 LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
 WHERE a.attnum > 0 AND NOT a.attisdropped
   AND c.relkind IN ('r','p') AND n.nspname = ANY($1)
+  AND c.oid NOT IN (${EXCLUDED_RELS})
 ORDER BY n.nspname, c.relname, a.attnum`;
 
 const Q_CONSTRAINTS = `
@@ -91,18 +131,23 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN pg_class rc ON rc.oid = con.confrelid
 LEFT JOIN pg_namespace rn ON rn.oid = rc.relnamespace
 WHERE n.nspname = ANY($1) AND con.contype IN ('p','f','u','c','x')
-  AND con.coninhcount = 0`;
+  AND con.coninhcount = 0
+  AND c.oid NOT IN (${EXCLUDED_RELS})
+  AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                  WHERE d.classid = 'pg_constraint'::regclass AND d.objid = con.oid AND d.deptype = 'e')`;
 
 /** Constraint-backing indexes are implied by their constraint and are never their own fact. */
 const Q_INDEXES = `
 SELECT n.nspname AS schema, ic.relname AS name, c.relname AS "table",
        pg_get_indexdef(i.indexrelid) AS definition,
-       i.indisunique AS unique, i.indisprimary AS primary, i.indisvalid AS valid
+       i.indisunique AS unique, i.indisvalid AS valid
 FROM pg_index i
 JOIN pg_class ic ON ic.oid = i.indexrelid
 JOIN pg_class c ON c.oid = i.indrelid
 JOIN pg_namespace n ON n.oid = ic.relnamespace
 WHERE n.nspname = ANY($1)
+  AND c.oid NOT IN (${EXCLUDED_RELS})
+  AND ic.oid NOT IN (${EXCLUDED_RELS})
   AND NOT EXISTS (SELECT 1 FROM pg_constraint con
                   WHERE con.conindid = i.indexrelid AND con.contype IN ('p','u','x'))`;
 
@@ -137,7 +182,31 @@ LEFT JOIN pg_depend d ON d.classid = 'pg_class'::regclass AND d.objid = c.oid
 LEFT JOIN pg_class dc ON dc.oid = d.refobjid
 LEFT JOIN pg_namespace dn ON dn.oid = dc.relnamespace
 LEFT JOIN pg_attribute da ON da.attrelid = d.refobjid AND da.attnum = d.refobjsubid
-WHERE c.relkind = 'S' AND n.nspname = ANY($1)`;
+WHERE c.relkind = 'S' AND n.nspname = ANY($1)
+  AND c.oid NOT IN (${EXCLUDED_RELS})
+  AND (dc.oid IS NULL OR dc.oid NOT IN (${EXCLUDED_RELS}))`;
+
+/**
+ * `serial` is a column DEFAULT `nextval('t_id_seq')` plus a sequence, and pg_depend
+ * records the attrdef -> sequence link. Without that edge the table is ordered before
+ * the sequence its own DEFAULT calls, and the plan fails with
+ * `relation "t_id_seq" does not exist`.
+ */
+const Q_DEFAULT_SEQUENCES = `
+SELECT n.nspname AS schema, c.relname AS "table", a.attname AS column,
+       sn.nspname AS seq_schema, s.relname AS seq_name
+FROM pg_depend d
+JOIN pg_attrdef ad ON ad.oid = d.objid
+JOIN pg_class c ON c.oid = ad.adrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = ad.adrelid AND a.attnum = ad.adnum
+JOIN pg_class s ON s.oid = d.refobjid
+JOIN pg_namespace sn ON sn.oid = s.relnamespace
+WHERE d.classid = 'pg_attrdef'::regclass AND d.refclassid = 'pg_class'::regclass
+  AND s.relkind = 'S' AND d.deptype = 'n'
+  AND n.nspname = ANY($1) AND sn.nspname = ANY($1)
+  AND c.oid NOT IN (${EXCLUDED_RELS})
+  AND s.oid NOT IN (${EXCLUDED_RELS})`;
 
 /** The completeness rule (design/06 §2.2): enumerate, subtract, report the remainder. */
 const Q_UNMODELED = `
@@ -188,7 +257,12 @@ export async function extractCatalog(
   let pgVersionNum = 0;
   try {
     await client.query("SET LOCAL search_path = pg_catalog");
-    await client.query(`SET LOCAL statement_timeout = '${options.statementTimeout ?? "30s"}'`);
+    // `SET LOCAL x = '<option>'` cannot take a bind, so the option used to be
+    // string-interpolated straight from caller input. `set_config` is the same
+    // GUC write with a real parameter.
+    await client.query("SELECT set_config('statement_timeout', $1, true)", [
+      options.statementTimeout ?? "30s",
+    ]);
     const ver = await client.query("SHOW server_version_num");
     pgVersionNum = Number(Object.values(ver.rows[0] ?? {})[0] ?? 0);
 
@@ -204,6 +278,8 @@ export async function extractCatalog(
     const rEnums = await client.query(Q_ENUM_TYPES, p);
     const rLabels = await client.query(Q_ENUM_LABELS, p);
     const rSeqs = await client.query(Q_SEQUENCES, p);
+    const rDefaultSeqs = await client.query(Q_DEFAULT_SEQUENCES, p);
+    const rPartitioning = await client.query(Q_PARTITIONING, p);
     const rUnmodeled = await client.query(Q_UNMODELED, p);
 
     /* ---- schemas ---- */
@@ -346,7 +422,6 @@ export async function extractCatalog(
           kind: "index",
           definition,
           unique: bool(r["unique"]),
-          primary: bool(r["primary"]),
           valid: bool(r["valid"]),
         } satisfies IndexPayload,
         provenance: prov,
@@ -401,6 +476,34 @@ export async function extractCatalog(
       edges.push({ from: id, to: { kind: "schema", schema }, kind: "owner" });
     }
 
+    /* ---- serial: column DEFAULT nextval() -> its sequence ---- */
+    for (const r of rDefaultSeqs.rows) {
+      edges.push({
+        from: {
+          kind: "column",
+          schema: str(r["schema"]),
+          table: str(r["table"]),
+          name: str(r["column"]),
+        },
+        to: { kind: "sequence", schema: str(r["seq_schema"]), name: str(r["seq_name"]) },
+        kind: "depends",
+      });
+    }
+
+    /* ---- Tier-M gaps that must not converge silently ---- */
+    for (const r of rPartitioning.rows) {
+      const schema = str(r["schema"]);
+      const name = str(r["name"]);
+      diagnostics.push({
+        code: "unsupported_kind",
+        severity: "error",
+        message:
+          `${schema}.${name} is a ${str(r["kind"])}; partitioning and inheritance are not ` +
+          `modelled yet, so it is excluded from the IR rather than diffed as a plain table`,
+        subject: encodeId({ kind: "table", schema, name }),
+      });
+    }
+
     /* ---- Tier U census ---- */
     for (const r of rUnmodeled.rows) {
       const n = Number(r["n"]);
@@ -410,6 +513,7 @@ export async function extractCatalog(
           severity: "info",
           message: `${n} ${str(r["kind"])} object(s) present and not diffed (Tier R/U)`,
           subject: str(r["kind"]),
+          count: n,
         });
       }
     }
@@ -420,7 +524,18 @@ export async function extractCatalog(
     throw err;
   }
 
-  return { ir: SchemaIR.build(facts, edges), pgVersionNum, diagnostics };
+  const ir = SchemaIR.build(facts, edges);
+  for (const orphan of ir.orphans()) {
+    diagnostics.push({
+      code: "orphan_fact",
+      severity: "warning",
+      message:
+        `${encodeId(orphan.id)} has no parent fact (${encodeId(orphan.parent!)}); its family ` +
+        `was extracted with a different exclusion than its parent's`,
+      subject: encodeId(orphan.id),
+    });
+  }
+  return { ir, pgVersionNum, diagnostics };
 }
 
 /**
@@ -440,12 +555,7 @@ export function evaluatedEnumLabels(
     const dot = qualified.lastIndexOf(".");
     const schema = qualified.slice(0, dot);
     const type = qualified.slice(dot + 1);
-    const mentionsType =
-      expr.includes(qualified) ||
-      expr.includes(`"${schema}"."${type}"`) ||
-      expr.includes(`::${type}`) ||
-      expr.includes(`::"${type}"`);
-    if (!mentionsType) continue;
+    if (!mentionsType(expr, schema, type)) continue;
     for (const label of labels) {
       if (expr.includes(`'${label.replace(/'/g, "''")}'`)) {
         out.push({ kind: "enumLabel", schema, type, name: label });
@@ -453,4 +563,33 @@ export function evaluatedEnumLabels(
     }
   }
   return out;
+}
+
+/** A bare identifier PostgreSQL will not have quoted in its own output. */
+const BARE_IDENT = /^[a-z_][a-z0-9_$]*$/;
+
+/** Both spellings of one identifier part: quoted always, bare only when legal. */
+function spellings(part: string): string[] {
+  const quoted = `"${part.replace(/"/g, '""')}"`;
+  return BARE_IDENT.test(part) ? [part, quoted] : [quoted];
+}
+
+/**
+ * Does `expr` name this enum type, in ANY spelling PostgreSQL might have emitted?
+ *
+ * `pg_get_expr` quotes a part only when it has to, so one type has up to four
+ * qualified spellings (`s.t`, `"s".t`, `s."t"`, `"s"."t"`). Matching only the two
+ * all-bare/all-quoted forms missed `'refunded'::"my schema".order_status` and
+ * `::public."OrderStatus"` — and a missed `evaluates` edge is a 55P04
+ * "unsafe use of new value" at apply time, which is the whole bug this edge exists
+ * to prevent.
+ */
+function mentionsType(expr: string, schema: string, type: string): boolean {
+  for (const t of spellings(type)) {
+    if (expr.includes(`::${t}`)) return true;
+    for (const sc of spellings(schema)) {
+      if (expr.includes(`${sc}.${t}`)) return true;
+    }
+  }
+  return false;
 }
