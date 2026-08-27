@@ -1,0 +1,6 @@
+# Byte-exact goldens (SQL, tsc diagnostics, design/03 generated blocks) are compared on
+# ubuntu / macos / windows runners alike, so every text file is LF on checkout regardless of
+# core.autocrlf.
+* text=auto eol=lf
+*.png binary
+*.tgz binary
