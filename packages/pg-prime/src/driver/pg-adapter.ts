@@ -14,7 +14,7 @@ import {
   executeCappedViaSubmittable,
   toPgField,
 } from './submittable.js'
-import { PgDriverError, normaliseError, toServerErrorData } from './errors.js'
+import { PgDriverError, normaliseError, toServerErrorData, isServerErrorShape } from './errors.js'
 import type { NormaliseOptions } from './errors.js'
 import type {
   PgDriverConfig,
@@ -442,6 +442,7 @@ class PgConnectionImpl implements PgConnection {
         this.#usable = false
         if (this.#failure === undefined) this.#failure = e
       }
+      if (isServerErrorShape(e) && this.#usable) await this.#afterReadyForQuery()
       const opts: NormaliseOptions = {
         adapter: ADAPTER,
         sql: query.text,
@@ -455,6 +456,44 @@ class PgConnectionImpl implements PgConnection {
       const i = this.#pending.indexOf(entry)
       if (i >= 0) this.#pending.splice(i, 1)
     }
+  }
+
+  /**
+   * Hold a server-error rejection until the backend's ReadyForQuery has been handled.
+   *
+   * pg settles a query at ErrorResponse and records the transaction status at the ReadyForQuery
+   * that follows it (`Client#_handleErrorMessage` vs `_handleReadyForQuery`). When both messages
+   * arrive in one TCP read the parser handles both before the rejection's microtask runs, and
+   * `transactionStatus` reads `'E'` after `await execute()` rejects; when the socket delivers
+   * them in two reads it still reads the pre-statement `'T'`. The seam promises the
+   * *post-statement* status after an awaited call (`PgConnection.transactionStatus`), and a
+   * caller that checks it before `rollback` — or `stream()`'s own `'E'` guard — must not depend
+   * on packet boundaries. CI flipped on exactly this (run 33059095233, `cursor.test.ts` "refuses
+   * to stream inside a FAILED transaction"): a test that had been green for five runs read `'T'`.
+   *
+   * Only a server error is held. After an ErrorResponse the backend always sends ReadyForQuery
+   * (it discards until Sync, then reports), so the wait is bounded by the round trip already in
+   * flight. A socket error, a client-side read deadline or a failed cancel has no ReadyForQuery
+   * coming — those paths retire the connection and are not held — and `end`/`error` on the client
+   * release the wait for the case where the socket dies in between. A drop-in client without
+   * `readyForQuery` / `connection` is not held either, which is the documented cost of lacking
+   * them.
+   */
+  #afterReadyForQuery(): Promise<void> {
+    const client = this.#client
+    const con = client.connection
+    if (client.readyForQuery !== false || con === undefined) return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      const done = (): void => {
+        con.removeListener('readyForQuery', done as (msg: never) => void)
+        client.removeListener('end', done as (arg: never) => void)
+        client.removeListener('error', done as (arg: never) => void)
+        resolve()
+      }
+      con.on('readyForQuery', done as (msg: never) => void)
+      client.on('end', done as (arg: never) => void)
+      client.on('error', done as (arg: never) => void)
+    })
   }
 
   #attachAbort(signal: AbortSignal | undefined, token: number): () => void {

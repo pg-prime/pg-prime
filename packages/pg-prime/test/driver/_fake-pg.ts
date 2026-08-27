@@ -131,6 +131,11 @@ export class FakeClient implements PgLikePoolClient {
     this.#events.emit('error', err)
   }
 
+  /** pg's `end` — the socket closed with nothing more coming, ReadyForQuery included. */
+  end(): void {
+    this.#events.emit('end')
+  }
+
   notice(message: string): void {
     this.#events.emit('notice', { severity: 'NOTICE', code: '00000', message })
   }

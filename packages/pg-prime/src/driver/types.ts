@@ -109,7 +109,14 @@ export interface PgConnection {
   /** ParameterStatus values captured at startup + any that changed. §4.7 — we assert on these. */
   readonly serverParameters: Readonly<Record<string, string>>
 
-  /** 'I' idle · 'T' in transaction · 'E' failed transaction · undefined if the adapter can't tell. */
+  /**
+   * 'I' idle · 'T' in transaction · 'E' failed transaction · undefined if the adapter can't tell.
+   *
+   * Post-statement after an awaited `execute()` — including a rejected one. pg reports the status
+   * on ReadyForQuery, which follows the ErrorResponse that rejects the promise; the adapter holds
+   * the rejection until then, so `await execute(…).catch(…)` followed by a read of this getter
+   * sees `'E'`, never the `'T'` the session was in when the statement was sent.
+   */
   readonly transactionStatus: 'I' | 'T' | 'E' | undefined
 
   /** False after a protocol error. The runtime layer must `release(conn, { dispose: true })`. */

@@ -49,6 +49,14 @@ export interface PgLikeClient {
   readonly activeQuery?: unknown
   /** Private-ish, but stable since pg 6 and required for describe/copy/close (§5.2). */
   readonly connection?: PgLikeConnection
+  /**
+   * pg's `Client#readyForQuery`: `false` from the moment a query is dispatched until its
+   * ReadyForQuery has been handled, `true` otherwise. Read for exactly one purpose —
+   * `PgConnectionImpl.#afterReadyForQuery`, which holds a server-error rejection until the
+   * transaction status pg reports on that message is in place. Optional: a drop-in without it
+   * loses the post-statement `transactionStatus` guarantee `types.ts` documents, and nothing else.
+   */
+  readonly readyForQuery?: boolean
 }
 
 /**

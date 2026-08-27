@@ -1694,6 +1694,21 @@ Two things are red-adjacent and neither is WS6's, both stated rather than rounde
   file alone.
 ---
 
+#### Follow-up · 2026-08-27 · the `transactionStatus` race, fixed at the adapter
+
+The first CI run of this workstream (33059095233) failed one pre-existing test —
+`test/driver/cursor.test.ts` "refuses to stream inside a FAILED transaction" — with
+`expected 'T' to be 'E'` right after `await execute('select 1/0').catch(…)`. That is the race
+this section's self-heal guard was written around ("session idle, not not-in-failed-tx"): pg
+rejects at ErrorResponse and records the status at the ReadyForQuery that follows, so the value a
+caller reads after the `await` depended on whether the two messages shared a TCP read. The guard
+stays; the race is gone: `PgConnectionImpl.#afterReadyForQuery` now holds a *server-error*
+rejection until pg's `readyForQuery` flag is back (socket `end`/`error` release it; socket errors,
+read deadlines and failed cancels are never held because no ReadyForQuery is coming). `types.ts`
+states the promise — post-statement status after any awaited call — and
+`test/driver/ready-for-query.test.ts` pins it against a fake that replays pg's message order,
+with the drop-in-without-`readyForQuery` case as the negative control.
+
 ### WS5 — Relations (1.5 weeks) · **DONE** — result in §3.5
 
 **Goal.** `u.posts.many(q)`, `.one(q)`, `.all()`, `.count()`, `.sum(f)`, `.exists()`, `.some/.every/.none(p)`, m2m via `through`, composite keys, default `where`/`orderBy` from the declaration — all emitting the `NestedPlan` items `hoist.ts` already consumes.
