@@ -10,3 +10,6 @@ bench/types/.gen/
 
 # stray declaration emit inside src (never checked in; `dist/` is the real output)
 packages/*/src/**/*.d.ts
+
+# IDE state
+.idea/
