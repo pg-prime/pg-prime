@@ -6,9 +6,12 @@
 #                   laptop, including Windows, where Postgres tooling usually gives up.
 #   pg     tier 2 — a real server. PG 17 on every PR; 15/16/17/18 nightly (see ci-nightly.yml
 #                   when WS7 lands). Everything guarded by requiresConcurrency() runs only here.
-#   types  the compile-time budgets (design/04 §3.5, design/03 Appendix B). Its own job because it
-#          compiles ~40 generated programs on two TypeScript versions and takes ~25 s, and because
-#          a budget that only exists in a JSON file is not a gate.
+#   types  the compile-time AND runtime-compile budgets (design/04 §3.5, design/03 Appendix B).
+#          Its own job because it compiles ~40 generated programs on two TypeScript versions and
+#          takes ~25 s, and because a budget that only exists in a JSON file is not a gate.
+#   perf   design/08 §5's nine raw-vs-orm pairs, on a `perf` label only. Informational, never
+#          blocking: a wall-clock database benchmark on a shared runner is noise, and gating on
+#          noise trains people to re-run CI until it passes.
 #
 # One env var selects the target everywhere: PG_PRIME_TEST_URL set ⇒ that server, unset ⇒ PGlite.
 
@@ -17,7 +20,10 @@ name: ci
 on:
   push:
     branches: [main]
+  # `labeled` is here so that adding the `perf` label to an open PR starts the perf job without a
+  # push; `reopened` has to be spelled out because naming `types` at all replaces the default set.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -46,7 +52,7 @@ jobs:
       - run: pnpm typecheck
 
   types:
-    name: type budgets (design/04 §3.5)
+    name: budgets — types (design/04 §3.5) + compile (design/03 Appendix B)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -62,6 +68,23 @@ jobs:
       - run: pnpm bench:types
       # The diagnostic goldens (design/04 §4). `pnpm type-errors` re-records after a deliberate change.
       - run: pnpm type-errors:check
+      # design/09 WS7. The deterministic, no-database half of the runtime bench: compile time and
+      # allocations for design/03 §1.1's 12-column / 2-join / 1-relation query, §1.1's two
+      # structural claims (one `join('')`, one binds array), and the decoder against the hand-written
+      # positional mapper. ~26 s including the `tsc` build of the package it imports.
+      #
+      # It lives here rather than in its own job because design/08 §4.6 budgets `bench:compile` +
+      # `bench:types` together at under 3 minutes, and two jobs would pay for two checkouts and two
+      # `pnpm install`s to save nothing. `--expose-gc` (in the package script) is what makes the
+      # allocation numbers exact rather than merely stable.
+      - run: pnpm bench:compile
+      - name: Upload the bench report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-compile-report
+          path: bench/runtime/report.json
+          if-no-files-found: warn
 
   live:
     name: live (tier 1, PGlite) · ${{ matrix.os }}
@@ -153,3 +176,50 @@ jobs:
           done
           echo "pgbouncer never accepted a connection on 6432"; exit 1
       - run: pnpm test:pg
+
+  perf:
+    # design/08 §5: "On PRs labelled `perf`: the runtime benchmark runs and posts a 3-run-median
+    # comparison. Informational, never blocking." So this job exists only when the label does, and
+    # `continue-on-error` keeps a noisy shared runner from turning a correct PR red.
+    #
+    # It is a NEW job rather than a step on `pg`: that job's whole point is the tier-2 suite against
+    # a PgBouncer topology, and a benchmark sharing a runner with a test suite measures the suite.
+    name: perf (design/08 §5, `perf` label only)
+    if: contains(github.event.pull_request.labels.*.name, 'perf')
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: pgprime
+          POSTGRES_PASSWORD: pgprime
+          POSTGRES_DB: pgprime
+          TZ: UTC
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pgprime"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_PRIME_TEST_URL: postgres://pgprime:pgprime@127.0.0.1:5432/pgprime
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The full bench: the compile and decode sections plus design/08 §5's nine `raw()`/`orm()`
+      # pairs, interleaved in one process. The three-way print (design / measured / budget) is in
+      # the log; report.json is the artifact.
+      - run: pnpm bench:runtime
+      - name: Upload the bench report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-runtime-report-pr-${{ github.event.pull_request.number }}
+          path: bench/runtime/report.json
+          if-no-files-found: warn

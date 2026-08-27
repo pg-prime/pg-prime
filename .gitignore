@@ -13,3 +13,6 @@ packages/*/src/**/*.d.ts
 
 # IDE state
 .idea/
+
+# generated runtime-bench build (packages/pg-prime emitted for the bench to import)
+bench/runtime/.gen/

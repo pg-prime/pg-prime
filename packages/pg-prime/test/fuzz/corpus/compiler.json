@@ -1,0 +1,4 @@
+{
+  "_why": "Regression corpus for test/fuzz/compiler-fuzz.test.ts. See ../corpus.ts for the two entry kinds and how to add one (PG_PRIME_FUZZ_RECORD=1).",
+  "cases": []
+}

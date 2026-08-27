@@ -1724,3 +1724,27 @@ where ("users"."meta" #>> $1) = $2
 | Decode throughput, 10k rows × 12 cols | within 15% of a hand-written positional mapper | near-raw is the bar (SUMMARY §6.4) |
 | Ident fuzz | 10k cases/PR, 1M nightly, 0 findings | §3.4 |
 | Compiler fuzz (params ≡ placeholders, 1 statement, no value in SQL text) | 10k cases/PR | §3.4 |
+
+<!-- as-built:appendix-b -->
+**AS BUILT · 2026-08-27 (design/09 WS7 · §3.7).** Every row above is now a job and a JSON budget.
+The measured numbers are in `09` §3.7; this table says only *what gates what*, because a budget
+nobody runs is a paragraph.
+
+| Row | Gated by | Where it runs |
+|---|---|---|
+| instantiations / query, 300 tables, flat vs 80 | `bench/types/budget.json` → `schemaSizeIndependenceRatio` (1.15), measured 1.000 at 25/100/300 on TS 5.9.3 and 7.0.2 | `pnpm bench:types`, `ci.yml` job `types`, every PR |
+| `tsc --noEmit`, 300 tables / 200 queries, < 8 s | `bench/types/budget.json` → `headline.checkTimeSeconds` | same |
+| `.d.ts` bytes < 400 KB | `bench/types/budget.json` → `packageDtsBytes`, measured 343.5 KB | same |
+| **compile time, 12-col + 2 joins + 1 nested relation, < 25 µs** | `bench/runtime/budget.json` → `compile.emitP50Us` (absolute, the emitter) **and** `compile.buildAndCompileRefRatio` + `compile.buildAndCompileBytes` (the builder chain). `bench/runtime/structure.mjs` gates §1.1's other two claims — one `join('')`, one params array — as exact integers | `pnpm bench:compile`, `ci.yml` job `types`, every PR |
+| **decode throughput, 10k × 12, within 15 % of a hand mapper** | `bench/runtime/budget.json` → `decode.ratioVsUncheckedMapperP50` and `…VsCheckedMapperP50`, against `bench/runtime/hand-mapper.mjs`; the oracle equivalence itself is tier 0 (`test/compile/decode-oracle.test.ts`) | same |
+| ident fuzz, 10k/PR · 1M nightly · 0 findings | `test/fuzz/ident-oracle.test.ts` + `test/fuzz/corpus/ident.json` | `ci.yml` job `live`/`pg` at 10k; `ci-nightly.yml` job `fuzz` at 1M |
+| compiler fuzz, 10k/PR | `test/fuzz/compiler-fuzz.test.ts` + `corpus/compiler.json` | same |
+| *(new)* **builder fuzz** — the same invariants through the public API, plus (e′) determinism and (f) immutability | `test/fuzz/builder-fuzz.test.ts` + `corpus/builder.json` | same |
+| *(new)* nine `raw()`/`orm()` pairs, `08` §5 | `bench/runtime/budget.json` → `e2e.overheadP50/P95/P99`, per case | `ci-nightly.yml` job `bench`; `ci.yml` job `perf` on a label |
+
+**Two rows are not met as written and are gated at measured budgets instead**, with the design
+number printed beside the measurement on every run and the reason recorded in `budget.json`'s
+`_overDesign` (which `run.mjs` fails without): the 25 µs holds for the *emitter* and not for the
+builder chain, and the decode ratio is 2.7–3.0× rather than 1.15×. `09` §3.7 finding 1 decomposes
+both.
+<!-- as-built:appendix-b:end -->

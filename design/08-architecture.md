@@ -476,6 +476,28 @@ generator produces tests that assert the implementation.
 Windows in tier 1 is a genuine, free win from PGlite — no Docker on Windows CI, which is where
 Postgres-tooling projects usually give up on Windows support entirely.
 
+**AS BUILT · 2026-08-27 (design/09 WS7 · §3.7).** Which of the ten rows above exist, and under
+which name. Nothing has been run on GitHub's runners yet for the rows marked *new*; the workflows
+parse and the topology is the PR `pg` job's, which is green (`09` §3.6 follow-up).
+
+| Row above | Built? | As |
+|---|---|---|
+| `lint` | **no** | Follow-up. Nobody owns oxlint + `tsgo --noEmit -b` in `09`; `pnpm typecheck` covers the second half on TS 7.0.2 only. |
+| `unit` (tier 0) | yes | `ci.yml` job `unit`, Node 22.12 / 24 / 26 × ubuntu. 715 tests, 4.9 s. |
+| `types` | partly | `ci.yml` job `types` — TS **5.9.3 and 7.0.2** (not 6.0.3, and no `7-next` arm: `04` §3.6 records that `@ark/attest` cannot run on TS 7 at all, and the two-compiler matrix is what `bench/types` measures). Lib-checking the emitted `dist/**/*.d.ts` is not wired; the `.d.ts` **size** budget is. |
+| `pglite` (tier 1) | yes, as **`live`** | `ci.yml` job `live`, Node 24 × ubuntu / macos / windows. |
+| `pg` (tier 2) | yes | `ci.yml` job `pg`, PostgreSQL 17 **+ PgBouncer 1.25** (`09` §3.6 added the pooler, which this table did not ask for). |
+| `pg-matrix` (tier 2) | **new** | `ci-nightly.yml` job `pg-matrix`, PG **15 / 16 / 17 / 18**, each with its own `edoburu/pgbouncer` in transaction mode. Nightly + `workflow_dispatch`; not on `main` pushes, because a four-server matrix on every merge buys a signal that changes only when a PG major does. |
+| `package` | **no** | Follow-up. `publint`, `attw`, size budgets, tree-shake goldens and `emit-parity` are release engineering and have no workstream in `09`. |
+| `bench:compile` + `bench:types` | yes | Both inside `ci.yml` job `types`, gating, **46 s combined** against this table's 3-minute budget. `bench:compile` is `@pg-prime/bench-runtime --compile-only`: compile time, allocations per compile, §1.1's two structural claims, and the decoder against its hand-written oracle. |
+| `bench:runtime` | **new** | `ci-nightly.yml` job `bench` (report uploaded as an artifact) and `ci.yml` job `perf`, which exists only when a PR carries the `perf` label and is `continue-on-error` — §5's "informational, never blocking". |
+| `corpus` + `fuzz` | partly | `ci-nightly.yml` job `fuzz` at `PG_PRIME_FUZZ_CASES=1000000` for all three fuzzers (measured: 144 s against PG 17), with the *server* oracles sampled and the sample printed. The 50 000 schema pairs are `@pg-prime/kit`'s corpus and are not wired. |
+
+Two things this table asks for and WS7 deliberately did not do: **gate PR CI on wall-clock**
+(§5 says not to, so every timed budget is a ratio — `09` §3.7 decision 1), and **publish absolute
+milliseconds as the gate** (they are in `bench/runtime/report.json` beside every ratio, because a
+ratio without absolutes is marketing).
+
 ---
 
 ## 5. Performance benchmarking

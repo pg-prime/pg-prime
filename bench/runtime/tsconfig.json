@@ -1,0 +1,15 @@
+{
+  "//": "Emit-only project for the runtime bench (design/09 WS7). The bench is `.mjs` like bench/types, and Node cannot load `src/**/*.ts` directly because every import in the package carries the `.js` suffix ESM requires. So `run.mjs` builds the package once with the consumer-floor compiler (5.9.3) and imports the JavaScript a user would get. `test/live/fixture.ts` comes along because the bench measures the same tables the live suite does — a second fixture is a second thing that can drift (R5).",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "../../packages/pg-prime",
+    "outDir": ".gen/dist",
+    "declaration": false,
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": [
+    "../../packages/pg-prime/src/**/*.ts",
+    "../../packages/pg-prime/test/live/fixture.ts"
+  ]
+}

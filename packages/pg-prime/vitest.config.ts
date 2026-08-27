@@ -31,14 +31,25 @@ export default defineConfig({
           // `test/live/*.unit.test.ts` is the harness's own tier-0 test: no database, no setup
           // file, so it costs nothing here and it is the only thing that pins the wire-protocol
           // rules the PGlite bridge implements.
-          include: ['test/{schema,sql,compile,query}/**/*.test.ts', 'test/live/**/*.unit.test.ts'],
+          include: [
+            'test/{schema,sql,compile,query}/**/*.test.ts',
+            'test/live/**/*.unit.test.ts',
+            // design/09 WS7: the fuzz *harness* (the regression corpus's loader, validator and
+            // append path) has no database in it, and it is machinery that only runs when
+            // something has already gone wrong — so it belongs in the run people watch.
+            'test/fuzz/**/*.unit.test.ts',
+          ],
         },
       },
       {
         test: {
           name: 'live',
           include: ['test/{driver,codec,fuzz,live,live-query}/**/*.test.ts'],
-          exclude: [...configDefaults.exclude, 'test/live/**/*.unit.test.ts'],
+          exclude: [
+            ...configDefaults.exclude,
+            'test/live/**/*.unit.test.ts',
+            'test/fuzz/**/*.unit.test.ts',
+          ],
           globalSetup: LIVE_GLOBAL_SETUP,
           setupFiles: LIVE_SETUP,
           testTimeout: LIVE_TIMEOUT_MS,

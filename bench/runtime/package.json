@@ -1,0 +1,16 @@
+{
+  "name": "@pg-prime/bench-runtime",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Runtime perf gates (design/09 WS7): compile time and allocations, the closure-tree decoder against a hand-written positional mapper, and design/08 §5's nine raw-vs-orm pairs. Builds packages/pg-prime with the workspace root toolchain (typescript59 alias 5.9.3) and imports the emitted JavaScript; `pg` is the raw side of the end-to-end pairs.",
+  "scripts": {
+    "bench": "node --expose-gc run.mjs",
+    "bench:compile": "node --expose-gc run.mjs --compile-only",
+    "bench:quick": "node --expose-gc run.mjs --quick",
+    "bench:report": "node --expose-gc run.mjs --no-gate"
+  },
+  "devDependencies": {
+    "pg": "^8.23.0"
+  }
+}

@@ -19,7 +19,7 @@
 | 4 | **DONE** (§3.4) Runtime builders: select / joins / insert / upsert / update / delete / RETURNING / CTE / set ops / windows / locking; `$call`/`$if`/`.compile()` memo | AST-equivalence with the existing hand-built ASTs in `test/compile`; `03` Appendix A byte-exact; seeded live execution with typed value assertions | Every `03` §2 example compiles byte-identically and executes with the promised values | 2–3 wk |
 | 5 | **DONE** (§3.5) Relation accessors (`many/one/all/count/sum/exists/some/every/none`), `RelationMeta` resolver, m2m `through`, composite keys | Window-function SQL as per-parent-LIMIT oracle; depth-3 typed value assertions; R5 golden extended | Relation semantics identical at depth 0 and 3 on PGlite and PG 15–18 | 1.5 wk |
 | 6 | **DONE** (§3.6) Executor: `execute/executeTakeFirst/prepare/stream/explain/toSQL`, dev `assertShape`, dynamic-OID decode, description cache, `meta.reads/writes` | Mock pool (tier 0); `RowDescription` OIDs (tier 1); `pg_prepared_statements`, PgBouncer (tier 2) | `CodecMismatchError` fires on a lying codec; named statements behave under PgBouncer | 1 wk |
-| 7 | Perf gates (compile < 25 µs, decode ≤ 1.15× hand mapper, type budgets), builder-level fuzz, nightly matrix | Budgets in JSON; fuzz invariants (a)–(f) | All `03` Appendix B rows gated in CI | 1 wk |
+| 7 | **DONE** (§3.7) Perf gates (compile, decode, allocations, nine e2e pairs), builder-level fuzz + a committed corpus, `bench:compile` on every PR and a nightly matrix | Budgets in JSON; fuzz invariants (a)–(f) | All `03` Appendix B rows gated in CI | 1 wk |
 
 Critical path: **L → 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7**. WS1 and WS2 can overlap (types vs runtime). Total ≈ **8–11 weeks** for one engineer; roughly 40% of that is the test work described below, which is deliberate — the builder is the surface every user touches and the one place where "it typechecks" and "it returns that value" must be the same statement.
 
@@ -1709,6 +1709,349 @@ states the promise — post-statement status after any awaited call — and
 `test/driver/ready-for-query.test.ts` pins it against a fake that replays pg's message order,
 with the drop-in-without-`readyForQuery` case as the negative control.
 
+---
+
+### 3.7 WS7 result — perf gates, builder fuzz, CI · 2026-08-27 · **DONE**
+
+`bench/runtime/` (workspace package `@pg-prime/bench-runtime`: `run.mjs`, `sampler.mjs`,
+`cases.mjs`, `structure.mjs`, `hand-mapper.mjs` + `.d.mts`, `e2e.mjs`, `budget.json`,
+`report.json`), `test/fuzz/{builder-generator.ts,builder-fuzz.test.ts,_invariants.ts,corpus.ts,
+corpus.unit.test.ts,corpus/}`, `test/compile/decode-oracle.test.ts`, and the CI wiring
+(`ci.yml`'s `types` job + a new `perf` job, plus `ci-nightly.yml`).
+
+#### The numbers
+
+Reference machine: MacBook Pro 18,1 (M1 Pro, 10 cores), Node 24.14.1, PostgreSQL 17.11 in Docker.
+Every timing below was taken with the machine at load average 7–12, which is stated because it is
+what sized the headroom.
+
+| | design | measured | budget |
+|---|---|---|---|
+| compile, 12-col + 2 joins + 1 relation — **emitter** (`compile(ast)`) | 25 µs | **4.1–5.1 µs** p50 | 25 µs, absolute |
+| compile, the same — **from the builder chain** (`db.from(…)….compile()`) | 25 µs | **33.7–46.0 µs** p50 | 26× the reference workload (≈ 100 µs here) |
+| allocation / compile, builder chain | — | **39 084–39 137 B** (±0.2 % over six runs) | 41 500 B |
+| allocation / compile, emitter | — | **9 840–9 917 B** | 10 400 B |
+| simple selects / sec (`08` §5) | 200 000 | **91 000–142 000** | 80 000, machine-normalised |
+| intermediate SQL strings | 0 | **0** | 0 |
+| params array allocations | 1 | **1**, and it is the array that was pushed into | 1 |
+| decode 10k × 12 vs hand mapper, **unchecked** | 1.15 | **2.68–2.99** | 3.1 |
+| decode 10k × 12 vs hand mapper, **same checks** | 1.15 | **1.55–1.65** | 1.75 |
+| decode row loop vs a literal-object copy (identity codecs) | — | **29–33×** | reported, not gated |
+| decode throughput | — | **1.07–1.49 M rows/s · 14 M cells/s** | 800 k rows/s |
+| e2e overhead p50, worst of nine (`08` §5) | 1.15 | **1.68–1.83** (the 1 000-row batch insert) | per case |
+| e2e overhead p50, median of nine | 1.15 | **1.07–1.13** | per case |
+| e2e overhead p95, worst of nine | 1.30 | **1.9–4.3** (same case) | per case |
+
+The nine pairs, over six runs against PostgreSQL 17.11 (`orm`/`raw` are one representative run); `p50 ×` and `p95 ×` are the observed
+ranges, and the absolute difference is there because a ratio without absolutes is marketing —
+`08` §5):
+
+| case | orm | raw | p50 × | p95 × | Δ |
+|---|---|---|---|---|---|
+| point select by PK | 0.225 | 0.207 | **1.08–1.14** | 1.20–1.23 | +0.02 ms |
+| select 1 000 rows (12 cols, 2 joins) | 2.55 | 1.96 | **1.20–1.32** | 1.13–1.96 | +0.6 ms |
+| insert one | 0.404 | 0.309 | **1.16–1.37** | 1.08–1.78 | +0.09 ms |
+| insert 1 000 (batch) | 12.9 | 7.5 | **1.68–1.83** | 1.9–4.3 | +5.4 ms |
+| update by PK | 0.398 | 0.349 | **1.12–1.25** | 1.18–1.73 | +0.05 ms |
+| delete by PK | 0.337 | 0.339 | **1.00–1.17** | 0.88–1.37 | +0.03 ms |
+| 5-statement transaction | 1.41 | 1.33 | **1.04–1.17** | 1.08–1.13 | +0.09 ms |
+| relation load, one level (vs hand LATERAL + `json_agg`) | 85.4 | 84.0 | **1.01–1.03** | 0.97–1.01 | +1.4 ms |
+| relation load, two levels | 181.4 | 179.8 | **1.01–1.02** | 1.00–1.01 | +1.6 ms |
+
+All nine of `08` §5's cases are expressible; none was substituted.
+
+Fuzz:
+
+| | PGlite | PostgreSQL 17.11 |
+|---|---|---|
+| 10 000 cases / fuzzer (PR) | 6.4 s for all three files | 6.6 s |
+| **1 000 000 cases / fuzzer (nightly)** | **137 s** | **144 s** |
+| builder chains at 1M | 1 000 003 chains, **1 601 938** prefix immutability checks | same |
+| shape mix at 1M | plain 500 682 · grouped 124 850 · windowed 124 798 · cte 124 645 · setop 125 028 | same |
+| chains carrying a bind / a *marked* bind | 86.8 % / 46.3 % | same |
+| live oracle sample | 20 000 ident, 5 000 compiler, 5 000 builder — **printed, with the count dropped** | same |
+
+Suites, after WS7:
+
+| | |
+|---|---|
+| `pnpm test` (tier 0) | **715** / 45 files, **4.93 s** (was 700 / 43, 4.2 s) |
+| `pnpm test:live` (tier 1, PGlite) | **1 434 passed + 2 skipped** / 78 files, 23 s |
+| `pnpm --filter pg-prime test:pg` (tier 1 + 2, PG 17.11) | **1 453 passed + 4 skipped** / 82 files, 8.6 s |
+| `pnpm bench:types` | unchanged — 94 / 177 / 250, ratio 1.000, `.d.ts` 343.5 KB | 52 s |
+| `pnpm bench:compile` | 20–26 s from a clean tree, including the `tsc` build it imports |
+| `pnpm bench:runtime` | 2 min 27 s with the nine pairs |
+| R10 mutations | **13 written, 12 caught; 1 survived and was not a bug** (see the table) |
+
+#### The four findings
+
+1. **Neither of design/03 Appendix B's two runtime numbers is met as written, and the reasons are
+   different.** This is the headline, so it is first.
+
+   *Compile.* The **emitter** compiles the §1.1 query in 4.1–5.1 µs, five times inside its 25 µs
+   budget. The **builder chain plus the compile** — what a request actually pays, because
+   `.compile()` is memoised per instance and a request builds a new one — is 33.7–46.0 µs. The
+   profile says where it goes: **25 % `mkNode`** (`Object.freeze` + `WeakSet.add`, the nominal-node
+   check that is the library's whole injection defence, `compile/nodes.ts`), **20 % garbage
+   collection** of the 39 KB each compile allocates, then `planSelect`, `scopeFor` and
+   `registerBuilder`. None of that is a bug and none of it is WS7's to change; it is the price of
+   the design decisions `03` §1.1 and `03` §3.4 record. §1.1's own claim — "cheap enough that
+   caching is an optimization, not a requirement" — still holds at 35 µs; the *number* beside it
+   does not, and the three-way print now says so on every run.
+
+   *Decode.* 2.68–2.99× a hand-written positional mapper, against a 1.15 budget. Decomposed by
+   adding two more oracles rather than by argument:
+
+   - vs the **unchecked** mapper (the literal reading of Appendix B): **2.7–3.0×**;
+   - vs a mapper doing **exactly the codecs' own checks** (`int8` is digits, `timestamptz` parsed
+     field by field): **1.55–1.65×**. So ~45 % of the gap is *correctness the mapper skips*, not
+     dispatch;
+   - the row loop alone, with twelve `text` (identity) codecs on both sides: **29–33×** a literal
+     object. That is the real structural cost, and in a real decode it is ~20 % of the total,
+     because 45 % of a decode is `parseTimestamptz` and 14 % is `decodeInt8Text`.
+
+   `compile/decode.ts` says a closure tree "measured within noise of generated code. If benchmarks
+   later disagree, codegen becomes an opt-in flag, never the default." They now disagree, and the
+   measurement says exactly where: twelve dynamic key assignments per row against one literal
+   object. That is the deferral below, with its CSP reason intact.
+
+2. **`08` §5's 200 000 simple selects/sec is 91 000–142 000**, for the same reason as finding 1's
+   compile line: the builder chain allocates 8.6 KB for a four-column select and 39 KB for the
+   §1.1 query, and allocation is what the clock is measuring. Gated at 80 000 with the 200 000
+   printed beside it.
+
+3. **`.distinct()` and `.distinctOn()` compile to SQL PostgreSQL then refuses, and the builder does
+   not stop you.** Found by the builder fuzzer on its first live run, three seeds, all pinned in
+   `test/fuzz/corpus/builder.json`:
+
+   - seed **2802423309** — `.distinct()` over a projection carrying a relation accessor is
+     `42883 could not identify an equality operator for type json`. A `many`/`all` relation is a
+     `json` column and `json` has no equality operator, so `SELECT DISTINCT` cannot run;
+   - seed **2310382765** — `.distinct()` with an `orderBy` on a column the projection does not
+     carry is `42P10 for SELECT DISTINCT, ORDER BY expressions must appear in select list`;
+   - a third, at 5 000 live cases — `.distinctOn(x)` followed by a plain `.orderBy(y)` is
+     `42P10 SELECT DISTINCT ON expressions must match initial ORDER BY expressions`, because
+     `.orderBy()` **appends** (`select.ts`) and the DISTINCT ON list must match the *initial*
+     ordering.
+
+   Seed **3300751089** is pinned too, and it is the one worth reading: it is the *same* json class
+   coming back 5 000 cases after the first fix, because that fix listed `many` and the two nested
+   shapes and forgot `all()`. A partial fix is a fix that returns.
+
+   All three are real DX gaps — the type layer could refuse them, and `03` §2.8 does not mention
+   any of them. They are **not** fixed here (that is builder work, not gate work); the generator
+   stops emitting them, the corpus pins the seeds, and the deferral below names them.
+
+4. **A 1 000 000-case run found a bug in the *test suite* on its first attempt.**
+   `ident-oracle.test.ts` asserted `Math.max(...lens)` over one argument per case, which is
+   `RangeError: Maximum call stack size exceeded` above ~125 000 arguments. The assertion was
+   correct and simply could not run at the scale `03` Appendix B has asked for since day one —
+   which is the argument for rehearsing the nightly budget locally before wiring it, rather than
+   discovering it at 03:17.
+
+#### Nine decisions
+
+1. **The gate is a ratio to a fixed reference workload, not a microsecond count**, for every timed
+   line except one. `08` §5 says a wall-clock benchmark on a shared runner is noise and gates the DB
+   cases on ratios; the same argument applies to the no-I/O compile bench, because a budget loose
+   enough not to flake on a 4-vCPU runner cannot notice a 30 % regression. `sampler.mjs`'s
+   `referenceWorkload` is a fixed, self-contained tree-build-freeze-walk-join with no dependency on
+   `pg-prime`, measured in the same process; every `…RefRatio` budget is divided by it. The one
+   absolute is the emitter's 25 µs, which is safe because it has 5× headroom.
+2. **The tight gate on the builder path is allocation, not time.** Measured across six runs: bytes
+   per compile moved 0.2 %, the wall-clock ratio moved 8.4 → 11.7 idle and **21.6** while
+   `pnpm test:live` saturated the machine. The reference workload tracks CPU well and GC pressure
+   only roughly, and this path allocates 39 KB per call. So `buildAndCompileRefRatio` is a
+   catastrophe guard at 26 and `buildAndCompileBytes` is the regression detector — which is `08`
+   §5's own "allocation count is where ORM overhead actually hides", arrived at by measurement.
+3. **A budget may not drift past its design number in silence.** `budget.json` carries
+   `_designLinked` (which budget corresponds to which design figure) and `_overDesign` (the ones
+   deliberately looser, each with its reason), and `run.mjs` **fails** on a linked budget that
+   exceeds its design figure without an entry. That turns R9's "loosening a budget is a reviewed
+   change to the JSON with a reason" from a convention into a gate — it is what catches mutation
+   M10, and nothing else does.
+4. **Three decode oracles, not one.** Finding 1 is why. Reporting only the unchecked mapper would
+   have hidden that 45 % of the gap is validation; reporting only the checked one would have
+   quietly moved the goalposts. `test/compile/decode-oracle.test.ts` asserts all three agree with
+   `buildDecoder` **in tier 0**, because a bench runs nightly and the equivalence has to fail in the
+   run people watch. It is the only piece of the bench that is a test.
+5. **The "counting emitter" counts from outside the compiler.** WS7's brief asks for one "in a test
+   build"; a second copy of `compiler.ts` would be free to drift from the file it is testing, and
+   counters in the production emitter would be on every user's hot path. `structure.mjs` wraps
+   `Array.prototype.join` and `Array.prototype.push` for the duration of exactly one `compile()`,
+   asserts that **one** `join('')` produced the finished SQL, that no other `join` produced a
+   >16-character substring of it, and that `compiled.binds` is `===` the array the `Bind` objects
+   were pushed into. The last one is a *proof* of "one params array allocation" rather than a
+   measurement of it.
+6. **Random builder chains stay typed, with no casts anywhere (R11, R12).** A random chain's type
+   depends on runtime choices, which no type system expresses. The way out is that the *shape* is
+   one of a small number of hand-written templates and only the *choices* are random: the four join
+   combinations are four functions with their own inferred scope types, and everything else before
+   the projection returns what it was given, so those steps are `(q: Q) => Q` arrays TypeScript
+   checks one by one. `Query`'s invariance in its row type (`[INV]`) is what forces the post-select
+   steps to carry their own lens — a fact, not an obstacle, and the reason `CompiledFacts` exists.
+7. **Invariant (f) needs two passes, because `.compile()` is memoised.** The obvious version —
+   compile a prefix, continue the chain, compile it again — compares a memo with itself and passes
+   even when `.where()` mutates in place. And a prefix cannot be compiled at all: `.select()` is
+   mandatory. So each seed is generated **twice**: once compiling every prefix through a fixed
+   projection lens at the moment it is created, once touching nothing until the chain is finished.
+   (f) is the two lists being equal; (e′) is the two final statements being byte-equal, which is a
+   real re-compile because the second pass is a different instance. Mutation M6 is caught here and
+   nowhere else.
+8. **The corpus has two entry kinds, and the second is why it is not empty.** `found` is a seed that
+   failed against shipped code. `mutation` is a seed that failed against a *deliberately mutated*
+   build during an R10 spot-check: shipped code passes it, and its value is that it is an input
+   known to discriminate that class of bug, so the class stays caught after the generator's seed
+   stream moves. Without the second kind a corpus is empty until the first production bug, which is
+   exactly when it is too late to have helped. All three fuzzers replay it first and announce how
+   many seeds they replayed.
+9. **`--quick` never gates.** It shrinks the decode fixture from 10 000 rows to 1 000 and quarters
+   the samples, which moves the ratios enough that a gate would be measuring the flag. It prints
+   that it is not gating.
+
+#### R10 — 13 mutations, 12 caught
+
+| # | Mutation | Caught by |
+|---|---|---|
+| M1 | the emitter pre-renders ten chunks into one intermediate SQL string | `bench:compile` → `structure · intermediate SQL strings` ×2 |
+| M2 | `Compiled.binds` is frozen from a `slice()` copy | `bench:compile` → `structure · binds array is the one pushed into` ×2 |
+| M3 | `$n` renumbering dropped — every bind emits `$1` | builder fuzz **(a)**, compiler fuzz **(a)**, and both live oracles — 4 tests |
+| M4 | bind values under 40 characters are spliced as literals instead of bound | builder fuzz **(b)** (`expected … not to contain '«bf'`) |
+| M5 | `.where()` mutates `this.s` and returns `this` | builder fuzz ×2 — as `TypeError: Cannot assign to read only property 'where'`. The state object is frozen, so this class of bug cannot even be written; recorded because that is the finding † |
+| M6 | `.orderBy()` appends into the **shared** array instead of copying it | builder fuzz **(f)** — `immutability at prefix 0 (having)` |
+| M7 | the corpus replay is disabled (`corpusSeeds` returns `[]`) | `corpus.unit.test.ts` ×2 (tier 0) |
+| M8 | the hand mapper decodes `int8` with `Number` | tier-0 `decode-oracle` ×2 **and** the bench's own pre-timing oracle check |
+| M9 | the decoder returns `undefined` where SQL NULL arrived | tier-0 `decode-oracle` ×3 (`toStrictEqual`, which `toEqual` would have missed) |
+| M10 | `compile.emitP50Us` widened 25 → 250 in `budget.json`, silently | `bench:compile` → `budget · compile.emitP50Us vs design (25)` — decision 3 |
+| M11 | the fuzz generator's `mint()` returns a constant, so invariant (b) is vacuous | builder fuzz → the *marked*-bind coverage floor |
+| M12 | the end-to-end raw oracle drops its `ORDER BY` | `bench:runtime` → the pair-equality check, before any timing |
+| M9a | *(survived)* the decoder's `null` short-circuit removed | **nothing** — and correctly so ‡ |
+
+† M5 is the mutation that could not be written as intended. `SelectBuilder` freezes its state
+object, so mutating in place throws rather than silently corrupting a prefix — which is a stronger
+answer than a failing assertion. M6 is the same bug in the shape the freeze does *not* stop (the
+array inside the frozen object), and that one is caught by (f).
+
+‡ M9a is behaviour-preserving: with the `null` guard removed, `typeof null !== 'string'` sends the
+value down the pass-through branch and the decoder returns `null` anyway. A mutation that changes
+no behaviour is not evidence of a missing test, and pretending it is would be the "16 written, 16
+caught" answer rather than the true one. M9 is the same line mutated so that it *does* change
+behaviour, and it is caught three times.
+
+#### The CI shape, and what it costs
+
+| job | where | trigger | measured |
+|---|---|---|---|
+| `bench:compile` | inside `ci.yml`'s `types` job | every PR, **gating** | 20–26 s from a clean tree |
+| `perf` | new job in `ci.yml`, `postgres:17` service | `perf` label, `continue-on-error` | ~3 min |
+| `pg-matrix` | `ci-nightly.yml`, PG 15/16/17/18 each + its own PgBouncer | nightly + dispatch | — |
+| `fuzz` | `ci-nightly.yml`, `PG_PRIME_FUZZ_CASES=1000000` | nightly + dispatch | 144 s measured locally against PG 17 |
+| `bench` | `ci-nightly.yml`, report uploaded as an artifact | nightly + dispatch | ~2.5 min |
+| `types` | `ci-nightly.yml` | nightly + dispatch | ~75 s |
+
+`pull_request.types` had to be spelled out as `[opened, synchronize, reopened, labeled]`: naming
+`types` at all replaces the default set, and dropping `reopened` would have silently stopped CI on
+reopened PRs. **Nightly failures notify through GitHub's default for scheduled runs** — an email to
+the workflow file's last committer, plus the Actions tab — and that is deliberately all of it: a
+nightly that also posts to chat is a nightly people mute.
+
+The 1M nightly needs **no bound of its own** (144 s), but the *server* oracles do:
+`PG_PRIME_FUZZ_ORACLE_CASES` caps how many cases reach PostgreSQL, because `ident-oracle` creates
+one temp table per accepted identifier and one backend will not hold ~482 000 of them. Every fuzzer
+prints its sample and the number dropped (R9: no silent caps) — at 1M that is 20 000 of 482 117 for
+the ident oracles and 5 000 of 1 000 000 for the two plan-probe oracles. **So yes: nightly needs the
+plan-probe invariant sampled**, and the sample is 5 000 rather than the PR's 300.
+
+#### Deviations from the plan as written
+
+1. The compile gate is **two lines, not one** — the emitter against `03` §1.1's 25 µs, and the
+   builder chain against a reference ratio. Finding 1.
+2. Timed budgets are **ratios to a reference workload**; WS7's brief says "gate on p50 with 15 %
+   headroom", which on a shared runner is a flake. Decision 1.
+3. The decode gate is **three oracles**, and the Appendix B one sits at 3.1 rather than 1.15, with
+   the reason in `budget.json`. Decision 4, finding 1.
+4. The end-to-end budgets are **per case**, not one 1.15/1.30 pair: the overhead is a constant
+   amount of client-side work per statement, so one number is either meaningless for the cheap cases
+   or red for the expensive ones.
+5. **`p95` was added beside `p99`.** Across six runs p50 reproduced to ±0.1 and p95 to ±0.4, while
+   the same p99 line moved 0.44 → 10.92 for `delete by PK`. p95 is the tightest tail statistic this
+   harness measures reproducibly; p99 stays as a uniform 12× catastrophe guard so `08` §5's number
+   keeps its place in the print.
+6. `bench:compile` lives **inside the `types` job**, not in its own — `08` §4.6 budgets the two
+   together at under 3 minutes and they measure 46 s combined.
+7. The bench **builds the package with `tsc` 5.9.3 and imports the emitted JavaScript**, because
+   `.mjs` cannot load `src/**/*.ts` through `.js`-suffixed imports. It measures what a user runs,
+   which is better than the alternative rather than a compromise.
+8. The bench's fixture is **`test/live/fixture.ts`**, the one `fixture.drift.test.ts` checks against
+   `information_schema` (R5). A bench-private fixture would be a second thing that can drift with
+   nothing checking it.
+9. `test/fuzz/_invariants.ts` and `test/fuzz/corpus.ts` are new shared modules WS7's Files line does
+   not list, and `compiler-fuzz.test.ts` / `ident-oracle.test.ts` were edited to use them. Two
+   fuzzers with two statement tokenizers is two things to get wrong.
+10. `vitest.config.ts` gained `test/fuzz/**/*.unit.test.ts` in the `unit` project (and the matching
+    exclude in `live`), on the `test/live/**/*.unit.test.ts` precedent, so the corpus machinery is
+    tested without a database.
+11. `test/fuzz/_budget.ts` grew `FUZZ_ORACLE_CASES` and `announceSample`, and `ident-oracle.test.ts`
+    lost a `Math.max(...)` spread. Both are what made the 1M nightly runnable at all (finding 4).
+
+#### Deferred, each with its owner and its reason
+
+- **The builder chain's 39 KB per compile** (finding 1, finding 2). Owner: whoever next touches
+  `compile/nodes.ts` and `query/select.ts`. 25 % of the profile is `mkNode`'s freeze + `WeakSet`,
+  which is the nominal-node security property `03` §3.4 D7 depends on and must not simply be
+  deleted; a pooled emitter and a cheaper node identity scheme are both plausible and both are
+  builder work, not gate work. The gate that will notice is `buildAndCompileBytes`.
+- **Codegen for the decoder's row loop** (finding 1). `compile/decode.ts` already specifies the
+  disposition: "codegen becomes an opt-in flag, never the default", because `new Function` is
+  forbidden in CSP-restricted runtimes. WS7's measurement is the trigger it names; the work is a
+  flag plus a fallback, and it belongs with whoever owns the decode plan.
+- **The three `distinct` / `distinctOn` foot-guns** (finding 3). Owner: the type layer. Each is
+  statically detectable — a `json`-typed projection member under `.distinct()`, an `orderBy` key
+  absent from the projection under `.distinct()`, a `distinctOn` list that is not a prefix of the
+  ordering — and each is currently a runtime SQLSTATE from the server. The fuzz corpus pins the
+  seeds so a fix has three regression cases waiting for it.
+- **Tightening the e2e p99 budgets.** They want the fixed nightly runner's distribution, which is
+  one nightly run away. Guessing a number from a laptop and calling it a gate is what R9 exists to
+  stop.
+- **`lint` and `package` from `08` §4.6.** Not WS7's, and not built: `lint` (oxlint + `tsgo
+  --noEmit -b`, < 60 s) and `package` (`publint --strict`, `attw --pack --profile esm-only`, size
+  and `.d.ts` budgets, tree-shake goldens, `emit-parity`, < 2 min). Both are release-engineering
+  workstreams with no owner in `09`.
+- **`docs/` examples compiled and executed against PGlite in CI** (`08` §6.4, the last unticked box
+  in §4). Not in WS7's spec and not done here; `docs/` is still empty. It stays open.
+- **A comparison run against `drizzle-orm` / `kysely` / `@prisma/client`** (`08` §5's nightly
+  paragraph) and the tracked dashboard with the automatic >25 % regression issue. `report.json` is
+  the artifact a dashboard would read; nothing consumes it yet.
+- **`mitata`** (`08` §5's named harness for the no-I/O microbenchmarks). `perf_hooks` plus the
+  reference-ratio method above does what the gate needs with no dependency, and `bench/types`
+  already set the no-dependency precedent. If the compile numbers ever need distribution *shapes*
+  rather than percentiles, `mitata` is the fallback.
+
+#### Environment, and what is unverified
+
+The whole of the above was measured on one machine, at load average 7–12, against the repo's
+existing Docker PostgreSQL 17.11 — deliberately not on an idle machine, because the budgets have to
+survive a busy one. What is **not** verified:
+
+- **No CI run has executed any of this.** `bench:compile` in the `types` job, the `perf` job's
+  `postgres:17` service, and all four `ci-nightly.yml` jobs are one run away from confirmation. The
+  workflows parse as YAML and the job graph is what the tables above describe; that is all that can
+  be said from here.
+- **The e2e p99 budgets are a guess shaped like a measurement** — see the deviation above. p50 and
+  p95 are measurements.
+- **`ci-nightly.yml`'s `pg-matrix` has never run on 15, 16 or 18.** WS5 ran those majors by hand
+  (§3.5) and the PR job covers 17; the *service topology* on three of the four is new here.
+- **The reference workload's calibration is a property of this machine.**
+  `_referenceUsOnDesignMachine: 3.75` is the M1 Pro's number, and every `…RefRatio` budget was
+  chosen against it. On a runner half the speed the ratios should hold — that is the point of the
+  method — but it has not been observed there.
+- **PGlite is never a perf target.** `bench:runtime` skips the nine pairs, loudly, when
+  `PG_PRIME_TEST_URL` is unset.
+
+One thing is red-adjacent and it is not WS7's: **`pnpm test:pg` at the monorepo root also runs
+`@pg-prime/kit`**, which fails locally for the pre-existing `pg_dump`/own-database reason §3.6
+records. Every tier-2 number above is `pnpm --filter pg-prime test:pg`.
+
 ### WS5 — Relations (1.5 weeks) · **DONE** — result in §3.5
 
 **Goal.** `u.posts.many(q)`, `.one(q)`, `.all()`, `.count()`, `.sum(f)`, `.exists()`, `.some/.every/.none(p)`, m2m via `through`, composite keys, default `where`/`orderBy` from the declaration — all emitting the `NestedPlan` items `hoist.ts` already consumes.
@@ -1750,7 +2093,7 @@ with the drop-in-without-`readyForQuery` case as the negative control.
 
 ---
 
-### WS7 — Perf gates, builder-level fuzz, CI wiring (1 week)
+### WS7 — Perf gates, builder-level fuzz, CI wiring (1 week) · **DONE** — result in §3.7
 
 **Goal.** Every row of `03` Appendix B is a CI gate; the fuzzers exercise the public surface, not just the AST.
 
@@ -1779,9 +2122,9 @@ with the drop-in-without-`readyForQuery` case as the negative control.
 - [x] `OPS` manifest: 100% golden + OID differential + semantic differential. (WS3, §3.3 — 88 confirmable rows, 7 deferred with a named reason; `03` §2.9's table regenerated from it)
 - [x] Per-parent LIMIT oracle and depth-3 typed values green on four PG majors. (WS5, §3.5 — PGlite, PG 15.19, 16.15, 17.11 and 18.4)
 - [x] `CodecMismatchError` fires on a lying codec in dev (WS6, §3.6 — ``sql`sum(amount)`.as(int4)`` over `numeric`, green on PGlite and PG 17.11, with the `.as()` call site and a second schema-drift variant); `skip locked` proven on tier 2 — **done** (WS4, §3.4: `test/pg/locking.test.ts`, green on PG 17.11).
-- [ ] Compile < 25 µs, decode ≤ 1.15× hand mapper, builder fuzz 10k/PR clean.
-- [ ] R10 mutation record in each WS's final PR.
-- [ ] `docs/` examples for the builder compile and run against PGlite in CI (`08` §6.4).
+- [x] Compile < 25 µs, decode ≤ 1.15× hand mapper, builder fuzz 10k/PR clean. (WS7, §3.7 — **with two numbers missed and recorded rather than waived**: the *emitter* is 4.1–5.1 µs against 25, the builder chain plus compile is 34–46 µs; decode is 2.7–3.0× an unchecked hand mapper and 1.55–1.65× one doing the codecs' own checks. Both gaps are gated at measured budgets, printed three-way against the design number on every run, and justified in `bench/runtime/budget.json`'s `_overDesign`, which `run.mjs` fails without. Builder fuzz is 10k/PR and 1M nightly, clean, with a committed corpus.)
+- [x] R10 mutation record in each WS's final PR. (WS0–WS7; WS7's is §3.7 — 13 mutations, 12 caught, 1 survived and is recorded as behaviour-preserving rather than as a gap.)
+- [ ] `docs/` examples for the builder compile and run against PGlite in CI (`08` §6.4). **Still open** — not in WS7's spec and not done there; `docs/` is empty and no job compiles it.
 
 ---
 

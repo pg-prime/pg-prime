@@ -23,9 +23,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { InvalidIdentifierError } from '../../src/sql/errors.js'
 import { MAX_IDENT_BYTES, quoteIdentPart } from '../../src/sql/ident.js'
 import { connect } from '../live/_harness.js'
-import { FUZZ_CASES, FUZZ_SEED } from './_budget.js'
+import { announceSample, FUZZ_CASES, FUZZ_ORACLE_CASES, FUZZ_SEED } from './_budget.js'
+import { announceCorpus, corpusSeeds, recordFinding } from './corpus.js'
 import type { Case } from './generator.js'
-import { cases, utf8Bytes } from './generator.js'
+import { cases, makeCase, utf8Bytes } from './generator.js'
 
 interface Accepted {
   readonly input: string
@@ -62,8 +63,18 @@ beforeAll(async () => {
   client = await connect()
 
   // ── Phase 1: run every case through the sanitizer, offline. ───────────────
+  //
+  // The committed regression corpus runs FIRST (design/09 WS7). `generator.ts` has said since the
+  // spike that a case "can be pinned into the regression corpus without storing the string
+  // itself"; `corpus/ident.json` is that corpus, and `makeCase(seed)` is what rebuilds the string.
+  const pinnedSeeds = corpusSeeds('ident')
+  announceCorpus('ident', pinnedSeeds)
+  const stream: Iterable<Case> = (function* () {
+    for (const seed of pinnedSeeds) yield makeCase(seed)
+    yield* cases(FUZZ_CASES, FUZZ_SEED)
+  })()
   const seen = new Set<string>()
-  for (const c of cases(FUZZ_CASES, FUZZ_SEED) as Generator<Case>) {
+  for (const c of stream) {
     try {
       const quoted = quoteIdentPart(c.value)
       const input = c.value as string
@@ -72,6 +83,14 @@ beforeAll(async () => {
         accepted.push({ input, quoted, seed: c.seed, strategy: c.strategy })
       }
     } catch (e) {
+      if (!(e instanceof InvalidIdentifierError)) {
+        recordFinding('ident', {
+          seed: c.seed,
+          invariant: 'sanitizer threw a non-InvalidIdentifierError',
+          note: `${c.strategy}: ${(e as Error).message}`,
+          kind: 'found',
+        })
+      }
       expect(e, `seed ${c.seed}`).toBeInstanceOf(InvalidIdentifierError)
       rejected.push({
         seed: c.seed,
@@ -131,16 +150,31 @@ describe('the corpus itself', () => {
     const lens = accepted.map((a) => utf8Bytes(a.input))
     expect(lens.some((n) => n === 62)).toBe(true)
     expect(lens.some((n) => n === 63)).toBe(true)
-    expect(Math.max(...lens)).toBeLessThanOrEqual(MAX_IDENT_BYTES)
+    // `Math.max(...lens)` spreads one argument per case, which is a `RangeError: Maximum call
+    // stack size exceeded` somewhere above ~125 000 arguments. Found by WS7's first 1 000 000-case
+    // nightly rehearsal (design/09 §3.7): the assertion was correct and simply could not run at the
+    // scale design/03 Appendix B asks for.
+    expect(lens.reduce((a, b) => (b > a ? b : a), 0)).toBeLessThanOrEqual(MAX_IDENT_BYTES)
     expect(rejected.some((r) => r.reason === 'too-long' && r.bytes === 64)).toBe(true)
   })
 })
 
+/**
+ * The slice of `accepted` the two server oracles look at.
+ *
+ * Uncapped this is fine at 10 000 cases and impossible at 1 000 000: oracle B creates one temp
+ * table per identifier, and one backend will not hold ~800 000 of them. `announceSample` prints
+ * what was dropped (R9).
+ */
+const sampled = (): readonly Accepted[] => accepted.slice(0, FUZZ_ORACLE_CASES)
+
 describe("oracle A — format('%I')", () => {
   it('agrees with PostgreSQL on every accepted identifier', async () => {
+    const pool = sampled()
+    announceSample("ident/oracle A format('%I')", pool.length, accepted.length)
     const BATCH = 1000
-    for (let i = 0; i < accepted.length; i += BATCH) {
-      const batch = accepted.slice(i, i + BATCH)
+    for (let i = 0; i < pool.length; i += BATCH) {
+      const batch = pool.slice(i, i + BATCH)
       const res = await client.query<{ ord: string; q: string }>(
         `select ord, format('%I', s) as q
          from json_array_elements_text($1::json) with ordinality as t(s, ord)
@@ -158,6 +192,12 @@ describe("oracle A — format('%I')", () => {
             input: a.input,
             ours: a.quoted,
             theirs,
+          })
+          recordFinding('ident', {
+            seed: a.seed,
+            invariant: "oracle A — format('%I')",
+            note: `ours ${a.quoted} vs PostgreSQL ${theirs}`,
+            kind: 'found',
           })
         }
       }
@@ -182,9 +222,11 @@ describe("oracle A — format('%I')", () => {
 
 describe('oracle B — CREATE TEMP TABLE round trip', () => {
   it('round-trips every accepted identifier byte for byte through the catalog', async () => {
+    const pool = sampled()
+    announceSample('ident/oracle B temp-table round trip', pool.length, accepted.length)
     const BATCH = 200
-    for (let i = 0; i < accepted.length; i += BATCH) {
-      const batch = accepted.slice(i, i + BATCH)
+    for (let i = 0; i < pool.length; i += BATCH) {
+      const batch = pool.slice(i, i + BATCH)
 
       // One simple-query call creating the whole batch: if ANY quoting were wrong, this is
       // where an injected statement would execute, so a syntax error here is also a finding.
@@ -207,6 +249,12 @@ describe('oracle B — CREATE TEMP TABLE round trip', () => {
             input: b.input,
             ours: b.quoted,
             theirs: [...names].find((n) => n.startsWith(b.input.slice(0, 8))) ?? '<absent>',
+          })
+          recordFinding('ident', {
+            seed: b.seed,
+            invariant: 'oracle B — CREATE TEMP TABLE round trip',
+            note: 'pg_class.relname did not come back byte-equal to the input',
+            kind: 'found',
           })
         }
       }

@@ -13,6 +13,8 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "bench:types": "pnpm --filter @pg-prime/bench-types bench",
     "bench:forks": "pnpm --filter @pg-prime/bench-types bench:forks",
+    "bench:runtime": "pnpm --filter @pg-prime/bench-runtime bench",
+    "bench:compile": "pnpm --filter @pg-prime/bench-runtime bench:compile",
     "type-errors": "node tools/type-errors/record.mjs",
     "type-errors:check": "node tools/type-errors/record.mjs --check"
   },

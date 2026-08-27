@@ -53,7 +53,9 @@ import * as ops from '../../src/query/types.js'
 import { connect, makeHarness, planProbe, sqlState, type Harness } from '../live/_harness.js'
 import type { PgConnection } from '../../src/driver/index.js'
 import { paramTypesOf } from '../../src/compile/contract.js'
-import { FUZZ_CASES, FUZZ_SEED } from './_budget.js'
+import { announceSample, FUZZ_CASES, FUZZ_ORACLE_CASES, FUZZ_SEED } from './_budget.js'
+import { denseRange, placeholderNumbers, statementCount } from './_invariants.js'
+import { announceCorpus, corpusSeeds, recordFinding } from './corpus.js'
 import { makeFixture } from './fixture.js'
 import { rng } from './generator.js'
 
@@ -299,49 +301,44 @@ function randomSelect(r: () => number): SelectNode {
 }
 
 // ─────────────────────────── invariants ───────────────────────────
-
-/** Count `;` that are NOT inside a single-quoted string or a double-quoted identifier. */
-function statementCount(text: string): number {
-  let inStr = false
-  let inIdent = false
-  let n = 1
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (inStr) {
-      if (ch === "'") inStr = text[i + 1] === "'" ? (i++, true) : false
-      else if (ch === '\\') i++
-    } else if (inIdent) {
-      if (ch === '"') inIdent = text[i + 1] === '"' ? (i++, true) : false
-    } else if (ch === "'") inStr = true
-    else if (ch === '"') inIdent = true
-    else if (ch === ';') n++
-  }
-  return n
-}
+//
+// (a) and (c) are `_invariants.ts`'s, shared with `builder-fuzz.test.ts` — two fuzzers with two
+// statement tokenizers would be two things to get wrong, and the tokenizer is what invariant (c)
+// is worth. Its unit test stayed here, where a reviewer looks for it.
 
 describe('whole-compiler fuzz', () => {
   const OFFLINE = Math.max(FUZZ_CASES, 10_000)
+  const pinned = corpusSeeds('compiler')
 
   it(`holds all four invariants over ${OFFLINE} random ASTs`, () => {
-    const r = rng(FUZZ_SEED ^ 0x1234)
-    for (let i = 0; i < OFFLINE; i++) {
-      const ast = randomSelect(r)
+    // The committed regression corpus runs BEFORE the random stream, always (design/09 WS7). A
+    // seeded fuzzer's coverage is a property of its seed stream, so anything a previous run found
+    // is otherwise rediscovered only by luck once the generator changes.
+    announceCorpus('compiler', pinned)
+    const check = (ast: SelectNode, label: string, seed: number | null): void => {
       const c0 = compile(ast)
-
-      // (a) numbering is dense, ordered, and matches binds.length exactly.
-      const ns = [...c0.sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]))
-      expect(ns, `case ${i}`).toEqual(Array.from({ length: c0.binds.length }, (_, k) => k + 1))
-
-      // (b) no bind VALUE ever appears in the SQL text.
-      expect(c0.sql, `case ${i}`).not.toContain('«fz')
-      expect(c0.sql, `case ${i}`).not.toContain('drop table')
-
-      // (c) exactly one statement.
-      expect(statementCount(c0.sql), `case ${i}`).toBe(1)
-
-      // Determinism: the same AST compiles to the same bytes.
-      expect(compile(ast).sql).toBe(c0.sql)
+      try {
+        // (a) numbering is dense, ordered, and matches binds.length exactly.
+        expect(placeholderNumbers(c0.sql), label).toEqual(denseRange(c0.binds.length))
+        // (b) no bind VALUE ever appears in the SQL text.
+        expect(c0.sql, label).not.toContain('«fz')
+        expect(c0.sql, label).not.toContain('drop table')
+        // (c) exactly one statement.
+        expect(statementCount(c0.sql), label).toBe(1)
+        // Determinism: the same AST compiles to the same bytes.
+        expect(compile(ast).sql, label).toBe(c0.sql)
+      } catch (e) {
+        if (seed !== null) {
+          recordFinding('compiler', { seed, invariant: 'a-d', note: 'offline invariant broke', kind: 'found' })
+        }
+        throw e
+      }
     }
+
+    for (const seed of pinned) check(randomSelect(rng(seed)), `pinned seed ${seed}`, seed)
+
+    const r = rng(FUZZ_SEED ^ 0x1234)
+    for (let i = 0; i < OFFLINE; i++) check(randomSelect(r), `case ${i}`, null)
   }, 300_000)
 
   it('the statement tokenizer itself is right (it is load-bearing for invariant c)', () => {
@@ -360,7 +357,19 @@ describe('whole-compiler fuzz', () => {
     // (e) is what tests the codec seam: Parse with `paramTypesOf(binds)` — the OIDs the codecs
     //     declare — then execute for real. `TOLERATED` is empty, so any SQLSTATE fails the run.
     const r = rng(FUZZ_SEED ^ 0xbeef)
-    const SAMPLE = Number(process.env['PG_PRIME_FUZZ_PG_CASES'] ?? 1000)
+    // Two server round trips per case, so the live half is a sample of the offline run and
+    // `announceSample` says how big a one (R9: no silent caps). `PG_PRIME_FUZZ_PG_CASES` is this
+    // file's own older knob and still wins when it is set.
+    const SAMPLE = Math.min(
+      Number(process.env['PG_PRIME_FUZZ_PG_CASES'] ?? 1000),
+      Math.max(FUZZ_ORACLE_CASES, 1),
+    )
+    announceSample(
+      'compiler/live plan+execute',
+      SAMPLE,
+      Math.max(FUZZ_CASES, 10_000),
+      'PG_PRIME_FUZZ_PG_CASES / PG_PRIME_FUZZ_ORACLE_CASES',
+    )
     let planned = 0
     let executed = 0
     let tolerated = 0

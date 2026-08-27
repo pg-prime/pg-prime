@@ -1,0 +1,26 @@
+{
+  "_why": "Regression corpus for test/fuzz/builder-fuzz.test.ts. See ../corpus.ts for the two entry kinds and how to add one (PG_PRIME_FUZZ_RECORD=1).",
+  "cases": [
+    {
+      "seed": 2310382765,
+      "invariant": "d",
+      "note": "found on the same first live run: .distinct() with an orderBy on a column the random projection did not include is 42P10 `for SELECT DISTINCT, ORDER BY expressions must appear in select list`. Same class as 2802423309 and the same disposition: the generator narrows the ordering when distinct is present, the builder still lets a user write it.",
+      "kind": "found",
+      "added": "2026-08-27"
+    },
+    {
+      "seed": 2802423309,
+      "invariant": "d",
+      "note": "found on the first live run: .distinct() over a projection carrying a `many` relation is 42883 `could not identify an equality operator for type json`. The generator no longer pairs the two (builder-generator.ts, userProjection's `json` option); the builder itself still lets a user write it \u2014 design/09 \u00a73.7 books that with an owner.",
+      "kind": "found",
+      "added": "2026-08-27"
+    },
+    {
+      "seed": 3300751089,
+      "invariant": "d",
+      "note": "the json/distinct class again, 5 000 live cases later: the first fix listed `many` and the two nested shapes as the json-projecting relation accessors and missed `all()`. Pinned because it is the seed that proved a partial fix is a fix that comes back.",
+      "kind": "found",
+      "added": "2026-08-27"
+    }
+  ]
+}

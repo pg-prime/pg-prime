@@ -1,0 +1,218 @@
+# The nightly half of design/08 §4.6, wired by design/09 WS7.
+#
+# Everything here is too slow, too wide or too noisy to run on a pull request, and each of those is
+# a different reason:
+#
+#   pg-matrix   tier 2 on PostgreSQL 15 / 16 / 17 / 18, each behind its own PgBouncer. Four servers
+#               is four times the PR's `pg` job for a signal that changes only when a PG major
+#               does — but the four majors are exactly where design/09 §3.5 found bugs (a
+#               16-only `EXPLAIN (GENERIC_PLAN)` that was red on 15), so they have to run somewhere.
+#   bench       design/08 §5's nine raw-vs-orm pairs. A ratio benchmark on a shared runner competing
+#               with a test suite measures the suite; here it has the runner to itself.
+#   fuzz        1 000 000 cases per fuzzer (design/03 Appendix B). ~2.5 minutes of offline work per
+#               suite and a bounded, PRINTED sample of the server oracles — see `_budget.ts`.
+#
+# **Failure notification.** GitHub emails the workflow file's last committer whenever a scheduled
+# run fails, and shows the failure on the repository's Actions tab and in the branch's status.
+# That is the notification, and it is deliberately all of it: a nightly that also posts to chat is
+# a nightly people mute. If this repository ever grows a chat integration, this is the workflow to
+# add it to.
+#
+# `schedule` only ever runs on the default branch, so a change here is not exercised until it is
+# merged — `workflow_dispatch` is how it gets tried before that, and how a maintainer re-runs a
+# suspicious night.
+
+name: ci-nightly
+
+on:
+  schedule:
+    # 03:17 UTC. Not on the hour: GitHub's scheduler queues every `0 * * * *` job in the world at
+    # once and a nightly that starts 40 minutes late for six hours is a nightly nobody trusts.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  pg-matrix:
+    name: tier 2 · PostgreSQL ${{ matrix.pg }} + PgBouncer
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ['15', '16', '17', '18']
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}
+        env:
+          POSTGRES_USER: pgprime
+          POSTGRES_PASSWORD: pgprime
+          POSTGRES_DB: pgprime
+          # The harness asserts UTC rather than SET-ting it (design/02 §4.7), so the server has to
+          # be started in it — every timestamptz golden is spelled in the session zone.
+          TZ: UTC
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pgprime"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      # One pooler per major, the same shape the PR's `pg` job uses (design/09 §3.6): `DB_HOST` is
+      # the sibling service's network alias, resolved through Docker's embedded DNS, and
+      # `MAX_PREPARED_STATEMENTS=200` is what design/07 §2.4 sizes our `maxPerConnection: 100`
+      # default against. With it at 0 a transaction pool loses our `Parse` between statements and
+      # the named-statement opt-in cannot work at all.
+      pgbouncer:
+        image: edoburu/pgbouncer:latest
+        env:
+          DB_HOST: postgres
+          DB_PORT: '5432'
+          DB_USER: pgprime
+          DB_PASSWORD: pgprime
+          DB_NAME: pgprime
+          POOL_MODE: transaction
+          MAX_PREPARED_STATEMENTS: '200'
+          AUTH_TYPE: scram-sha-256
+        ports: ['6432:5432']
+    env:
+      PG_PRIME_TEST_URL: postgres://pgprime:pgprime@127.0.0.1:5432/pgprime
+      PG_PRIME_TEST_PGBOUNCER_URL: postgres://pgprime:pgprime@127.0.0.1:6432/pgprime
+      # Debian's pg_wrapper resolves a bare `pg_dump` to the runner's preinstalled 16 even after a
+      # newer one is installed; the kit's oracle refuses a client older than the server.
+      PG_PRIME_PG_DUMP: '["/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_dump"]'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `pg_dump` for @pg-prime/kit's round-trip oracle; the client version must be >= the server's,
+      # and ubuntu-latest ships 16 from the distro archive, so every major comes from PGDG.
+      - name: Install postgresql-client-${{ matrix.pg }} (PGDG)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl --fail -sSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update && sudo apt-get install -y postgresql-client-${{ matrix.pg }}
+          /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_dump --version
+      # The pgbouncer image ships no health check we can express here (no `pg_isready` in it) and it
+      # starts before Postgres is ready, so it needs a wait rather than a `--health-cmd`. Failing
+      # loudly beats letting a test report a connection error as a pooler bug.
+      - name: Wait for PgBouncer
+        run: |
+          for i in $(seq 1 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/6432) 2>/dev/null; then echo "pgbouncer up"; exit 0; fi
+            sleep 1
+          done
+          echo "pgbouncer never accepted a connection on 6432"; exit 1
+      - run: pnpm test:pg
+
+  fuzz:
+    # design/03 Appendix B: "10k cases/PR, 1M nightly, 0 findings", for all three fuzzers.
+    #
+    # Measured before this job was written (design/09 §3.7): 1 000 000 cases is ~140 s of wall clock
+    # on PGlite and ~150 s against a real server, so it fits a nightly with three orders of
+    # magnitude to spare and needs no bound of its own. What IS bounded is the number of cases that
+    # reach the server — `PG_PRIME_FUZZ_ORACLE_CASES` — because the ident oracle creates one temp
+    # table per accepted identifier and one backend will not hold ~480 000 of them. Every fuzzer
+    # prints its sample and what it dropped (R9: no silent caps).
+    name: fuzz · 1M cases
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: pgprime
+          POSTGRES_PASSWORD: pgprime
+          POSTGRES_DB: pgprime
+          TZ: UTC
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pgprime"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_PRIME_TEST_URL: postgres://pgprime:pgprime@127.0.0.1:5432/pgprime
+      PG_PRIME_FUZZ_CASES: '1000000'
+      PG_PRIME_FUZZ_ORACLE_CASES: '20000'
+      # Two server round trips per case, so these stay far below the offline count. They are the
+      # nightly's widening of the PR's 1 000 / 300.
+      PG_PRIME_FUZZ_PG_CASES: '5000'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter pg-prime exec vitest run --project live test/fuzz/
+      # A seed the fuzzers found is written into the corpus only with this set, and only into the
+      # workspace — never committed by CI. The artifact is how a maintainer picks it up.
+      - name: Upload any newly recorded corpus entries
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-candidates
+          path: packages/pg-prime/test/fuzz/corpus/
+          if-no-files-found: warn
+
+  bench:
+    # design/08 §5's nine pairs, on a runner with nothing else on it. The gate is a RATIO per case
+    # (`bench/runtime/budget.json`), because absolute milliseconds from a shared runner say nothing;
+    # the absolutes are still in the report, because a ratio without absolutes is marketing.
+    name: bench · runtime (design/08 §5)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: pgprime
+          POSTGRES_PASSWORD: pgprime
+          POSTGRES_DB: pgprime
+          TZ: UTC
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pgprime"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_PRIME_TEST_URL: postgres://pgprime:pgprime@127.0.0.1:5432/pgprime
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm bench:runtime
+      - name: Upload the bench report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-runtime-report-${{ github.run_id }}
+          path: bench/runtime/report.json
+          if-no-files-found: warn
+
+  types:
+    # The type budgets run on every PR too; here they run on the default branch so a merge that
+    # crossed two green PRs into one breach is caught the same night rather than by the next PR.
+    name: budgets — types + compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm bench:types
+      - run: pnpm bench:compile
