@@ -55,6 +55,7 @@ import type { FieldOrigin, FieldPlan, JsonPlan } from './contract.js'
 import {
   cast,
   col,
+  inInternalNodes,
   jsonAgg,
   jsonBuild,
   leftJoinLateral,
@@ -1208,7 +1209,9 @@ export function planSelect(node: SelectNode, rowEquality = false): PlannedSelect
   const cache = eq ? PLANNED_EQ : PLANNED
   const memo = cache.get(node)
   if (memo !== undefined) return memo
-  const planned = planSelectUncached(node, eq)
+  // Everything this pass builds is read by `./compiler.ts` and by nothing else, so it does not
+  // need a place in the nominal node registry — see `inInternalNodes` in `./nodes.ts`.
+  const planned = inInternalNodes(() => planSelectUncached(node, eq))
   cache.set(node, planned)
   if (planned.node !== node) {
     cache.set(planned.node, {
@@ -1274,6 +1277,14 @@ export function planReturning(items: readonly ProjectionItem[]): {
     const leaf = leafFields(items)
     return { items, fields: leaf.fields, origins: leaf.origins }
   }
+  return inInternalNodes(() => planReturningUncached(items))
+}
+
+function planReturningUncached(items: readonly ProjectionItem[]): {
+  items: readonly ProjectionItem[]
+  fields: FieldPlan[]
+  origins: (FieldOrigin | undefined)[]
+} {
   const out: FlatOut = {
     items: [],
     joins: [],

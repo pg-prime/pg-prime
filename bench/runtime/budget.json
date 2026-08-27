@@ -1,12 +1,12 @@
 {
-  "_source": "design/03 Appendix B rows 4-5 and \u00a71.1; design/08 \u00a75. CI fails the build on breach (R9). Loosening any line here is a reviewed change to this file with the reason in the commit message.",
+  "_source": "design/03 Appendix B rows 4-5 and §1.1; design/08 §5. CI fails the build on breach (R9). Loosening any line here is a reviewed change to this file with the reason in the commit message.",
   "_gatedBy": {
-    "bench:compile": "every PR \u2014 the compile, structure and decode sections. Deterministic, no database.",
-    "bench:runtime": "nightly on the fixed runner, and on a PR labelled `perf` \u2014 adds the nine end-to-end pairs."
+    "bench:compile": "every PR — the compile, structure and decode sections. Deterministic, no database.",
+    "bench:runtime": "nightly on the fixed runner, and on a PR labelled `perf` — adds the nine end-to-end pairs."
   },
   "_referenceUsOnDesignMachine": 3.75,
   "_design": {
-    "_why": "design/03 \u00a71.1 and design/08 \u00a75's own numbers, printed beside the measurement so drift from the design document is visible even inside budget (R9).",
+    "_why": "design/03 §1.1 and design/08 §5's own numbers, printed beside the measurement so drift from the design document is visible even inside budget (R9).",
     "compileUs": 25,
     "simpleSelectsPerSecond": 200000,
     "intermediateSqlStrings": 0,
@@ -16,33 +16,41 @@
     "e2eP99": 1.3
   },
   "compile": {
-    "_why": "Two kinds of line. `emitP50Us` is design/03 \u00a71.1's own number, gated absolutely because the emitter measures ~4.4 us against it -- ~5.7x headroom, which no runner can flake. Everything tighter is a RATIO to sampler.mjs's fixed reference workload measured in the same process, for the reason design/08 \u00a75 gives for the DB cases: a wall-clock budget loose enough not to flake on a shared runner is too loose to notice a 30% regression. The bytes/op lines are the tight ones, because allocation is machine-INDEPENDENT (+/-0.2% across runs here) and design/08 \u00a75 names it as where ORM overhead hides. Headroom was sized by running this bench 3x idle and 3x while `pnpm test:live` saturated the machine; design/09 \u00a73.7 records both spreads.",
+    "_why": "Two kinds of line. `emitP50Us` is design/03 §1.1's own number, gated absolutely because the emitter measures ~4.6 us against it -- ~5.4x headroom, which no runner can flake. Everything tighter is a RATIO to sampler.mjs's fixed reference workload measured in the same process, for the reason design/08 §5 gives for the DB cases: a wall-clock budget loose enough not to flake on a shared runner is too loose to notice a 30% regression. The bytes/op lines are the tight ones, because allocation is machine-INDEPENDENT (+/-0.1% across runs here) and design/08 §5 names it as where ORM overhead hides. Every number below was re-cut downward after the 2026-08-27 perf pass (design/09 §3.7 follow-up); headroom is ~5% on the allocation lines and ~2x on the build-and-compile ratio, which is the only line a busy machine really moves.",
     "emitP50Us": 25,
-    "emitRefRatio": 1.5,
-    "buildAndCompileRefRatio": 26.0,
-    "simpleRefRatio": 4.0,
-    "simpleSelectsPerSecond": 80000,
-    "_whySimpleSelectsPerSecond": "design/08 \u00a75 asks for 200 000/s and the builder-plus-compile path measures 97k-142k on the reference machine (design/09 \u00a73.7 finding 2). The floor here is the measured behaviour with headroom, not the design number, and the three-way print carries the 200 000 next to it on every run so the gap cannot be forgotten. Closing it means reducing the 39 KB a compile allocates, which is builder work and is booked as a deferral, not a budget edit.",
-    "buildAndCompileBytes": 41500,
-    "emitBytes": 10400,
-    "simpleBytes": 9100,
-    "_whyBuildAndCompileRefRatioIsCoarse": "Measured 8.4-11.7 idle and 21.6 while `pnpm test:live` saturated the machine, with bytes/op moving 0.2% across the same six runs. The reference workload tracks CPU speed well and memory/GC pressure only roughly, and this path allocates 39 KB per call -- so its wall clock is the one number here that a busy machine really can move. The budget is therefore a CATASTROPHE guard, not a regression detector; the regression detector for this path is `buildAndCompileBytes`. design/08 \u00a75 makes this argument about shared CI runners; measuring it made the same argument one level further in."
+    "emitRefRatio": 1.4,
+    "buildAndCompileRefRatio": 12.0,
+    "simpleRefRatio": 2.0,
+    "simpleSelectsPerSecond": 200000,
+    "_whySimpleSelectsPerSecond": "design/08 §5's own 200 000/s, gated AT the design number since the 2026-08-27 perf pass; the `_overDesign` waiver this line carried is deleted. The measurement is the BEST-CASE per-second figure (1e6 / min, machine-normalised) and not the p50 one, and `run.mjs` explains at length why: this is the only throughput FLOOR in the file, every source of interference pushes it towards failing and nothing pushes it away, and a 4 us operation is one scheduler stall wide. Across thirteen runs the min-derived figure was 263 548-350 116 and the p50-derived one 199 772-306 147, the low end of the second taken while `tsc` rebuilt the package in the same process tree. Both clear 200 000 on every run but that one; the gate uses the statistic that measures the library rather than the machine, which is the same choice `calibrate()` makes for the machine reference. The p50 figure stays in the print and in report.json, and the machine-independent regression detectors for this path are `simpleBytes` and `simpleRefRatio`.",
+    "buildAndCompileBytes": 32500,
+    "emitBytes": 9900,
+    "simpleBytes": 7600,
+    "_whyBuildAndCompileRefRatioIsCoarse": "Measured 4.8-5.4 across three consecutive runs on a quiet machine and 5.5-6.0 on the same machine at load average 20-25; the pre-perf-pass code measured 11.2-11.3 quiet and reached 21.6 while `pnpm test:live` saturated the machine. The reference workload tracks CPU speed well and memory/GC pressure only roughly, so this line is a CATASTROPHE guard at ~2x the worst observed value, not a regression detector; the regression detector for this path is `buildAndCompileBytes`, which moved 0.1% across the same runs.",
+    "_whyEmitBytesIsNotTighter": "The emitter reads 9 020 B on most runs and 9 353-9 474 on some -- bimodal, not noisy: the same 256 pre-built ASTs, the same batch of 28-29, `stable: true` on both readings. It is most likely the chunk array's growth landing on either side of a capacity doubling for a given warm-up history. 9 900 is ~4.5% over the high mode; a budget at the low one would be red on a run in three for no code change, which is what R9 exists to stop. It is still a tightening: WS7's was 10 400."
   },
   "decode": {
-    "_why": "design/03 Appendix B says 'within 15% of a hand-written positional mapper' and does not say what the mapper may skip. Measured (design/09 \u00a73.7), that is the whole question, so three pairs are gated instead of one. None sits at 1.15 and none is meant to: the numbers below are the measured behaviour plus headroom, and the design number is printed beside every one of them so the gap stays visible (R9). Bringing any of them to 1.15 needs `new Function` codegen for the row loop, which src/compile/decode.ts rules out by default on CSP grounds and offers as an opt-in flag exactly when 'benchmarks later disagree' -- they now do, and design/09 \u00a73.7 books it as a named deferral rather than widening this file again.",
-    "ratioVsUncheckedMapperP50": 3.1,
-    "ratioVsCheckedMapperP50": 1.75,
-    "rowsPerSecond": 800000,
-    "_notGated": "`decode \u00b7 row-loop dispatch only` is reported, never gated. It pairs a decoder built over twelve `text` (identity) codecs against a literal-object copy, so the denominator is ~70 us for 10 000 rows and the ratio swings 21-47 with the sample size and the machine. It is a decomposition -- it says the closure tree's row loop is ~20-30x a literal object and that this is ~20% of a real decode -- not an Appendix B row, and a gate on it would be a gate on noise."
+    "_why": "design/03 Appendix B says 'within 15% of a hand-written positional mapper' and does not say what the mapper may skip. Measured (design/09 §3.7), that is the whole question, so three pairs are gated per builder instead of one. The default closure tree does not reach 1.15 and cannot: a closure tree cannot write an object LITERAL, because the keys are only known at run time, and the dynamic-key row loop alone is ~24x a literal copy (see `_notGated`). The opt-in `{ decoder: 'codegen' }` builder does reach it -- 1.126-1.168 against the same-checks mapper -- which is exactly the disposition src/compile/decode.ts recorded in advance: 'if benchmarks later disagree, codegen becomes an opt-in flag, never the default'. Both builders are gated, and the design number is printed beside every one of them (R9).",
+    "ratioVsUncheckedMapperP50": 2.8,
+    "ratioVsCheckedMapperP50": 1.65,
+    "rowsPerSecond": 1000000,
+    "_notGated": "`decode · row-loop dispatch only` is reported, never gated, for BOTH builders. It pairs a decoder built over twelve `text` (identity) codecs against a literal-object copy, so the denominator is ~80 us for 10 000 rows and the ratio swings with the sample size and the machine. It is a decomposition -- it says the closure tree's row loop is ~24-27x a literal object and the generated one ~2x, which is where the two builders differ and nowhere else -- not an Appendix B row, and a gate on it would be a gate on noise.",
+    "codegen": {
+      "_why": "The opt-in `{ decoder: 'codegen' }` builder (design/03 §1.3 AS BUILT). It is gated because an opt-in fast path with no budget is a fast path that rots, and because the flag only earns its existence if the number beside it is published. Measured 1.89-2.02 vs the unchecked mapper and 1.126-1.168 vs the same-checks one across eight runs; the budgets are the worst of those plus the same relative headroom WS7 used for the closure-tree lines. `fractionOfClosureTree` is the line that says the flag is still worth having: the generated decoder must stay measurably faster than the default (measured 0.726-0.758), or it is a liability rather than a choice.",
+      "ratioVsUncheckedMapperP50": 2.15,
+      "ratioVsCheckedMapperP50": 1.3,
+      "rowsPerSecond": 1400000,
+      "fractionOfClosureTree": 0.85
+    }
   },
   "e2e": {
-    "_why": "design/08 \u00a75's gate is p50 <= 1.15x and p99 <= 1.30x raw `pg`, on all nine cases. Measured on PostgreSQL 17.11 (design/09 \u00a73.7), five of the nine sit between 1.17 and 1.36 at p50 and one -- the 1 000-row batch insert -- at 1.79, so a single 1.15 line would be red on the day it was written. The budgets are therefore PER CASE and measured, with the design number printed beside every one of them on every run so the gap cannot be forgotten. The shape of the gap is the useful part and it is booked in \u00a73.7: our overhead is a roughly constant ~0.05-0.19 ms of client-side work per statement, which is ~20-35% of a point select and ~1% of a relation load, plus real encoding work in the batch insert.",
-    "_whyP99IsLoose": "design/08 \u00a75 gates p99 <= 1.30x and the gate is kept, but it is kept HONEST rather than tight. Across five runs on the reference machine the p50 ratios reproduced to +/-0.1 and the p95 ratios to about +/-0.4, while the SAME p99 line moved 0.44 -> 10.92 for `delete by PK` and 0.79 -> 4.38 for the batch insert: a 99th percentile over 40-100 samples of a sub-millisecond round trip is one scheduler stall wide, and no sample count this harness can afford fixes that on a machine it does not own. So p99 is a uniform 12x catastrophe guard and `overheadP95` is the tail gate that actually holds. Tightening p99 wants the fixed nightly runner's numbers, which is one nightly run away; design/09 \u00a73.7 records that as unverified rather than guessing.",
+    "_why": "design/08 §5's gate is p50 <= 1.15x and p99 <= 1.30x raw `pg`, on all nine cases. The budgets are PER CASE and measured, with the design number printed beside every one of them on every run so the gap cannot be forgotten. Measured on PostgreSQL 17.11 across seven runs after the 2026-08-27 perf pass, the nine p50 ranges are 1.007-1.010 and 1.009-1.022 (the two relation loads), 1.061-1.123 (the 5-statement transaction), 1.078-1.159 (update), 1.096-1.110 (point select), 1.111-1.282 (delete), 1.170-1.205 (the 1 000-row select), 1.204-1.340 (insert one) and 1.389-1.684 (the 1 000-row batch insert) -- four of the nine now sit entirely at or under 1.15, against three before, and six of nine do on a good run. Only the batch insert moved enough to re-cut its budget (2.1 -> 1.9); the other eight sit inside the ranges that sized them over six runs including a saturated machine, and tightening a nine-case tail gate from three quieter runs would be sizing it on LESS evidence than set it. The shape of the gap is the useful part and it is booked in design/09 §3.7: our overhead is a roughly constant ~0.02-0.11 ms of client-side work per statement, which is ~10-30% of a point select and ~1% of a relation load, plus real encoding work in the batch insert.",
+    "_whyP99IsLoose": "design/08 §5 gates p99 <= 1.30x and the gate is kept, but it is kept HONEST rather than tight. Across five runs on the reference machine the p50 ratios reproduced to +/-0.1 and the p95 ratios to about +/-0.4, while the SAME p99 line moved 0.44 -> 10.92 for `delete by PK` and 0.79 -> 4.38 for the batch insert: a 99th percentile over 40-100 samples of a sub-millisecond round trip is one scheduler stall wide, and no sample count this harness can afford fixes that on a machine it does not own. So p99 is a uniform 12x catastrophe guard and `overheadP95` is the tail gate that actually holds. Tightening p99 wants the fixed nightly runner's numbers, which is one nightly run away; design/09 §3.7 records that as unverified rather than guessing.",
     "overheadP50": {
       "point select by PK": 1.45,
       "select 1 000 rows (12 cols, 2 joins)": 1.55,
       "insert one": 1.65,
-      "insert 1 000 (batch)": 2.1,
+      "insert 1 000 (batch)": 1.9,
       "update by PK": 1.5,
       "delete by PK": 1.6,
       "5-statement transaction": 1.4,
@@ -71,29 +79,33 @@
       "relation load, one level": 1.8,
       "relation load, two levels": 1.8
     },
-    "_whyP95Exists": "A deviation from design/08 \u00a75, which names p50 and p99 only. p95 was added because it is the tightest tail statistic this harness measures reproducibly: across six runs on the reference machine p50 moved +/-0.1 and p95 +/-0.4, while the same p99 line moved 0.44 -> 10.92. The p95 budgets are ~1.6x the WORST of those six runs -- a tail guard, not a tight bound, because even p95 shows the occasional excursion (the 1 000-row select read 1.13-1.22 five times and 1.96 once). Tightening them wants the fixed nightly runner's distribution; guessing one from a laptop and calling it a gate is what R9 exists to stop. The p99 line stays so design/08 \u00a75's number keeps its place in the print."
+    "_whyP95Exists": "A deviation from design/08 §5, which names p50 and p99 only. p95 was added because it is the tightest tail statistic this harness measures reproducibly: across six runs on the reference machine p50 moved +/-0.1 and p95 +/-0.4, while the same p99 line moved 0.44 -> 10.92. The p95 budgets are ~1.6x the WORST of those six runs -- a tail guard, not a tight bound, because even p95 shows the occasional excursion (the 1 000-row select read 1.13-1.22 five times and 1.96 once). Tightening them wants the fixed nightly runner's distribution; guessing one from a laptop and calling it a gate is what R9 exists to stop. The p99 line stays so design/08 §5's number keeps its place in the print."
   },
   "_caveats": [
-    "The `\u2026RefRatio` gates divide by sampler.mjs's reference workload. It tracks CPU speed well and GC pressure only roughly, so the build-and-compile ratio is the noisiest line here (8.4-11.7 across six runs on one machine); the tight gate on that path is bytes/op, not time.",
-    "`decode \u00b7 row-loop dispatch only` is reported, not gated -- see decode._notGated."
+    "The `…RefRatio` gates divide by sampler.mjs's reference workload. It tracks CPU speed well and GC pressure only roughly, so the build-and-compile ratio is the noisiest line here (4.8-5.4 quiet, 5.5-6.0 at load average 20-25, and 21.6 for the pre-perf-pass code under saturation); the tight gate on that path is bytes/op, not time.",
+    "`decode · row-loop dispatch only` is reported, not gated, for either builder -- see decode._notGated.",
+    "`decode.codegen.*` gates a code path that is OFF by default. It is measured on every run anyway, because design/03 §1.3's disposition is that the flag exists only as long as the benchmark says it is worth having."
   ],
   "_designLinked": {
-    "_why": "Which gated line corresponds to which design number, so that widening a budget past its design number is a MACHINE-checkable event and not only a review one (R9). `run.mjs` fails when a linked budget exceeds its design value unless the metric is named in `_overDesign` \u2014 which is what turns 'loosening a budget is a reviewed change with a reason' from a convention into a gate.",
+    "_why": "Which gated line corresponds to which design number, so that widening a budget past its design number is a MACHINE-checkable event and not only a review one (R9). `run.mjs` fails when a linked budget exceeds its design value unless the metric is named in `_overDesign` — which is what turns 'loosening a budget is a reviewed change with a reason' from a convention into a gate.",
     "compile.emitP50Us": "compileUs",
     "compile.simpleSelectsPerSecond": "simpleSelectsPerSecond",
     "decode.ratioVsUncheckedMapperP50": "decodeRatio",
     "decode.ratioVsCheckedMapperP50": "decodeRatio",
     "e2e.overheadP50": "e2eP50",
     "e2e.overheadP95": "e2eP99",
-    "e2e.overheadP99": "e2eP99"
+    "e2e.overheadP99": "e2eP99",
+    "decode.codegen.ratioVsUncheckedMapperP50": "decodeRatio",
+    "decode.codegen.ratioVsCheckedMapperP50": "decodeRatio"
   },
   "_overDesign": {
-    "_why": "Every entry is a budget that is deliberately looser than design's number, with the reason. Adding one is the reviewed act R9 describes; the three-way print keeps the design number visible next to the measurement for as long as the entry exists.",
-    "compile.simpleSelectsPerSecond": "design/08 \u00a75 asks 200 000/s of the builder-chain-plus-compile path; measured 92k-142k on the reference machine. The gap is 39 KB of allocation per compile (design/09 \u00a73.7 finding 2), which is builder work and is booked as a deferral rather than paid for by editing this number again.",
-    "decode.ratioVsUncheckedMapperP50": "design/03 Appendix B asks for 1.15x a hand-written positional mapper; measured 2.70-2.99. ~45% of the gap is validation the unchecked mapper skips and the rest is the closure tree's per-cell dispatch and dynamic-key row construction (design/09 \u00a73.7 finding 1).",
-    "decode.ratioVsCheckedMapperP50": "the same measurement against a mapper that performs the codecs' own checks: 1.55-1.65. This is the honest 'what does the closure tree cost' number and it is still above 1.15; closing it needs the codegen decode.ts rules out by default on CSP grounds.",
-    "e2e.overheadP50": "design/08 \u00a75 asks p50 <= 1.15x on all nine; measured 1.01-1.83 (design/09 \u00a73.7). The overhead is a roughly constant ~0.03-0.15 ms of client-side work per statement plus real codec encoding in the batch insert, so it is ~1% of a relation load and ~1.8x of a 1 000-row batch. Per-case budgets, each measured.",
-    "e2e.overheadP95": "the tail gate design/08 \u00a75 does not name; see e2e._whyP95Exists.",
-    "e2e.overheadP99": "a uniform 12x catastrophe guard; see e2e._whyP99IsLoose."
+    "_why": "Every entry is a budget that is deliberately looser than design's number, with the reason. Adding one is the reviewed act R9 describes; the three-way print keeps the design number visible next to the measurement for as long as the entry exists. `compile.simpleSelectsPerSecond` was DELETED on 2026-08-27 because the measurement now clears 200 000/s -- which is what these entries are for: they come out by measurement, never by editing the number.",
+    "decode.ratioVsUncheckedMapperP50": "design/03 Appendix B asks for 1.15x a hand-written positional mapper; the DEFAULT closure tree measures 2.51-2.66 (was 2.68-2.99). ~40% of the gap is validation the unchecked mapper skips and the rest is the dynamic-key row loop, which no closure tree can remove -- `{ decoder: 'codegen' }` is the supported way to 1.15 and is gated below.",
+    "decode.ratioVsCheckedMapperP50": "the same measurement against a mapper that performs the codecs' own checks: 1.50-1.55 (was 1.55-1.65). This is the honest 'what does the closure tree cost' number. It is at the closure tree's floor: an all-`col` specialisation that writes the row without a per-cell closure was implemented and measured at 1.520 against 1.542, inside the run-to-run spread, and was not kept (design/09 §3.7 follow-up).",
+    "e2e.overheadP50": "design/08 §5 asks p50 <= 1.15x on all nine; measured 1.007-1.684 over seven runs after the 2026-08-27 perf pass (was 1.01-1.83). Four of the nine are now entirely at or under the design number and the batch insert's budget came down 2.1 -> 1.9 with it. The overhead is a roughly constant amount of client-side work per statement plus real codec encoding in the batch insert, so one number for all nine is either meaningless for the cheap cases or red for the expensive ones. Per-case budgets, each measured.",
+    "e2e.overheadP95": "the tail gate design/08 §5 does not name; see e2e._whyP95Exists.",
+    "e2e.overheadP99": "a uniform 12x catastrophe guard; see e2e._whyP99IsLoose.",
+    "decode.codegen.ratioVsUncheckedMapperP50": "the generated builder against the mapper that skips the codecs' checks: 1.89-1.96. The remaining gap is the codecs themselves -- `parseTimestamptz` and `decodeInt8Text` are ~59% of a decode and the unchecked mapper does neither -- not the row loop, which is now 2x a literal copy rather than 24x.",
+    "decode.codegen.ratioVsCheckedMapperP50": "the MEASUREMENT meets design here -- 1.126-1.146 on the quiet runs -- and the BUDGET does not, at 1.30. A run taken straight after a full tier-2 suite read 1.168, which is the whole argument: a ratio of two ~6 ms timings on a machine this harness does not own moves several percent, so a gate at 1.15 would have 0.1% margin -- red on the first busy runner and therefore worthless. The entry stays until the fixed nightly runner has a distribution to size it from; the three-way print carries 1.15 beside the measurement on every run, which is the part that matters."
   }
 }

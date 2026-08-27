@@ -15,6 +15,7 @@
     "bench:forks": "pnpm --filter @pg-prime/bench-types bench:forks",
     "bench:runtime": "pnpm --filter @pg-prime/bench-runtime bench",
     "bench:compile": "pnpm --filter @pg-prime/bench-runtime bench:compile",
+    "bench:profile": "pnpm --filter @pg-prime/bench-runtime profile",
     "type-errors": "node tools/type-errors/record.mjs",
     "type-errors:check": "node tools/type-errors/record.mjs --check"
   },

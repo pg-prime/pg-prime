@@ -95,6 +95,29 @@ export function hasNul(s: string): boolean {
  * The whole injection audit surface for identifiers is these ~15 lines.
  */
 export function quoteIdentPart(part: unknown, index = 0): string {
+  // Fast path, and it is the only path any identifier a schema declares ever takes: printable
+  // ASCII with no `"` to double. One scan answers all four questions the slow path asks
+  // separately — no NUL (< 0x20), no lone surrogate (all code units < 0x80), byte length equals
+  // `length`, nothing for `replaceAll` to do. Anything else falls through unchanged below, so the
+  // set of accepted identifiers is exactly what it was, and the audit surface is still the slow
+  // path plus this scan.
+  //
+  // Measured (design/09 §3.7 follow-up): **99.2 ns → 26.9 ns** per call on the twelve column names
+  // of design/03 §1.1's query, i.e. 3.7x, and **zero bytes** either way — V8's `replaceAll` returns
+  // the receiver when it replaces nothing, so what this removes is four passes over the string and
+  // two calls, not an allocation. R10 M5 (the fast path stops excluding `"`) is caught by seven
+  // tests including `test/sql/kysely-cve.test.ts`.
+  if (typeof part === 'string' && part.length > 0 && part.length <= MAX_IDENT_BYTES) {
+    let plain = true
+    for (let i = 0; i < part.length; i++) {
+      const c = part.charCodeAt(i)
+      if (c < 0x20 || c > 0x7e || c === 0x22) {
+        plain = false
+        break
+      }
+    }
+    if (plain) return `"${part}"`
+  }
   if (typeof part !== 'string') {
     throw new InvalidIdentifierError(
       'not-a-string',

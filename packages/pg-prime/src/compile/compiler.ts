@@ -72,6 +72,30 @@ function quoteAlias(key: string): string {
   return quoted
 }
 
+/**
+ * `'\n'` plus `n` spaces, built once per depth.
+ *
+ * A statement of design/03 §1.1's size emits ~40 newlines, and `` `\n${' '.repeat(n)}` `` was two
+ * string allocations for each of them, for text that has at most a handful of distinct values.
+ * Measured (design/09 §3.7 follow-up): **408 B per compile**, 1.3 % of the total and 4.3 % of the
+ * emitter's own allocation, with the emitter's p50 unchanged at 4.06 µs — a small win, kept
+ * because it is a table lookup and not because it was decisive. The table is capped so that a
+ * pathologically nested query grows the *chunk* list, which it was going to grow anyway, rather
+ * than this array.
+ */
+const NEWLINES: string[] = ['\n']
+const MAX_CACHED_INDENT = 64
+
+function newlineAt(indent: number): string {
+  if (indent > MAX_CACHED_INDENT) return `\n${' '.repeat(indent)}`
+  let s = NEWLINES[indent]
+  if (s === undefined) {
+    s = `\n${' '.repeat(indent)}`
+    NEWLINES[indent] = s
+  }
+  return s
+}
+
 class Emitter {
   readonly chunks: string[] = []
   readonly binds: Bind[] = []
@@ -97,7 +121,7 @@ class Emitter {
 
   /** Newline + current indentation. */
   nl(): void {
-    this.chunks.push(this.indent === 0 ? '\n' : `\n${' '.repeat(this.indent)}`)
+    this.chunks.push(newlineAt(this.indent))
   }
 
   block(f: () => void): void {

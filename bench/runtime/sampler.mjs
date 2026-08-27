@@ -149,34 +149,90 @@ export async function samplePairedAsync(a, b, { iters = 1, samples = 60, warmup 
 }
 
 /**
- * Bytes allocated per call, as the median of 20 batches.
+ * Bytes allocated per call, as the median of `batches` batches.
  *
  * `heapUsed` before and after a batch, with no GC in between, is the total the batch allocated
- * INCLUDING the garbage — which is the number we want, because garbage is what costs. Batches are
- * sized (500 calls) to stay well inside a young generation so no scavenge runs mid-batch; a batch
- * during which one did shows up as a negative or wildly small delta and the median throws it away.
+ * INCLUDING the garbage — which is the number we want, because garbage is what costs.
  *
- * `--expose-gc` makes it exact by emptying the nursery first; without the flag the numbers are
- * still usable (the median of 20 is stable to a few percent) and the report says which mode it ran
- * in, because a budget compared against a differently-measured number is not a budget.
+ * ─── Three ways this measurement lies ───────────────────────────────────────
+ *
+ * 1. **The caller throws the result away.** This is the one that actually bit, and it is the
+ *    caller's to fix, not this function's: with the result unused, escape analysis sinks the
+ *    allocation and a stage of a builder chain can read *less* than the stage before it. Every
+ *    caller here stores what it measures — see the `keep()` sink in `profile.mjs`, which exists
+ *    because the first version of that file did not.
+ *
+ * 2. **A scavenge inside the batch.** The instant a minor GC runs mid-batch the delta stops being
+ *    "what was allocated" and becomes "what survived", which is near zero for a pure function. So
+ *    the batch is **sized from a probe** to keep each batch's allocation near `targetBatchBytes`
+ *    (256 KB, comfortably inside any nursery V8 will give us) — eight calls for a 31 KB/op
+ *    workload, thirty for an 8 KB one — and the result carries `stable`: the same measurement
+ *    repeated at a quarter of the batch size, agreeing within 3 %. A `stable: false` means the
+ *    number is a floor, not a measurement, and `run.mjs` prints it as one.
+ *
+ *    How much this was worth is worth writing down, because it is less than it looks: measured on
+ *    the reference machine, the fixed batch of 500 this function used to use and the probe-sized
+ *    batch agree to **~1 %** on all three gated workloads (31 904 vs 31 530 B for the heavy
+ *    build-and-compile, 8 830 vs 8 729 B for the builder chain alone). The value of the change is
+ *    the `stable` flag and the small-batch honesty, not a correction to the numbers — which is
+ *    also why the pre- and post-perf-pass allocation figures in design/09 §3.7 are comparable.
+ *
+ * 3. **The instrument's own allocation.** `process.memoryUsage()` returns a fresh object, so the
+ *    two calls that bracket a batch allocate ~256 B between them. At batch 500 that is half a byte
+ *    per op and invisible; at the batch sizes point 2 forces (single digits for a 31 KB workload)
+ *    it is tens of bytes per op. It is measured once, with an empty body, and subtracted.
+ *
+ * `globalThis.gc?.()` is called ONCE before the batches rather than before each one, because at
+ * these batch sizes a full GC between batches empties the `WeakSet` of AST nodes and the `WeakMap`
+ * memos and every batch re-pays their backing-store growth. One collection up front, then
+ * consecutive batches, and the median absorbs the natural collections along the way; the ~1 %
+ * agreement above is with the per-batch-`gc()` version, so this is a wash on accuracy.
  */
-export function bytesPerOp(fn, { batch = 500, batches = 20, warmup = 20000 } = {}) {
+export function bytesPerOp(
+  fn,
+  { targetBatchBytes = 262144, batches = 25, warmup = 20000, maxBatch = 2000 } = {},
+) {
   for (let i = 0; i < warmup; i++) fn()
+  const overhead = harnessOverhead()
+  globalThis.gc?.()
+  // A tiny batch to size the real one. It over-reads slightly (the overhead correction is itself
+  // ±64 B), which only ever makes the chosen batch smaller, i.e. safer.
+  const probe = batchMedian(fn, 4, 9, overhead)
+  const batch = Math.max(1, Math.min(maxBatch, Math.round(targetBatchBytes / Math.max(probe, 64))))
+  const main = batchMedian(fn, batch, batches, overhead)
+  // The cross-check: a quarter of the batch cannot be scavenging where the full one is not.
+  const quarter = batch > 4 ? batchMedian(fn, Math.max(1, batch >> 2), Math.ceil(batches / 2), overhead) : main
+  const worst = Math.max(main, quarter)
+  return {
+    median: Math.round(worst),
+    batch,
+    stable: worst === 0 ? true : Math.abs(main - quarter) / worst <= 0.03,
+    exact: typeof globalThis.gc === 'function',
+  }
+}
+
+/** The median per-op delta of `batches` batches of `batch` calls, minus the harness's own bytes. */
+function batchMedian(fn, batch, batches, overhead) {
   const xs = []
   for (let s = 0; s < batches; s++) {
-    globalThis.gc?.()
     const before = process.memoryUsage().heapUsed
     for (let i = 0; i < batch; i++) fn()
     const after = process.memoryUsage().heapUsed
-    xs.push((after - before) / batch)
+    xs.push((after - before - overhead) / batch)
   }
   xs.sort((a, b) => a - b)
-  return {
-    median: Math.round(percentile(xs, 50)),
-    min: Math.round(xs[0]),
-    max: Math.round(xs[xs.length - 1]),
-    exact: typeof globalThis.gc === 'function',
+  return percentile(xs, 50)
+}
+
+/** What two bracketing `process.memoryUsage()` calls allocate between them, with nothing in between. */
+function harnessOverhead() {
+  const xs = []
+  for (let s = 0; s < 41; s++) {
+    const before = process.memoryUsage().heapUsed
+    xs.push(process.memoryUsage().heapUsed - before)
   }
+  xs.sort((a, b) => a - b)
+  return percentile(xs, 50)
 }
 
 /**

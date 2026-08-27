@@ -8,7 +8,8 @@
     "bench": "node --expose-gc run.mjs",
     "bench:compile": "node --expose-gc run.mjs --compile-only",
     "bench:quick": "node --expose-gc run.mjs --quick",
-    "bench:report": "node --expose-gc run.mjs --no-gate"
+    "bench:report": "node --expose-gc run.mjs --no-gate",
+    "profile": "node --expose-gc profile.mjs"
   },
   "devDependencies": {
     "pg": "^8.23.0"

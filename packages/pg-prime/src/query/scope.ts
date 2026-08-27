@@ -143,22 +143,39 @@ export function registerDerived(
   })
 }
 
+/**
+ * Memo for the table branch of {@link sourceOf}.
+ *
+ * A table handle's `SourceRuntime` is a constant of the handle — the schema key and two closures
+ * over it — and `sourceOf` is called once per `.from()`/`.join()` **and once per alias inside
+ * every scope rebuild**, which is O(aliases²) over a chain. Rebuilding the record each time
+ * allocated an object and two closures per call for an answer that cannot change. `SOURCES` above
+ * cannot hold these because it is the *nominal* registry for CTEs and derived tables: membership
+ * there means "registered by this library", and a bare table handle is recognised structurally,
+ * by its `$`.
+ */
+const TABLE_SOURCES = new WeakMap<object, SourceRuntime>()
+
 /** The runtime behind whatever `.from()` / `.innerJoin()` was handed. */
 export function sourceOf(h: unknown): SourceRuntime {
   if (typeof h === 'object' && h !== null) {
     const registered = SOURCES.get(h)
     if (registered !== undefined) return registered
+    const memo = TABLE_SOURCES.get(h)
+    if (memo !== undefined) return memo
     const like = h as TableLike & Record<symbol, unknown>
     if (like.$ !== undefined && typeof like.$.name === 'string') {
       // The schema KEY, not the DB name: `defineSchema` keys `postTags` onto a table called
       // `post_tags`, and the alias the type layer promises is the key.
       const key = typeof like[NAME] === 'string' ? (like[NAME] as string) : like.$.name
-      return {
+      const built: SourceRuntime = {
         kind: 'table',
         name: key,
         fromItem: (alias) => tableFrom(metaOf(like).table, alias),
         refs: (alias, registry) => refsOf(like, alias, registry),
       }
+      TABLE_SOURCES.set(h, built)
+      return built
     }
   }
   throw new BuilderError(
@@ -214,8 +231,23 @@ export function scopeFor(
   // The avoid-list is part of the identity of the scope, not just of the alias: the same table at
   // the same alias produces different relation-child aliases in a statement that also binds
   // "posts" and in one that does not.
+  //
+  // `rebuildScope` calls this once per alias with the SAME array, so the suffix is recomputed
+  // O(aliases²) times over a chain. Two things were tried against that (design/09 §3.7 follow-up):
+  //
+  //  - **dropping the `[...avoid].sort()` that used to be here** — kept. It only ever
+  //    *canonicalised* two spellings of the same alias set so they could share a cache entry, and
+  //    `Object.keys` of a frozen sources record is already deterministic for a given chain shape.
+  //    Two chains that reach the same set in different orders now miss the cache and build the
+  //    scope twice, which is a cost, never a wrong answer — the avoid-list itself is read with
+  //    `includes`, which does not care about order. Measured at **4 506 B per compile**, 14 % of
+  //    the whole thing, because the copy is per alias per rebuild;
+  //  - **memoising the joined string on the array's identity** — reverted. It measured 206 B per
+  //    compile, 0.6 %, and it was a process-global one-entry cache: a mutation that made it hand
+  //    back the *previous* statement's key passed all 733 tier-0 tests and all 1 452 tier-1 ones
+  //    (R10 M10). 0.6 % is not worth a correctness property with no oracle behind it.
   const avoid = visible.includes(alias) ? visible : [alias, ...visible]
-  const key = avoid.length === 1 ? alias : `${alias}\u0000${[...avoid].sort().join('\u0000')}`
+  const key = avoid.length === 1 ? alias : `${alias}\u0000${avoid.join('\u0000')}`
   const hit = byAlias.get(key)
   if (hit !== undefined) return hit
 

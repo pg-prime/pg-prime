@@ -8,10 +8,48 @@
  * names the column it happened in. It is bound HERE, once per plan — never per row and never per
  * cell — which is why threading it costs nothing on the hot path. `typmod` is `-1` because a
  * compiled plan predates the `RowDescription`; the executor is what has `dataTypeModifier`, and no
- * built-in reads it today. It is a **tree of
- * closures, not `new Function`**: CSP-restricted runtimes (Workers, some Electron/Deno
- * configurations) forbid eval, and a closure tree measured within noise of generated code.
- * If benchmarks later disagree, codegen becomes an opt-in flag, never the default.
+ * built-in reads it today.
+ *
+ * ## Two builders, and which one is the default
+ *
+ * The default is a **tree of closures, not `new Function`**: CSP-restricted runtimes (Workers,
+ * some Electron/Deno configurations) forbid `eval`, and `03` §1.3's disposition was "if benchmarks
+ * later disagree, codegen becomes an opt-in flag, never the default".
+ *
+ * They disagree, and the measurement says exactly where. A closure tree cannot build a row as an
+ * object *literal*: the keys are only known at run time, so it must write twelve dynamic
+ * properties into a fresh object. Measured on the 10 000 × 12 fixture with identity codecs on
+ * both sides — so the only difference is the shape of the row loop — that is **~1.92 ms against
+ * ~0.07 ms** for the same loop written as an object literal, a 21–27× gap that no amount of
+ * hoisting inside the closure tree closes (a template clone, which fixes the hidden class, buys
+ * 12 %; generated code closes it to 1.9–2.2×). Through real codecs the row loop is ~20 % of a
+ * decode, so the same structural gap reads as 1.50–1.55× a same-checks hand mapper for the
+ * closure tree and 1.126–1.168× for the generated one — design/03 Appendix B asks for 1.15.
+ *
+ * So there are two builders behind one function:
+ *
+ *  - `'closure'` (default) — the tree below, with the row loop specialised as far as it goes
+ *    without `eval`: parallel `keys`/`decoders` arrays instead of a destructured tuple per row, a
+ *    **template clone** so every row object starts life with the finished hidden class and the
+ *    per-field stores are plain writes rather than twelve map transitions, and the `col` cell
+ *    decode fused into `rowFieldDecoder` so a plain column costs one closure call and not two.
+ *    Going further — inlining the cell decode into the loop itself, so there is no per-cell call
+ *    at all — was implemented and measured at **1.520 against 1.542**, inside the run-to-run
+ *    spread and *worse* on identity codecs (one call site sees twelve codec shapes instead of
+ *    twelve monomorphic ones), and was not kept (design/09 §3.7 follow-up).
+ *  - `'codegen'` (opt-in, `pgPrime({ decoder: 'codegen' })`) — {@link codegenRowDecoder} builds
+ *    the same plan into a real object literal with `new Function`. It is the technique
+ *    `pg-native` and postgres.js use for row materialisation. Nothing user-controlled is
+ *    interpolated: result keys go through {@link jsString} (and `__proto__` is refused at plan
+ *    time, as it is for the closure tree), column indexes are asserted to be non-negative
+ *    integers, and every codec, sub-decoder and `CodecContext` is passed in as a bound parameter
+ *    rather than named in the source. The generated function is checked against the closure tree
+ *    in tier 0 (`test/compile/decode-oracle.test.ts`), which is R1's "three implementations
+ *    agreeing" — closure tree, generated code, hand-written mapper.
+ *
+ * `pgPrime()` refuses `{ decoder: 'codegen' }` up front on a runtime where `new Function` is
+ * unavailable ({@link assertCodegenAvailable}), so a CSP policy is a configuration error at
+ * start-up and never a surprise on the first query.
  *
  * Two properties fall out of the plan being *positional*:
  *  - two joined tables both exposing `id` cannot clobber each other;
@@ -136,6 +174,21 @@ function rowFieldDecoder(
   f: FieldPlan,
   parent: CodecContext,
 ): (row: readonly unknown[]) => unknown {
+  if (f.k === 'col') {
+    // Fused, not `fieldDecoder` behind an index closure. A plain column is the overwhelmingly
+    // common field and it is the one the decode budget is measured on; going through two closures
+    // to read one cell doubled the call count on the hottest line in the library for no gain. The
+    // body is `fieldDecoder`'s `col` branch verbatim, so the two cannot disagree.
+    assertPlanKey(f.key)
+    const ctx = forColumn(parent, f.key)
+    const codec = f.codec
+    const idx = f.idx
+    return (row) => {
+      const raw = row[idx]
+      if (raw === null || raw === undefined) return null
+      return typeof raw === 'string' ? codec.decodeText(raw, ctx) : raw
+    }
+  }
   if (f.k !== 'group') {
     const dec = fieldDecoder(f, parent)
     const idx = f.idx
@@ -199,9 +252,161 @@ function fieldDecoder(f: FieldPlan, parent: CodecContext): (raw: unknown) => unk
   }
 }
 
+/**
+ * Which row builder {@link buildDecoder} uses. `'closure'` is the default and the only one that
+ * works under a Content-Security-Policy that forbids `eval` — see the module docblock.
+ */
+export type DecoderMode = 'closure' | 'codegen'
+
+/**
+ * Does this runtime allow `new Function`?
+ *
+ * Called once, from `pgPrime({ decoder: 'codegen' })`, so that a CSP-restricted runtime is a
+ * start-up error naming the option rather than a `EvalError` from inside the first query's decode
+ * — which is the failure people report as "the ORM crashed after the query worked in dev".
+ */
+export function assertCodegenAvailable(): void {
+  try {
+    // eslint-disable-next-line no-new-func
+    const probe = new Function('return 1') as () => number
+    if (probe() !== 1) throw new Error('probe returned the wrong value')
+  } catch (cause) {
+    throw new DecodePlanError(
+      "pg-prime: { decoder: 'codegen' } needs `new Function`, and this runtime does not allow it " +
+        '(a Content-Security-Policy without `unsafe-eval`, a Cloudflare Worker, or a locked-down ' +
+        "Electron/Deno). Remove the option — the default 'closure' decoder needs no code " +
+        `generation and decodes to exactly the same values. (${String(cause)})`,
+    )
+  }
+}
+
+/**
+ * A JavaScript string literal for `key`, safe to place in generated source.
+ *
+ * `JSON.stringify` escapes the quote, the backslash and every control character, and since ES2019
+ * it escapes lone surrogates too — but U+2028 and U+2029 are legal in a JSON string and were, for
+ * a long time, illegal *unescaped* in a JavaScript one. Escaping them costs nothing and removes
+ * the last way a projection key could end a string literal early. Keys additionally go through
+ * {@link assertPlanKey} before they get here.
+ */
+function jsString(key: string): string {
+  return JSON.stringify(key).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')
+}
+
+/** A column index is written into generated source as a number, so it has to be one. */
+function assertPlanIndex(idx: unknown, key: string): number {
+  if (typeof idx !== 'number' || !Number.isInteger(idx) || idx < 0) {
+    throw new DecodePlanError(
+      `pg-prime: the result plan for "${key}" has a column index of ${String(idx)}, which is not a ` +
+        'non-negative integer. A plan is compiler output; a hand-built one must still be well formed.',
+    )
+  }
+  return idx
+}
+
+/**
+ * The `'codegen'` row builder: the plan, compiled to one function whose body is an object literal.
+ *
+ * The generated source names nothing but its own parameters. Every codec (`c0`, `c1`, …), every
+ * per-column {@link CodecContext} (`x0`, …) and every fallback sub-decoder (`f0`, …) is passed
+ * **by position** into the outer `new Function`, so no identifier derived from a schema, a column
+ * name or a value ever appears as code. The only interpolated text is a result key inside a string
+ * literal ({@link jsString}) and a column index proven to be an integer ({@link assertPlanIndex}).
+ *
+ * `col` fields are inlined — the same `null`/`undefined` short-circuit and the same
+ * `typeof raw === 'string'` pass-through that {@link fieldDecoder} performs, so a driver that
+ * pre-parses is handled identically — which also gives each `cN.decodeText(...)` its own
+ * monomorphic call site, where the closure tree has one `dec(...)` site with twelve closures
+ * behind it. That second effect is the *smaller* one, and the measurement says so: removing the
+ * per-cell call from the closure tree without also getting the object literal buys nothing
+ * (design/09 §3.7 follow-up). The literal is the gap. `json` and `group` fields keep the closure
+ * tree's own decoder, bound as `fN`, so the two builders cannot diverge on the parts that are not
+ * the row loop.
+ */
+function codegenRowDecoder<Row>(fields: readonly FieldPlan[], ctx: CodecContext): Decoder<Row> {
+  const params: string[] = []
+  const bound: unknown[] = []
+  const decls: string[] = []
+  const props: string[] = []
+
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i] as FieldPlan
+    assertPlanKey(f.key)
+    const key = jsString(f.key)
+    if (f.k === 'col') {
+      const idx = assertPlanIndex(f.idx, f.key)
+      params.push(`c${i}`, `x${i}`)
+      bound.push(f.codec, forColumn(ctx, f.key))
+      decls.push(`const v${i}=r[${idx}]`)
+      props.push(
+        `${key}:v${i}===null||v${i}===undefined?null:typeof v${i}==='string'?c${i}.decodeText(v${i},x${i}):v${i}`,
+      )
+    } else {
+      params.push(`f${i}`)
+      bound.push(rowFieldDecoder(f, ctx))
+      props.push(`${key}:f${i}(r)`)
+    }
+  }
+
+  const src =
+    'return function decodeRows(rows){' +
+    'const n=rows.length,out=new Array(n);' +
+    'for(let i=0;i<n;i++){' +
+    'const r=rows[i];' +
+    `${decls.join(';')}${decls.length > 0 ? ';' : ''}` +
+    `out[i]={${props.join(',')}}` +
+    '}' +
+    'return out}'
+
+  // eslint-disable-next-line no-new-func
+  const make = new Function(...params, src) as (...a: unknown[]) => Decoder<Row>
+  return make(...bound)
+}
+
+/**
+ * The `'closure'` row builder, specialised as far as it goes without `eval`.
+ *
+ * Two things it does that the first version did not, each worth its line:
+ *
+ *  - **Parallel arrays, indexed loop.** `for (const [key, idx, dec] of plans)` destructured a
+ *    three-element tuple *per field per row*, which is an iterator plus three loads on the hottest
+ *    line in the library.
+ *  - **A template clone.** `{ ...TEMPLATE }` starts each row object on the map it will finish
+ *    with, so the twelve stores are writes to existing slots rather than twelve hidden-class
+ *    transitions. Measured on 10 000 × 12 rows with identity codecs, where it is the only thing
+ *    happening: **2.28 ms → 2.01 ms**, 12 %. Through real codecs it is 2.4 %, because the codecs
+ *    are most of the work.
+ */
+function closureRowDecoder<Row>(fields: readonly FieldPlan[], ctx: CodecContext): Decoder<Row> {
+  const n = fields.length
+  const keys: string[] = new Array(n) as string[]
+  const decoders: ((row: readonly unknown[]) => unknown)[] = new Array(n) as ((
+    row: readonly unknown[],
+  ) => unknown)[]
+  const template: Record<string, unknown> = {}
+  for (let i = 0; i < n; i++) {
+    const f = fields[i] as FieldPlan
+    keys[i] = f.key
+    decoders[i] = rowFieldDecoder(f, ctx)
+    // `assertPlanKey` has already run inside `rowFieldDecoder`, so `__proto__` cannot reach here.
+    template[f.key] = null
+  }
+  return (rows) => {
+    const out: Row[] = new Array(rows.length) as Row[]
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] as readonly unknown[]
+      const obj: Record<string, unknown> = { ...template }
+      for (let j = 0; j < n; j++) obj[keys[j] as string] = (decoders[j] as (r: readonly unknown[]) => unknown)(row)
+      out[i] = obj as Row
+    }
+    return out
+  }
+}
+
 export function buildDecoder<Row = unknown>(
   shape: ResultShape,
   ctx: CodecContext = defaultDecodeContext(),
+  mode: DecoderMode = 'closure',
 ): Decoder<Row> {
   switch (shape.k) {
     case 'void':
@@ -220,34 +425,9 @@ export function buildDecoder<Row = unknown>(
         })
     }
 
-    case 'row': {
-      // A projection with a `nest({...})` in it needs whole-row decoders; without one — the
-      // overwhelmingly common case, and the one the decode budget is measured on — the plan stays
-      // the flat `[key, idx, decode]` triple the spike measured.
-      if (shape.fields.some((f) => f.k === 'group')) {
-        const grouped = shape.fields.map((f) => [f.key, rowFieldDecoder(f, ctx)] as const)
-        return (rows) => {
-          const out: Row[] = new Array(rows.length) as Row[]
-          for (let i = 0; i < rows.length; i++) {
-            const row = rows[i] as readonly unknown[]
-            const obj: Record<string, unknown> = {}
-            for (const [key, dec] of grouped) obj[key] = dec(row)
-            out[i] = obj as Row
-          }
-          return out
-        }
-      }
-      const plans = shape.fields.map((f) => [f.key, (f as { idx: number }).idx, fieldDecoder(f, ctx)] as const)
-      return (rows) => {
-        const out: Row[] = new Array(rows.length) as Row[]
-        for (let i = 0; i < rows.length; i++) {
-          const row = rows[i] as readonly unknown[]
-          const obj: Record<string, unknown> = {}
-          for (const [key, idx, dec] of plans) obj[key] = dec(row[idx])
-          out[i] = obj as Row
-        }
-        return out
-      }
-    }
+    case 'row':
+      return mode === 'codegen'
+        ? codegenRowDecoder<Row>(shape.fields, ctx)
+        : closureRowDecoder<Row>(shape.fields, ctx)
   }
 }

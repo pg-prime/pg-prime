@@ -61,8 +61,14 @@ import { registerDerived } from './scope.js'
 type Lambda<R> = (...a: never[]) => R
 
 function compact<T extends Record<string, unknown>>(o: T): T {
-  for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k]
-  return o
+  // A copy rather than `delete`, which would put the object into dictionary mode — see the note
+  // on the same function in `./select.ts`.
+  const out: Record<string, unknown> = {}
+  for (const k of Object.keys(o)) {
+    const v = o[k]
+    if (v !== undefined) out[k] = v
+  }
+  return out as T
 }
 
 function call<R>(f: Lambda<R>, ...args: readonly unknown[]): R {

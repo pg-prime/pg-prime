@@ -51,13 +51,56 @@ export type QuerySource =
 
 const BUILDERS = new WeakSet<object>()
 
-/** Called from every statement builder's constructor. */
+/**
+ * The *prototypes* of the builder classes, which is where the registration actually lands.
+ *
+ * `WeakSet.prototype.add` has no TurboFan fast path; `getPrototypeOf` + `WeakSet.prototype.has`
+ * does. Every method of every builder constructs a new instance (that is the immutability
+ * contract), so a seven-step chain paid seven `add`s. Measured in situ by reverting this to
+ * `BUILDERS.add(b)` and re-running `bench:compile` (design/09 §3.7 follow-up): the four-column
+ * simple select goes **4.08 µs → 5.05 µs** and design/08 §5's throughput line **~245 000/s →
+ * 196 982/s**; the heavy query goes 20.2 µs → 22.0 µs. Allocation is unchanged either way. This is
+ * the single change that carries §5's 200 000/s, so it is worth the paragraph below.
+ *
+ * There are five builder classes in the program, so five prototypes are registered — once each, on
+ * the first instance — and every later instance costs a `has`.
+ *
+ * **What this changes, exactly.** `isBuilder(v)` used to answer "did a builder constructor produce
+ * `v`"; it now answers "does `v` have a builder class's prototype". That is a slightly weaker
+ * statement, and it is the honest way to describe it. It is still the statement the nominal guard
+ * needs: a prototype enters this set only from the constructor of a class defined in this package,
+ * the classes are not on the public barrel (`test/query/index.test.ts`'s `EXPECTED_ABSENT`), and
+ * `JSON.parse` cannot produce an object with one — a `"__proto__"` key in JSON text becomes an own
+ * property, not a prototype. So "arrived as data" is still distinguishable from "we built it",
+ * which is what D7 is about; what is no longer distinguishable is a builder from an
+ * `Object.create(sameProto)` made by someone who already holds a builder.
+ *
+ * `Object.prototype` and `null` are refused, so a stray `registerBuilder({})` — the function is
+ * internal, but it is still a function — registers that object alone rather than every object in
+ * the program.
+ */
+const BUILDER_PROTOS = new WeakSet<object>()
+
+/**
+ * Called from every statement builder's constructor.
+ *
+ * Registers the instance's **class**, not the instance, whenever it has one: see
+ * {@link BUILDER_PROTOS}. Either way the postcondition is the one callers rely on —
+ * `isBuilder(b)` is true afterwards, and stays true for every instance of the same class.
+ */
 export function registerBuilder(b: object): void {
-  BUILDERS.add(b)
+  const proto: unknown = Object.getPrototypeOf(b)
+  if (proto === null || proto === Object.prototype) {
+    BUILDERS.add(b)
+    return
+  }
+  if (!BUILDER_PROTOS.has(proto as object)) BUILDER_PROTOS.add(proto as object)
 }
 
 export function isBuilder(v: unknown): v is HasAst {
-  return typeof v === 'object' && v !== null && BUILDERS.has(v)
+  if (typeof v !== 'object' || v === null) return false
+  const proto: unknown = Object.getPrototypeOf(v)
+  return (proto !== null && BUILDER_PROTOS.has(proto as object)) || BUILDERS.has(v)
 }
 
 function describe(v: unknown): string {

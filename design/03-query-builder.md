@@ -306,6 +306,52 @@ Three properties of this contract matter:
 - **Codecs travel with the plan, not with the row.** Nothing looks up an OID at decode time on the hot path. `RowDescription` OIDs are used only (a) for `sql`-tag fragments with no declared codec, and (b) in `assertShape` dev mode, where we compare each field's `dataTypeID` against `codec.oid` and throw a precise error on mismatch. That is what turns D6 from a promise into a check.
 - **Decoding is a compiled closure tree.** `buildDecoder(shape)` is called once per `Compiled` and returns `(rows: unknown[][]) => Row[]`. It is a tree of closures, **not** `new Function` — CSP-restricted runtimes (Workers, some Electron/Deno configurations) forbid eval, and a closure tree measured within noise of generated code in prototypes. If benchmarks later disagree, `new Function` becomes an opt-in `{ decoder: 'codegen' }` flag, never the default.
 
+> **AS BUILT 2026-08-27 (the perf pass, `09` §3.7 follow-up).** The third bullet's conditional
+> fired. "A closure tree measured within noise of generated code" was true of the prototype and is
+> not true of the shipped decoder, so `{ decoder: 'codegen' }` exists — **opt-in, never the
+> default**, exactly as this paragraph specified in advance.
+>
+> **What the measurement says.** A closure tree cannot write a row as an object *literal*: the keys
+> are only known at run time, so it must write N dynamic properties into a fresh object. On the
+> 10 000 × 12 fixture with identity codecs on both sides — so the only difference is the shape of
+> the row loop — that is **~1.9 ms against ~0.08 ms** for a literal, ~24×. Through real codecs the
+> loop is ~20 % of a decode and the gap comes out as **1.50–1.55× a same-checks hand mapper for the
+> closure tree and 1.13–1.15× for the generated one** (1.17 on a busy machine), against Appendix
+> B's 1.15. Both are gated in
+> `bench/runtime/budget.json` and printed against 1.15 on every run.
+>
+> ```ts
+> const db = pgPrime({ driver, schema, decoder: 'codegen' })   // 'closure' | 'codegen', default 'closure'
+> ```
+>
+> **The default does not change, and the reason is unchanged.** A Content-Security-Policy without
+> `unsafe-eval` — a Cloudflare Worker, a hardened Electron renderer, some Deno configurations —
+> forbids `new Function`, and a database client whose default row decoder cannot run there is a
+> client that fails in production for a reason its user never chose. So the closure tree stays the
+> default, and it is *tested* on a runtime with no code generation at all
+> (`test/compile/decode-oracle.test.ts` replaces `globalThis.Function` with one that throws and
+> decodes the fixture anyway).
+>
+> **What the generator may write.** The generated source names nothing but its own parameters.
+> Every codec, every per-column `CodecContext` and every fallback sub-decoder is passed **by
+> position** into the outer `new Function`, so no identifier derived from a schema, a column name
+> or a value is ever code. The only interpolated text is a result key inside a string literal
+> (`JSON.stringify`, plus an explicit U+2028/U+2029 escape) and a column index proven to be a
+> non-negative integer; `__proto__` is refused at plan time for *both* builders, because in
+> generated source it would be an ordinary key and the two builders must not disagree about it.
+> `json` and `group` fields keep the closure tree's own decoder, bound as a parameter — only the
+> row loop is generated.
+>
+> **Choosing it on a runtime that forbids it is a start-up error**, not a first-query error:
+> `pgPrime({ decoder: 'codegen' })` probes `new Function` once and throws a `PgPrimeError` naming
+> the option and the fix. Finding out under load is the whole complaint against eval-based fast
+> paths.
+>
+> **R1 is three implementations now.** `test/compile/decode-oracle.test.ts` runs every assertion
+> for both builders and asserts they agree cell for cell with each other and with the hand-written
+> positional mapper — one of which was written to be readable rather than general, and one of which
+> shares no row-materialisation code with the other two.
+
 ### 1.4 Caching and `.prepare()`
 
 Three layers, only one of which is implicit:
@@ -1804,17 +1850,31 @@ nobody runs is a paragraph.
 |---|---|---|
 | instantiations / query, 300 tables, flat vs 80 | `bench/types/budget.json` → `schemaSizeIndependenceRatio` (1.15), measured 1.000 at 25/100/300 on TS 5.9.3 and 7.0.2 | `pnpm bench:types`, `ci.yml` job `types`, every PR |
 | `tsc --noEmit`, 300 tables / 200 queries, < 8 s | `bench/types/budget.json` → `headline.checkTimeSeconds` | same |
-| `.d.ts` bytes < 400 KB | `bench/types/budget.json` → `packageDtsBytes`, measured 343.5 KB | same |
+| `.d.ts` bytes < 400 KB | `bench/types/budget.json` → `packageDtsBytes`, measured 350.1 KB | same |
 | **compile time, 12-col + 2 joins + 1 nested relation, < 25 µs** | `bench/runtime/budget.json` → `compile.emitP50Us` (absolute, the emitter) **and** `compile.buildAndCompileRefRatio` + `compile.buildAndCompileBytes` (the builder chain). `bench/runtime/structure.mjs` gates §1.1's other two claims — one `join('')`, one params array — as exact integers | `pnpm bench:compile`, `ci.yml` job `types`, every PR |
-| **decode throughput, 10k × 12, within 15 % of a hand mapper** | `bench/runtime/budget.json` → `decode.ratioVsUncheckedMapperP50` and `…VsCheckedMapperP50`, against `bench/runtime/hand-mapper.mjs`; the oracle equivalence itself is tier 0 (`test/compile/decode-oracle.test.ts`) | same |
+| **decode throughput, 10k × 12, within 15 % of a hand mapper** | `bench/runtime/budget.json` → `decode.ratioVsUncheckedMapperP50` and `…VsCheckedMapperP50` for the default closure tree, and the same two under `decode.codegen` for the opt-in generated one (plus `decode.codegen.fractionOfClosureTree`, which fails if the flag stops being worth having), against `bench/runtime/hand-mapper.mjs`; the oracle equivalence itself is tier 0 (`test/compile/decode-oracle.test.ts`), for both builders | same |
 | ident fuzz, 10k/PR · 1M nightly · 0 findings | `test/fuzz/ident-oracle.test.ts` + `test/fuzz/corpus/ident.json` | `ci.yml` job `live`/`pg` at 10k; `ci-nightly.yml` job `fuzz` at 1M |
 | compiler fuzz, 10k/PR | `test/fuzz/compiler-fuzz.test.ts` + `corpus/compiler.json` | same |
 | *(new)* **builder fuzz** — the same invariants through the public API, plus (e′) determinism and (f) immutability | `test/fuzz/builder-fuzz.test.ts` + `corpus/builder.json` | same |
 | *(new)* nine `raw()`/`orm()` pairs, `08` §5 | `bench/runtime/budget.json` → `e2e.overheadP50/P95/P99`, per case | `ci-nightly.yml` job `bench`; `ci.yml` job `perf` on a label |
 
-**Two rows are not met as written and are gated at measured budgets instead**, with the design
-number printed beside the measurement on every run and the reason recorded in `budget.json`'s
-`_overDesign` (which `run.mjs` fails without): the 25 µs holds for the *emitter* and not for the
-builder chain, and the decode ratio is 2.7–3.0× rather than 1.15×. `09` §3.7 finding 1 decomposes
-both.
+**Where the two runtime rows stand, after the 2026-08-27 perf pass** (`09` §3.7 follow-up; WS7's
+own reading of them is `09` §3.7 finding 1, kept there because the before-numbers are the point):
+
+- **compile < 25 µs** — **met**, and now from the builder chain and not only from the emitter:
+  3.9–4.1 µs for `compile(ast)` and **19.8–20.2 µs** for `db.from(…)….compile()`, against
+  33.7–46.0 µs before. The gate is still a *ratio* to a fixed reference workload rather than a raw
+  microsecond count, because `08` §5 is right that a wall clock on a shared runner is noise.
+- **decode within 15 % of a hand-written positional mapper** — **met by the opt-in
+  `{ decoder: 'codegen' }` builder** (1.126–1.146× a mapper doing the codecs' own checks) and
+  **missed by the default closure tree** (1.50–1.55×, from 1.55–1.65×). §1.3's AS BUILT has the
+  reason the default does not change and the measurement that says the closure tree is at its
+  floor. Both builders are gated; the design number is printed beside all four ratios on every run.
+
+`08` §5's third runtime number — 200 000 simple selects/sec, which this table does not carry —
+went 91k–142k to **264k–350k** best-case (200k–306k taken from the p50) in the same pass, and its
+`_overDesign` waiver is deleted; `09` §3.7's follow-up records why the floor gates the best-case
+figure. What
+remains above design is four decode entries, each with its measurement and its reason in
+`budget.json`'s `_overDesign`, which `run.mjs` fails without.
 <!-- as-built:appendix-b:end -->

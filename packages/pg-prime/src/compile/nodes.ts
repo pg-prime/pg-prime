@@ -80,6 +80,57 @@ import type {
 const NODES = new WeakSet<object>()
 
 /**
+ * Nesting depth of the **compiler-internal** window (see {@link inInternalNodes}).
+ *
+ * A plain counter and not a boolean because `planSelect` recurses: the emitter plans the inner
+ * select of a lateral it has just planned, so the window opens inside itself.
+ */
+let internalDepth = 0
+
+/**
+ * Run `f` with node *registration* suppressed, and give back what it returns.
+ *
+ * ## Why this exists
+ *
+ * `WeakSet.prototype.add` has no TurboFan fast path — it is a runtime call — and `mkNode` was the
+ * top frame of the profile design/09 §3.7 recorded, at 25 %. Measured in situ by turning this
+ * suppression off and re-running `bench:compile`: design/03 §1.1's query compiles in **24.7 µs
+ * with it off and 20.2 µs with it on**, at **31 125 B against 31 099 B** — i.e. ~18 % of the
+ * compile and, per operation, no heap at all. That shape is the argument: what the registry costs
+ * is CPU on a runtime call, so the only way to stop paying it is to stop making the call for nodes
+ * that provably do not need to be in the set.
+ *
+ * ## Why suppressing it is not a hole in D7
+ *
+ * The registry answers exactly one question — "did *this library* build this value, or did it
+ * arrive as data?" — and it is asked in exactly one place: the boundary where a caller hands a
+ * value back to us (`sql`'s hole classifier, `toExprNode`, `queryAstOf`, `allOf`; see the
+ * `isAstNode` call sites). Nodes built by `./hoist.ts` never cross that boundary in the other
+ * direction: the planner is a pure AST → AST pass whose output is read by `./compiler.ts` and by
+ * nothing else, it invokes no user callback, and the only things it hands back to the query layer
+ * are `FieldPlan`s (codecs and keys, not nodes).
+ *
+ * The failure mode if that analysis is ever wrong is also the safe one. An *unregistered* node
+ * reaching a template hole is classified as **data** and becomes `$n` — a wrong query, loudly, at
+ * the first test that touches it. The dangerous direction is the opposite one, and nothing here
+ * adds a way to get into the set; `NODES` still has exactly one writer.
+ *
+ * Registration is suppressed, `Object.freeze` is not. Immutability is a different property from
+ * nominality — it is what lets a node be shared by reference between a query and its derivatives —
+ * and it is separately tested: R10 M1 (drop the freeze) is caught by `test/compile/contract.ts`'s
+ * "AST nodes are frozen, so a builder can structurally share them" and by `test/query/ops.ts`'s
+ * "an operator never mutates its operands", neither of which the registry mutations reach.
+ */
+export function inInternalNodes<T>(f: () => T): T {
+  internalDepth++
+  try {
+    return f()
+  } finally {
+    internalDepth--
+  }
+}
+
+/**
  * `text[]`, for the jsonb path operators whose right operand is a path array (03 §3.4, D7 — the
  * GHSA-wmrf-hv6w-mr66 class: a path is a PARAMETER, never spliced text). Derived rather than taken
  * from a registry so importing the node constructors does not build 50 codecs; it carries
@@ -87,10 +138,15 @@ const NODES = new WeakSet<object>()
  */
 const textArrayCodec = arrayCodecOf(textCodec)
 
-/** Freeze, register, return. The only way a value becomes "SQL" rather than "data". */
+/**
+ * Freeze, register, return. The only way a value becomes "SQL" rather than "data".
+ *
+ * Inside {@link inInternalNodes} the registration is skipped — see that function for why that is
+ * a cost decision and not a security one.
+ */
 export function mkNode<T extends object>(n: T): T {
   Object.freeze(n)
-  NODES.add(n)
+  if (internalDepth === 0) NODES.add(n)
   return n
 }
 

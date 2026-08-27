@@ -313,6 +313,8 @@ export type {
   StatementMode,
   StreamOptions,
 } from './query/executor.js'
+/** `ExecOptions.decoder` (`03` §1.3 AS BUILT) — the row builder, `'closure'` by default. */
+export type { DecoderMode } from './compile/decode.js'
 export type { PlaceholderRef, SqlSnapshot } from './query/terminals.js'
 export type { RawQuery, RawRow } from './query/raw.js'
 export { CodecMismatchError } from './query/errors.js'

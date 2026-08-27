@@ -30,6 +30,7 @@ import type {
 } from '../compile/ast.js'
 import {
   group as groupItem,
+  inInternalNodes,
   isAstNode,
   mkNode,
   nested as nestedItem,
@@ -294,9 +295,20 @@ export function compileProjection(
   p: Record<string, unknown>,
   leftJoined: ReadonlySet<string>,
 ): readonly ProjectionItem[] {
-  const items: ProjectionItem[] = []
-  for (const key of Object.keys(p)) items.push(projectionItem(key, p[key], leftJoined))
-  return Object.freeze(items)
+  const keys = Object.keys(p)
+  const items: ProjectionItem[] = new Array(keys.length) as ProjectionItem[]
+  // Every caller evaluates the user's lambda first — `p` is its return value — so nothing inside
+  // this window is user code, and a `ProjectionItem` is a clause the emitter reads, never a value
+  // handed back to us. `inInternalNodes` therefore skips the `WeakSet.add` per item; see
+  // `src/compile/nodes.ts` for what that is worth (~18 % of a compile, together with the planner's
+  // window) and for why it is not a hole in D7. The *expressions* inside the items were built by
+  // the operator layer, outside this window, and are registered as they always were.
+  return inInternalNodes(() => {
+    for (let i = 0; i < keys.length; i++) {
+      items[i] = projectionItem(keys[i] as string, p[keys[i] as string], leftJoined)
+    }
+    return Object.freeze(items)
+  })
 }
 
 /** `asc(x)` / `desc(x)` produce an `OrderItem` node; a bare expression means `asc`. */

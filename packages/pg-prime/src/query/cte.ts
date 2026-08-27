@@ -122,8 +122,14 @@ function omitK<T extends { k: string }>(n: T): Omit<T, 'k'> {
 
 /** Drop `undefined`-valued keys so a rebuilt node is `toStrictEqual` to a hand-built one. */
 function compact<T extends Record<string, unknown>>(o: T): T {
-  for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k]
-  return o
+  // A copy rather than `delete`, which would put the object into dictionary mode — see the note
+  // on the same function in `./select.ts`.
+  const out: Record<string, unknown> = {}
+  for (const k of Object.keys(o)) {
+    const v = o[k]
+    if (v !== undefined) out[k] = v
+  }
+  return out as T
 }
 
 export class ExecutorImpl {

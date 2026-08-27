@@ -37,7 +37,8 @@ import type { AnyCodec, CodecRegistry } from '../codec/index.js'
 import { unknownCodec } from '../codec/index.js'
 import type { Bind, Compiled, FieldOrigin, FieldPlan, ResultShape } from '../compile/contract.js'
 import { paramTypesOf } from '../compile/contract.js'
-import { buildDecoder } from '../compile/decode.js'
+import type { DecoderMode } from '../compile/decode.js'
+import { assertCodegenAvailable, buildDecoder } from '../compile/decode.js'
 import type {
   PgConnection,
   PgField,
@@ -85,6 +86,16 @@ export interface ExecOptions {
   /** `07` §2.1. Default `'unnamed'` — one round trip, zero session state, safe on every pooler. */
   readonly statement?: StatementMode
   readonly preparedStatements?: PreparedStatementOptions
+  /**
+   * How a result row is materialised (`03` §1.3). Default `'closure'`.
+   *
+   * `'codegen'` builds the row with `new Function` and is measurably faster
+   * (`design/09` §3.7's follow-up has the numbers); it is opt-in and never the default because a
+   * Content-Security-Policy without `unsafe-eval` — a Cloudflare Worker, a hardened Electron
+   * renderer — forbids it. Choosing it on such a runtime throws **here**, at `pgPrime()`, not at
+   * the first query.
+   */
+  readonly decoder?: DecoderMode
 }
 
 /** Everything an execution needs that is not the statement. One per `pgPrime(...)`. */
@@ -95,6 +106,7 @@ export interface ExecEnv {
   readonly maxPerConnection: number
   readonly downgradeAfterFailures: number
   readonly prefix: string
+  readonly decoder: DecoderMode
   /** Mutable: the self-heal counter and the one-way downgrade (`07` §2.4 policy 4). */
   readonly named: { selfHeals: number; downgraded: boolean }
 }
@@ -116,6 +128,9 @@ function inProduction(): boolean {
 
 export function makeEnv(registry: CodecRegistry, opts: ExecOptions | undefined): ExecEnv {
   const p = opts?.preparedStatements
+  // Fail at construction, not at the first row: `new Function` either works in this runtime or it
+  // does not, and finding out under load is the whole complaint against eval-based fast paths.
+  if (opts?.decoder === 'codegen') assertCodegenAvailable()
   return {
     registry,
     assertShape: opts?.assertShape ?? !inProduction(),
@@ -123,6 +138,7 @@ export function makeEnv(registry: CodecRegistry, opts: ExecOptions | undefined):
     maxPerConnection: p?.maxPerConnection ?? 100,
     downgradeAfterFailures: p?.downgradeAfterFailures ?? 3,
     prefix: p?.prefix ?? 'pgprime',
+    decoder: opts?.decoder ?? 'closure',
     named: { selfHeals: 0, downgraded: false },
   }
 }
@@ -374,6 +390,7 @@ interface DecoderMemo {
   readonly generation: number
   readonly serverParameters: Readonly<Record<string, string>>
   readonly oids: string
+  readonly mode: DecoderMode
   readonly decode: (rows: readonly (readonly (string | null)[])[]) => unknown[]
 }
 
@@ -394,6 +411,7 @@ export function decoderFor<Row>(
   registry: CodecRegistry,
   serverParameters: Readonly<Record<string, string>>,
   fields: readonly PgField[],
+  mode: DecoderMode = 'closure',
 ): (rows: readonly (readonly (string | null)[])[]) => Row[] {
   const dynamic = dynamicIndexes(compiled as Compiled<unknown>)
   const oids = oidSignature(dynamic, fields)
@@ -403,17 +421,19 @@ export function decoderFor<Row>(
     hit.registry === registry &&
     hit.generation === registry.generation &&
     hit.serverParameters === serverParameters &&
-    hit.oids === oids
+    hit.oids === oids &&
+    hit.mode === mode
   ) {
     return hit.decode as unknown as (rows: readonly (readonly (string | null)[])[]) => Row[]
   }
   const shape = resolveDynamicShape(compiled.shape, dynamic, fields, registry)
-  const decode = buildDecoder<Row>(shape, { typmod: -1, registry, serverParameters })
+  const decode = buildDecoder<Row>(shape, { typmod: -1, registry, serverParameters }, mode)
   DECODERS.set(compiled, {
     registry,
     generation: registry.generation,
     serverParameters,
     oids,
+    mode,
     decode: decode as unknown as DecoderMemo['decode'],
   })
   return decode
@@ -701,7 +721,7 @@ export async function runOn<Row>(
       if (env.assertShape) {
         assertShape(compiled as Compiled<unknown>, result.fields, env.registry)
       }
-      return decoderFor(compiled, env.registry, conn.serverParameters, result.fields)(
+      return decoderFor(compiled, env.registry, conn.serverParameters, result.fields, env.decoder)(
         result.rows as never,
       )
     } catch (e) {
@@ -801,7 +821,7 @@ export async function* streamOn<Row>(
       if (env.assertShape) {
         assertShape(compiled as Compiled<unknown>, chunk.fields, env.registry)
       }
-      decode = decoderFor(compiled, env.registry, conn.serverParameters, chunk.fields)
+      decode = decoderFor(compiled, env.registry, conn.serverParameters, chunk.fields, env.decoder)
     }
     for (const row of decode(chunk.rows as never)) yield row
   }

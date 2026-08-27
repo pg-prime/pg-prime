@@ -19,3 +19,5 @@ bench/runtime/.gen/
 
 # Agent worktrees (Claude Code) — never part of the repo
 .claude/worktrees/
+# ad-hoc CPU profiles from `pnpm bench:profile --cpu`
+*.cpuprofile

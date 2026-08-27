@@ -90,8 +90,20 @@ export function rebuildScope(sources: Sources, ctx: BuilderCtx): Scope {
 
 /** Drop keys whose value is `undefined` so a builder's AST is `toStrictEqual` to a hand-built one. */
 function compact<T extends Record<string, unknown>>(o: T): T {
-  for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k]
-  return o
+  // A copy, not `delete`. Deleting a property moves the object into V8's dictionary mode, and the
+  // node constructor then spreads that dictionary into the frozen node. Measured in situ by
+  // reverting all six copies of this function to `delete` and re-running `bench:compile`
+  // (design/09 §3.7 follow-up): the four-column simple select allocates **8 387 B against
+  // 6 932 B** — 21 % of the whole compile — and design/08 §5's throughput line reads 184 791/s
+  // against ~245 000/s; design/03 §1.1's query allocates 33 435 B against 31 099 B. It is the
+  // largest single allocation win of that pass. Every caller hands in a fresh object literal, so
+  // returning a different object is invisible.
+  const out: Record<string, unknown> = {}
+  for (const k of Object.keys(o)) {
+    const v = o[k]
+    if (v !== undefined) out[k] = v
+  }
+  return out as T
 }
 
 function call<R>(f: Lambda<R>, scope: Scope): R {
