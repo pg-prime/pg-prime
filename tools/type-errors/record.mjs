@@ -23,6 +23,13 @@ const ROOT_FORMS = [...new Set([ROOT, ROOT.replaceAll('\\', '/'), ROOT.replaceAl
 function portable(line) {
   let out = line.replace(/\r$/, '')
   for (const form of ROOT_FORMS) out = out.split(form).join('<repo>')
+  // `import("<file>").T` is how the checker spells a type whose short name would be ambiguous
+  // (TS2719 "two different types with this name"). A closed specifier is a path and nothing more.
+  out = out.replace(/import\("[^"]*"\)/g, 'import("<module>")')
+  // An ELIDED type string is cut at a fixed character offset, so how much of it is visible — and
+  // therefore its text — depends on the length of the checkout path on that machine. The visible
+  // part carries no information a golden should pin; collapse it, keep the tail that does.
+  out = out.replace(/import\("[^']*?\.\.\./g, '<elided>...')
   return out
 }
 

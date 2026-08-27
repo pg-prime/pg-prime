@@ -102,6 +102,9 @@ jobs:
           --health-retries 10
     env:
       PG_PRIME_TEST_URL: postgres://pgprime:pgprime@127.0.0.1:5432/pgprime
+      # Debian's pg_wrapper resolves a bare `pg_dump` to the runner's preinstalled 16 even after 17
+      # is installed; the kit's oracle refuses a client older than the server, so name the binary.
+      PG_PRIME_PG_DUMP: '["/usr/lib/postgresql/17/bin/pg_dump"]'
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
