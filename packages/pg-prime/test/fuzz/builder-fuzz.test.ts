@@ -24,6 +24,17 @@
  *  (f) **immutability** — every intermediate builder compiles to the same thing before and after
  *      the chain continued past it.
  *
+ * ## The third outcome: a refusal
+ *
+ * Since the distinct follow-up of 2026-08-27 a chain has three possible answers, not two. It can
+ * compile; it can throw something unexpected (a finding); or the builder can **refuse** it with a
+ * `BuilderError` — which is what `.distinct()` with an `ORDER BY` on an unprojected expression now
+ * gets, because there is no repair for it that is not a different query. `CompiledFacts.refused`
+ * carries the sentence. (e′) and (f) are asserted over it unchanged — a refusal must be
+ * deterministic and must not depend on what the chain did *after* the prefix — while (a)-(c) and
+ * the live oracle skip it, there being no statement. The count is printed on every run and floored,
+ * so a fix that quietly stopped refusing anything cannot pass as a clean run.
+ *
  * ## How (e′) and (f) are actually checked, and the trap in the obvious version
  *
  * `.compile()` is memoised on the instance (`03` §1.4a). So the naive (f) — compile a prefix, keep
@@ -103,8 +114,27 @@ afterAll(async () => {
   await client?.end()
 })
 
+/**
+ * The refusals this generator is *allowed* to provoke, by prefix.
+ *
+ * Without this list `factsOf`'s `catch` would be a hole: every `BuilderError` the builder learns to
+ * throw would turn from a red run into a silently skipped chain, which is the opposite of what a
+ * fuzzer is for. One entry, and it is the `.distinct()` ordering rule of 2026-08-27 — the column
+ * name varies, the sentence does not.
+ */
+const EXPECTED_REFUSALS: readonly string[] = ['pg-prime: .distinct() cannot order by ']
+
 /** Everything (a)-(c) needs, in one place, so a failure names the invariant rather than a line. */
 function assertShapeInvariants(facts: CompiledFacts, where: string): void {
+  // A refused chain has no SQL to hold invariants over; (e′) and (f) still apply to the sentence.
+  if (facts.refused !== undefined) {
+    const refused = facts.refused
+    expect(
+      EXPECTED_REFUSALS.some((prefix) => refused.startsWith(prefix)),
+      `${where} — refused with a sentence this generator does not expect: ${refused}`,
+    ).toBe(true)
+    return
+  }
   // (a) numbering is dense, ordered, and matches binds.length exactly.
   expect(placeholderNumbers(facts.sql), `${where} — (a) $n numbering`).toEqual(
     denseRange(facts.binds.length),
@@ -140,6 +170,9 @@ describe('builder fuzz', () => {
      */
     let withBinds = 0
     let withMarkedBinds = 0
+    /** Chains the builder refused (see the header's "third outcome"), and the sentences it used. */
+    let refused = 0
+    const refusals = new Set<string>()
 
     for (const seed of stream) {
       const eager = makeChain(db, h_(), seed, { eager: true })
@@ -148,6 +181,10 @@ describe('builder fuzz', () => {
 
       const factsEager = eager.compile()
       const factsLate = late.compile()
+      if (factsEager.refused !== undefined) {
+        refused++
+        refusals.add(factsEager.refused)
+      }
       if (factsEager.binds.length > 0) withBinds++
       if (factsEager.binds.some((b) => b.k === 'value' && typeof b.encoded === 'string' && b.encoded.includes('«bf'))) {
         withMarkedBinds++
@@ -157,8 +194,10 @@ describe('builder fuzz', () => {
       try {
         assertShapeInvariants(factsEager, where)
 
-        // (e′) determinism: two independently built chains, byte-equal SQL and byte-equal binds.
+        // (e′) determinism: two independently built chains, byte-equal SQL and byte-equal binds
+        // — or byte-equal refusals, which is the same claim about the same function.
         expect(factsLate.sql, `${where} — (e′) determinism, SQL`).toBe(factsEager.sql)
+        expect(factsLate.refused, `${where} — (e′) determinism, refusal`).toBe(factsEager.refused)
         expect(bindKey(factsLate.binds), `${where} — (e′) determinism, binds`).toBe(
           bindKey(factsEager.binds),
         )
@@ -173,6 +212,10 @@ describe('builder fuzz', () => {
           expect(after?.sql, `${where} — (f) immutability at prefix ${k} (${late.prefixes[k]?.label})`).toBe(
             before?.sql,
           )
+          expect(
+            after?.refused,
+            `${where} — (f) immutability, refusal at prefix ${k} (${late.prefixes[k]?.label})`,
+          ).toBe(before?.refused)
           expect(bindKey(after?.binds ?? []), `${where} — (f) immutability, binds at prefix ${k}`).toBe(
             bindKey(before?.binds ?? []),
           )
@@ -195,6 +238,8 @@ describe('builder fuzz', () => {
         `${prefixesChecked.toLocaleString('en-US')} prefix immutability checks, ` +
         `${((100 * withBinds) / stream.length).toFixed(1)}% carried a bind ` +
         `(${((100 * withMarkedBinds) / stream.length).toFixed(1)}% a marked one), ` +
+        `${refused.toLocaleString('en-US')} refused by the builder ` +
+        `(${refusals.size} distinct sentence${refusals.size === 1 ? '' : 's'}), ` +
         `shapes ${JSON.stringify(byShape)}\n`,
     )
     // The generator must keep reaching every shape; a weighting bug that silently stopped emitting
@@ -213,6 +258,15 @@ describe('builder fuzz', () => {
       withMarkedBinds / stream.length,
       'fewer than a quarter of the chains bound a MARKED value — invariant (b) is now vacuous',
     ).toBeGreaterThan(0.25)
+    // The refusal path is a real branch of the builder and the generator reaches it on ~0.5 % of
+    // chains, measured over 50 000 (`.distinct()` drawn together with an `orderBy` the random
+    // projection does not carry). A floor of one keeps it from silently disappearing — which is
+    // exactly what happened for a day, when the generator was narrowed instead of the builder
+    // being fixed.
+    expect(
+      refused,
+      'no chain was refused — the .distinct()/orderBy narrowing has come back, or the check has gone',
+    ).toBeGreaterThan(0)
   }, 900_000)
 
   it('(d)+(e) PostgreSQL plans the SQL, and runs it with the codecs’ declared param types', async () => {
@@ -229,11 +283,18 @@ describe('builder fuzz', () => {
     const stream = [...pinned, ...seeds(SAMPLE, FUZZ_SEED ^ 0xb0b2)]
     let planned = 0
     let executed = 0
+    let refused = 0
     const failures: { stage: 'plan' | 'execute'; seed: number; sql: string; code?: string | undefined; message: string }[] = []
 
     for (const seed of stream) {
       const chain = makeChain(db, h_(), seed)
       const facts = chain.compile()
+      // Refused at compile time: there is no statement to send, and that is the point of the
+      // refusal — the `42P10` this used to be is what the sentence replaced.
+      if (facts.refused !== undefined) {
+        refused++
+        continue
+      }
       try {
         for (const stmt of planProbe(facts.sql)) await client.query(stmt)
         planned++
@@ -257,8 +318,9 @@ describe('builder fuzz', () => {
     // R9: the cap is printed, never silent. The offline pass above is the one that runs at full
     // `PG_PRIME_FUZZ_CASES`; this one is a sample because each case is two server round trips.
     process.stderr.write(
-      `[fuzz] builder/live: planned ${planned}/${stream.length}, executed with declared param ` +
-        `types ${executed}/${stream.length}; sampled from PG_PRIME_FUZZ_PG_CASES=${SAMPLE} ` +
+      `[fuzz] builder/live: planned ${planned}/${stream.length - refused}, executed with declared ` +
+        `param types ${executed}/${stream.length - refused}, ${refused} refused at compile time; ` +
+        `sampled from PG_PRIME_FUZZ_PG_CASES=${SAMPLE} ` +
         `(the offline invariants ran ${FUZZ_CASES.toLocaleString('en-US')})\n`,
     )
     if (failures.length > 0) {
@@ -266,8 +328,8 @@ describe('builder fuzz', () => {
       console.error(failures[0])
     }
     expect(failures).toEqual([])
-    expect(planned).toBe(stream.length)
-    expect(executed).toBe(stream.length)
+    expect(planned).toBe(stream.length - refused)
+    expect(executed).toBe(stream.length - refused)
   }, 900_000)
 })
 

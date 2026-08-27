@@ -166,11 +166,28 @@ export class SelectBuilder {
     return this.#next({ projection: compileProjection(allOf(scope), NO_LEFT_JOINS) })
   }
 
+  /**
+   * `select distinct` — every output column compared, which has two consequences the compiler
+   * handles rather than leaving to the server (`03` §2.8 / §2.3 AS BUILT 2026-08-27): an
+   * `.orderBy()` on an expression the projection does not carry is a `BuilderError` at
+   * `.compile()` (PostgreSQL's `42P10`, and no repair for it is the same query), and a relation
+   * projection is built as `jsonb` rather than `json`, because `json` has no equality operator.
+   */
   distinct(): SelectBuilder {
     return this.#next({ distinct: {} })
   }
 
-  /** `distinct on (…)` — PG-only, and the reason "latest row per group" needs no window (03 §2.8). */
+  /**
+   * `distinct on (…)` — PG-only, and the reason "latest row per group" needs no window (03 §2.8).
+   *
+   * **The emitted `ORDER BY` always leads with these expressions**, in this order, followed by
+   * whatever `.orderBy()` added — because PostgreSQL requires the `DISTINCT ON` list to match the
+   * *initial* `ORDER BY` expressions (`42P10`) and `.orderBy()` appends, so writing
+   * `.distinctOn(a).orderBy(desc(b))` and meaning "the greatest `b` for each `a`" is the ordinary
+   * case rather than a mistake. A list that already leads with them keeps its own direction and
+   * `nulls` placement untouched. See `03` §2.8's AS BUILT note of 2026-08-27 and `alignDistinctOn`
+   * in `src/compile/hoist.ts`.
+   */
   distinctOn(f: Lambda<unknown>): SelectBuilder {
     return this.#next({ distinct: { on: toExprList(call(f, this.s.scope), 'distinctOn()') } })
   }

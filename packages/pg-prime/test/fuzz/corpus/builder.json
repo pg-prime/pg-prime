@@ -2,23 +2,37 @@
   "_why": "Regression corpus for test/fuzz/builder-fuzz.test.ts. See ../corpus.ts for the two entry kinds and how to add one (PG_PRIME_FUZZ_RECORD=1).",
   "cases": [
     {
+      "seed": 683141876,
+      "invariant": "d",
+      "note": "mutation seed for the SET-OPERATION half of the json class: a setop shape whose two branches each carry a relation column, joined with `intersect`. Shipped code plans both branches with rowEquality and emits jsonb_agg; with compile/hoist.ts's jsonVariant switch removed it is 42883. The `found` seeds below all reach the class through `.distinct()`, so without this one the operator half of it is pinned by nothing.",
+      "kind": "mutation",
+      "added": "2026-08-27"
+    },
+    {
       "seed": 2310382765,
       "invariant": "d",
-      "note": "found on the same first live run: .distinct() with an orderBy on a column the random projection did not include is 42P10 `for SELECT DISTINCT, ORDER BY expressions must appear in select list`. Same class as 2802423309 and the same disposition: the generator narrows the ordering when distinct is present, the builder still lets a user write it.",
+      "note": "found on the first live run: .distinct() with an orderBy on a column the random projection did not include is 42P10 `for SELECT DISTINCT, ORDER BY expressions must appear in select list`. FIXED 2026-08-27 — the builder now refuses it at compile time with a sentence naming the expression (compile/compiler.ts's checkDistinctOrder), so this seed is a chain the fuzzer records as `refused` and never sends to the server.",
       "kind": "found",
       "added": "2026-08-27"
     },
     {
       "seed": 2802423309,
       "invariant": "d",
-      "note": "found on the first live run: .distinct() over a projection carrying a `many` relation is 42883 `could not identify an equality operator for type json`. The generator no longer pairs the two (builder-generator.ts, userProjection's `json` option); the builder itself still lets a user write it \u2014 design/09 \u00a73.7 books that with an owner.",
+      "note": "found on the first live run: .distinct() over a projection carrying a `many` relation is 42883 `could not identify an equality operator for type json`. FIXED 2026-08-27 — a relation column under a statement that compares whole rows is built as jsonb (compile/hoist.ts's jsonVariant), so this seed now plans and executes.",
       "kind": "found",
+      "added": "2026-08-27"
+    },
+    {
+      "seed": 3154729903,
+      "invariant": "d",
+      "note": "mutation seed for the DISTINCT ON ordering class, which had no pinned seed of its own: a chain whose `orderBy(posts)` step was drawn BEFORE its `distinctOn` step, so the keys are not the initial ORDER BY expressions. Shipped code leads the emitted ORDER BY with them (compile/hoist.ts's alignDistinctOn); with that removed it is 42P10. The class needs ~5 000 live cases to reappear by chance, which is how it was found and why a pin is worth more here than anywhere else in this file.",
+      "kind": "mutation",
       "added": "2026-08-27"
     },
     {
       "seed": 3300751089,
       "invariant": "d",
-      "note": "the json/distinct class again, 5 000 live cases later: the first fix listed `many` and the two nested shapes as the json-projecting relation accessors and missed `all()`. Pinned because it is the seed that proved a partial fix is a fix that comes back.",
+      "note": "the json/distinct class again, 5 000 live cases later: the first fix listed `many` and the two nested shapes as the json-projecting relation accessors and missed `all()`. Pinned because it is the seed that proved a partial fix is a fix that comes back. FIXED 2026-08-27 with 2802423309, by a rule that is about the STATEMENT rather than about a list of accessors — which is why the same class cannot return through a seventh spelling.",
       "kind": "found",
       "added": "2026-08-27"
     }

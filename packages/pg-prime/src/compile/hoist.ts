@@ -38,7 +38,7 @@ import {
   jsonbCodec,
   unknownCodec,
 } from '../codec/index.js'
-import { UnsupportedNodeError } from '../sql/errors.js'
+import { BuilderError, UnsupportedNodeError } from '../sql/errors.js'
 import { MAX_IDENT_BYTES, utf8ByteLength } from '../sql/ident.js'
 import type {
   Expr,
@@ -181,6 +181,32 @@ const VOLATILE: ReadonlySet<string> = new Set([
 function digest(n: SubqueryExprNode): string | null {
   const out: string[] = []
   return digExpr(n, out) ? out.join(SEP) : null
+}
+
+/**
+ * The same digest, over **any** expression — the "is this the same expression?" test the two
+ * `DISTINCT` rules need (03 §2.8 AS BUILT 2026-08-27).
+ *
+ * It is the CSE digest deliberately, and not a second comparator written for the occasion: the
+ * properties that make it safe to collapse two laterals into one — injective (every list is
+ * length-prefixed, every free-text token is `JSON.stringify`d, every optional member writes a
+ * present/absent marker) and `null` rather than a guess for anything it does not recognise — are
+ * exactly the properties "PostgreSQL will consider these two expressions equal" needs. Two
+ * comparators would be two things to keep in step.
+ *
+ * `null` means *unknown*, never *different*, and every caller must read it that way: a `sql`
+ * fragment or a volatile function is a query we cannot reason about, so the server decides.
+ */
+export function exprDigest(e: Expr): string | null {
+  const out: string[] = []
+  return digExpr(e, out) ? out.join(SEP) : null
+}
+
+/** Structural equality of two expressions, by {@link exprDigest}. Unknown ⇒ not equal. */
+export function sameExpr(a: Expr, b: Expr): boolean {
+  if (a === b) return true
+  const da = exprDigest(a)
+  return da !== null && da === exprDigest(b)
 }
 
 /**
@@ -766,7 +792,10 @@ function buildJsonEntries(
       continue
     }
     if (item.nested !== undefined) {
-      const hoisted = hoistOne(item.nested, seq, item.key)
+      // `rowEquality: false`, always: a relation *inside* a relation is a member of the enclosing
+      // json object, not a column of the statement's row, so nothing ever compares it. The
+      // enclosing object is what needs an equality operator, and {@link jsonVariant} gave it one.
+      const hoisted = hoistOne(item.nested, seq, item.key, false)
       if (hoisted.join !== undefined) joins.push(hoisted.join)
       // The nested value is already a json/jsonb value; do NOT cast it to text, and do not
       // double-encode it. It embeds natively into the enclosing json_build_object.
@@ -794,12 +823,42 @@ interface HoistedRelation {
 /** The alias of the derived table inside a `many` lateral. Never user-visible. */
 const INNER_ALIAS = 'x'
 
+/**
+ * `json` by default (03 §2.3 point 5 — jsonb reorders keys and dedupes; json is cheaper and
+ * order-preserving), **`jsonb` when the statement compares whole rows for equality**.
+ *
+ * PostgreSQL's `json` has no equality operator, so `select distinct` / `union` / `intersect` /
+ * `except` over a relation column is `42883 could not identify an equality operator for type
+ * json` at execute time — found by the WS7 builder fuzzer at seeds 2802423309 and 3300751089.
+ * `jsonb` has equality, the value is the same value, and the decoder is a `JSON.parse` plus
+ * per-key lookups either way (`compile/decode.ts`), so the switch is invisible above the SQL.
+ *
+ * An **explicit** `{ variant: 'json' }` is not overridden, because silently ignoring what a caller
+ * wrote is worse than refusing it: it is the one case that gets a sentence instead.
+ */
+function jsonVariant(
+  nested: NonNullable<ProjectionItem['nested']>,
+  label: string,
+  rowEquality: boolean,
+): 'json' | 'jsonb' {
+  if (!rowEquality) return nested.variant ?? 'json'
+  if (nested.variant === 'json') {
+    throw new BuilderError(
+      `pg-prime: relation "${label}" asks for { variant: 'json' } in a statement that compares ` +
+        'whole rows (distinct, union, intersect, except), and PostgreSQL cannot compare json ' +
+        "(42883). Drop the option — jsonb is used there automatically — or drop the distinct.",
+    )
+  }
+  return 'jsonb'
+}
+
 function hoistOne(
   nested: NonNullable<ProjectionItem['nested']>,
   seq: Seq,
   label: string,
+  rowEquality: boolean,
 ): HoistedRelation {
-  const variant = nested.variant ?? 'json'
+  const variant = jsonVariant(nested, label, rowEquality)
   const jsonCodec = variant === 'jsonb' ? jsonbCodec : jsonCodecJson
   const lateral = nested.strategy !== 'subquery'
   // Allocated before recursing, so a lateral's number is lower than those of the laterals nested
@@ -900,6 +959,8 @@ interface FlatOut {
   origins: (FieldOrigin | undefined)[]
   /** `false` for a RETURNING list, which has no FROM clause to hoist a LATERAL onto. */
   hoist: boolean
+  /** The statement compares whole rows, so a relation column must be `jsonb`. {@link jsonVariant} */
+  rowEquality: boolean
   seq: Seq
   /** Numbers the fallback aliases of {@link dottedAlias}. Separate from `seq` so a long key
    *  cannot renumber the laterals and move every golden. */
@@ -970,7 +1031,10 @@ function flatten(
             "`{ strategy: 'subquery' }` to the accessor.",
         )
       }
-      const h = hoistOne(item.nested, out.seq, alias)
+      // Every relation `flatten` reaches is a column of this statement's row — including one
+      // inside a `nest({...})` group, which expands to row columns rather than to a json object.
+      // So `out.rowEquality` applies to all of them; {@link buildJsonEntries}'s do not.
+      const h = hoistOne(item.nested, out.seq, alias, out.rowEquality)
       if (h.join !== undefined) out.joins.push(h.join)
       out.items.push(projection(alias, h.ref))
       fields.push({ key: item.key, k: 'json', idx, plan: h.plan, nullable: h.nullable })
@@ -1069,6 +1133,62 @@ function originOf(e: Expr): FieldOrigin | undefined {
  * which is also the cheapest way to state the idempotence the docblock below promises.
  */
 const PLANNED = new WeakMap<SelectNode, PlannedSelect>()
+/** The same memo for the `rowEquality: true` reading of a node. See {@link planSelect}. */
+const PLANNED_EQ = new WeakMap<SelectNode, PlannedSelect>()
+
+/**
+ * `select distinct` compares every output column; `select distinct on (…)` compares only the
+ * expressions in its own list, so it needs no equality operator for the row.
+ *
+ * Exported so the emitter's guard and the planner's memo key cannot drift into two readings of
+ * "does this statement compare rows?".
+ */
+export function comparesWholeRows(n: SelectNode): boolean {
+  return n.distinct !== undefined && (n.distinct.on === undefined || n.distinct.on.length === 0)
+}
+
+const NO_ORDER: readonly OrderItem[] = Object.freeze([])
+
+/**
+ * Make the emitted `ORDER BY` **lead with the `DISTINCT ON` expressions**, in their order
+ * (03 §2.8 AS BUILT 2026-08-27).
+ *
+ * PostgreSQL requires a `DISTINCT ON` list to match the *initial* `ORDER BY` expressions and
+ * answers `42P10 SELECT DISTINCT ON expressions must match initial ORDER BY expressions`
+ * otherwise — while `.orderBy()` **appends** (`query/select.ts`), so
+ * `.distinctOn(a).orderBy(desc(b))` is a statement the builder knew was invalid and emitted
+ * anyway. Found by the WS7 builder fuzzer on its first live run.
+ *
+ * Reconciling is the right answer rather than an error because the two clauses are not in
+ * conflict: "the first row of each `a`, and among the rows sharing an `a` the one with the
+ * greatest `b`" is exactly what `order by a, b desc` means, and it is what "latest row per group"
+ * means. Django documents the same rule and lets the database fail; here the builder holds both
+ * halves and can simply write the statement the caller meant.
+ *
+ * A user list that already leads with the keys is returned **unchanged and by reference**, so its
+ * directions, its `nulls` placement and its golden all stand. A partial match keeps the items that
+ * did match — direction included — and only inserts what is missing.
+ */
+function alignDistinctOn(n: SelectNode): SelectNode {
+  const on = n.distinct?.on
+  if (on === undefined || on.length === 0) return n
+  const user = n.orderBy ?? NO_ORDER
+
+  let matched = 0
+  while (matched < on.length) {
+    const item = user[matched]
+    if (item === undefined || !sameExpr(item.e, on[matched] as Expr)) break
+    matched++
+  }
+  if (matched === on.length) return n
+
+  const items: OrderItem[] = user.slice(0, matched)
+  // `asc` is PostgreSQL's own default for an unqualified ORDER BY item, so a key the caller never
+  // ordered by is ordered the way writing it out by hand would have.
+  for (let i = matched; i < on.length; i++) items.push(order(on[i] as Expr, 'asc'))
+  for (let i = matched; i < user.length; i++) items.push(user[i] as OrderItem)
+  return select({ ...n, orderBy: Object.freeze(items) })
+}
 
 /**
  * Hoist every nested relation in a select's projection into `LEFT JOIN LATERAL`s, share every
@@ -1076,14 +1196,22 @@ const PLANNED = new WeakMap<SelectNode, PlannedSelect>()
  * the positional decode plan.
  *
  * Idempotent on a select with none of the three, which it returns **unchanged and by reference**.
+ *
+ * `rowEquality` says the statement compares this select's rows for equality even though the
+ * select itself carries no `distinct` — it is a branch of a `union` / `intersect` / `except`
+ * (`compiler.ts` threads it down through the branches). It changes exactly one thing, the json
+ * variant of a relation column; see {@link jsonVariant}. It is part of the memo key because the
+ * same frozen node can legally be planned both ways in one program.
  */
-export function planSelect(node: SelectNode): PlannedSelect {
-  const memo = PLANNED.get(node)
+export function planSelect(node: SelectNode, rowEquality = false): PlannedSelect {
+  const eq = rowEquality || comparesWholeRows(node)
+  const cache = eq ? PLANNED_EQ : PLANNED
+  const memo = cache.get(node)
   if (memo !== undefined) return memo
-  const planned = planSelectUncached(node)
-  PLANNED.set(node, planned)
+  const planned = planSelectUncached(node, eq)
+  cache.set(node, planned)
   if (planned.node !== node) {
-    PLANNED.set(planned.node, {
+    cache.set(planned.node, {
       node: planned.node,
       fields: planned.fields,
       origins: planned.origins,
@@ -1092,14 +1220,17 @@ export function planSelect(node: SelectNode): PlannedSelect {
   return planned
 }
 
-function planSelectUncached(node: SelectNode): PlannedSelect {
+function planSelectUncached(node: SelectNode, rowEquality: boolean): PlannedSelect {
   const seq: Seq = { n: 0 }
   const cse = newCse(seq)
-  const rewritten = rewriteClauses(node, cse)
+  // The alignment runs on the REWRITTEN node so that `distinctOn(u.posts.count())` compares the
+  // `"_r0"."v"` the emitter will print against the `"_r0"."v"` in the ORDER BY, not two
+  // structurally identical subqueries that CSE is about to collapse into one reference.
+  const rewritten = alignDistinctOn(rewriteClauses(node, cse))
 
   if (cse.joins.length === 0 && isFlat(node.projection)) {
     const leaf = leafFields(node.projection)
-    return { node, fields: leaf.fields, origins: leaf.origins }
+    return { node: rewritten, fields: leaf.fields, origins: leaf.origins }
   }
 
   // `cse.joins` first: an aggregate lateral is written before a relation lateral, which is the
@@ -1109,6 +1240,7 @@ function planSelectUncached(node: SelectNode): PlannedSelect {
     joins: [...cse.joins],
     origins: [],
     hoist: true,
+    rowEquality,
     seq,
     colSeq: { n: 0 },
   }
@@ -1147,6 +1279,8 @@ export function planReturning(items: readonly ProjectionItem[]): {
     joins: [],
     origins: [],
     hoist: false,
+    // A RETURNING list is never DISTINCT — the grammar has no such thing.
+    rowEquality: false,
     seq: { n: 0 },
     colSeq: { n: 0 },
   }

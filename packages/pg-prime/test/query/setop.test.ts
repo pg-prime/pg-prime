@@ -131,3 +131,55 @@ describe('a branch that carries a WITH', () => {
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AS BUILT 2026-08-27 — a distinct set operation compares whole rows
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `union` / `intersect` / `except` deduplicate, and PostgreSQL cannot compare `json` — so a branch
+ * carrying a relation projection is `42883 could not identify an equality operator for type json`
+ * exactly as a `select distinct` is. The `… all` spellings need no equality and must be left
+ * alone: they are the negative control, and half of what this block exists to pin.
+ *
+ * The flag reaches a branch from the *operator*, not from the branch, and it **inherits
+ * downwards** — the last test is the one that matters, because `(a union all b) except c` compares
+ * rows `a` produced.
+ */
+describe('a relation column under a DISTINCT set operation is jsonb', () => {
+  const rel = () =>
+    db.from(schema.h.users).select(({ users: u }) => ({
+      id: u.id,
+      posts: u.posts.many((sq) => sq.select((p) => ({ id: p.id }))),
+    }))
+
+  const aggOf = (sql: string): string[] => sql.match(/jsonb?_agg/g) ?? []
+
+  it('union: both branches switch to jsonb', () => {
+    expect(aggOf(sqlOf(rel().union(rel())))).toEqual(['jsonb_agg', 'jsonb_agg'])
+  })
+
+  it('intersect and except switch too — every deduplicating operator does', () => {
+    expect(aggOf(sqlOf(rel().intersect(rel())))).toEqual(['jsonb_agg', 'jsonb_agg'])
+    expect(aggOf(sqlOf(rel().except(rel())))).toEqual(['jsonb_agg', 'jsonb_agg'])
+  })
+
+  it('union all does NOT — it compares nothing, so nothing has to change', () => {
+    expect(aggOf(sqlOf(rel().unionAll(rel())))).toEqual(['json_agg', 'json_agg'])
+    expect(sqlOf(rel().unionAll(rel()))).not.toContain('jsonb')
+  })
+
+  it('the flag inherits downwards: `(a union all b) except c` makes a and b jsonb too', () => {
+    // The `except` compares the rows the inner `union all` produced, so all three branches need a
+    // comparable column — reading only the nearest operator would have left two of them as json.
+    expect(aggOf(sqlOf(rel().unionAll(rel()).except(rel())))).toEqual([
+      'jsonb_agg',
+      'jsonb_agg',
+      'jsonb_agg',
+    ])
+  })
+
+  it('the result shape is the left branch’s, and the variant did not disturb it', () => {
+    expect(rel().union(rel()).compile().shape).toStrictEqual(rel().unionAll(rel()).compile().shape)
+  })
+})
+

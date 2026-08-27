@@ -15,6 +15,7 @@
 
 import type { AnyCodec } from '../codec/index.js'
 import {
+  BuilderError,
   InvalidFragmentError,
   TooManyParametersError,
   UnsupportedNodeError,
@@ -43,7 +44,7 @@ import type {
   WindowDef,
 } from './ast.js'
 import type { Bind, Compiled, FieldOrigin, FieldPlan, ResultShape } from './contract.js'
-import { planReturning, planSelect } from './hoist.js'
+import { comparesWholeRows, exprDigest, planReturning, planSelect } from './hoist.js'
 
 /** The PostgreSQL wire protocol caps parameters at 65535 (int16). */
 const MAX_PARAMS = 65535
@@ -867,8 +868,69 @@ function emitSelectBody(em: Emitter, n: SelectNode): void {
   }
 }
 
+/**
+ * One line of the offending expression, for a D9 sentence: its own SQL, whitespace collapsed and
+ * clipped. The emitter is the right renderer because it is the text the caller will see in the
+ * statement — a paraphrase would be a second spelling of the same expression to keep in step.
+ */
+function describeExpr(e: Expr): string {
+  let text: string
+  try {
+    const em = new Emitter()
+    emitExpr(em, e)
+    text = em.sql().replace(/\s+/g, ' ').trim()
+  } catch {
+    return `a ${e.k} expression`
+  }
+  return text.length > 64 ? `${text.slice(0, 63)}…` : text
+}
+
+/**
+ * `select distinct` requires every `ORDER BY` expression to appear in the select list
+ * (`42P10 for SELECT DISTINCT, ORDER BY expressions must appear in select list`), and the builder
+ * has both lists in hand — found by the WS7 builder fuzzer at seed 2310382765.
+ *
+ * It **refuses** rather than reconciling, which is the opposite of the `DISTINCT ON` rule two
+ * clauses above, and deliberately: widening the projection to satisfy the ordering would change
+ * the row shape the caller declared, and — because `distinct` is a *set* operation — would also
+ * change which rows come back. There is no repair that is not a different query, so the answer is
+ * a sentence at compile time instead of a `42P10` at execute time.
+ *
+ * Both lists are post-`planSelect`, so a `nest({...})` has already expanded into its leaf columns
+ * and a shared relation aggregate is the same `"_r0"."v"` reference on both sides.
+ *
+ * An expression the digest cannot describe (a `sql` fragment, a volatile function) is **allowed
+ * through**: `null` means unknown, and a false rejection here would refuse a query PostgreSQL
+ * accepts. The permissive direction is the same one `03` §2.3's GROUP BY guard chose.
+ */
+function checkDistinctOrder(
+  projection: readonly ProjectionItem[],
+  orderBy: readonly OrderItem[],
+): void {
+  const selected = new Set<string>()
+  for (const item of projection) {
+    const d = exprDigest(item.expr)
+    if (d !== null) selected.add(d)
+  }
+  for (const o of orderBy) {
+    const d = exprDigest(o.e)
+    if (d === null || selected.has(d)) continue
+    throw new BuilderError(
+      `pg-prime: .distinct() cannot order by ${describeExpr(o.e)} — PostgreSQL requires every ` +
+        'ORDER BY expression of a SELECT DISTINCT to appear in the select list (42P10). Order by ' +
+        'a selected column, or add it to select().',
+    )
+  }
+}
+
 function emitSelectBodyIn(em: Emitter, n: SelectNode): void {
   if (n.with !== undefined) emitWith(em, n.with)
+  // Guarded so the digest pass costs nothing on the hot path: only a `select distinct` (not
+  // `distinct on`, whose rule is the initial-match one `planSelect` already satisfied) that also
+  // carries an ORDER BY can be wrong this way, and that is a rounding error of all compiles.
+  if (n.orderBy !== undefined && n.orderBy.length > 0 && comparesWholeRows(n)) {
+    checkDistinctOrder(n.projection, n.orderBy)
+  }
   em.push('select ')
   if (n.distinct !== undefined) {
     em.push('distinct ')
@@ -1134,22 +1196,33 @@ function branchNeedsParens(n: SelectNode | SetOpNode): boolean {
   )
 }
 
-function emitSetOpBranch(em: Emitter, n: SelectNode | SetOpNode): void {
+/**
+ * `union` / `intersect` / `except` deduplicate, and deduplicating means comparing whole rows;
+ * their `… all` spellings do not. This is the flag `planSelect(node, rowEquality)` needs, and it
+ * **inherits downwards**: the branches of `a union all b` are compared when that union is itself
+ * a branch of an `except`, so the rows `a` produces have to be comparable too.
+ */
+function isDistinctOp(op: SetOpNode['op']): boolean {
+  return !op.endsWith(' all')
+}
+
+function emitSetOpBranch(em: Emitter, n: SelectNode | SetOpNode, rowEquality: boolean): void {
   if (branchNeedsParens(n)) {
     em.push('(')
-    em.block(() => emitStatement(em, n))
+    em.block(() => emitStatement(em, n, rowEquality))
     em.push(')')
     return
   }
-  emitStatement(em, n)
+  emitStatement(em, n, rowEquality)
 }
 
-function emitSetOpBody(em: Emitter, n: SetOpNode): void {
-  emitSetOpBranch(em, n.left)
+function emitSetOpBody(em: Emitter, n: SetOpNode, rowEquality = false): void {
+  const eq = rowEquality || isDistinctOp(n.op)
+  emitSetOpBranch(em, n.left, eq)
   em.nl()
   em.push(n.op)
   em.nl()
-  emitSetOpBranch(em, n.right)
+  emitSetOpBranch(em, n.right, eq)
   if (n.orderBy !== undefined && n.orderBy.length > 0) {
     em.nl()
     em.push('order by ')
@@ -1200,12 +1273,12 @@ function deleteReturningScope(n: DeleteNode): string | undefined {
   return n.using !== undefined && n.using.length > 0 ? undefined : n.from.alias
 }
 
-function emitStatement(em: Emitter, n: Statement): void {
+function emitStatement(em: Emitter, n: Statement, rowEquality = false): void {
   switch (n.k) {
     case 'select':
       // planSelect is a pure AST→AST transform that assigns no parameter numbers, so running
       // it here (for selects reached as subqueries) cannot perturb `$n` ordering.
-      emitSelectBody(em, planSelect(n).node)
+      emitSelectBody(em, planSelect(n, rowEquality).node)
       return
     case 'insert':
       emitInsertBody(em, n)
@@ -1227,7 +1300,7 @@ function emitStatement(em: Emitter, n: Statement): void {
       }
       return
     case 'setop':
-      emitSetOpBody(em, n)
+      emitSetOpBody(em, n, rowEquality)
       return
     default:
       throw new UnsupportedNodeError((n as { k: string }).k, 'statement')
@@ -1252,10 +1325,23 @@ function emitTopReturning(
   return { fields: planned.fields, origins: planned.origins }
 }
 
-function leftmost(n: SetOpNode): SelectNode {
+/**
+ * The branch whose column names and types PostgreSQL takes for the whole set operation, **and
+ * whether anything on the way down to it compares rows**.
+ *
+ * The second half matters because the decode plan has to be the one the emitter will produce:
+ * planning the leftmost branch with a different `rowEquality` than {@link emitSetOpBody} passes it
+ * would plan the same node twice and — the day a variant ever reaches a `FieldPlan` — describe a
+ * statement that was not emitted.
+ */
+function leftmost(n: SetOpNode): { node: SelectNode; rowEquality: boolean } {
   let cur: SelectNode | SetOpNode = n
-  while (cur.k === 'setop') cur = cur.left
-  return cur
+  let rowEquality = false
+  while (cur.k === 'setop') {
+    rowEquality ||= isDistinctOp(cur.op)
+    cur = cur.left
+  }
+  return { node: cur, rowEquality }
 }
 
 /**
@@ -1301,7 +1387,8 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
       // column names and types from there and requires every other branch to be union-compatible,
       // which `SetMismatch` in `src/query/types.ts` checks at compile time.
       {
-        const planned = planSelect(leftmost(stmt))
+        const lm = leftmost(stmt)
+        const planned = planSelect(lm.node, lm.rowEquality)
         fields = planned.fields
         origins = planned.origins
       }

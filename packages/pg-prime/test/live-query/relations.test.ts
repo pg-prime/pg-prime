@@ -25,7 +25,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { expectTypeOf } from 'expect-type'
 import { textCodec } from '../../src/codec/index.js'
 import * as q from '../../src/query/types.js'
-import { pgMajor } from '../live/_harness.js'
+import { pgMajor, sqlState } from '../live/_harness.js'
+import { FIRST_POST_ID } from '../live/fixture.js'
 import { assertPlans, makeLiveDb, type LiveDb } from './_db.js'
 
 let live: LiveDb
@@ -690,6 +691,131 @@ describe('a relation sub-query does not shadow a SIBLING alias', () => {
     expect(rows.map((r) => [String(r.pid), String(r.later.length)])).toStrictEqual(expected)
     // …and the correct answer is non-empty, so an all-zero result would not pass by accident.
     expect(rows.some((r) => r.later.length > 0)).toBe(true)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 03 §2.3 point 5, AS BUILT 2026-08-27 — a relation column under `select distinct`
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The claim is that the **value is unchanged** by the variant switch, so every assertion here is
+ * an R3 pair against the `json` form of the same query: the two must be `toStrictEqual`, leaves
+ * and all. `jsonb` reorders keys and dedupes them, which is why this needs a server to settle —
+ * the decode plan is positional over keys, so key order cannot matter, but that is an argument and
+ * this is a measurement.
+ *
+ * The leaves are chosen for the two that a JSON round trip destroys: `int8` past 2^53 (every
+ * fixture post id is above `FIRST_POST_ID`) and `numeric` with a trailing zero. Both go through
+ * `::text` (R5) and the cast is unchanged by the variant — asserted, not assumed.
+ */
+describe('select distinct over a relation column', () => {
+  it('R3: many() — same types, same values, and the ids survive past 2^53', async () => {
+    const of = (distinct: boolean) => {
+      const base = live.db.from(h().users, 'u')
+      const src = distinct ? base.distinct() : base
+      return src
+        .select((t) => ({
+          email: t.u.email,
+          posts: t.u.posts.many((sub) =>
+            sub
+              .select((p) => ({ id: p.id, title: p.title, amount: p.amount, at: p.createdAt }))
+              .orderBy((p) => q.asc(p.title)),
+          ),
+        }))
+        .orderBy((t) => q.asc(t.u.email))
+    }
+
+    const rows = await of(true).execute()
+    expectTypeOf(rows).toEqualTypeOf<
+      { email: string; posts: { id: bigint; title: string; amount: string; at: Date }[] }[]
+    >()
+    expect(of(true).compile().sql).toContain('jsonb_agg')
+    expect(of(false).compile().sql).toContain('json_agg("x"."o"')
+
+    // The value oracle: the same query without `distinct`, whose json form is what every other
+    // test in this file has already checked against hand-written SQL.
+    expect(rows).toStrictEqual(await of(false).execute())
+
+    const ada = rows.find((r) => r.email === 'ada@example.com')
+    expect(ada?.posts).toHaveLength(5)
+    // int8 past 2^53 and numeric's trailing zero, both intact through jsonb. Titles order the
+    // list because the fixture assigns identity through a join, so id order is not insert order.
+    expect(ada?.posts.every((p) => p.id >= FIRST_POST_ID)).toBe(true)
+    expect(ada?.posts.map((p) => [p.title, p.amount])).toStrictEqual([
+      ['draft', '5.00'],
+      ['fifth', '1.00'],
+      ['first', '0.00'],
+      ['tie-a', '-1.10'],
+      ['tie-b', '12345678.90'],
+    ])
+    expect(ada?.posts[2]?.at).toStrictEqual(new Date('2026-02-01T10:00:00.000000Z'))
+    // …and an empty relation is still `[]`, not null: `coalesce(…, '[]'::jsonb)`.
+    expect(rows.find((r) => r.email === 'cyd@example.com')?.posts).toStrictEqual([])
+  })
+
+  it('R3: all(), and a relation nested inside a relation, decode identically too', async () => {
+    const of = (distinct: boolean) => {
+      const base = live.db.from(h().posts, 'p')
+      const src = distinct ? base.distinct() : base
+      return src
+        .select((t) => ({
+          title: t.p.title,
+          everything: t.p.comments.all(),
+          deep: t.p.comments.many((sub) =>
+            sub.select((c) => ({ id: c.id, post: c.post.one((s) => s.select((x) => ({ amount: x.amount }))) })),
+          ),
+        }))
+        .orderBy((t) => q.asc(t.p.title))
+    }
+    const rows = await of(true).execute()
+    expect(rows).toStrictEqual(await of(false).execute())
+
+    const first = rows.find((r) => r.title === 'first')
+    expect(first?.everything).toHaveLength(3)
+    expect(first?.everything[0]?.id).toBeGreaterThan(0n)
+    expect(first?.deep.map((d) => d.post.amount)).toStrictEqual(['0.00', '0.00', '0.00'])
+    // The inner relation stays `json` and is coerced into the outer `jsonb` object; the value is
+    // the same either way, which is the whole reason the inner one is left alone.
+    const sql = of(true).compile().sql
+    expect(sql).toContain('jsonb_agg')
+    expect(sql).toContain('json_build_object')
+  })
+
+  it('R4: the same statement built with json is 42883 on this very server', async () => {
+    // The negative control for the whole mechanism (R13: SQLSTATE, not message text). Without the
+    // variant switch this is the statement the builder emitted, and it is still rejected.
+    const err = await live
+      .raw(
+        `select distinct u.email, coalesce(json_agg(json_build_object('id', p.id::text)), ` +
+          `'[]'::json) from ${ns()}.users u left join ${ns()}.posts p on p.author_id = u.id ` +
+          `group by u.email, u.id`,
+      )
+      .catch((e: unknown) => e)
+    expect(sqlState(err)).toBe('42883')
+
+    // …and the jsonb spelling of the same thing is accepted, so 42883 is about the type and not
+    // about the query.
+    const ok = await live.raw(
+      `select distinct u.email, coalesce(jsonb_agg(jsonb_build_object('id', p.id::text)), ` +
+        `'[]'::jsonb) from ${ns()}.users u left join ${ns()}.posts p on p.author_id = u.id ` +
+        `group by u.email, u.id`,
+    )
+    expect(ok.length).toBeGreaterThan(0)
+  })
+
+  it('distinct actually deduplicates the relation column, which is what needed the operator', async () => {
+    // Two rows that differ only in their relation value must stay two; two that agree must
+    // collapse. `union` of a query with itself is the cheapest way to make an exact duplicate.
+    const one = () =>
+      live.db.from(h().users, 'u').select((t) => ({
+        posts: t.u.posts.many((sub) => sub.select((p) => ({ id: p.id })).orderBy((p) => q.asc(p.id))),
+      }))
+    const all = await one().execute()
+    const deduped = await one().distinct().execute()
+    // Ada has 5 posts, Bob 1, and everyone else none — so four users share the value `[]`.
+    expect(all).toHaveLength(6)
+    expect(deduped).toHaveLength(3)
   })
 })
 

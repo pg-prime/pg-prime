@@ -236,3 +236,59 @@ describe('§2.8 × §2.7 — a set-operation branch that carries a WITH', () => 
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AS BUILT 2026-08-27 — a distinct set operation over a relation column
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `union` / `intersect` / `except` deduplicate, so they need an equality operator for every output
+ * column — the same `42883` a `select distinct` gets, reached from the other direction. The branch
+ * is planned with the flag the *operator* carries, and `… all` carries none.
+ */
+describe('a relation column across a set operation', () => {
+  const withPosts = () =>
+    live.db.from(h().users, 'u').select((t) => ({
+      v: t.u.email,
+      rel: t.u.posts.many((sq) => sq.select((p) => ({ id: p.id })).orderBy((p) => q.asc(p.id))),
+    }))
+
+  it('R3: union over a relation column runs, and the values are the branch’s own', async () => {
+    const rows = await withPosts().union(withPosts()).orderBy((r) => q.asc(r.v)).execute()
+    expectTypeOf(rows).toEqualTypeOf<{ v: string; rel: { id: bigint }[] }[]>()
+    // A union with itself is the identity on a set, so the answer is the branch, deduplicated —
+    // which is only computable if the json column has an equality operator at all.
+    const one = await withPosts().orderBy((t) => q.asc(t.u.email)).execute()
+    expect(rows).toStrictEqual(one)
+    expect(rows.filter((r) => r.rel.length > 0)).toHaveLength(2)
+    expect(rows.find((r) => r.v === 'ada@example.com')?.rel).toHaveLength(5)
+  })
+
+  it('union all is unchanged — it needs no operator, and keeps the duplicates', async () => {
+    const built = withPosts().unionAll(withPosts())
+    expect(built.compile().sql).not.toContain('jsonb')
+    expect(await built.execute()).toHaveLength(12)
+  })
+
+  it('intersect and except work too, and agree with a hand-written oracle', async () => {
+    const withPosts2 = () =>
+      live.db
+        .from(h().users, 'u')
+        .where((t) => t.u.posts.some((p) => q.isTrue(p.published)))
+        .select((t) => ({
+          v: t.u.email,
+          rel: t.u.posts.many((sq) => sq.select((p) => ({ id: p.id })).orderBy((p) => q.asc(p.id))),
+        }))
+    const both = await withPosts().intersect(withPosts2()).orderBy((r) => q.asc(r.v)).execute()
+    expect(both.map((r) => r.v)).toStrictEqual(['ada@example.com', 'bob@example.com'])
+
+    const rest = await withPosts().except(withPosts2()).orderBy((r) => q.asc(r.v)).execute()
+    const oracle = await live.raw(
+      `select email from ${ns()}.users u where not exists (
+         select 1 from ${ns()}.posts p where p.author_id = u.id and p.published
+       ) order by email asc`,
+    )
+    expect(rest.map((r) => r.v)).toStrictEqual(oracle.map((r) => r[0]))
+    expect(rest.every((r) => r.rel.length === 0)).toBe(true)
+  })
+})
+

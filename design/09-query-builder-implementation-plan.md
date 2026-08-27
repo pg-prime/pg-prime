@@ -2005,11 +2005,8 @@ plan-probe invariant sampled**, and the sample is 5 000 rather than the PR's 300
   disposition: "codegen becomes an opt-in flag, never the default", because `new Function` is
   forbidden in CSP-restricted runtimes. WS7's measurement is the trigger it names; the work is a
   flag plus a fallback, and it belongs with whoever owns the decode plan.
-- **The three `distinct` / `distinctOn` foot-guns** (finding 3). Owner: the type layer. Each is
-  statically detectable — a `json`-typed projection member under `.distinct()`, an `orderBy` key
-  absent from the projection under `.distinct()`, a `distinctOn` list that is not a prefix of the
-  ordering — and each is currently a runtime SQLSTATE from the server. The fuzz corpus pins the
-  seeds so a fix has three regression cases waiting for it.
+- ~~**The three `distinct` / `distinctOn` foot-guns** (finding 3).~~ **Done 2026-08-27** — see the
+  follow-up at the end of this section. Owner turned out to be the *compiler*, not the type layer.
 - **Tightening the e2e p99 budgets.** They want the fixed nightly runner's distribution, which is
   one nightly run away. Guessing a number from a laptop and calling it a gate is what R9 exists to
   stop.
@@ -2051,6 +2048,116 @@ survive a busy one. What is **not** verified:
 One thing is red-adjacent and it is not WS7's: **`pnpm test:pg` at the monorepo root also runs
 `@pg-prime/kit`**, which fails locally for the pre-existing `pg_dump`/own-database reason §3.6
 records. Every tier-2 number above is `pnpm --filter pg-prime test:pg`.
+
+#### Follow-up · 2026-08-27 · the three distinct findings
+
+Finding 3's three foot-guns are fixed, and the deferral above named the wrong owner. It said "the
+type layer", reasoning that each is statically detectable; two of the three turned out to be
+detectable only from things the *compiler* holds and the type system deliberately does not. What
+shipped is `src/compile/hoist.ts` **+146 / −12** and `src/compile/compiler.ts` **+101 / −14**,
+no new public API, and no change to `bench/types`.
+
+| finding | behaviour now | where |
+|---|---|---|
+| `.distinctOn(a).orderBy(desc(b))` → `42P10` | the emitted `ORDER BY` **leads with the DISTINCT ON expressions**; a list that already leads with them is returned unchanged *by reference* | `alignDistinctOn`, run inside `planSelect` |
+| `.distinct()` + an `orderBy` the projection lacks → `42P10` | **refused at `.compile()`** with a one-line 216-character `BuilderError` naming the expression in its own SQL and both fixes | `checkDistinctOrder`, on the emit path |
+| `.distinct()` (or a distinct set operation) over a relation column → `42883` | the relation projection is built as **`jsonb`**, whose equality operator exists | `jsonVariant`, from `planSelect(node, rowEquality)` |
+
+Five decisions, each of which could have gone the other way:
+
+1. **Reconcile the first, refuse the second.** They look like the same class and are not. A
+   `DISTINCT ON` list and an `ORDER BY` are not in conflict — "latest row per group" *is* the
+   reconciled statement — while widening a projection to satisfy a `DISTINCT`'s ordering changes
+   both the row shape and which rows come back, so every repair there is a different query.
+2. **"Same expression" is `03` §2.3 point 6's CSE digest, exported rather than re-written.** Its two
+   properties — injective (length-prefixed lists, `JSON.stringify`d tokens, present/absent markers)
+   and `null` rather than a guess for anything unrecognised — are exactly what "PostgreSQL will
+   consider these equal" needs. `null` is read as *unknown, therefore allow*, which is the same
+   permissive direction §2.3's GROUP BY guard chose: a `sql` fragment under `.distinct()` is left to
+   the server rather than refused on a guess.
+3. **The variant is decided from the STATEMENT, not from the accessor.** The first attempt at this
+   class (WS7 itself) listed `many`, `all` and the nested shapes and missed `all()`; seed 3300751089
+   is the fuzzer bringing it back 5 000 cases later. `planSelect(node, rowEquality)` makes the rule
+   "does anything compare this row?", which no list can be incomplete about. Its three boundaries —
+   `distinct on` does not switch, a relation nested inside a relation does not switch, an explicit
+   `{ variant: 'json' }` is a `BuilderError` rather than a silent override — are each a named test.
+4. **No type-level guard, and the reason is measured elsewhere.** The check needs the projection's
+   *expressions*; `Query<S, O, N>` carries its row type, and `O = { id: bigint }` cannot say which
+   column produced it. Carrying the projection record is the fourth type parameter §2.3's GROUP BY
+   amendment already rejected. Every instantiation count `pnpm bench:types` measures is unchanged
+   (94 / 177 / 250 per query at 300 tables, ratio 1.000) and `pnpm type-errors:check` reports no
+   drift, because no `OrmTypeError` was added.
+5. **The fuzzer's narrowing is lifted, and a refusal is a first-class outcome.** WS7 narrowed the
+   generator three ways rather than fixing the builder; all three are gone (`userProjection`'s
+   `json` option, the `distinct`-aware `orderBy`, the `distinctOn`-first reordering), and the set-op
+   shape gained a relation arm on one draw in four so the operator half of the json class is
+   generated too. `CompiledFacts.refused` carries the `BuilderError` sentence: (e′) determinism and
+   (f) immutability are asserted over it unchanged, (a)-(c) and the live oracle skip it, the count
+   is printed, and a floor plus an `EXPECTED_REFUSALS` whitelist keeps the `catch` from becoming a
+   hole that swallows the next `BuilderError` someone adds.
+
+**R10 — 12 mutations, 12 caught, every one of them at tier 0.** Each was applied to the shipped
+source and the suite actually run; `×n` is how many tests of that file went red, and the three that
+also name a live number were re-run against the fuzzer (PGlite) with the mutation in place.
+
+| # | Mutation | Caught by |
+|---|---|---|
+| M1 | `alignDistinctOn` disabled | `select.test.ts` → `distinct on leads the ORDER BY` ×4 — **and** the live builder fuzz at `PG_PRIME_FUZZ_PG_CASES=5000`, which fails 24 plan probes + 24 executes with `42P10` and names seed 3154729903 first |
+| M2 | a leading match is re-prepended instead of reused | `select.test.ts` ×2 → `a list that already leads with the keys is untouched…` and the partial-match golden |
+| M3 | the keys are appended after the caller's list, not prepended | `select.test.ts` ×3 → `an orderBy on other columns is appended AFTER the keys, not before`, the different-order golden, and the partial match |
+| M4 | `checkDistinctOrder` never runs | `select.test.ts` → `throws a BuilderError naming the expression and the fix`; the builder fuzz catches it **twice more** — the refusal floor (`no chain was refused`) and 27 × `42P10` from the live oracle at 5 000, naming seed 2310382765 first |
+| M5 | an undescribable expression is refused instead of allowed | `select.test.ts` → `an expression the digest cannot describe is allowed through` |
+| M6 | `jsonVariant` never switches | `relations.test.ts` ×4; the live fuzz at its default 300 samples fails 10 plan probes + 10 executes with `42883` and names seed 683141876 first |
+| M7 | `jsonVariant` switches unconditionally | `relations.test.ts` ×9, the §2.3 feed golden among them. The non-distinct goldens are the negative control and they are what fires |
+| M8 | `union all` treated as deduplicating | `setop.test.ts` → `union all does NOT — it compares nothing` |
+| M9 | the flag does not inherit downwards | `setop.test.ts` → `(a union all b) except c makes a and b jsonb too` |
+| M10 | `distinct on` read as comparing whole rows | `relations.test.ts` → `distinct ON stays json` |
+| M11 | a relation nested inside a relation switches too | `relations.test.ts` → `a relation nested inside a relation keeps json` |
+| M12 | an explicit `{ variant: 'json' }` is silently overridden | `relations.test.ts` → `…is refused, not silently overridden` |
+
+The corpus grew from three seeds to five. The three `found` seeds keep their pins and now record
+that they pass — 2310382765 as a `refused` chain the fuzzer never sends to the server, the other two
+as statements that plan and execute. Two `mutation` seeds are new, and each covers a class that had
+no pin of its own: **3154729903** (an `orderBy` step drawn *before* a `distinctOn` step — the
+`42P10` ordering class, which needs ~5 000 live cases to reappear by chance) and **683141876** (a
+set operation whose two branches each carry a relation column, joined with `intersect` — the
+operator half of the json class, which every `found` seed reaches only through `.distinct()`). Both
+were verified to fail against the corresponding mutated build and to be the first seed the run
+names, the corpus being replayed before the random stream.
+
+**The 50 000-case runs, both green:**
+
+| | PGlite | PostgreSQL 17.11 |
+|---|---|---|
+| chains | 50 005 (5 pinned + 50 000) | same |
+| prefix immutability checks | 79 144 | same |
+| refused by the builder | 272 (0.54 %), 2 distinct sentences | same |
+| shape mix | plain 24 765 · cte 6 449 · setop 6 339 · windowed 6 227 · grouped 6 225 | same |
+| chains carrying a bind / a *marked* bind | 85.5 % / 45.7 % | same |
+| live plan + execute (`PG_PRIME_FUZZ_PG_CASES=5000`) | **4 978 / 4 978**, 27 refused | **4 978 / 4 978**, 27 refused |
+| wall clock | 16.0 s | 16.3 s |
+
+Suites after the follow-up, on a machine at load average 8–25 (the other half of this worktree pair
+was benchmarking throughout): `pnpm test` **738** / 45 files, **5.2 s** best of four — no new tier-0
+file; `pnpm test:live` **1 467 passed + 2 skipped** / 78 files, 23–38 s; `pnpm --filter pg-prime
+test:pg` against PG 17.11 **1 486 passed + 4 skipped** / 82 files, ~10 s. `pnpm typecheck` and
+`pnpm type-errors:check` are clean, and `pnpm bench:types` is unchanged in every *count* (94 / 177 /
+250 per query at 300 tables, every schema-size ratio 1.000) — only its timings move, which is why
+`report.json` is not part of this commit.
+
+**Tier 0 is now at its 5 s line, and that is the one number worth watching.** §2.2 asks `unit` to
+stay under 5 s; WS7 measured 4.93 s for 715 tests, this follow-up adds 23 and measures 5.2 s at load
+8 and 5.7–5.9 s at load 25. The two runs are not comparable (WS7's was at load 7–12), so the honest
+statement is that the follow-up did not move it much and that the budget now has no headroom left
+for the next 20 tests — the next workstream that adds a tier-0 file should expect to have to split
+the project rather than to shave its own tests.
+
+`pnpm bench:compile` is the other load-bearing number, because the emit path gained a guard:
+emitter p50 **3.7–5.7 µs** across two runs (budget 25), build+compile ratio **9.7–12.0** (budget 26,
+and §3.7 already records that ratio as the noisiest line here), **39 086–39 140 B**/compile (budget
+41 500, and the WS7 measurement was 39 084–39 137). Bytes/op is the tight gate on that path and it
+did not move. The digest pass is behind a three-condition guard — `distinct`, not `distinct on`, and
+a non-empty `orderBy` — so an ordinary compile does not reach it.
 
 ### WS5 — Relations (1.5 weeks) · **DONE** — result in §3.5
 

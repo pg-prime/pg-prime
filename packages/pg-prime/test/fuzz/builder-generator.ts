@@ -42,6 +42,7 @@
 
 import type { Bind } from '../../src/compile/contract.js'
 import { nest } from '../../src/query/projection.js'
+import { BuilderError } from '../../src/sql/errors.js'
 import * as q from '../../src/query/types.js'
 import type { Db, Projection } from '../../src/query/types.js'
 import type { Projectable } from '../../src/schema/index.js'
@@ -212,24 +213,15 @@ export function combine(
  * `Projection` is `Record<string, Projectable>`, so an assembled object is a legal argument — the
  * randomness is in which keys exist, not in bending a type.
  *
- * **`json: false` suppresses the relation accessors that project a `json` column** (`many`, `all`
- * and the nested `one` inside them). Found by this fuzzer at seed 2802423309: `select distinct`
- * requires an equality operator for every output column and PostgreSQL's `json` has none
- * (`42883 could not identify an equality operator for type json`), so `db.from(users).distinct()
- * .select(u => ({ posts: u.posts.many(...) }))` compiles cleanly and then fails on the server.
- * That is a real gap in the builder — design/09 §3.7 books it with an owner — and not something
- * this generator should keep rediscovering, so the caller says when a `json` column is admissible.
- *
- * The random draws are IDENTICAL either way: a suppressed branch falls back to `count()` rather
- * than re-rolling, so a seed means the same chain shape whichever mode it is generated in.
+ * **A relation accessor that projects a json column is generated freely again**, `.distinct()`
+ * included. It was suppressed for the length of one day: seeds 2802423309 and 3300751089 found
+ * that `select distinct` needs an equality operator for every output column and PostgreSQL's
+ * `json` has none (`42883 could not identify an equality operator for type json`). The builder now
+ * emits the **jsonb** variant of a relation projection whenever the statement compares rows
+ * (`compile/hoist.ts`'s `jsonVariant`), so the combination is legal — and generating it is what
+ * keeps that fix honest.
  */
-export function userProjection(
-  r: Rng,
-  u: UserRefs,
-  mint: () => string,
-  opts: { readonly json?: boolean } = {},
-): Projection {
-  const json = opts.json !== false
+export function userProjection(r: Rng, u: UserRefs, mint: () => string): Projection {
   const out: Record<string, Projectable> = { id: u.id }
   if (chance(r, 0.7)) out['email'] = u.email
   if (chance(r, 0.4)) out['role'] = u.role
@@ -239,12 +231,11 @@ export function userProjection(
     out['grp'] = nest({ name: u.name, joined: u.createdAt })
   }
   if (chance(r, 0.45)) {
-    const branch = int(r, 0, 6)
-    // `many` (0), `all` (4) and the two nested shapes (5, 6) project a `json` column;
-    // `count` (1), `sum` (2) and `exists` (3) project a scalar. `all()` was missed on the first
-    // pass and the fuzzer found it again 5 000 live cases later, at seed 3300751089.
-    const jsonBranch = branch === 0 || branch === 4 || branch === 5 || branch === 6
-    switch (jsonBranch && !json ? 1 : branch) {
+    // `many` (0), `all` (4) and the two nested shapes (5, 6) project a json column; `count` (1),
+    // `sum` (2) and `exists` (3) project a scalar. All seven are drawn under every chain shape —
+    // `all()` is spelled out because the first, partial fix listed the other three and the fuzzer
+    // came back with it 5 000 live cases later, at seed 3300751089.
+    switch (int(r, 0, 6)) {
       case 0:
         out['posts'] = u.posts.many((s) =>
           s
@@ -328,12 +319,35 @@ export function commentProjection(r: Rng, c: CommentRefs | NullCommentRefs): Pro
 export interface CompiledFacts {
   readonly sql: string
   readonly binds: readonly Bind[]
+  /**
+   * The sentence, when the builder **refused to compile the chain** — the third outcome, and a
+   * first-class one since the distinct follow-up of 2026-08-27.
+   *
+   * `.distinct()` with an `ORDER BY` on an expression the projection does not carry is `42P10` at
+   * the server, and there is no repair that is not a different query (widening the projection
+   * changes the row shape *and* which rows a DISTINCT returns), so `compile()` throws a
+   * `BuilderError` naming the expression. A generator that only ever produced compilable chains
+   * would be a generator that had been narrowed away from a real API surface, so the refusal is
+   * recorded instead: (e′) determinism and (f) immutability are asserted over the sentence exactly
+   * as they are over SQL, and (a)-(c) and the live oracle skip it because there is no statement.
+   */
+  readonly refused?: string | undefined
 }
 
-/** Narrow any builder stage's `.compile()` to {@link CompiledFacts}. Structural, no assertion. */
+/**
+ * Narrow any builder stage's `.compile()` to {@link CompiledFacts}. Structural, no assertion.
+ *
+ * A `BuilderError` becomes a `refused` fact; every other throw propagates, because "the builder
+ * crashed" and "the builder said no" are not the same result and only one of them is a finding.
+ */
 const factsOf = (x: { compile: () => CompiledFacts }): CompiledFacts => {
-  const c = x.compile()
-  return { sql: c.sql, binds: c.binds }
+  try {
+    const c = x.compile()
+    return { sql: c.sql, binds: c.binds }
+  } catch (e) {
+    if (e instanceof BuilderError) return { sql: '', binds: [], refused: e.message }
+    throw e
+  }
 }
 
 export interface Step<Q> {
@@ -415,26 +429,22 @@ function plainSelect(
     type Q0 = typeof base
     const probe = (x: Q0): CompiledFacts => factsOf(x.select(({ users: u }) => ({ probe: u.id })))
     /**
-     * Set before the steps are applied, read inside `orderBy`.
+     * `distinct` and `orderBy` are drawn independently again.
      *
      * PostgreSQL requires every `ORDER BY` expression of a `SELECT DISTINCT` to appear in the
-     * select list (`42P10`), and this projection is random. Found by this fuzzer at seed
-     * 2310382765 — a second way `.distinct()` compiles cleanly and fails on the server, booked in
-     * design/09 §3.7 next to the `json` one. When `distinct` is in the chain the ordering narrows
-     * to `id`, which the projection always carries; the random draws are unchanged either way.
+     * select list (`42P10`) and this projection is random, so for one day the ordering narrowed to
+     * `id` whenever `distinct` was in the chain (seed 2310382765). The builder now **refuses** the
+     * pair at compile time with a sentence naming the expression, so the pair is generated again
+     * and {@link factsOf}'s caller records the `BuilderError` as the answer rather than as a
+     * failure — see `expectedRefusal` in `builder-fuzz.test.ts`.
      */
-    let distinctChosen = false
     const steps: readonly Step<Q0>[] = [
       { label: 'where(users)', apply: (x, rr, m) => x.where(({ users: u }) => combine(rr, int(rr, 0, 2), () => userLeaf(rr, u, m))) },
       {
         label: 'orderBy(users)',
         apply: (x, rr) =>
           x.orderBy(({ users: u }) =>
-            distinctChosen
-              ? q.asc(u.id)
-              : chance(rr, 0.5)
-                ? [q.desc(u.createdAt), q.asc(u.id)]
-                : q.asc(u.email),
+            chance(rr, 0.5) ? [q.desc(u.createdAt), q.asc(u.id)] : q.asc(u.email),
           ),
       },
       { label: 'limit', apply: (x, rr) => x.limit(int(rr, 1, 50)) },
@@ -443,11 +453,7 @@ function plainSelect(
       { label: 'where(relation)', apply: (x, rr) => x.where(({ users: u }) => (chance(rr, 0.5) ? u.posts.some((p) => q.isTrue(p.published)) : u.posts.none((p) => q.isTrue(p.published)))) },
     ]
     let cur: Q0 = base
-    const chosen = stepsFor(steps, r, int(r, 0, 4))
-    distinctChosen = chosen.some((st) => st.label === 'distinct')
-    for (const st of chosen) cur = record(st.label, st.apply(cur, r, mint), probe)
-    /** `select distinct` cannot carry a `json` column — see {@link userProjection}. */
-    const json = !distinctChosen
+    for (const st of stepsFor(steps, r, int(r, 0, 4))) cur = record(st.label, st.apply(cur, r, mint), probe)
     // After `.select(...)` the stage is `Query<S, Project<P>, N>`, and `Query` is INVARIANT in its
     // row type (`[INV]`, design/04 §3.3 — it is what turns `let q = …; if (f) q = q.select(x)` into
     // a compile error). So the pre-select `probe` does not typecheck against it, and each
@@ -456,7 +462,7 @@ function plainSelect(
       factsOf(x.select(({ users: u }) => ({ probe: u.id })))
     const sel = record(
       'select(users)',
-      cur.select(({ users: u }) => userProjection(r, u, mint, { json })),
+      cur.select(({ users: u }) => userProjection(r, u, mint)),
       selProbe,
     )
     const tail = chance(r, 0.3) ? record('limit(after select)', sel.limit(int(r, 1, 20)), selProbe) : sel
@@ -510,21 +516,16 @@ function plainSelect(
     ]
     let cur: Q2 = base
     /**
-     * `distinctOn` first, always.
+     * `distinctOn` wherever it was drawn — **after** a plain `orderBy` included.
      *
-     * `.orderBy()` APPENDS (`src/query/select.ts`), and PostgreSQL requires a `DISTINCT ON` list to
-     * match the *initial* `ORDER BY` expressions — extra keys after them are fine, keys before them
-     * are `42P10 SELECT DISTINCT ON expressions must match initial ORDER BY expressions`. Found by
-     * this fuzzer on its first 5 000-case live run (design/09 §3.7): a plain `orderBy` step drawn
-     * before the `distinctOn` step produced exactly that. Reordering keeps every draw and every
-     * step; it only fixes where the distinct ordering lands.
+     * `.orderBy()` APPENDS (`src/query/select.ts`) and PostgreSQL requires a `DISTINCT ON` list to
+     * match the *initial* `ORDER BY` expressions, so a plain `orderBy` step drawn before the
+     * `distinctOn` step was `42P10 SELECT DISTINCT ON expressions must match initial ORDER BY
+     * expressions` — found by this fuzzer on its first 5 000-case live run (design/09 §3.7). The
+     * step list was reordered to hide it; the compiler now makes the emitted `ORDER BY` lead with
+     * the `DISTINCT ON` expressions (`compile/hoist.ts`'s `alignDistinctOn`), so the draw stands.
      */
-    const chosen2 = stepsFor(steps, r, int(r, 0, 3))
-    const ordered2 = [
-      ...chosen2.filter((st) => st.label === 'distinctOn'),
-      ...chosen2.filter((st) => st.label !== 'distinctOn'),
-    ]
-    for (const st of ordered2) cur = record(st.label, st.apply(cur, r, mint), probe)
+    for (const st of stepsFor(steps, r, int(r, 0, 3))) cur = record(st.label, st.apply(cur, r, mint), probe)
     const sel = record(
       'select(leftJoin)',
       cur.select(({ posts: p, c }) => ({ ...postProjection(r, p, mint), ...commentProjection(r, c) })),
@@ -636,8 +637,59 @@ function cteSelect(db: AnyDb, h: Handles, r: Rng, mint: () => string): () => Com
   return () => factsOf(chained)
 }
 
-/** Shape 5 — a set operation between two chains that project the same shape. */
+/**
+ * Shape 5 — a set operation between two chains that project the same shape.
+ *
+ * **One arm in four carries a relation projection**, which is the set-operation half of the json
+ * finding: `union` / `intersect` / `except` deduplicate, deduplicating compares whole rows, and
+ * PostgreSQL cannot compare `json`. The branches are planned with `rowEquality` and come out as
+ * `jsonb_agg` (`compile/compiler.ts`'s `isDistinctOp`, `compile/hoist.ts`'s `jsonVariant`); the
+ * `… all` spellings are drawn from the same list, so the pair that must *not* switch is generated
+ * too. Both branches project `{ v: text, rel: { id: bigint }[] }` — union-compatible by
+ * construction, which is what lets a random arm typecheck at all.
+ */
 function setOpSelect(db: AnyDb, h: Handles, r: Rng, mint: () => string): () => CompiledFacts {
+  const withRelation = chance(r, 0.25)
+  const op = pick(r, ['union', 'unionAll', 'intersect', 'except'] as const)
+  // Drawn before the branch so the two arms consume the same stream in the same order and a seed
+  // means the same *chain*, not merely the same shape.
+  const relLimit = int(r, 1, 3)
+  const wantOrder = chance(r, 0.6)
+  const wantLimit = chance(r, 0.5)
+  const limitN = int(r, 1, 20)
+
+  // The two arms are written out rather than selected with a ternary, exactly as the four join
+  // combinations above are: `union` type-checks that branch 2 projects branch 1's columns, so a
+  // ternary would hand it a union of two projections and the check would resolve against the wrong
+  // one (`OrmTypeError<'union branch 2 has no column "rel"'>`). Two blocks, two inferred pairs.
+  if (withRelation) {
+    const left = db
+      .from(h.users)
+      .where(({ users: u }) => combine(r, int(r, 0, 1), () => userLeaf(r, u, mint)))
+      .select(({ users: u }) => ({
+        v: u.email,
+        rel: u.posts.many((sq) => sq.select((p) => ({ id: p.id })).limit(relLimit)),
+      }))
+    const right = db
+      .from(h.posts)
+      .where(({ posts: p }) => combine(r, int(r, 0, 1), () => postLeaf(r, p, mint)))
+      .select(({ posts: p }) => ({
+        v: p.title,
+        rel: p.comments.many((sq) => sq.select((c) => ({ id: c.id })).limit(relLimit)),
+      }))
+    const joined =
+      op === 'union'
+        ? left.union(right)
+        : op === 'unionAll'
+          ? left.unionAll(right)
+          : op === 'intersect'
+            ? left.intersect(right)
+            : left.except(right)
+    const ordered = wantOrder ? joined.orderBy((row) => q.asc(row.v)) : joined
+    const limited = wantLimit ? ordered.limit(limitN) : ordered
+    return () => factsOf(limited)
+  }
+
   const left = db
     .from(h.users)
     .where(({ users: u }) => combine(r, int(r, 0, 1), () => userLeaf(r, u, mint)))
@@ -646,7 +698,6 @@ function setOpSelect(db: AnyDb, h: Handles, r: Rng, mint: () => string): () => C
     .from(h.posts)
     .where(({ posts: p }) => combine(r, int(r, 0, 1), () => postLeaf(r, p, mint)))
     .select(({ posts: p }) => ({ v: p.title }))
-  const op = pick(r, ['union', 'unionAll', 'intersect', 'except'] as const)
   const joined =
     op === 'union'
       ? left.union(right)
@@ -655,8 +706,8 @@ function setOpSelect(db: AnyDb, h: Handles, r: Rng, mint: () => string): () => C
         : op === 'intersect'
           ? left.intersect(right)
           : left.except(right)
-  const ordered = chance(r, 0.6) ? joined.orderBy((row) => q.asc(row.v)) : joined
-  const limited = chance(r, 0.5) ? ordered.limit(int(r, 1, 20)) : ordered
+  const ordered = wantOrder ? joined.orderBy((row) => q.asc(row.v)) : joined
+  const limited = wantLimit ? ordered.limit(limitN) : ordered
   return () => factsOf(limited)
 }
 

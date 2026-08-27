@@ -16,7 +16,7 @@ import { numericCodec } from '../../src/codec/index.js'
 import { SchemaError } from '../../src/sql/errors.js'
 import { defineRelations, defineSchema, pgTable, REFS } from '../../src/schema/index.js'
 import { compileOnly } from '../../src/query/run.js'
-import { add, desc, eq, fn, gt, isNull, isTrue, over, sql } from '../../src/query/types.js'
+import { add, desc, eq, fn, gt, isNull, isTrue, nest, over, sql } from '../../src/query/types.js'
 import type { RefsAtAlias } from '../../src/query/ref.js'
 import { makeFixture } from '../live/fixture.js'
 import { schema } from './_schema.js'
@@ -636,6 +636,163 @@ describe('a relation sub-query does not shadow a SIBLING alias', () => {
       .select((t) => ({ mine: t.users.posts.many((sq) => sq.select((c) => ({ id: c.id }))) }))
     expect(built.compile().sql).toContain('from "public"."posts" as "posts"')
     expect(built.compile().sql).not.toContain('posts2')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 03 §2.3 point 5, AS BUILT 2026-08-27 — jsonb when the statement compares rows
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `json` has no equality operator, so `select distinct` over a relation column is
+ * `42883 could not identify an equality operator for type json` at execute time (WS7 fuzz seeds
+ * 2802423309 and 3300751089). `jsonb` has one, the value is the same value, and the decode plan
+ * does not change — so the variant switches itself, and only where equality is actually needed.
+ *
+ * The negative controls are half of this block: the *non*-distinct forms must stay byte-identical
+ * `json`, or "only where it is needed" is a claim with nothing behind it.
+ */
+describe('a relation column under distinct is jsonb', () => {
+  it('select distinct: json_agg → jsonb_agg, json_build_object → jsonb_build_object', () => {
+    const built = db
+      .from(schema.h.users, 'users')
+      .distinct()
+      .select((t) => ({
+        id: t.users.id,
+        posts: t.users.posts.many((sq) => sq.select((p) => ({ id: p.id, amount: p.amount }))),
+      }))
+    expect(built.compile().sql).toBe(
+      [
+        'select distinct "users"."id" as "id", "_r0"."v" as "posts"',
+        'from "public"."users" as "users"',
+        'left join lateral (',
+        '  select coalesce(jsonb_agg("x"."o"), \'[]\'::jsonb) as "v"',
+        '  from (',
+        '    select jsonb_build_object(\'id\', "posts"."id"::text, \'amount\', ' +
+          '"posts"."amount"::text) as "o"',
+        '    from "public"."posts" as "posts"',
+        '    where "posts"."author_id" = "users"."id"',
+        '  ) as "x"',
+        ') as "_r0" on true',
+      ].join('\n'),
+    )
+  })
+
+  it('without distinct it is json, byte for byte — the switch is not unconditional', () => {
+    const sql = db
+      .from(schema.h.users, 'users')
+      .select((t) => ({
+        id: t.users.id,
+        posts: t.users.posts.many((sq) => sq.select((p) => ({ id: p.id, amount: p.amount }))),
+      }))
+      .compile().sql
+    expect(sql).toContain('coalesce(json_agg("x"."o"), \'[]\'::json)')
+    expect(sql).not.toContain('jsonb')
+  })
+
+  it('distinct ON stays json — only its own keys are compared, not the whole row', () => {
+    const sql = db
+      .from(schema.h.users, 'users')
+      .distinctOn((t) => t.users.email)
+      .select((t) => ({
+        id: t.users.id,
+        posts: t.users.posts.many((sq) => sq.select((p) => ({ id: p.id }))),
+      }))
+      .compile().sql
+    expect(sql).toContain('coalesce(json_agg("x"."o"), \'[]\'::json)')
+    expect(sql).not.toContain('jsonb')
+  })
+
+  it('the decode plan is identical either way — the variant never reaches a codec', () => {
+    const plain = db
+      .from(schema.h.users, 'users')
+      .select((t) => ({
+        id: t.users.id,
+        posts: t.users.posts.many((sq) => sq.select((p) => ({ id: p.id, amount: p.amount }))),
+      }))
+      .compile().shape
+    const distinct = db
+      .from(schema.h.users, 'users')
+      .distinct()
+      .select((t) => ({
+        id: t.users.id,
+        posts: t.users.posts.many((sq) => sq.select((p) => ({ id: p.id, amount: p.amount }))),
+      }))
+      .compile().shape
+    expect(distinct).toStrictEqual(plain)
+  })
+
+  it('a relation inside a nest({...}) group is a row column too, so it switches as well', () => {
+    const sql = db
+      .from(schema.h.users, 'users')
+      .distinct()
+      .select((t) => ({
+        id: t.users.id,
+        g: nest({ posts: t.users.posts.many((sq) => sq.select((p) => ({ id: p.id }))) }),
+      }))
+      .compile().sql
+    expect(sql).toContain('jsonb_agg')
+    expect(sql).not.toContain('coalesce(json_agg')
+  })
+
+  /**
+   * A relation *inside* a relation is a member of the enclosing json object, not a column of the
+   * row, so nothing compares it: the outer aggregate is `jsonb`, the inner stays `json` and
+   * `jsonb_build_object` coerces it on the way in. Pinned because "make everything jsonb" is the
+   * tempting over-correction, and it would move every nested golden for nothing.
+   */
+  it('a relation nested inside a relation keeps json — only the row column needs equality', () => {
+    const sql = db
+      .from(schema.h.users, 'users')
+      .distinct()
+      .select((t) => ({
+        id: t.users.id,
+        posts: t.users.posts.many((sq) =>
+          sq.select((p) => ({
+            id: p.id,
+            comments: p.comments.many((s2) => s2.select((c) => ({ id: c.id }))),
+          })),
+        ),
+      }))
+      .compile().sql
+    expect(sql).toContain('jsonb_agg("x"."o")')
+    expect(sql).toContain('coalesce(json_agg("x"."o"), \'[]\'::json)')
+  })
+
+  it("an explicit { variant: 'json' } under distinct is refused, not silently overridden", () => {
+    let message = ''
+    try {
+      db.from(schema.h.users, 'users')
+        .distinct()
+        .select((t) => ({
+          id: t.users.id,
+          posts: t.users.posts.many((sq) => sq.select((p) => ({ id: p.id })), { variant: 'json' }),
+        }))
+        .compile()
+    } catch (e) {
+      message = (e as Error).message
+    }
+    expect(message).toBe(
+      'pg-prime: relation "posts" asks for { variant: \'json\' } in a statement that compares ' +
+        'whole rows (distinct, union, intersect, except), and PostgreSQL cannot compare json ' +
+        '(42883). Drop the option — jsonb is used there automatically — or drop the distinct.',
+    )
+    // D9 (design/04 §4): one line, under 300 characters.
+    expect(message).not.toContain('\n')
+    expect(message.length).toBeLessThan(300)
+  })
+
+  it("an explicit { variant: 'jsonb' } under distinct is simply what happens anyway", () => {
+    expect(() =>
+      db
+        .from(schema.h.users, 'users')
+        .distinct()
+        .select((t) => ({
+          id: t.users.id,
+          posts: t.users.posts.many((sq) => sq.select((p) => ({ id: p.id })), { variant: 'jsonb' }),
+        }))
+        .compile(),
+    ).not.toThrow()
   })
 })
 

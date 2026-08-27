@@ -22,7 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { expectTypeOf } from 'expect-type'
 import { textCodec } from '../../src/codec/index.js'
 import * as q from '../../src/query/types.js'
-import { pgMajor } from '../live/_harness.js'
+import { pgMajor, sqlState } from '../live/_harness.js'
 import { FIRST_POST_ID } from '../live/fixture.js'
 import { assertPlans, makeLiveDb, type LiveDb } from './_db.js'
 
@@ -314,6 +314,59 @@ describe('§2.8 — distinct on, group by, subqueries', () => {
     )
     expect(rows).toStrictEqual(oracle.map((r) => ({ authorId: BigInt(r[0]!), title: r[1] })))
     expect(rows).toHaveLength(2)
+  })
+
+  /**
+   * `.distinctOn(a).orderBy(desc(b))` — the ordering the caller wrote *appended* to the keys.
+   *
+   * `.orderBy()` appends, and PostgreSQL requires the `DISTINCT ON` list to match the **initial**
+   * `ORDER BY` expressions, so before 2026-08-27 this compiled to a statement the server refused
+   * with `42P10`. The compiler now leads the ORDER BY with the keys, which is exactly "latest row
+   * per group": the oracle below is that sentence written by hand.
+   */
+  it('distinctOn then a plain orderBy is the latest row per group, not a 42P10', async () => {
+    const rows = await live.db
+      .from(h().posts)
+      .distinctOn(({ posts: p }) => [p.authorId])
+      .select(({ posts: p }) => ({ authorId: p.authorId, title: p.title }))
+      .orderBy(({ posts: p }) => [q.desc(p.createdAt), q.asc(p.id)])
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ authorId: bigint; title: string }[]>()
+    const oracle = await live.raw(
+      `select distinct on (author_id) author_id, title from ${live.fx.ns}.posts ` +
+        `order by author_id asc, created_at desc, id asc`,
+    )
+    expect(rows).toStrictEqual(oracle.map((r) => ({ authorId: BigInt(r[0]!), title: r[1] })))
+    expect(rows).toHaveLength(2)
+  })
+
+  /**
+   * R4, the negative control for both `distinct` findings: the statements the builder used to emit
+   * are still rejected by this very server, so the two rules above are preventing something real
+   * rather than describing something that never happened. R13 — SQLSTATE, not message text.
+   */
+  it('R4: the un-reconciled statements are still 42P10 when written by hand', async () => {
+    const keysAfter = await live
+      .raw(
+        `select distinct on (author_id) author_id, title from ${live.fx.ns}.posts ` +
+          `order by created_at desc`,
+      )
+      .catch((e: unknown) => e)
+    expect(sqlState(keysAfter)).toBe('42P10')
+
+    const orderNotSelected = await live
+      .raw(`select distinct author_id from ${live.fx.ns}.posts order by created_at desc`)
+      .catch((e: unknown) => e)
+    expect(sqlState(orderNotSelected)).toBe('42P10')
+  })
+
+  it('the builder refuses .distinct() + an unprojected orderBy before any round trip', async () => {
+    const built = live.db
+      .from(h().posts)
+      .distinct()
+      .select(({ posts: p }) => ({ authorId: p.authorId }))
+      .orderBy(({ posts: p }) => q.desc(p.createdAt))
+    await expect(built.execute()).rejects.toThrow(/cannot order by "posts"\."created_at"/)
   })
 
   it('group by + having, with exact aggregate types', async () => {

@@ -354,6 +354,181 @@ describe('§2.8 — distinct on, locking, composition', () => {
     )
   })
 
+  /**
+   * The emitted `ORDER BY` leads with the `DISTINCT ON` expressions — `03` §2.8's AS BUILT note of
+   * 2026-08-27, and the whole of it in four goldens.
+   *
+   * PostgreSQL answers `42P10 SELECT DISTINCT ON expressions must match initial ORDER BY
+   * expressions` otherwise, and `.orderBy()` appends, so before this the builder emitted a
+   * statement it could have known was invalid. Every case below is byte-exact because the point is
+   * *where* the keys land, and a `toContain` would not see it.
+   */
+  describe('distinct on leads the ORDER BY', () => {
+    const on1 = () => from().distinctOn(({ posts: p }) => [p.authorId])
+
+    it('with no orderBy at all, the keys become the ordering', () => {
+      expect(sqlOf(on1())).toBe(
+        [
+          'select distinct on ("posts"."author_id") "posts"."id" as "id"',
+          'from "public"."posts" as "posts"',
+          'order by "posts"."author_id" asc',
+        ].join('\n'),
+      )
+    })
+
+    it('an orderBy on other columns is appended AFTER the keys, not before', () => {
+      expect(sqlOf(on1().orderBy(({ posts: p }) => [q.desc(p.createdAt), q.asc(p.id)]))).toBe(
+        [
+          'select distinct on ("posts"."author_id") "posts"."id" as "id"',
+          'from "public"."posts" as "posts"',
+          'order by "posts"."author_id" asc, "posts"."created_at" desc, "posts"."id" asc',
+        ].join('\n'),
+      )
+    })
+
+    it('a list that already leads with the keys is untouched, direction and nulls included', () => {
+      const built = on1().orderBy(({ posts: p }) => [
+        q.desc(p.authorId, 'first'),
+        q.desc(p.createdAt),
+      ])
+      expect(sqlOf(built)).toBe(
+        [
+          'select distinct on ("posts"."author_id") "posts"."id" as "id"',
+          'from "public"."posts" as "posts"',
+          'order by "posts"."author_id" desc nulls first, "posts"."created_at" desc',
+        ].join('\n'),
+      )
+      // …and the AST is the caller's, unchanged: the reconciliation is a compile-time transform,
+      // so `toAst()` still says exactly what was written (the WS4 equivalence oracle depends on it).
+      expect(built.toAst().orderBy).toHaveLength(2)
+    })
+
+    /**
+     * Keys the caller ordered by in a *different* order.
+     *
+     * PostgreSQL forces the DISTINCT ON list to come first, so the caller's priority is not
+     * achievable; what is achievable is not silently dropping the ordering they wrote. Both survive
+     * — the keys lead, the caller's list follows in full — and the repeated items are a no-op for
+     * the server (a tie-break on a column already fully determined). Deliberately redundant SQL
+     * beats a discarded clause.
+     */
+    it('keys in a different order than the leading items: keys first, caller’s list intact', () => {
+      const built = from()
+        .distinctOn(({ posts: p }) => [p.authorId, p.title])
+        .orderBy(({ posts: p }) => [q.desc(p.title), q.asc(p.authorId)])
+      expect(sqlOf(built)).toBe(
+        [
+          'select distinct on ("posts"."author_id", "posts"."title") "posts"."id" as "id"',
+          'from "public"."posts" as "posts"',
+          'order by "posts"."author_id" asc, "posts"."title" asc, ' +
+            '"posts"."title" desc, "posts"."author_id" asc',
+        ].join('\n'),
+      )
+    })
+
+    it('a partial match keeps the matched item’s direction and inserts only what is missing', () => {
+      expect(
+        sqlOf(
+          from()
+            .distinctOn(({ posts: p }) => [p.authorId, p.title])
+            .orderBy(({ posts: p }) => [q.desc(p.authorId), q.asc(p.createdAt)]),
+        ),
+      ).toBe(
+        [
+          'select distinct on ("posts"."author_id", "posts"."title") "posts"."id" as "id"',
+          'from "public"."posts" as "posts"',
+          'order by "posts"."author_id" desc, "posts"."title" asc, "posts"."created_at" asc',
+        ].join('\n'),
+      )
+    })
+  })
+
+  /**
+   * `select distinct` + an `ORDER BY` the projection does not carry is refused at compile time.
+   *
+   * `42P10 for SELECT DISTINCT, ORDER BY expressions must appear in select list`. Unlike the
+   * `DISTINCT ON` rule above there is no reconciliation: widening the projection would change the
+   * row shape *and* which rows a DISTINCT returns, so every repair is a different query.
+   */
+  describe('distinct refuses an ORDER BY it cannot satisfy', () => {
+    const distinctById = () =>
+      db
+        .from(schema.h.posts)
+        .distinct()
+        .select(({ posts: p }) => ({ id: p.id }))
+
+    it('throws a BuilderError naming the expression and the fix', () => {
+      const built = distinctById().orderBy(({ posts: p }) => q.desc(p.createdAt))
+      expect(() => built.compile()).toThrow(BuilderError)
+      let message = ''
+      try {
+        built.compile()
+      } catch (e) {
+        message = (e as Error).message
+      }
+      expect(message).toBe(
+        'pg-prime: .distinct() cannot order by "posts"."created_at" — PostgreSQL requires every ' +
+          'ORDER BY expression of a SELECT DISTINCT to appear in the select list (42P10). Order ' +
+          'by a selected column, or add it to select().',
+      )
+      // D9 (design/04 §4): one line, under 300 characters.
+      expect(message).not.toContain('\n')
+      expect(message.length).toBeLessThan(300)
+    })
+
+    it('…and accepts the same ordering once the column is projected', () => {
+      expect(
+        sqlOf(
+          db
+            .from(schema.h.posts)
+            .distinct()
+            .select(({ posts: p }) => ({ id: p.id, at: p.createdAt }))
+            .orderBy(({ posts: p }) => q.desc(p.createdAt)),
+        ),
+      ).toBe(
+        [
+          'select distinct "posts"."id" as "id", "posts"."created_at" as "at"',
+          'from "public"."posts" as "posts"',
+          'order by "posts"."created_at" desc',
+        ].join('\n'),
+      )
+    })
+
+    it('a nest({...}) member counts as projected — the check runs on the FLATTENED list', () => {
+      expect(() =>
+        db
+          .from(schema.h.posts)
+          .distinct()
+          .select(({ posts: p }) => ({ id: p.id, g: q.nest({ at: p.createdAt }) }))
+          .orderBy(({ posts: p }) => q.desc(p.createdAt))
+          .compile(),
+      ).not.toThrow()
+    })
+
+    it('an expression the digest cannot describe is allowed through — unknown is not different', () => {
+      // A `sql` fragment is opaque, so refusing it would be a guess. PostgreSQL decides.
+      expect(() =>
+        db
+          .from(schema.h.posts)
+          .distinct()
+          .select(({ posts: p }) => ({ id: p.id }))
+          .orderBy(() => q.desc(q.sql`random()`.asUnsafe<number>()))
+          .compile(),
+      ).not.toThrow()
+    })
+
+    it('distinct ON is not subject to the rule — only its own keys need comparing', () => {
+      expect(() =>
+        db
+          .from(schema.h.posts)
+          .distinctOn(({ posts: p }) => [p.authorId])
+          .select(({ posts: p }) => ({ id: p.id }))
+          .orderBy(({ posts: p }) => q.desc(p.createdAt))
+          .compile(),
+      ).not.toThrow()
+    })
+  })
+
   it('forUpdate defaults to `for update` and takes of/wait', () => {
     expect(sqlOf(from().forUpdate())).toContain('\nfor update')
     expect(sqlOf(from().forUpdate({ of: ['posts'], wait: 'skip locked' }))).toContain(

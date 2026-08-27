@@ -733,6 +733,31 @@ Five design points, each deliberate:
 > aggregate work in a `RETURNING` list where there is no FROM clause to hang a lateral on. The flag
 > can change the plan; it cannot change the answer.
 
+> **AS BUILT 2026-08-27 (the three distinct findings, `09` §3.7 follow-up).** Point 5's "`json` not
+> `jsonb` by default" has **one exception, and the builder applies it itself**: when the statement
+> compares whole rows, a relation column is built as `jsonb`.
+>
+> PostgreSQL's `json` has no equality operator, so `select distinct` — and `union` / `intersect` /
+> `except`, which deduplicate — over a relation column is `42883 could not identify an equality
+> operator for type json` at execute time. `jsonb` has one. Found by the WS7 builder fuzzer at seeds
+> 2802423309 and 3300751089, and fixed where the statement is known rather than where the accessor
+> is written: `planSelect(node, rowEquality)` in `src/compile/hoist.ts` decides the variant from the
+> *statement*, so no list of accessors can be incomplete — which is exactly how the first attempt at
+> this class shipped a fix that named `many` and forgot `all()`.
+>
+> Three boundaries, each pinned by a test rather than left to the reader:
+> - **`distinct on (…)` does not switch.** It compares only its own key expressions, not the row.
+> - **A relation nested inside a relation does not switch.** It is a member of the enclosing json
+>   object, not a column of the row; `jsonb_build_object` coerces it on the way in.
+> - **An explicit `{ variant: 'json' }` under a distinct statement is a `BuilderError`**, not a
+>   silent override. Ignoring what a caller wrote is worse than refusing it.
+>
+> The value is unchanged by the switch and that is a measurement, not an argument: the decode plan
+> is byte-identical (`ResultShape` is `toStrictEqual` either way, because the variant never reaches
+> a codec) and `test/live-query/relations.test.ts` asserts the two forms' *decoded rows* are
+> `toStrictEqual` on PGlite and PostgreSQL 17.11, `int8` past 2^53 and `numeric`'s trailing zero
+> included. Key order cannot matter — the json decoder reads by key, positionally over the plan.
+
 **Relation filters** (`some` / `every` / `none`) compile to `EXISTS` / `NOT EXISTS`, ported from MikroORM's `$some`/`$none`/`$every` (mikroorm.md §4.1), with the null-safety that `every` requires:
 
 ```ts
@@ -1079,6 +1104,51 @@ const ranked = await db.from(posts)
 > raises `55P03`, and the default blocks until the holder commits. It cannot be tested on PGlite,
 > which multiplexes every connection onto one backend and would pass a completely broken
 > implementation.
+
+> **AS BUILT 2026-08-27 — the two `distinct` rules this section did not state (`09` §3.7 follow-up).**
+> The WS7 builder fuzzer found both on its first live runs. A builder that holds the projection, the
+> ORDER BY and the DISTINCT clause at once must never emit a statement it can know PostgreSQL will
+> reject; Kysely, Drizzle and SQLAlchemy pass these through, and Django documents the first rule and
+> still lets the database fail.
+>
+> **1. The emitted `ORDER BY` leads with the `DISTINCT ON` expressions, in their order.** PostgreSQL
+> requires the `DISTINCT ON` list to match the *initial* `ORDER BY` expressions (`42P10 SELECT
+> DISTINCT ON expressions must match initial ORDER BY expressions`) and `.orderBy()` **appends**, so
+> `.distinctOn(a).orderBy(desc(b))` used to compile cleanly and fail at execute. The two clauses are
+> not in conflict — "the first row of each `a`, and among those the greatest `b`" is what `order by
+> a, b desc` means and what "latest row per group" means — so `alignDistinctOn`
+> (`src/compile/hoist.ts`) reconciles them at compile time. A list that already leads with the keys
+> is returned **unchanged and by reference**, direction and `nulls` placement intact, so the goldens
+> of every query written the correct way stand; a partial match keeps the items that matched and
+> inserts only what is missing; keys the caller ordered by in a different order are emitted first
+> and the caller's list follows *in full*, deliberately duplicating rather than discarding a clause
+> the caller wrote (a repeated ORDER BY item is a no-op for the server). With no `.orderBy()` at all
+> the keys become the ordering, which costs the sort `DISTINCT ON` was going to do anyway. "Same
+> expression" is the CSE digest of `03` §2.3 point 6, reused rather than re-invented, and it runs
+> after the hoist so a `distinctOn(u.posts.count())` compares the `"_r0"."v"` the emitter will
+> actually print.
+>
+> **2. `.distinct()` with an `ORDER BY` the projection does not carry is refused at compile time.**
+> `42P10 for SELECT DISTINCT, ORDER BY expressions must appear in select list`. Here there is no
+> reconciliation, and the asymmetry with rule 1 is the point: widening the projection would change
+> the row shape the caller declared *and* — `distinct` being a set operation — which rows come back,
+> so every repair is a different query. `.compile()` throws a `BuilderError` naming the offending
+> expression in its own SQL and the two fixes ("order by a selected column, or add it to
+> `select()`"), one line, 216 characters, well inside `04` D9's 300. Both lists are read
+> post-`planSelect`, so a `nest({...})` has already flattened into its leaf columns; an expression
+> the digest cannot describe — a `sql` fragment, a volatile call — is **allowed through**, because
+> `null` means unknown and a false rejection would refuse a query PostgreSQL accepts.
+>
+> **No type-level guard.** Deciding this in the type system needs the *expressions* of the
+> projection, not its row type, and `Query<S, O, N>` carries only the latter — `O` is
+> `{ id: bigint }`, which cannot say which column produced it. Carrying the projection record is the
+> fourth type parameter §2.3's GROUP BY amendment already rejected by measurement, so the check is
+> the runtime one and nothing was added to `bench/types`.
+>
+> **`union` / `intersect` / `except` compare rows too**, so their branches carry the same flag as a
+> `select distinct` and it inherits downwards: in `(a union all b) except c` the `except` compares
+> what the inner `union all` produced, and all three branches switch. `… all` never does. §2.3's AS
+> BUILT note of the same date has the json/jsonb half.
 
 ### 2.9 PG operator vocabulary
 
