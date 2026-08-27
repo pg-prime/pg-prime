@@ -11,10 +11,10 @@
  * `jsonContains` / `rangeContains`). That is a DX input to the decision, not a perf one.
  */
 
-import type { AnyCodec, CodecOut } from '../../../packages/pgorm/src/codec/index.js'
-import type { META, OUT } from '../../../packages/pgorm/src/schema/index.js'
-import type { Projectable } from '../../../packages/pgorm/src/schema/index.js'
-import type { AnyQuery, Expr, ExprOf, Operand } from '../../../packages/pgorm/src/query/types.js'
+import type { AnyCodec, CodecOut } from '../../../packages/pg-prime/src/codec/index.js'
+import type { META, OUT } from '../../../packages/pg-prime/src/schema/index.js'
+import type { Projectable } from '../../../packages/pg-prime/src/schema/index.js'
+import type { AnyQuery, Expr, ExprOf, Operand } from '../../../packages/pg-prime/src/query/types.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Type-class gates

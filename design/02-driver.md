@@ -5,7 +5,7 @@
 **Inputs:** [`research/pg-drivers.md`](../research/pg-drivers.md), [`research/SUMMARY.md`](../research/SUMMARY.md) §3–4.
 **Baseline:** PostgreSQL ≥ 15 · ESM-only · Node ≥ 22 · **zero runtime deps, zero peer deps** · near-raw `pg` performance.
 
-> **AMENDMENT (2026-08-14, implementation spike — PG 17.11).** Five deviations found while building the real adapter (`packages/pgorm/src/driver`, `src/codec`), each detailed in code comments:
+> **AMENDMENT (2026-08-14, implementation spike — PG 17.11).** Five deviations found while building the real adapter (`packages/pg-prime/src/driver`, `src/codec`), each detailed in code comments:
 > ① §4.7 ParameterStatus cannot be captured from a user-supplied pool (startup messages predate acquisition) → one `pg_settings` query per *physical* connection, WeakMap-cached, plus a live `parameterStatus` subscription.
 > ② `capabilities.cancel` is always `'pg_cancel_backend'` — the protocol cancel path needs an unconnected second client and is 07's opt-in; claiming `'protocol'` was aspirational.
 > ③ `PgQuery.maxRows` cannot use pg's `rows` option (pg pages, every row still crosses the wire) → implemented over the cursor.

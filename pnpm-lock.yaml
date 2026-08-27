@@ -35,11 +35,11 @@ importers:
 
   bench/types: {}
 
-  packages/create-pgorm: {}
+  packages/create-pg-prime: {}
 
-  packages/pgorm: {}
+  packages/pg-prime: {}
 
-  packages/pgorm-kit:
+  packages/pg-prime-kit:
     dependencies:
       '@types/pg':
         specifier: ^8.21.0
@@ -52,7 +52,7 @@ importers:
         specifier: ^4.1.10
         version: 4.1.10(@types/node@26.2.0)(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(tsx@4.23.12))
 
-  packages/pgorm-testing: {}
+  packages/pg-prime-testing: {}
 
 packages:
 

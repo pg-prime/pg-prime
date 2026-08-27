@@ -38,76 +38,76 @@ the right number. We copy the count, not the contents.
 
 | Package | Role | Deps | Build | Budget (unpacked) |
 |---|---|---|---|---|
-| **`pgormjs`** | The runtime. Schema DSL, codec registry, query builder + compiler, executor, transactions, structural driver adapters, migration *applier*. | **zero runtime deps, zero peer deps** | `tsgo`, unbundled ESM | **≤ 2.5 MB / ≤ 400 files** |
-| **`@pgorm/kit`** | The CLI. Introspection, diff engine, plan emission, hazard linter, `verify` / `baseline` / `push`, codemods. | bundled & inlined | `esbuild` single file + `tsgo` for `.d.ts` | **≤ 8 MB** (hard fail 12 MB) |
-| **`@pgorm/testing`** | Structural driver mock, ephemeral PGlite/testcontainer fixtures, `expectSql` golden helpers. Dev-only. | `@electric-sql/pglite` + `@testcontainers/postgresql` as **optional** peers | `tsgo` | ≤ 300 KB |
-| **`create-pgormjs`** | `npm create pgormjs` scaffolder. | bundled | `esbuild` | ≤ 500 KB |
+| **`pg-prime`** | The runtime. Schema DSL, codec registry, query builder + compiler, executor, transactions, structural driver adapters, migration *applier*. | **zero runtime deps, zero peer deps** | `tsgo`, unbundled ESM | **≤ 2.5 MB / ≤ 400 files** |
+| **`@pg-prime/kit`** | The CLI. Introspection, diff engine, plan emission, hazard linter, `verify` / `baseline` / `push`, codemods. | bundled & inlined | `esbuild` single file + `tsgo` for `.d.ts` | **≤ 8 MB** (hard fail 12 MB) |
+| **`@pg-prime/testing`** | Structural driver mock, ephemeral PGlite/testcontainer fixtures, `expectSql` golden helpers. Dev-only. | `@electric-sql/pglite` + `@testcontainers/postgresql` as **optional** peers | `tsgo` | ≤ 300 KB |
+| **`create-pg-prime`** | `npm create pg-prime` scaffolder. | bundled | `esbuild` | ≤ 500 KB |
 
 **Deliberately NOT separate packages:**
 
-- **No `@pgorm/adapter-pg`.** The adapter interface is structural (`PgLikePool`, per research §6) — it
+- **No `@pg-prime/adapter-pg`.** The adapter interface is structural (`PgLikePool`, per research §6) — it
   never imports `pg`'s types, it declares the shape `pg` happens to satisfy. That is ~300 LOC and it
-  ships as the `pgormjs/adapter-pg` **subpath**, not a package. Same for `pgormjs/adapter-pglite`. This is
+  ships as the `pg-prime/adapter-pg` **subpath**, not a package. Same for `pg-prime/adapter-pglite`. This is
   how we get zero deps *and* zero peer deps, and how Neon/Hyperdrive duck-type in for free.
-- **No `@pgorm/pgvector` / `@pgorm/postgis`.** Extension codecs are pure TS with no dependencies; they
-  ship as `pgormjs/pgvector` and `pgormjs/postgis` subpaths and tree-shake to zero when unused. Splitting
+- **No `@pg-prime/pgvector` / `@pg-prime/postgis`.** Extension codecs are pure TS with no dependencies; they
+  ship as `pg-prime/pgvector` and `pg-prime/postgis` subpaths and tree-shake to zero when unused. Splitting
   them into packages buys nothing and costs a version-skew axis.
-- **No `@pgorm/core` + `@pgorm/postgres` split.** There is no second dialect. Ever. That split is the
+- **No `@pg-prime/core` + `@pg-prime/postgres` split.** There is no second dialect. Ever. That split is the
   thing we are differentiating against.
 
 **Where the CLI/runtime boundary sits (the load-bearing decision):**
-`pgormjs` contains the migration **applier** (read `.sql` + `.plan.json`, take
+`pg-prime` contains the migration **applier** (read `.sql` + `.plan.json`, take
 `pg_advisory_xact_lock`, honour `txmode`, record in the history table) because production apps run
-migrations at boot and must not install a CLI to do it. `@pgorm/kit` contains the migration
+migrations at boot and must not install a CLI to do it. `@pg-prime/kit` contains the migration
 **author** (introspect → diff → emit → lint), which is a dev-time-only concern and is where all the
 weight is. This is the Kysely `kysely/migration` lesson applied deliberately rather than as a 0.29
-breaking change: **`pgormjs/migrate` is a first-class subpath from day one and is never re-exported
+breaking change: **`pg-prime/migrate` is a first-class subpath from day one and is never re-exported
 from the root.**
 
 ### 1.2 Size budgets, and how they are enforced
 
 Anchored on F10. `kysely` is the closest comparable (types-heavy, zero-dep, ESM-only) at 1.65 MB, and
 it has no schema DSL, no codecs and no diff engine — so ~1.5× of Kysely is the honest target for
-`pgormjs`.
+`pg-prime`.
 
 | Budget | Value | Enforcement |
 |---|---|---|
-| `pgormjs` unpacked | ≤ 2.5 MB, ≤ 400 files | `tools/size-budget.mjs`, fails CI |
-| `pgormjs` total `.d.ts` | ≤ 900 KB across ≤ 200 files (warn at 750 KB) | same |
-| `pgormjs` **largest single `.d.ts`** | **≤ 40 KB** | same — this is the canary. Drizzle's `codecs.d.ts` (34 KB) and `select.d.ts` (31.5 KB) are exactly where its 1.96 MB came from |
-| `pgormjs` total JS | ≤ 700 KB raw | same |
+| `pg-prime` unpacked | ≤ 2.5 MB, ≤ 400 files | `tools/size-budget.mjs`, fails CI |
+| `pg-prime` total `.d.ts` | ≤ 900 KB across ≤ 200 files (warn at 750 KB) | same |
+| `pg-prime` **largest single `.d.ts`** | **≤ 40 KB** | same — this is the canary. Drizzle's `codecs.d.ts` (34 KB) and `select.d.ts` (31.5 KB) are exactly where its 1.96 MB came from |
+| `pg-prime` total JS | ≤ 700 KB raw | same |
 | Tree-shaken "connect + one select" | ≤ 35 KB min+gz | `tools/treeshake-check.mjs` |
 | Tree-shaken "full CRUD + tx" | ≤ 55 KB min+gz | same |
 | Full root import | ≤ 120 KB min+gz | same |
-| `pgormjs` runtime deps / peer deps | **0 / 0** | asserted in `size-budget.mjs` |
-| `@pgorm/kit` unpacked | ≤ 8 MB (fail 12 MB); single bundle file ≤ 2 MB | `size-budget.mjs` |
+| `pg-prime` runtime deps / peer deps | **0 / 0** | asserted in `size-budget.mjs` |
+| `@pg-prime/kit` unpacked | ≤ 8 MB (fail 12 MB); single bundle file ≤ 2 MB | `size-budget.mjs` |
 
 The min+gz numbers are **provisional and get baselined on the first release**, then ratcheted
 downward only. Budgets live in `tools/budgets.json` and every change to that file requires a
 reviewer-visible justification in the PR body.
 
-**The `@pgorm/kit` headline:** ≤ 8 MB against drizzle-kit's 95 MB is a **~12× smaller** dev
+**The `@pg-prime/kit` headline:** ≤ 8 MB against drizzle-kit's 95 MB is a **~12× smaller** dev
 dependency. That number goes in the README, because "one number that explains why this exists" is
 worth more than a paragraph.
 
 ### 1.3 Name — DECIDED
 
-Runtime `pgormjs` · CLI `@pgorm/kit` · test helpers `@pgorm/testing` · scaffolder `create-pgormjs`
-(`npm create pgormjs`). The `@pgorm` npm scope and the GitHub org `pgormjs` are both held.
+Runtime `pg-prime` · CLI `@pg-prime/kit` · test helpers `@pg-prime/testing` · scaffolder `create-pg-prime`
+(`npm create pg-prime`). The `@pg-prime` npm scope and the GitHub org `pg-prime` are both held.
 
 The one lesson worth keeping from the search: **a 404 on the registry does not mean a name is
-available.** Bare `pgorm` returned 404 and is nevertheless permanently unpublishable — npm's
+available.** Bare `pg-prime` returned 404 and is nevertheless permanently unpublishable — npm's
 similarity rule rejects it against the squatted 2015 `pg-orm` ("Package name too similar to
 existing package pg-orm"). Verify by attempting a `0.0.0` publish, not by probing the registry.
 `pg-orm-ts` is separately dead: unpublished 2026-08-04, and npm forbids reuse of unpublished names.
 
-**Status:** `pgormjs@0.0.0` is published. `@pgorm/kit`, `@pgorm/testing` and `create-pgormjs` are
+**Status:** `pg-prime@0.0.0` is published. `@pg-prime/kit`, `@pg-prime/testing` and `create-pg-prime` are
 still unclaimed — placeholders are free and the names are not.
 
 ### 1.4 Monorepo tooling
 
 - **pnpm 11 workspaces** (`pnpm-workspace.yaml`), default isolated `node_modules`. The isolation is
-  not incidental: it is what lets `packages/pgorm` build on `typescript@7.0.2` while
+  not incidental: it is what lets `packages/pg-prime` build on `typescript@7.0.2` while
   `bench/types` and `docs/` pin `typescript@6.0.3` for the tools that cannot run on 7 (F3). One
   hoisted TS would make that impossible.
 - **No Turborepo / Nx / Moon at v0.** Four packages, topological ordering already built into
@@ -120,13 +120,13 @@ still unclaimed — placeholders are free and the names are not.
 - **Release: Changesets** (`@changesets/cli@^3`; 3.0.0 landed 2026-08-11 and requires
   `node ^22.11 || ^24 || >=26`, `pnpm >=10` `[verified]` — aligned with our floor. If 3.0 proves
   rough in week 1, fall back to the `2.31.x` maintenance line).
-  - `pgormjs` and `@pgorm/kit` are a **`fixed` version group** — they always publish the same version.
+  - `pg-prime` and `@pg-prime/kit` are a **`fixed` version group** — they always publish the same version.
     Version skew between an ORM and its CLI is a permanent support tax (it is the top confusion in
     Drizzle's tracker); we design it away.
-  - `@pgorm/testing` and `create-pgormjs` version independently.
+  - `@pg-prime/testing` and `create-pg-prime` version independently.
   - CI enforces `changeset status --since=origin/main` on every PR touching `packages/`.
 - **`pkg-pr-new`** on every PR → installable preview builds
-  (`pnpm add https://pkg.pr.new/pgormjs@<sha>`). For a migration tool, "try my fix against your real
+  (`pnpm add https://pkg.pr.new/pg-prime@<sha>`). For a migration tool, "try my fix against your real
   schema" is the single highest-value contributor loop.
 
 ---
@@ -141,7 +141,7 @@ import silently bypasses it. `[verified working, F4]`
 
 ```jsonc
 {
-  "name": "pgorm",
+  "name": "pg-prime",
   "type": "module",
   "sideEffects": false,
   "license": "Apache-2.0",
@@ -166,7 +166,7 @@ import silently bypasses it. `[verified working, F4]`
 ```
 
 **Why `./schema` is not in the root barrel.** DDL builders are imported by *both* app code and the
-CLI. Keeping them behind their own entry means (a) `@pgorm/kit` loads the schema graph without ever
+CLI. Keeping them behind their own entry means (a) `@pg-prime/kit` loads the schema graph without ever
 touching the executor, (b) an application's server bundle never pulls DDL builders, and (c) the
 tree-shaking golden files (§2.4) become meaningful instead of trivially green. The runtime imports
 schema **types only** (`import type`), which erase. A lint rule forbids value imports across the
@@ -193,12 +193,12 @@ error. Verified output under TS 5.4.5:
 
 ```
 error TS2349: This expression is not callable.
-  Type '{ readonly __pgormTypeError__: "pgorm requires TypeScript >= 5.9. Please upgrade."; } & String'
+  Type '{ readonly __pg-primeTypeError__: "pg-prime requires TypeScript >= 5.9. Please upgrade."; } & String'
   has no call signatures.
 ```
 
 Refinement over Kysely's version: name the brand key so it reads first in a truncated hover — use
-`{ ERROR: 'pgorm requires TypeScript >= 5.9 — see https://pgorm.dev/ts' }` rather than a
+`{ ERROR: 'pg-prime requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' }` rather than a
 `__dunder__` key.
 
 ### 2.3 No default export — policy
@@ -235,7 +235,7 @@ Not "we set `sideEffects: false` and hope". Concretely, `tools/treeshake-check.m
 
 ### 3.1 Compiler
 
-**`pgormjs` runtime: `tsc` only (via `tsgo`, `typescript@7.0.2`). Unbundled ESM, 1:1 source→output file
+**`pg-prime` runtime: `tsc` only (via `tsgo`, `typescript@7.0.2`). Unbundled ESM, 1:1 source→output file
 mapping. No bundler, ever.**
 
 This is the Kysely model and it is unambiguously right for a types-heavy library: the `.d.ts` the
@@ -247,13 +247,13 @@ public entries come from the export map pointing at real emitted files, not from
 config.
 
 **Emit-parity guard.** TS 7 is six weeks old as a stable release. `tools/emit-parity.mjs` builds
-`packages/pgorm` twice — once with `typescript@6.0.3` and once with `tsgo@7.0.2` — and `diff -r`s the
+`packages/pg-prime` twice — once with `typescript@6.0.3` and once with `tsgo@7.0.2` — and `diff -r`s the
 two `dist/` trees, failing on any difference. That converts "is the new compiler's emit trustworthy?"
 from an unknown into a test, and gives us a one-line fallback (`build with 6.0.3`) if it ever fires.
 
-**`@pgorm/kit` CLI: bundled with `esbuild@0.28` into a single ESM file with a shebang; `.d.ts` for its
+**`@pg-prime/kit` CLI: bundled with `esbuild@0.28` into a single ESM file with a shebang; `.d.ts` for its
 small programmatic API emitted by `tsgo`.** Bundling pays here and only here: CLI cold-start matters,
-and inlining deps means `npm i -D @pgorm/kit` never surprises anyone with a transitive tree.
+and inlining deps means `npm i -D @pg-prime/kit` never surprises anyone with a transitive tree.
 **esbuild rather than `tsdown`** — `tsdown@0.22` (rolldown) is the Vite team's tsup successor and is
 where the ecosystem is heading, but it is pre-1.0 and we would be taking it for a job esbuild does in
 20 lines of stable config. **Revisit `tsdown` when it hits 1.0.**
@@ -263,9 +263,9 @@ where the ecosystem is heading, but it is pre-1.0 and we would be taking it for 
 - `declaration: true`, `declarationMap: true`, `sourceMap: true`. Ship `dist/**/*.d.ts` +
   `.d.ts.map` + `.js.map`; do **not** ship sources (`files: ["dist"]`) — maps point at published
   `.map` files with `sourcesContent` inlined for the small files and omitted for large ones.
-- **`isolatedDeclarations`: `false` in `pgormjs` (the builder API is inference-heavy and explicit
-  return types there would be both unwritable and worse for users), `true` in `@pgorm/kit`,
-  `@pgorm/testing` and `create-pgormjs`** — where it is free and buys parallel emit plus a guarantee
+- **`isolatedDeclarations`: `false` in `pg-prime` (the builder API is inference-heavy and explicit
+  return types there would be both unwritable and worse for users), `true` in `@pg-prime/kit`,
+  `@pg-prime/testing` and `create-pg-prime`** — where it is free and buys parallel emit plus a guarantee
   that no inferred type leaks a deep internal path.
 - **Budget: ≤ 900 KB total, ≤ 200 files, ≤ 40 KB per file** (§1.2). `tools/size-budget.mjs` prints
   the top-10 largest declarations on failure so the offender is obvious.
@@ -338,7 +338,7 @@ are worth one dev dependency in a monorepo.)
 
 ### 4.1 Tier 0 — unit, against the structural driver mock
 
-Agent 02's `PgLikePool` seam makes this free: `@pgorm/testing` exports `createMockPool()`, which
+Agent 02's `PgLikePool` seam makes this free: `@pg-prime/testing` exports `createMockPool()`, which
 returns a `PgLikePool`-shaped object that records every `{ text, values, mode, binary, rowMode }` and
 replays scripted result sets. **Every SQL-emitting path gets a golden-string assertion.** No database,
 no I/O. **Target: the whole tier 0 suite under 5 seconds.** This is where 80% of the tests live and it
@@ -368,13 +368,13 @@ safety would test green on PGlite while being completely broken.** So:
 > tier 1.** Concretely banned from PGlite: advisory-lock contention, cross-session LISTEN/NOTIFY, row-
 > and DDL-lock waiting, `40001` serialization-failure retry, deadlock detection, `lock_timeout` /
 > `statement_timeout` behaviour under contention, connection-pool semantics, and PgBouncer modes.
-> `@pgorm/testing` exports the PGlite fixture with a `requiresConcurrency()` guard that throws
+> `@pg-prime/testing` exports the PGlite fixture with a `requiresConcurrency()` guard that throws
 > loudly rather than passing quietly.
 
 > **Addendum, 2026-08-25 (WS-L).** `@electric-sql/pglite-socket` turned out not to be usable as
 > the socket in front of it — PGlite emits a spurious `ReadyForQuery` after every
 > extended-protocol error, which desynchronises `pg` on ~50% of erroring parameterised queries.
-> `pgormjs` ships its own ~130-line bridge in `test/live/_pglite-bridge.ts` instead. F7's finding
+> `pg-prime` ships its own ~130-line bridge in `test/live/_pglite-bridge.ts` instead. F7's finding
 > (the real `pg` driver over the real wire protocol) stands; the package does not. See `09` §2.4.
 
 Second boundary: PGlite is PG **18.3**, above our PG-15 floor, so it cannot catch version-gated
@@ -431,7 +431,7 @@ mechanisms, in order of value:
    once introspection works, and it is the test most likely to find the bugs users would have found.
    Nightly.
 
-Coverage gate: 90% lines on `pgormjs`, 85% on `@pgorm/kit`. Not 100% — chasing the last 10% on a code
+Coverage gate: 90% lines on `pg-prime`, 85% on `@pg-prime/kit`. Not 100% — chasing the last 10% on a code
 generator produces tests that assert the implementation.
 
 ### 4.5 Type-level testing (harness — budgets are agent 04's)
@@ -445,7 +445,7 @@ generator produces tests that assert the implementation.
   is literally the tool Prisma used to benchmark Drizzle, so our numbers are comparable to published
   ones. Baselines committed to `bench/types/baselines.json`; `--update-baselines` to change them.
 - **Expected-error tests:** `tools/type-errors/` compiles fixtures with the TS 6.0.3 API and asserts
-  the **message text** of our branded `PgOrmTypeError<'…'>` diagnostics against golden files. Error
+  the **message text** of our branded `PgPrimeTypeError<'…'>` diagnostics against golden files. Error
   message quality is a headline DX feature (round-1: Drizzle's error spew is its own top complaint);
   features have tests, so error messages get tests.
 - **`tstyche` considered and rejected.** Its distinguishing feature is built-in multi-TS-version
@@ -477,7 +477,7 @@ Postgres-tooling projects usually give up on Windows support entirely.
 The bar from round-1 is "near-raw driver overhead"; the anti-target is Prisma 7's ~11× average /
 ~27× p99. Both of those are *ratios*, so the harness measures ratios.
 
-**Design: every case is a pair.** `raw()` uses `pg` directly, `orm()` uses `pgormjs`, against the same
+**Design: every case is a pair.** `raw()` uses `pg` directly, `orm()` uses `pg-prime`, against the same
 database, the same query, the same connection settings, interleaved in the same process to cancel
 drift. We report `overhead_p50 = orm_p50 / raw_p50` and `overhead_p99`, never absolute milliseconds in
 isolation.
@@ -528,7 +528,7 @@ Both are policy failures, so the fix is policy.
   never in a PATCH.** This is stated in the README's first section, not buried in CONTRIBUTING.
 - **Every breaking change requires**: a `BREAKING:` section in the changeset, a before/after entry in
   `MIGRATING.md`, and — wherever the change is mechanical — a codemod shipped as
-  `pgorm codemod <name>`. A breaking change without a migration path does not merge.
+  `pg-prime codemod <name>`. A breaking change without a migration path does not merge.
 - **Cadence:** a minor roughly every 6 weeks; patches whenever needed. `ROADMAP.md` carries the 1.0
   checklist with a per-item status and is updated on every minor.
 - **The no-RC-purgatory rule:** *never more than 3 consecutive prereleases of the same target version,
@@ -557,8 +557,8 @@ Both are policy failures, so the fix is policy.
 6. **Type perf:** ≤ 25 000 instantiations for the 100-table fixture, ≤ 8 s cold `tsc --noEmit` on the
    400-table fixture, and **no schema size at which check time is superlinear** (measured across
    10/100/400). *(Exact thresholds are agent 04's to set; the gate exists regardless.)*
-7. **Size budgets met:** `pgormjs` ≤ 2.5 MB unpacked, `.d.ts` ≤ 900 KB, no single `.d.ts` > 40 KB,
-   hello-world ≤ 35 KB min+gz, **zero runtime deps and zero peer deps**; `@pgorm/kit` ≤ 8 MB.
+7. **Size budgets met:** `pg-prime` ≤ 2.5 MB unpacked, `.d.ts` ≤ 900 KB, no single `.d.ts` > 40 KB,
+   hello-world ≤ 35 KB min+gz, **zero runtime deps and zero peer deps**; `@pg-prime/kit` ≤ 8 MB.
 8. **Security:** sanitizer fuzz suite green over ≥ 10⁷ generated cases differential-tested against
    PostgreSQL's own `quote_ident`/`quote_literal`; `SECURITY.md` published with a disclosure address
    and a ≤ 72 h triage commitment; every release published via npm **trusted publishing** with
@@ -600,7 +600,7 @@ is the publisher, so adding a second human is a permissions change, not a secret
 
 ### 6.5 License
 
-**MPL-2.0** for `pgormjs`, `@pgorm/kit`, `@pgorm/testing` and `create-pgormjs`. Docs content
+**MPL-2.0** for `pg-prime`, `@pg-prime/kit`, `@pg-prime/testing` and `create-pg-prime`. Docs content
 **CC-BY-4.0**.
 
 Rationale (00-overview sign-off 3): the requirement is that forks stay open source. Apache-2.0 and
@@ -616,14 +616,14 @@ licence can be relaxed after the fact only with every contributor's consent.
 ## 7. Repo layout
 
 ```
-pgorm/
+pg-prime/
 ├─ .github/
 │  ├─ workflows/            ci.yml  nightly.yml  release.yml  bench.yml  codeql.yml  scorecard.yml
 │  ├─ ISSUE_TEMPLATE/       bug.yml  diff-bug.yml  type-perf.yml  feature.yml  config.yml
 │  ├─ CODEOWNERS  dependabot.yml  pull_request_template.md  FUNDING.yml
 ├─ .changeset/              config.json  *.md
 ├─ packages/
-│  ├─ pgorm/                                   # runtime — zero deps, ESM-only, tsc-emitted
+│  ├─ pg-prime/                                   # runtime — zero deps, ESM-only, tsc-emitted
 │  │  ├─ src/
 │  │  │  ├─ index.ts                           # root entry: client, tx, query builder
 │  │  │  ├─ schema/         index.ts  table.ts  columns/  constraints/  indexes/  policies/
@@ -640,12 +640,12 @@ pgorm/
 │  │  │  └─ internal/                          # never exported
 │  │  ├─ test/              unit/  pglite/  pg/  types/
 │  │  └─ package.json  tsconfig.json  README.md
-│  ├─ pgorm-kit/                               # CLI + diff engine — esbuild single-file bundle
+│  ├─ pg-prime-kit/                               # CLI + diff engine — esbuild single-file bundle
 │  │  ├─ src/               cli.ts  commands/  introspect/  diff/  plan/  lint/  apply/  codemod/
 │  │  ├─ test/              unit/  golden/  fuzz/  corpus/
 │  │  └─ package.json  tsconfig.json  build.mjs
-│  ├─ pgorm-testing/        src/{mock-pool.ts,pglite-fixture.ts,pg-fixture.ts,expect-sql.ts}   # → @pgorm/testing
-│  └─ create-pgorm/         src/  templates/
+│  ├─ pg-prime-testing/        src/{mock-pool.ts,pglite-fixture.ts,pg-fixture.ts,expect-sql.ts}   # → @pg-prime/testing
+│  └─ create-pg-prime/         src/  templates/
 ├─ fixtures/
 │  ├─ schemas/              10-tables/  100-tables/  400-tables/        # type-perf fixtures
 │  ├─ migrations/<case>/    from.ts  to.ts  expected.sql  expected.plan.json
@@ -676,7 +676,7 @@ pgorm/
 
 Every item that was open here has been decided; recorded so the reasoning is not re-litigated.
 
-1. **Name** — decided, §1.3. `pgormjs` / `@pgorm/kit` / `@pgorm/testing` / `create-pgormjs`.
+1. **Name** — decided, §1.3. `pg-prime` / `@pg-prime/kit` / `@pg-prime/testing` / `create-pg-prime`.
 2. **TS floor** — **5.9**, and it is a *consumer* floor, not a devDependency question: we compile
    and typecheck with tsgo (TS 7), while 5.9 is the oldest TypeScript a consumer may use against
    our published `.d.ts`. The `types@<5.9` export gate turns an older consumer's failure into one
@@ -687,7 +687,7 @@ Every item that was open here has been decided; recorded so the reasoning is not
    headline, against gates of 200k / 2.0 s / 0.5 s and a schema-size-independence ratio of 1.15
    (measured **1.00**). `@ark/attest` is *not* part of the harness — it cannot run on TS 7 and has
    been removed from the tree; the per-construct baselines it would have provided are still unwired.
-5. **`PgLikePool` seam** — holds. `packages/pgorm/src/driver` imports nothing non-relative, and
+5. **`PgLikePool` seam** — holds. `packages/pg-prime/src/driver` imports nothing non-relative, and
    `pg.Pool` casts to it structurally with no `as any`.
 
 ```

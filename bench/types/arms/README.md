@@ -19,7 +19,7 @@ a path that never existed; it is preserved verbatim for exactly that reason.)
 
 ## Why `f1-ops-free.ts` lives here and not in `src/`
 
-It shipped as `packages/pgorm/src/query/ops-free.ts` while F1 was being measured, because arm A won
+It shipped as `packages/pg-prime/src/query/ops-free.ts` while F1 was being measured, because arm A won
 and the winner is the shipped surface. WS3 then *implemented* that surface — `src/query/ops.ts`,
 `ops.types.ts`, `fn.ts`, `ops.manifest.ts` — and in doing so gave it class gates, exact result
 codecs, `json`-vs-`jsonb` operand splitting and a dozen operators the arm never had. Weighing that
@@ -31,6 +31,6 @@ So the arm moved here, unchanged, and `forks.mjs` compiles it directly.
 One number moved with it and should not be read as drift: the arm emits **7 960 B**, not the
 **7 853 B** recorded in `09` §3.0. The body is byte-identical — the whole +107 B is four import
 specifiers getting longer when the file left `src/query/` (`'../codec/index.js'` →
-`'../../../packages/pgorm/src/codec/index.js'`, ×4), and `.d.ts` keeps import specifiers verbatim.
+`'../../../packages/pg-prime/src/codec/index.js'`, ×4), and `.d.ts` keeps import specifiers verbatim.
 Arm B is untouched at **4 462 B**, and the reported comparison is unchanged: **−43 %**
 (−43.9 % on the new denominator, −43.2 % on the old).

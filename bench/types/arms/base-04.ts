@@ -2,7 +2,7 @@
  * WS0 fork **F3, arm A** — relation accessors reached through a **second lambda parameter**,
  * `(t, r) => r.u.posts(…)` (design/04 §2.4). Arm B (accessors on the table scope, design/03 §2.3)
  * won the measurement and is now the shipped surface in
- * `packages/pgorm/src/query/types.ts`; this file preserves the arm it beat so the numbers in
+ * `packages/pg-prime/src/query/types.ts`; this file preserves the arm it beat so the numbers in
  * design/09 §3.0 stay reproducible.
  *
  * design/04 §2.4's stated reason for the second parameter was "specifically to avoid an
@@ -13,8 +13,8 @@
  * Apart from where the relations live, this is the shipped `Query` verbatim.
  */
 
-import type { AnyHandle, Projectable } from '../../../packages/pgorm/src/schema/index.js'
-import type { NAME } from '../../../packages/pgorm/src/schema/index.js'
+import type { AnyHandle, Projectable } from '../../../packages/pg-prime/src/schema/index.js'
+import type { NAME } from '../../../packages/pg-prime/src/schema/index.js'
 import type {
   Expr,
   Project,
@@ -24,8 +24,8 @@ import type {
   RelsNs,
   SelectAt,
   Sources,
-} from '../../../packages/pgorm/src/query/types.js'
-import type { INV, ROW } from '../../../packages/pgorm/src/query/symbols.js'
+} from '../../../packages/pg-prime/src/query/types.js'
+import type { INV, ROW } from '../../../packages/pg-prime/src/query/symbols.js'
 
 export interface Query04<S extends Sources, O> {
   readonly [INV]: (o: O) => O

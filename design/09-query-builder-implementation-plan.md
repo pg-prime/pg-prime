@@ -3,7 +3,7 @@
 **Date:** 2026-08-25
 **Status:** PLAN. Sequenced workstreams with per-workstream test contracts and exit gates. Nothing here re-opens a decision recorded in `03`/`04`/`08`; where `03` and `04` disagree (§3 WS0) the disagreement is named and resolved by measurement, not by fiat.
 **Inputs:** `03-query-builder.md` (API, AST, compiler contract, Appendix A goldens, Appendix B budgets), `04-type-system.md` (type engine, §3.5 budgets), `08-architecture.md` §4 (test tiers, CI matrix), `00-overview.md` R5 (no-dehydration-tax contract).
-**Starting point (verified in-repo 2026-08-25):** tier 1 of the query engine is spiked and tested — `packages/pgorm/src/compile/{ast,nodes,compiler,hoist,decode,contract}.ts` (AST, single-pass emitter, LATERAL/`json_agg` hoist, positional decoder), `src/sql/` (`sql` tag, `ident` sanitizer, Kysely-CVE regressions), `src/schema/` (table/column/relation types, `Selectable`/`Insertable`/`Loaded`), `src/codec/` (registry + 25 scalar + 25 array codecs, R5 golden), `src/driver/` (structural `pg` adapter). **Missing:** the fluent builder, the `Ref` operator surface, the `Query<S,O>` type engine, the executor, and the seam that joins schema → compiler → real codecs (the compiler still runs on `src/sql/codec.ts`'s `spikeCodecs`).
+**Starting point (verified in-repo 2026-08-25):** tier 1 of the query engine is spiked and tested — `packages/pg-prime/src/compile/{ast,nodes,compiler,hoist,decode,contract}.ts` (AST, single-pass emitter, LATERAL/`json_agg` hoist, positional decoder), `src/sql/` (`sql` tag, `ident` sanitizer, Kysely-CVE regressions), `src/schema/` (table/column/relation types, `Selectable`/`Insertable`/`Loaded`), `src/codec/` (registry + 25 scalar + 25 array codecs, R5 golden), `src/driver/` (structural `pg` adapter). **Missing:** the fluent builder, the `Ref` operator surface, the `Query<S,O>` type engine, the executor, and the seam that joins schema → compiler → real codecs (the compiler still runs on `src/sql/codec.ts`'s `spikeCodecs`).
 
 ---
 
@@ -11,7 +11,7 @@
 
 | WS | Deliverable | Primary oracle | Gate to leave | Est. |
 |---|---|---|---|---|
-| L | **DONE** (§2.4) One live-PG harness (PGlite default, real PG via `PGORM_TEST_URL`), namespaced fixture, vitest projects, CI jobs | — | `pnpm test:live` green with no Docker (PGlite) *and* against PG 17 | 3–4 d |
+| L | **DONE** (§2.4) One live-PG harness (PGlite default, real PG via `PG_PRIME_TEST_URL`), namespaced fixture, vitest projects, CI jobs | — | `pnpm test:live` green with no Docker (PGlite) *and* against PG 17 | 3–4 d |
 | 0 | **DONE** (§3.0) The three `03`-vs-`04` API forks decided by measurement | `bench/types` marginal instantiations + check time on TS 5.9.3 / 7.0.2 | Decision recorded in this doc §3.0 with numbers | 2–3 d |
 | 1 | **DONE** (§3.1) `Query<S,O>` type engine (`src/query/types.ts`) | `expect-type` probes, `@ts-expect-error` probes, error-message goldens, type budget | the three per-query budgets in `bench/types/budget.json` are gated and pass | 1.5–2 wk |
 | 2 | **DONE** (§3.2) Codec seam: schema `ColumnRuntime` → compiler `ColumnMeta` → `src/codec` registry; `spikeCodecs` deleted | `RowDescription.dataTypeID` from a live server | Every DSL column builder resolves to a codec whose OID PG confirms | 3–5 d |
@@ -47,7 +47,7 @@ expect(rows).toStrictEqual([{ id: 9007199254740993n, joined: new Date('2026-01-0
 
 **R5 — Fixtures cannot drift.** The live fixture exports both the `pgTable(...)` definitions the builder queries and the DDL that creates them. One test per fixture asserts the two agree by reading `information_schema.columns` (name, `udt_name`, nullability, array dims) and comparing to `TableRuntime`. If the DDL and the schema disagree, every other live test is testing a lie.
 
-**R6 — Isolation and determinism.** Each live test file owns a schema namespace (`makeFixture('pgorm_q_select')`, the pattern in `test/fuzz/fixture.ts`) so vitest workers sharing one server cannot interfere. Seed data is a pure function (Appendix A). Tests never depend on execution order or on rows another file inserted. Tier 2 uses `CREATE DATABASE … TEMPLATE` for per-test databases where DDL is mutated.
+**R6 — Isolation and determinism.** Each live test file owns a schema namespace (`makeFixture('pgprime_q_select')`, the pattern in `test/fuzz/fixture.ts`) so vitest workers sharing one server cannot interfere. Seed data is a pure function (Appendix A). Tests never depend on execution order or on rows another file inserted. Tier 2 uses `CREATE DATABASE … TEMPLATE` for per-test databases where DDL is mutated.
 
 **R7 — Type tests come in threes and run on two compilers.** For every type-level feature: (a) an `expectTypeOf` positive; (b) an `@ts-expect-error` negative — the unused-directive rule (`test/schema/typecheck.test.ts`) turns a *lost* error into a build failure; (c) for every branded `OrmTypeError<'…'>`, a golden of the diagnostic *text* (`tools/type-errors/`, `08` §4.5). All of it compiles on TS 5.9.3 and 7.0.2; a probe that passes on one and not the other is a bug.
 
@@ -63,7 +63,7 @@ expect(rows).toStrictEqual([{ id: 9007199254740993n, joined: new Date('2026-01-0
 
 **R13 — Live tests assert SQLSTATE, not message text**, when checking that PG rejects something (`sqlState(e) === '42703'`), because messages vary by version and locale.
 
-Coverage target stays at `08`'s 90% lines for `pgormjs`, but the review question is R10's, not the percentage.
+Coverage target stays at `08`'s 90% lines for `pg-prime`, but the review question is R10's, not the percentage.
 
 ---
 
@@ -75,9 +75,9 @@ Three ad-hoc containers, each with its own harness and env var:
 
 | Suite | Harness | Default target | Env |
 |---|---|---|---|
-| `test/driver`, `test/codec` | `test/driver/_harness.ts` (`pg.Pool` → `pgDriver`) | `:54330` | `PGORM_TEST_URL` |
-| `test/fuzz` | `test/fuzz/_pg.ts` (raw `pg.Client`) | `:54331` | `PGORM_SQL_TEST_URL` |
-| `pgorm-kit/test` | `test/support/db.ts` (`makeDatabase`) | `:54329` | `PGORM_SPIKE_*` |
+| `test/driver`, `test/codec` | `test/driver/_harness.ts` (`pg.Pool` → `pgDriver`) | `:54330` | `PG_PRIME_TEST_URL` |
+| `test/fuzz` | `test/fuzz/_pg.ts` (raw `pg.Client`) | `:54331` | `PG_PRIME_SQL_TEST_URL` |
+| `pg-prime-kit/test` | `test/support/db.ts` (`makeDatabase`) | `:54329` | `PG_PRIME_SPIKE_*` |
 
 Fine for spikes; unworkable for a suite that must run on a contributor's laptop with no Docker (`08` §4.2's whole point) and on a PG 15–18 matrix in CI.
 
@@ -86,10 +86,10 @@ Fine for spikes; unworkable for a suite that must run on a contributor's laptop 
 One harness, three vitest projects, one env var.
 
 ```
-packages/pgorm/test/
+packages/pg-prime/test/
   live/
     _harness.ts        # single entry: liveTarget() → { url, kind: 'pglite' | 'pg', version }
-    _globalSetup.ts    # boots PGlite + pglite-socket when PGORM_TEST_URL is unset
+    _globalSetup.ts    # boots PGlite + pglite-socket when PG_PRIME_TEST_URL is unset
     fixture.ts         # pgTable defs + DDL + seed + drop, namespaced (Appendix A)
     fixture.drift.test.ts
   unit/  → existing test/{schema,sql,compile} + new test/query   (tier 0, no I/O)
@@ -97,19 +97,19 @@ packages/pgorm/test/
   pg/    → tests marked requiresConcurrency() or requiresVersion()  (tier 2 only)
 ```
 
-- **`liveTarget()`**: if `PGORM_TEST_URL` is set, use it and record `SHOW server_version_num`. Otherwise `globalSetup` starts `new PGlite()` behind `PGLiteSocketServer` on an ephemeral port and exports the URL. Same `pg` driver, same wire protocol, either way — nothing in a test knows which it is except through the two guards below.
+- **`liveTarget()`**: if `PG_PRIME_TEST_URL` is set, use it and record `SHOW server_version_num`. Otherwise `globalSetup` starts `new PGlite()` behind `PGLiteSocketServer` on an ephemeral port and exports the URL. Same `pg` driver, same wire protocol, either way — nothing in a test knows which it is except through the two guards below.
 - **`requiresConcurrency()`**: `it.skipIf(target.kind === 'pglite')` with a logged reason. Enforces `08` §4.2's ban list (a PGlite "second session" is the same backend and would pass a broken `SKIP LOCKED`).
 - **`requiresVersion(min)`**: for SQL that differs by PG major (`EXPLAIN (GENERIC_PLAN)` is 16+; below that the plan-ability check falls back to `PREPARE __p AS <sql>; DEALLOCATE __p`).
-- **Vitest projects**: `unit` (must stay < 5 s), `live`, `pg`. `pnpm test` = `unit`; `pnpm test:live` = `unit` + `live` (PGlite, no Docker); `pnpm test:pg` = all three against `PGORM_TEST_URL`.
+- **Vitest projects**: `unit` (must stay < 5 s), `live`, `pg`. `pnpm test` = `unit`; `pnpm test:live` = `unit` + `live` (PGlite, no Docker); `pnpm test:pg` = all three against `PG_PRIME_TEST_URL`.
 - **CI**: PR → `unit` on Node 22/24/26; `live` on PGlite × ubuntu/macos/windows; `live`+`pg` on a PG 17 container. `main`/nightly → PG 15/16/17/18 + PgBouncer 1.24 (transaction mode) × `live`+`pg`; fuzz at 1M cases; benches.
-- **Per-test DDL mutation** (only WS2's codec-seam tests need it): `CREATE DATABASE t_<n> TEMPLATE pgorm_base` on tier 2; on PGlite a fresh `new PGlite()` per file (~0.6 s) is cheaper than emulating templates.
-- `@pgorm/kit` keeps its own admin harness (it needs `CREATE DATABASE` and `pg_dump`) but switches to the same `PGORM_TEST_URL`. Out of scope here otherwise.
+- **Per-test DDL mutation** (only WS2's codec-seam tests need it): `CREATE DATABASE t_<n> TEMPLATE pgprime_base` on tier 2; on PGlite a fresh `new PGlite()` per file (~0.6 s) is cheaper than emulating templates.
+- `@pg-prime/kit` keeps its own admin harness (it needs `CREATE DATABASE` and `pg_dump`) but switches to the same `PG_PRIME_TEST_URL`. Out of scope here otherwise.
 
 ### 2.4 What WS-L actually built — 2026-08-25 · **DONE**
 
-Shipped as specified: one harness (`test/live/_harness.ts`), one env var (`PGORM_TEST_URL`), three
+Shipped as specified: one harness (`test/live/_harness.ts`), one env var (`PG_PRIME_TEST_URL`), three
 vitest projects (`unit` / `live` / `pg`), the Appendix A fixture with its drift test, and the CI
-matrix in `.github/workflows/ci.yml`. `@pgorm/kit` reads the same env var. Four deviations, each
+matrix in `.github/workflows/ci.yml`. `@pg-prime/kit` reads the same env var. Four deviations, each
 forced by a measurement rather than a preference:
 
 **1. PGlite is booted per test *file*, not once per run.** §2.2 said `globalSetup` boots it. It is
@@ -161,8 +161,8 @@ matched `nspname like 'pg_temp%'`, which counts *other* sessions' temp tables (n
 were passing on PGlite for the wrong reason and are now guarded.
 
 **Measured.** `unit` 173 tests in 1.8 s. `live` on PGlite: 216 tests, 13 files, 8.6 s wall, no
-Docker, **10/10 runs green**. `pg` on PostgreSQL 17: 203 + 5 tier-2 tests, 0 skipped. `@pgorm/kit`
-57 tests against `PGORM_TEST_URL`.
+Docker, **10/10 runs green**. `pg` on PostgreSQL 17: 203 + 5 tier-2 tests, 0 skipped. `@pg-prime/kit`
+57 tests against `PG_PRIME_TEST_URL`.
 
 **R10 mutation record.**
 
@@ -205,7 +205,7 @@ Each workstream lists: goal · files · contract · steps · tests by tier · ex
 
 Run it: `pnpm bench:forks` (`bench/types/forks.mjs`, ~90 s). Full data: `bench/types/forks.report.json`.
 
-**What was built.** `packages/pgorm/src/query/{types,ops-free,symbols}.ts` — design/04 §2 ported
+**What was built.** `packages/pg-prime/src/query/{types,ops-free,symbols}.ts` — design/04 §2 ported
 onto the real `src/schema` types, declaration-only. Four complete query surfaces were compiled:
 `base04` (design/04 §2 as written) and one arm per fork, each differing from `base04` in exactly
 that fork and nothing else, so `base04 − arm` prices the fork alone. `bench/types/gen.mjs` gained
@@ -342,7 +342,7 @@ unaffected, because `$all` is an explicit sub-object rather than the scope itsel
 
 #### What ships
 
-`packages/pgorm/src/query/types.ts` is the decided surface — design/04 on F1 and F2, design/03 on
+`packages/pg-prime/src/query/types.ts` is the decided surface — design/04 on F1 and F2, design/03 on
 F3: 90 / 172 / 206 marginal instantiations, ratio 1.000, −0.4 % to −2.0 % whole-program against
 design/04 as written. Recorded in `bench/types/budget.json` under `_measuredWs0`; WS1 turns those
 three lines into gates. `design/03` §2.9 and `design/04` §2.1/§2.2/§2.4 point back here.
@@ -581,7 +581,7 @@ silently, and each is a line item for a later workstream.
 
 #### Housekeeping
 
-`packages/pgorm/src/schema/*.d.ts` — eight stale declaration files committed by accident in
+`packages/pg-prime/src/schema/*.d.ts` — eight stale declaration files committed by accident in
 `b823739` — were deleted and the pattern added to `.gitignore`. They shadowed nothing, but a
 `.d.ts` size gate that measures a directory containing stale copies of its own output measures
 nothing either.
@@ -687,7 +687,7 @@ type-class gate (`src/query/ops-free.ts`) enforces at the type level.
 
 **(c) `sqlState()` was blind to half the suite.** The harness helper read `e.code`, which is where
 raw `pg` puts the SQLSTATE. Our own adapter throws a `PgDriverError` carrying `PgDriverErrorData`,
-where it is `err.pgorm.server.sqlstate` (errors cross the driver seam as plain data — `02` §7 D12).
+where it is `err.pgPrime.server.sqlstate` (errors cross the driver seam as plain data — `02` §7 D12).
 Every adapter-side error therefore looked like "no SQLSTATE" and silently bypassed R13. Fixed to
 read both.
 
@@ -1019,7 +1019,7 @@ finish the file. Named here rather than left implicit.
 Appendix A was hand-written before a builder existed, which made it a second source of truth for
 the one thing that must not have one — the exact SQL this library emits. It is now produced by
 `test/query/appendix-a.test.ts`, which builds each statement through the public API and diffs the
-compiled text against the markdown; `PGORM_UPDATE_DOCS=1` rewrites it. Same mechanism as WS3's
+compiled text against the markdown; `PG_PRIME_UPDATE_DOCS=1` rewrites it. Same mechanism as WS3's
 §2.9 table, same reason.
 
 Four differences from the hand-written original are permanent, and each is the document having been
@@ -1075,7 +1075,7 @@ every projection item is aliased, including inside an `insert … select`.
 9. **`db.from(db.h.users)`, not `db.from(users)`.** WS1's decision, restated because WS4 is where a
    reader meets it: the builder is typed against `AnyHandle` (a `[SCHEMA]` + `[NAME]` pair) rather
    than against `Table`, because relations live on the schema and a bare table would silently have
-   none. `pgOrm({ schema })` exposes the handles on `db.h`, so a query file needs no second import.
+   none. `pgPrime({ schema })` exposes the handles on `db.h`, so a query file needs no second import.
 
 #### Eight findings
 
@@ -1556,7 +1556,7 @@ The fixture module exports `{ ddl, seed, drop, tables: { users, posts, comments,
 ## Appendix B — Test file map (new files only)
 
 ```
-packages/pgorm/test/
+packages/pg-prime/test/
   live/_harness.ts  live/_globalSetup.ts  live/fixture.ts  live/fixture.drift.test.ts
   query/types/{select,join,leftJoinNullability,cte,setop,groupByGuard,if,call,invariance,inferResult,nest,write,relations}.probe.ts
   query/{meta,ops,select,insert,update,delete,cte,setop,window,relations,executor}.test.ts

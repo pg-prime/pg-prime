@@ -11,9 +11,9 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 export const GEN_ROOT = join(HERE, '.gen')
 
 /** Relative specifiers from a scenario dir to the package sources. */
-const SRC = '../../../../packages/pgorm/src/schema/index.js'
-const Q = '../../../../packages/pgorm/src/query/types.js'
-const CODEC = '../../../../packages/pgorm/src/codec/index.js'
+const SRC = '../../../../packages/pg-prime/src/schema/index.js'
+const Q = '../../../../packages/pg-prime/src/query/types.js'
+const CODEC = '../../../../packages/pg-prime/src/codec/index.js'
 
 const ARM = (f) => `../../arms/${f}.js`
 

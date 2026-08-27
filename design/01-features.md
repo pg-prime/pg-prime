@@ -86,7 +86,7 @@ The type architecture is Kysely's, ported wholesale and fixed in six places. Cod
 | `Selectable` / `Insertable` / `Updateable` projections, nullable → optional derivation | **v1** | Optionality falls out of the insert type; nothing is declared twice. |
 | Tuple-wrapped non-distributive conditionals (`[T] extends [X]`) | **v1** | Enum-typed columns do not distribute; a regression test locks this in. |
 | `DrainOuterGeneric`-style instantiation flattening | **v1** | The reference schema (§11) does not hit TS2589 and stays inside the instantiation budget. |
-| Readable type errors (`PgOrmTypeError<'message'>`) instead of inference cascades | **v1** | The five most common mistakes each produce one sentence, not a 40-line union dump. |
+| Readable type errors (`PgPrimeTypeError<'message'>`) instead of inference cascades | **v1** | The five most common mistakes each produce one sentence, not a 40-line union dump. |
 | Version-gated type errors via export map (`types@<5.9` → one-line stub) | **v1** | An unsupported TS version yields a single readable diagnostic. |
 | JSON round-trip degradation model (`Date` → `string` inside `json_agg`) | **v1** | A nested relation projection types a `timestamptz` column exactly as it decodes, not as the parent does. |
 | ORM-owned codec registry, passed per-pool, never global mutation | **v1** | `pg.types` global state is provably untouched; a test asserts another library's parsers survive. |
@@ -306,7 +306,7 @@ Flow: **TS schema + `sql/` lane → IR → diff against `pg_catalog` (shadow-nor
 | Type-perf benchmark in CI (instantiations, check time, `.d.ts` bytes) on the reference app | **v1** | Fails the build on regression beyond the budget. |
 | Fuzz tests on identifier, literal and JSON-path sanitizers | **v1** | Kysely shipped three high-severity CVEs here; these are security-critical code with fuzzing from day one. |
 | `sideEffects: false`, granular export paths, npm provenance attestation | **v1** | Verifiable provenance badge; tree-shaking demonstrated in a bundle-size test. |
-| TS config file (`pgorm.config.ts`), env handled in userland, no magic dotenv | **v1** | Config is typechecked; we never read `.env` behind the user's back. |
+| TS config file (`pg-prime.config.ts`), env handled in userland, no magic dotenv | **v1** | Config is typechecked; we never read `.env` behind the user's back. |
 | CLI verb set: `generate`, `migrate` (`deploy`/`status`), `check`, `verify`, `lint`, `baseline`, `pull`, `push`, `diff` | **v1** | Vocabulary users already know from drizzle-kit/Prisma; every verb documented with exit codes. |
 | Every CLI command emits a **structured JSON envelope** (`--output json`), never interactive in CI | **v1** | The envelope is the machine surface; TTY prompts are a convenience layer that writes annotations for you. |
 | Programmatic SDK returning the same envelope as the CLI | **v1** | The tool is scriptable and testable without spawning a process. |
@@ -415,7 +415,7 @@ All four items are decided; recorded so they are not re-opened.
    Revisit only if the ratio regresses once the fluent builder lands.
 3. **The performance bar, stated numerically.** — **≤1.15× raw `pg` median, ≤1.30× p99.** Carried
    into 08's 1.0 release list as a gate. Not yet measurable: there is no executor to benchmark.
-4. **Package layout.** — **Four packages**: `pgormjs` (runtime, zero deps and zero peer deps),
-   `@pgorm/kit` (CLI, may take dependencies the runtime may not), `@pgorm/testing`,
-   `create-pgormjs`. "Zero runtime dependencies" stays literally true of the artefact that ships to
-   production; verified — `packages/pgorm/src` has no non-relative imports at all.
+4. **Package layout.** — **Four packages**: `pg-prime` (runtime, zero deps and zero peer deps),
+   `@pg-prime/kit` (CLI, may take dependencies the runtime may not), `@pg-prime/testing`,
+   `create-pg-prime`. "Zero runtime dependencies" stays literally true of the artefact that ships to
+   production; verified — `packages/pg-prime/src` has no non-relative imports at all.

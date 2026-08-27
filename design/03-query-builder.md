@@ -417,7 +417,7 @@ export const relations = defineRelations({
   posts: { author: one(users, { from: posts.authorId, to: users.id, required: true }) },
 })
 
-export const db = pgOrm({ pool, schema: { users, posts }, relations })
+export const db = pgPrime({ pool, schema: { users, posts }, relations })
 ```
 
 ### 2.1 Select, where, order, limit
@@ -470,7 +470,7 @@ Notes on shape:
 > Operators are free functions (fork F1, §2.9's amendment), so `u.deletedAt.isNull()` is
 > `isNull(u.deletedAt)` and `u.role.in([...])` is `inList(u.role, [...])`. And `db.h.users` rather
 > than `users`: WS1 typed the builder against a *handle* — a `[SCHEMA]` + `[NAME]` pair — because
-> relations live on the schema and a bare `pgTable(...)` would silently have none. `pgOrm({ schema })`
+> relations live on the schema and a bare `pgTable(...)` would silently have none. `pgPrime({ schema })`
 > puts the handles on `db.h`, so a query file still needs one import.
 >
 > Everything else holds byte for byte: the compiled SQL is Appendix A's, `in([])` is the constant
@@ -739,7 +739,7 @@ function render(u: Feed) { u.posts[0].author.name }   // checked, sync, no undef
 `and` / `or` / `not` are free functions (tree-shakeable, no `eb` parameter to thread), and take arrays or varargs:
 
 ```ts
-import { and, or, not, exists, coalesce, fn, asc, desc } from 'pgormjs'
+import { and, or, not, exists, coalesce, fn, asc, desc } from 'pg-prime'
 
 .where(({ users: u }) => and(
   u.deletedAt.isNull(),
@@ -1080,8 +1080,8 @@ type Ref<C extends Codec> = BaseOps<C> & OpsByClass<C>[TypeClassOf<C>]
 ```
 
 > **REGENERATED 2026-08-26 (WS3).** The table below is produced from `src/query/ops.manifest.ts`
-> by `packages/pgorm/test/query/ops-table.test.ts`, which fails CI if the two disagree. Edit the
-> manifest, then run `PGORM_UPDATE_DOCS=1 pnpm test -- ops-table`. Two corrections it forced on the
+> by `packages/pg-prime/test/query/ops-table.test.ts`, which fails CI if the two disagree. Edit the
+> manifest, then run `PG_PRIME_UPDATE_DOCS=1 pnpm test -- ops-table`. Two corrections it forced on the
 > hand-written version it replaced: `avg` is **not** always `numeric` (it is `float8` for `float4`
 > and `float8` operands), and the json/jsonb accessors are the *only* members of that row that
 > accept a `json` operand — everything else there is jsonb-only.
@@ -1594,7 +1594,7 @@ Every example in §2 with its exact output.
 
 > **REGENERATED 2026-08-26 (WS4).** This block is no longer hand-written: it is produced by
 > `test/query/appendix-a.test.ts`, which builds each statement through the public API and
-> compares the compiled SQL byte for byte. `PGORM_UPDATE_DOCS=1 pnpm test -- appendix-a`
+> compares the compiled SQL byte for byte. `PG_PRIME_UPDATE_DOCS=1 pnpm test -- appendix-a`
 > rewrites it. The compiler is pure, so no database is involved.
 
 <!-- appendix-a:start — generated from test/query/appendix-a.test.ts; do not edit -->

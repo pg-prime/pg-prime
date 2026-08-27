@@ -1,0 +1,17 @@
+{
+  "name": "create-pg-prime",
+  "version": "0.0.0",
+  "description": "Scaffolder for pg-prime projects. Pre-alpha — not yet usable.",
+  "license": "MPL-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-prime/pg-prime.git"
+  }
+}

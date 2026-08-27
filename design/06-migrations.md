@@ -492,7 +492,7 @@ carrying a view or trigger legitimately differs from the clone; flipping the def
 
 Unavailability — no `pg_dump` on PATH, or one older than the server — is `skipped`, never
 `failed`: that is an environment gap, not evidence about the plan. The launcher argv is
-injectable (`PGORM_PG_DUMP`, `PGORM_PG_DUMP_URI`) so a containerized server can be reached
+injectable (`PG_PRIME_PG_DUMP`, `PG_PRIME_PG_DUMP_URI`) so a containerized server can be reached
 without `src/` knowing that Docker exists.
 
 **Status on the fixture corpus (2026-08-25):** acceptance, enum-ordering, multi-schema up and

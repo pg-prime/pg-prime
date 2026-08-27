@@ -1,4 +1,4 @@
-# pgorm — Design Overview & Decision Record
+# pg-prime — Design Overview & Decision Record
 
 **Living document.** Last reconciled **2026-08-25**. Design round completed 2026-08-14; this file
 is the entry point, the decision record, and the honest status of what is actually built.
@@ -31,20 +31,20 @@ different `Codec` types coexist (`sql/codec.ts` carries a self-described spike-l
 | Driver | `execute` · `stream` (real cursors) · `describe` · `cancel` · error taxonomy. No transactions, no COPY |
 | SQL + compiler | `sql` tag with `ident`/`lit`/`join`/`unsafeRaw`; SELECT and INSERT compile. **UPDATE and DELETE do not** — the AST nodes exist, the compiler throws |
 | Migration engine | The most complete subsystem. Extract → IR → diff → ordered DDL → prove → apply → re-extract, end to end on 8 object kinds, 21 phases, 21 hazard codes |
-| Packaging | Nothing is consumable: no entry point, no `exports`, no build. `@pgorm/testing` and `create-pgormjs` are README-only |
+| Packaging | Nothing is consumable: no entry point, no `exports`, no build. `@pg-prime/testing` and `create-pg-prime` are README-only |
 
 **428 tests green** (168 runtime offline, 203 runtime live, 57 kit); workspace typecheck clean.
 **Type budget, measured on the real implementation:** 137,778 instantiations, 1.11 s on TS 5.9 /
 0.231 s on TS 7, schema-size-independence ratio **1.00** against a 1.15 gate.
-**Dependencies:** `pgormjs` has zero runtime deps and zero peer deps — verified, `src/` contains no
-non-relative imports at all. `@pgorm/kit` depends on `pg` + `@types/pg`. 7 devDeps at the root.
+**Dependencies:** `pg-prime` has zero runtime deps and zero peer deps — verified, `src/` contains no
+non-relative imports at all. `@pg-prime/kit` depends on `pg` + `@types/pg`. 7 devDeps at the root.
 
 ## Decisions of record
 
-1. **Names.** Runtime `pgormjs` · CLI `@pgorm/kit` · helpers `@pgorm/testing` · scaffolder
-   `create-pgormjs`. Bare `pgorm` is permanently unpublishable — npm's similarity rule rejects it
+1. **Names.** Runtime `pg-prime` · CLI `@pg-prime/kit` · helpers `@pg-prime/testing` · scaffolder
+   `create-pg-prime`. Bare `pg-prime` is permanently unpublishable — npm's similarity rule rejects it
    against the squatted 2015 `pg-orm`, and **a 404 does not prove a name is available**. Only
-   `pgormjs@0.0.0` is published so far; the other three are unclaimed.
+   `pg-prime@0.0.0` is published so far; the other three are unclaimed.
 2. **TypeScript.** Build with tsgo (TS 7); **consumer floor 5.9**. The floor is what a *user* needs
    to typecheck against our `.d.ts`, enforced by a `types@<5.9` export gate. Lowering a floor later
    is non-breaking; raising one is not.
@@ -96,4 +96,4 @@ non-relative imports at all. `@pgorm/kit` depends on `pg` + `@types/pg`. 7 devDe
    API forks, to be settled by measurement rather than fiat.
 4. Package entry points and a build, so any of this is installable.
 5. CI. There is none: every gate in these documents is currently run by hand.
-6. Claim `@pgorm/kit`, `@pgorm/testing`, `create-pgormjs` on npm.
+6. Claim `@pg-prime/kit`, `@pg-prime/testing`, `create-pg-prime` on npm.

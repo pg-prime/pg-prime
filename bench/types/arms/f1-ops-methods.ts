@@ -8,9 +8,9 @@
  * `Ref` instantiates nothing per call; the intersection is paid once per table at declaration.*
  */
 
-import type { OUT } from '../../../packages/pgorm/src/schema/index.js'
-import type { ColMeta, Projectable, Ref } from '../../../packages/pgorm/src/schema/index.js'
-import type { AnyQuery, Expr, ExprOf, Operand } from '../../../packages/pgorm/src/query/types.js'
+import type { OUT } from '../../../packages/pg-prime/src/schema/index.js'
+import type { ColMeta, Projectable, Ref } from '../../../packages/pg-prime/src/schema/index.js'
+import type { AnyQuery, Expr, ExprOf, Operand } from '../../../packages/pg-prime/src/query/types.js'
 
 /** Type-class dispatch is a single indexed access, which keeps the type cost flat (03 §2.9). */
 type ClassOf<M extends ColMeta> = M['pg'] extends `${string}[]`

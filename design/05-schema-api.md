@@ -49,7 +49,7 @@ Read this section top to bottom; the rest of the document is reference.
 import {
   sql, pgSchema, pgExtension, pgDomain, pgEnum, pgCompositeType,
   uuid, text, timestamptz, citext,
-} from 'pgormjs/pg';
+} from 'pg-prime/pg';
 
 // ─── extensions (managed: we emit CREATE EXTENSION and order everything after it)
 export const pgcrypto  = pgExtension('pgcrypto');
@@ -94,7 +94,7 @@ export const softDelete = () => ({
 ### 1.2 `db/schema/functions.ts` — SQL functions as first-class, callable objects
 
 ```ts
-import { sql, pgFunction, uuid } from 'pgormjs/pg';
+import { sql, pgFunction, uuid } from 'pg-prime/pg';
 import { audit } from './_shared.js';
 
 /** BEFORE UPDATE trigger body. */
@@ -153,7 +153,7 @@ export const logMembershipChange = pgFunction('log_membership_change', {
 ```ts
 import {
   sql, pgTable, index, uniqueIndex, check, comment, rls,
-} from 'pgormjs/pg';
+} from 'pg-prime/pg';
 import { email, postalAddress, pk, timestamps, softDelete } from './_shared.js';
 
 export type UserPrefs = {
@@ -202,7 +202,7 @@ export const users = pgTable('users', (t) => ({
 ### 1.4 `db/schema/orgs.ts`
 
 ```ts
-import { sql, pgTable, index, check, rls, comment } from 'pgormjs/pg';
+import { sql, pgTable, index, check, rls, comment } from 'pg-prime/pg';
 import { email, pk, timestamps } from './_shared.js';
 
 export const orgs = pgTable('orgs', (t) => ({
@@ -231,7 +231,7 @@ export const orgs = pgTable('orgs', (t) => ({
 ```ts
 import {
   sql, pgTable, primaryKey, foreignKey, exclude, index, rls,
-} from 'pgormjs/pg';
+} from 'pg-prime/pg';
 import { memberRole, btreeGist, timestamps } from './_shared.js';
 import { users } from './users.js';
 import { orgs } from './orgs.js';
@@ -279,7 +279,7 @@ export const seatHolds = pgTable('seat_holds', (t) => ({
 ### 1.6 `db/schema/audit.ts` — partitioning, identity, non-public schema
 
 ```ts
-import { sql, primaryKey, index, partitionBy, partitions, pgPartition } from 'pgormjs/pg';
+import { sql, primaryKey, index, partitionBy, partitions, pgPartition } from 'pg-prime/pg';
 import { audit } from './_shared.js';
 
 export const membershipEvents = audit.table('membership_events', (t) => ({
@@ -311,7 +311,7 @@ export const membershipEvents2026 = pgPartition('membership_events_2026', {
 ### 1.7 `db/schema/triggers.ts`
 
 ```ts
-import { sql, pgTrigger } from 'pgormjs/pg';
+import { sql, pgTrigger } from 'pg-prime/pg';
 import { setUpdatedAt, logMembershipChange } from './functions.js';
 import { users } from './users.js';
 import { orgs } from './orgs.js';
@@ -341,7 +341,7 @@ export const membershipsAudit = pgTrigger('memberships_audit', {
 ### 1.8 `db/schema/views.ts`
 
 ```ts
-import { sql, pgMaterializedView, pgView, uniqueIndex, count, eq } from 'pgormjs/pg';
+import { sql, pgMaterializedView, pgView, uniqueIndex, count, eq } from 'pg-prime/pg';
 import { orgs } from './orgs.js';
 import { memberships } from './memberships.js';
 
@@ -384,7 +384,7 @@ export const orgHealth = pgView('org_health')
 ### 1.9 `db/schema/security.ts` — roles, RLS policies, grants
 
 ```ts
-import { sql, pgRole, pgPolicy, grant } from 'pgormjs/pg';
+import { sql, pgRole, pgPolicy, grant } from 'pg-prime/pg';
 import { currentOrgId } from './functions.js';
 import { orgs } from './orgs.js';
 import { users } from './users.js';
@@ -431,7 +431,7 @@ export const appUserGrants = [
 ### 1.10 `db/schema/relations.ts`
 
 ```ts
-import { defineRelations } from 'pgormjs';
+import { defineRelations } from 'pg-prime';
 import * as tables from './tables.js';   // barrel re-exporting users, orgs, memberships, …
 
 export const relations = defineRelations(tables, (r) => ({
@@ -481,7 +481,7 @@ export const relations = defineRelations(tables, (r) => ({
 ### 1.11 `db/schema/index.ts` — the registry
 
 ```ts
-import { defineSchema } from 'pgormjs';
+import { defineSchema } from 'pg-prime';
 
 import * as shared     from './_shared.js';
 import * as functions  from './functions.js';
@@ -506,7 +506,7 @@ export const schema = defineSchema({
 });
 
 // Types come out as free type functions:
-import type { Row, Insert, Update } from 'pgormjs';
+import type { Row, Insert, Update } from 'pg-prime';
 export type User      = Row<typeof usersMod.users>;
 export type NewUser   = Insert<typeof usersMod.users>;
 export type UserPatch = Update<typeof usersMod.users>;
@@ -1181,7 +1181,7 @@ Why not file-glob discovery:
 The CLI reads `pg-orm.config.ts`:
 
 ```ts
-import { defineConfig } from 'pgormjs/config';
+import { defineConfig } from 'pg-prime/config';
 import { schema } from './db/schema/index.js';
 
 export default defineConfig({

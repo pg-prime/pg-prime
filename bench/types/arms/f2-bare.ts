@@ -9,8 +9,8 @@
  * on the claim.
  */
 
-import type { AnyHandle, Defer, Projectable, Simplify } from '../../../packages/pgorm/src/schema/index.js'
-import type { NAME } from '../../../packages/pgorm/src/schema/index.js'
+import type { AnyHandle, Defer, Projectable, Simplify } from '../../../packages/pg-prime/src/schema/index.js'
+import type { NAME } from '../../../packages/pg-prime/src/schema/index.js'
 import type {
   Expr,
   ExprOf,
@@ -19,8 +19,8 @@ import type {
   RelsNs,
   SelectAt,
   Sources,
-} from '../../../packages/pgorm/src/query/types.js'
-import type { INV, ROW } from '../../../packages/pgorm/src/query/symbols.js'
+} from '../../../packages/pg-prime/src/query/types.js'
+import type { INV, ROW } from '../../../packages/pg-prime/src/query/symbols.js'
 
 /** A projection whose values may themselves be projections, to any depth. */
 export type BareProjection = { readonly [k: string]: Projectable | BareProjection }

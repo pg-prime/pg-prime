@@ -267,7 +267,7 @@ function packageDtsBytes() {
     process.execPath,
     [
       COMPILERS['5.9.3'],
-      '-p', join(ROOT, 'packages', 'pgorm', 'tsconfig.json'),
+      '-p', join(ROOT, 'packages', 'pg-prime', 'tsconfig.json'),
       '--outDir', out, '--emitDeclarationOnly', '--pretty', 'false',
     ],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },

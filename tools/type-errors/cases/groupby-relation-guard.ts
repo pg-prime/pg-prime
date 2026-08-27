@@ -1,6 +1,6 @@
 // design/03 §2.3: a relation row-set projection after a GROUP BY that drops the parent key.
-import type { Executor } from '../../../packages/pgorm/src/query/types.js'
-import { schema } from '../../../packages/pgorm/test/schema/fixture.js'
+import type { Executor } from '../../../packages/pg-prime/src/query/types.js'
+import { schema } from '../../../packages/pg-prime/test/schema/fixture.js'
 declare const db: Executor
 db.from(schema.h.users, 'u')
   .groupBy((t) => [t.u.email])

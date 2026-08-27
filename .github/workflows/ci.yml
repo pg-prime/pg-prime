@@ -10,7 +10,7 @@
 #          compiles ~40 generated programs on two TypeScript versions and takes ~25 s, and because
 #          a budget that only exists in a JSON file is not a gate.
 #
-# One env var selects the target everywhere: PGORM_TEST_URL set ⇒ that server, unset ⇒ PGlite.
+# One env var selects the target everywhere: PG_PRIME_TEST_URL set ⇒ that server, unset ⇒ PGlite.
 
 name: ci
 
@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PGORM_FUZZ_CASES: '10000'
+  PG_PRIME_FUZZ_CASES: '10000'
 
 jobs:
   unit:
@@ -88,20 +88,20 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_USER: pgorm
-          POSTGRES_PASSWORD: pgorm
-          POSTGRES_DB: pgorm
+          POSTGRES_USER: pgprime
+          POSTGRES_PASSWORD: pgprime
+          POSTGRES_DB: pgprime
           # The harness asserts UTC rather than SET-ting it (design/02 §4.7), so the server has
           # to be started in it — every timestamptz golden is spelled in the session zone.
           TZ: UTC
         ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U pgorm"
+          --health-cmd "pg_isready -U pgprime"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      PGORM_TEST_URL: postgres://pgorm:pgorm@127.0.0.1:5432/pgorm
+      PG_PRIME_TEST_URL: postgres://pgprime:pgprime@127.0.0.1:5432/pgprime
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -110,6 +110,6 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # `pg_dump` for @pgorm/kit's round-trip oracle; the client version must be >= the server's.
+      # `pg_dump` for @pg-prime/kit's round-trip oracle; the client version must be >= the server's.
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client-17
       - run: pnpm test:pg

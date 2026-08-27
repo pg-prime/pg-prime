@@ -1,17 +1,17 @@
 {
-  "name": "pgorm-monorepo",
+  "name": "pg-prime-monorepo",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "test": "pnpm --filter pgormjs test",
-    "test:live": "pnpm --filter pgormjs test:live",
+    "test": "pnpm --filter pg-prime test",
+    "test:live": "pnpm --filter pg-prime test:live",
     "test:pg": "pnpm -r --if-present test:pg",
     "typecheck": "pnpm -r --if-present typecheck",
-    "bench:types": "pnpm --filter @pgorm-bench/types bench",
-    "bench:forks": "pnpm --filter @pgorm-bench/types bench:forks",
+    "bench:types": "pnpm --filter @pg-prime-bench/types bench",
+    "bench:forks": "pnpm --filter @pg-prime-bench/types bench:forks",
     "type-errors": "node tools/type-errors/record.mjs",
     "type-errors:check": "node tools/type-errors/record.mjs --check"
   },

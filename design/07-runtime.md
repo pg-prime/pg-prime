@@ -22,7 +22,7 @@
 ## 0. The five-minute version
 
 ```ts
-import { createDb } from 'pgormjs'
+import { createDb } from 'pg-prime'
 import * as schema from './schema.js'
 
 export const db = createDb({
@@ -397,14 +397,14 @@ export interface PreparedStatementOptions {
   /** Consecutive self-heal events before this pool permanently downgrades to
    *  'unnamedExtended' and logs at error level. Default 3. */
   downgradeAfterFailures?: number
-  /** Statement name prefix. Default 'pgorm'. Names are `${prefix}_${fnv1a(sql)}_${seq}`. */
+  /** Statement name prefix. Default 'pg-prime'. Names are `${prefix}_${fnv1a(sql)}_${seq}`. */
   prefix?: string
 }
 ```
 
 **Keying.** The cache key is `hash(sql text) + ':' + paramOidSignature`. Both components are required: the same SQL text with different inferred parameter types is a genuinely different statement, and keying on text alone is how you get `42804 datatype_mismatch` on the second call. The key is scoped **per physical connection**, never process-wide, because a named statement lives on a backend, not in our process. Cache state travels with the connection object and is discarded when the connection is destroyed.
 
-**Naming.** `pgorm_<hash>_<seq>`. Deterministic per SQL text so logs and `pg_prepared_statements` are readable; the `seq` disambiguates hash collisions and re-prepares after eviction.
+**Naming.** `pgprime_<hash>_<seq>`. Deterministic per SQL text so logs and `pg_prepared_statements` are readable; the `seq` disambiguates hash collisions and re-prepares after eviction.
 
 **Eviction.** LRU at `maxPerConnection`. Evicting sends the **protocol `Close` message** (`'C'`,`'S'`,name) — **never SQL `DEALLOCATE <name>`**. This is not a stylistic preference: SQL `DEALLOCATE` with a client-chosen name is exactly what breaks PHP/PDO against PgBouncer (§5.2), because the name PgBouncer gave the server is `PGBOUNCER_{id}`, not ours. Protocol `Close` is rewritten in flight by the pooler; SQL `DEALLOCATE` is forwarded verbatim and fails. If agent 02's seam cannot express a protocol `Close` on `pg`, the fallback is **evict-by-forgetting** (drop the map entry, let the server-side statement leak until the connection recycles at `maxLifetimeSeconds`) — still strictly better than emitting `DEALLOCATE`. Never `DEALLOCATE ALL` / `DISCARD ALL`.
 
@@ -504,9 +504,9 @@ BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY DEFERRABLE
 `tx.transaction(fn)` and its alias `tx.savepoint(fn)` emit:
 
 ```sql
-SAVEPOINT "pgorm_sp_1"        -- depth-derived, deterministic, always identifier-quoted
-RELEASE SAVEPOINT "pgorm_sp_1"          -- on success
-ROLLBACK TO SAVEPOINT "pgorm_sp_1"      -- on throw, then rethrow
+SAVEPOINT "pgprime_sp_1"        -- depth-derived, deterministic, always identifier-quoted
+RELEASE SAVEPOINT "pgprime_sp_1"          -- on success
+ROLLBACK TO SAVEPOINT "pgprime_sp_1"      -- on throw, then rethrow
 ```
 
 Names are depth-derived rather than random because nesting is lexical, the names appear in logs and `EXPLAIN` output, and determinism makes tests readable. They are always identifier-quoted regardless.
@@ -561,8 +561,8 @@ export interface RetryPolicy {
   /** 'full' (default) = sleep(random(0, min(maxDelay, base * 2**(attempt-1)))). */
   jitter?: 'full' | 'equal' | 'none'
   /** Last word: return false to stop retrying. Sees the typed error and the attempt number. */
-  shouldRetry?(err: PgOrmError, attempt: number): boolean
-  onRetry?(info: { err: PgOrmError; attempt: number; delayMs: number; label?: string }): void
+  shouldRetry?(err: PgPrimeError, attempt: number): boolean
+  onRetry?(info: { err: PgPrimeError; attempt: number; delayMs: number; label?: string }): void
 }
 ```
 
@@ -573,7 +573,7 @@ Full jitter (rather than plain exponential) because serialization failures are *
 1. **`IndeterminateCommitError`.** If the connection dies after we write `COMMIT` but before we read the response, **the transaction may have committed**. Retrying is a correctness bug, not a latency tradeoff — it is how you double-charge a credit card. This gets its own error class (§4.2), is never retried, and its message says exactly this. To my knowledge no TS ORM distinguishes this case; every one of them classifies it as a generic connection error. This is the single most important correctness decision in this section.
 2. **Aborted `signal`.** If the caller's `AbortSignal` fired, retrying contradicts the caller.
 3. **Anything after a streamed result has been partially delivered** to the caller (§6.3) — the consumer has already seen rows.
-4. **Non-`PgOrmError` throws from the callback** unless `shouldRetry` explicitly says otherwise. A `TypeError` in user code is not a transient database condition.
+4. **Non-`PgPrimeError` throws from the callback** unless `shouldRetry` explicitly says otherwise. A `TypeError` in user code is not a transient database condition.
 
 **Idempotency warning — structural, not just documentary.** Retry re-runs the *callback*, so every non-database side effect in it runs again: the Stripe charge, the S3 upload, the email, the counter increment on a Redis key. Mitigations we actually ship:
 
@@ -677,7 +677,7 @@ We reject Drizzle's design (`tx.rollback()` throws, and the promise silently res
 
 ### 4.1 Design rules
 
-1. **One base class, `PgOrmError`.** `instanceof PgOrmError` reliably answers "did this come from the database layer".
+1. **One base class, `PgPrimeError`.** `instanceof PgPrimeError` reliably answers "did this come from the database layer".
 2. **Branch on SQLSTATE *class*, leaf on SQLSTATE.** Users can catch broadly (`IntegrityConstraintError`) or narrowly (`UniqueViolationError`) without a lookup table.
 3. **Unmodelled SQLSTATEs never lose information.** They land on the nearest class ancestor, or `UnknownQueryError`, always carrying the raw `code`. Adding a leaf class later is not a breaking change.
 4. **Every error carries structured fields, not just a message.** Nobody should ever parse our message text; if they need to, we have failed.
@@ -687,7 +687,7 @@ We reject Drizzle's design (`tx.rollback()` throws, and the promise silently res
 ### 4.2 The hierarchy
 
 ```
-PgOrmError                                  abstract; { message, code?, cause?, callSite? }
+PgPrimeError                                  abstract; { message, code?, cause?, callSite? }
 ├── QueryError                              the server rejected a statement (has a SQLSTATE)
 │   ├── IntegrityConstraintError            class 23
 │   │   ├── NotNullViolationError           23502
@@ -758,7 +758,7 @@ PgOrmError                                  abstract; { message, code?, cause?, 
 ### 4.3 Fields and the redaction policy
 
 ```ts
-export abstract class PgOrmError extends Error {
+export abstract class PgPrimeError extends Error {
   readonly code?: string                       // SQLSTATE, when the server gave one
   readonly cause?: unknown                     // always the underlying driver error
   /** Captured at query start, so you get the real call site instead of a useless async stack. §7.4 */
@@ -768,7 +768,7 @@ export abstract class PgOrmError extends Error {
   readonly name: string
 }
 
-export class QueryError extends PgOrmError {
+export class QueryError extends PgPrimeError {
   readonly code: string                        // '23505'
   readonly sqlStateClass: string               // '23'
   readonly severity: 'ERROR' | 'FATAL' | 'PANIC'
@@ -862,7 +862,7 @@ to:
 And, more importantly, matching becomes type-safe and refactor-proof:
 
 ```ts
-import { isUniqueViolation, isForeignKeyViolation } from 'pgormjs'
+import { isUniqueViolation, isForeignKeyViolation } from 'pg-prime'
 
 try { await db.insert(users).values(v) }
 catch (e) {
@@ -886,8 +886,8 @@ String-matching on `err.constraint === 'users_email_key'` is the status quo ever
 The SQLSTATE→class mapping lives in one exported record so it is inspectable, testable, and extensible:
 
 ```ts
-export const SQLSTATE_MAP: Readonly<Record<string, PgOrmErrorCtor>> = { '23505': UniqueViolationError, ... }
-export const SQLSTATE_CLASS_FALLBACK: Readonly<Record<string, PgOrmErrorCtor>> = {
+export const SQLSTATE_MAP: Readonly<Record<string, PgPrimeErrorCtor>> = { '23505': UniqueViolationError, ... }
+export const SQLSTATE_CLASS_FALLBACK: Readonly<Record<string, PgPrimeErrorCtor>> = {
   '23': IntegrityConstraintError, '22': DataError, '40': TransactionError,
   '42': SchemaError, '53': InsufficientResourcesError, '08': ConnectionError, ...
 }
@@ -1113,7 +1113,7 @@ export interface Subscription {
   on(event: 'reconnect', h: (info: { attempt: number; downMs: number }) => void): () => void
   /** Fires after a reconnect. Notifications during the gap are LOST — reconcile here. */
   on(event: 'gap', h: (info: { downMs: number }) => void): () => void
-  on(event: 'error', h: (e: PgOrmError) => void): () => void
+  on(event: 'error', h: (e: PgPrimeError) => void): () => void
 }
 
 db.listen(channel: string, handler: (payload: string, ctx: { channel: string; processId: number }) => void,
@@ -1195,7 +1195,7 @@ export interface QueryEndEvent extends QueryStartEvent {
 
 export interface QueryErrorEvent extends QueryStartEvent {
   readonly durationMs: number
-  readonly error: PgOrmError
+  readonly error: PgPrimeError
 }
 ```
 

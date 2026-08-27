@@ -14,7 +14,7 @@
  *   whole-plain − whole-base = the rebuild artifact, which is not
  */
 
-import type { COLS, NAME, SCHEMA } from '../../../packages/pgorm/src/schema/index.js'
+import type { COLS, NAME, SCHEMA } from '../../../packages/pg-prime/src/schema/index.js'
 import type {
   AnyHandle,
   AnySchema,
@@ -23,7 +23,7 @@ import type {
   RelMeta,
   RelOut,
   TableOf,
-} from '../../../packages/pgorm/src/schema/index.js'
+} from '../../../packages/pg-prime/src/schema/index.js'
 import type {
   Expr,
   Project,
@@ -32,8 +32,8 @@ import type {
   SelectAt,
   Sources,
   TableAt,
-} from '../../../packages/pgorm/src/query/types.js'
-import type { INV, PRJ, ROW } from '../../../packages/pgorm/src/query/symbols.js'
+} from '../../../packages/pg-prime/src/query/types.js'
+import type { INV, PRJ, ROW } from '../../../packages/pg-prime/src/query/symbols.js'
 
 type ColsAt<H extends AnyHandle> = TableAt<H>[typeof COLS & keyof TableAt<H>]
 

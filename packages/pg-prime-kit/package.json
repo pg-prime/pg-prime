@@ -1,0 +1,32 @@
+{
+  "name": "@pg-prime/kit",
+  "version": "0.0.0",
+  "description": "Migration engine and CLI for pg-prime: catalog diffing, plan generation, lint, verify. Pre-alpha \u2014 not yet usable.",
+  "license": "MPL-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
+    "test:pg": "vitest run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-prime/pg-prime.git"
+  },
+  "dependencies": {
+    "@types/pg": "^8.21.0",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
+  }
+}

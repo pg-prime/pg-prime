@@ -1,4 +1,4 @@
-# pgorm
+# pg-prime
 
 A PostgreSQL-only, type-safe TypeScript ORM with first-class migrations and zero runtime dependencies.
 
@@ -8,7 +8,7 @@ A PostgreSQL-only, type-safe TypeScript ORM with first-class migrations and zero
 
 ## Why
 
-Multi-database ORMs pay a dialect tax on every feature: the schema DSL stops at the lowest common denominator, the migration engine can't use Postgres superpowers (transactional DDL, `CREATE INDEX CONCURRENTLY`, RLS), and type decoding is inconsistent across drivers. pgorm targets exactly one database and manages the *entire* PostgreSQL DDL surface — tables, triggers, functions, domains, composite types, partitions, exclusion constraints, RLS policies — with an operations-grade migration engine and end-to-end owned type codecs.
+Multi-database ORMs pay a dialect tax on every feature: the schema DSL stops at the lowest common denominator, the migration engine can't use Postgres superpowers (transactional DDL, `CREATE INDEX CONCURRENTLY`, RLS), and type decoding is inconsistent across drivers. pg-prime targets exactly one database and manages the *entire* PostgreSQL DDL surface — tables, triggers, functions, domains, composite types, partitions, exclusion constraints, RLS policies — with an operations-grade migration engine and end-to-end owned type codecs.
 
 **Design** — [`design/`](./design/), maintained; start at [`00-overview.md`](./design/00-overview.md).
 **Research** — [`research/`](./research/), a historical 2026-08-14 snapshot kept as provenance.
@@ -17,11 +17,11 @@ Multi-database ORMs pay a dialect tax on every feature: the schema DSL stops at 
 
 | Package | Purpose |
 |---|---|
-| `pgormjs` | Runtime: schema DSL, codecs, query builder, executor, migration applier. Zero deps, zero peer deps. |
-| `@pgorm/kit` | CLI: diff engine, migration generation, lint, verify. |
-| `@pgorm/testing` | Test helpers (PGlite tier, container matrix). |
-| `create-pgormjs` | Project scaffolder (`npm create pgormjs`). |
+| `pg-prime` | Runtime: schema DSL, codecs, query builder, executor, migration applier. Zero deps, zero peer deps. |
+| `@pg-prime/kit` | CLI: diff engine, migration generation, lint, verify. |
+| `@pg-prime/testing` | Test helpers (PGlite tier, container matrix). |
+| `create-pg-prime` | Project scaffolder (`npm create pg-prime`). |
 
 ## License
 
-[MPL-2.0](./LICENSE) — modifications to pgorm's files must stay open source; applications using pgorm are unaffected.
+[MPL-2.0](./LICENSE) — modifications to pg-prime's files must stay open source; applications using pg-prime are unaffected.

@@ -3,7 +3,7 @@
 //   node bench/types/forks.mjs [--quick] [--repeats N]
 //
 // Four arms, each a complete query surface differing from the design/04 baseline in exactly one
-// fork (see packages/pgorm/src/query/forks/*.ts):
+// fork (see packages/pg-prime/src/query/forks/*.ts):
 //
 //   base04    04 §2 as written — free-function operators, nest() required, relations on a 2nd param
 //   f1        03 §2.9 — operators are METHODS ON REFS, gated by the column's type class
@@ -160,7 +160,7 @@ rmSync(DTS_OUT, { recursive: true, force: true })
 mkdirSync(DTS_OUT, { recursive: true })
 execFileSync(
   process.execPath,
-  [COMPILERS['5.9.3'], '-p', join(ROOT, 'packages', 'pgorm', 'tsconfig.json'), '--outDir', DTS_OUT, '--emitDeclarationOnly', '--pretty', 'false'],
+  [COMPILERS['5.9.3'], '-p', join(ROOT, 'packages', 'pg-prime', 'tsconfig.json'), '--outDir', DTS_OUT, '--emitDeclarationOnly', '--pretty', 'false'],
   { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
 )
 // The arms live in `bench/types/arms/`, outside the package, so the method-table arm needs its

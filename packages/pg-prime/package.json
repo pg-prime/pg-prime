@@ -1,0 +1,33 @@
+{
+  "name": "pg-prime",
+  "version": "0.0.0",
+  "description": "PostgreSQL-only, type-safe TypeScript ORM. Zero dependencies. Pre-alpha — not yet usable.",
+  "license": "MPL-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "test": "vitest run --project unit",
+    "test:live": "vitest run --project unit --project live",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/schema/tsconfig.json && tsc --noEmit -p test/query/tsconfig.json && tsc --noEmit -p test/live/tsconfig.json && tsc --noEmit -p test/sql-compile.tsconfig.json",
+    "test:pg": "vitest run",
+    "test:watch": "vitest --project unit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-prime/pg-prime.git"
+  },
+  "keywords": [
+    "postgres",
+    "postgresql",
+    "orm",
+    "typescript",
+    "migrations",
+    "typesafe"
+  ]
+}

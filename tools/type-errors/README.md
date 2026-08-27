@@ -6,7 +6,7 @@ A claim like that decays silently — one extra overload, one long inferred type
 the number doubles with nothing failing.
 
 So each file in `cases/` is one mistake, and `__golden__/<case>.<ts-version>.txt` is the exact
-`tsc --pretty false` output it produces. `packages/pgorm/test/query/type-errors.test.ts` compiles
+`tsc --pretty false` output it produces. `packages/pg-prime/test/query/type-errors.test.ts` compiles
 the whole directory on **both** compilers (5.9.3, the consumer floor, and 7.0.2, the build compiler)
 and diffs against the golden.
 

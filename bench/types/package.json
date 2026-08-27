@@ -1,5 +1,5 @@
 {
-  "name": "@pgorm-bench/types",
+  "name": "@pg-prime-bench/types",
   "private": true,
   "version": "0.0.0",
   "type": "module",
