@@ -18,6 +18,11 @@ import type { Compiled } from '../compile/contract.js'
 import { and as andNode, del as deleteNode, table as tableFrom } from '../compile/nodes.js'
 import { BuilderError } from '../sql/errors.js'
 import type { BuilderCtx, DeleteState } from './builder-state.js'
+import type { ExplainOptions, ExplainResult } from './executor.js'
+import type { PrepareOptions, PreparedQueryImpl } from './prepared.js'
+import { prepareFrom } from './prepared.js'
+import type { SqlSnapshot } from './terminals.js'
+import { explainWith, runnerOf, takeFirst, toSQLOf } from './terminals.js'
 import { metaOf } from './meta.js'
 import type { RefScope } from './ref.js'
 import { registerBuilder } from './nominal.js'
@@ -119,10 +124,26 @@ export class DeleteBuilder {
   }
 
   async execute(): Promise<unknown[]> {
-    if (this.s.ctx.runner === undefined) {
-      throw new BuilderError('pg-prime: this statement has no executor; it can be compiled, not executed.')
-    }
-    return this.s.ctx.runner.run(this.compile())
+    return runnerOf(this.s.ctx).run(this.compile())
+  }
+
+  /** `rows[0]` of the RETURNING list. See `terminals.ts` for why this is not `maxRows: 1` — on a
+   *  write it is not merely wasteful, it would STOP the statement at the cap. */
+  async executeTakeFirst(): Promise<unknown> {
+    return takeFirst(await this.execute())
+  }
+
+  prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
+    return prepareFrom(this.s.ctx, this.compile(), name, opts)
+  }
+
+  /** `analyze: true` here is wrapped and rolled back unless you say `rollback: false` (07 §7.5). */
+  explain(opts?: ExplainOptions): Promise<ExplainResult> {
+    return explainWith(this.s.ctx, this.compile(), opts)
+  }
+
+  toSQL(): SqlSnapshot {
+    return toSQLOf(this.compile())
   }
 }
 

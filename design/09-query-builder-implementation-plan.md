@@ -18,7 +18,7 @@
 | 3 | **DONE** (§3.3) `Ref` operator surface (`src/query/{ops,ops.types,fn,ops.manifest}.ts`), type-class gated; `.as(codec)` closes WS0's gate hole | PG's own type inference (`select <expr>` → `dataTypeID`) vs each op's `resultCodec`; hand-written SQL as result oracle | 100% of `03` §2.9 vocabulary has golden + live differential | 1–1.5 wk |
 | 4 | **DONE** (§3.4) Runtime builders: select / joins / insert / upsert / update / delete / RETURNING / CTE / set ops / windows / locking; `$call`/`$if`/`.compile()` memo | AST-equivalence with the existing hand-built ASTs in `test/compile`; `03` Appendix A byte-exact; seeded live execution with typed value assertions | Every `03` §2 example compiles byte-identically and executes with the promised values | 2–3 wk |
 | 5 | **DONE** (§3.5) Relation accessors (`many/one/all/count/sum/exists/some/every/none`), `RelationMeta` resolver, m2m `through`, composite keys | Window-function SQL as per-parent-LIMIT oracle; depth-3 typed value assertions; R5 golden extended | Relation semantics identical at depth 0 and 3 on PGlite and PG 15–18 | 1.5 wk |
-| 6 | Executor: `execute/prepare/stream/explain/toSQL`, dev `assertShape`, `meta.reads/writes` | Mock pool (tier 0); `pg_prepared_statements`, two-session tests (tier 2) | `CodecMismatchError` fires on a lying codec; named statements behave under PgBouncer | 1 wk |
+| 6 | **DONE** (§3.6) Executor: `execute/executeTakeFirst/prepare/stream/explain/toSQL`, dev `assertShape`, dynamic-OID decode, description cache, `meta.reads/writes` | Mock pool (tier 0); `RowDescription` OIDs (tier 1); `pg_prepared_statements`, PgBouncer (tier 2) | `CodecMismatchError` fires on a lying codec; named statements behave under PgBouncer | 1 wk |
 | 7 | Perf gates (compile < 25 µs, decode ≤ 1.15× hand mapper, type budgets), builder-level fuzz, nightly matrix | Budgets in JSON; fuzz invariants (a)–(f) | All `03` Appendix B rows gated in CI | 1 wk |
 
 Critical path: **L → 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7**. WS1 and WS2 can overlap (types vs runtime). Total ≈ **8–11 weeks** for one engineer; roughly 40% of that is the test work described below, which is deliberate — the builder is the surface every user touches and the one place where "it typechecks" and "it returns that value" must be the same statement.
@@ -1435,6 +1435,265 @@ Carried from WS4, unchanged: CTE refs keep `pg: any`; recursive CTEs have no sel
 
 ---
 
+### 3.6 WS6 result — the executor · 2026-08-27 · **DONE**
+
+`src/query/executor.ts` (the execution policy), `src/query/terminals.ts` (the terminals every
+builder shares), `src/query/prepared.ts` (`.prepare()` and `placeholder()`), `src/query/raw.ts`
+(``db.sql`…` ``, the description cache's entry point) and `src/query/errors.ts`
+(`CodecMismatchError`). `src/query/run.ts` keeps the thing that was always its own — **connection
+lifetime** — and `Runner` grew `use` / `scope` / `env`, which is the whole difference between `db`
+and `tx` written down once.
+
+#### The numbers
+
+| | |
+|---|---|
+| `pnpm test` (tier 0) | **700** / 43 files, 4.2 s |
+| `pnpm test:live` (tier 1, PGlite) | **1 413 passed + 2 skipped** / 74 files, ~18 s |
+| `pnpm test:pg` (tier 1 + 2, PG 17.11 + PgBouncer 1.25.2) | **1 436** / 78 files, ~6 s |
+| per-query type budget (300 tables) | **94 / 177 / 250** against 1500 / 2000 / 2750 — *unchanged* |
+| 20 chained joins · relation 4 deep | 8 508.8 / 916 against 12 000 / 1 500 — *unchanged* |
+| schema-size independence ratio | **1.000** at 25 / 100 / 300 tables, both compilers |
+| package `.d.ts` | **343.5 KB** / 400 KB (was 300.8 KB; `query/executor.d.ts` is 14.9 KB of the delta) |
+| R10 mutations | **16 written, 16 caught** — 1 only after the test it exposed was added |
+
+The three per-query lines not moving is the same result WS4 and WS5 reported, and for the same
+reason: `Query` grew five members (`executeTakeFirst`, `prepare`, `stream`, `explain`, `toSQL`) and
+a query costs exactly what it cost before, because TypeScript instantiates an interface's members
+lazily. `.d.ts` is where the surface shows up, +42.7 KB for four new modules.
+
+#### The placeholder surface, measured
+
+`03` §1.4 sketches the hole as a second lambda parameter — `.where(({users: u}, $) =>
+u.email.eq($.email))` — and fork F1 says operands come from free functions. Both arms were built
+and measured at 300 tables on both compilers:
+
+| arm | simple select | join+agg+sql+nest | relation projection | ratio | `.d.ts` |
+|---|---|---|---|---|---|
+| **A** — `placeholder('email', textCodec)` (shipped) | 94 | 177 | 250 | 1.000 | 349 583 B |
+| **B** — `$` as a second parameter on `select`/`where`/`orderBy` | 94 | 177 | 250 | 1.000 | 349 787 B |
+
+(The two `.d.ts` figures are from the same commit, taken before the last two additions —
+`statementStats` and the raw-SQL surface — so they are comparable with each other rather than with
+the 351 758 B the table above reports for the finished branch.)
+
+**The `$` scope is free**, and that is the useful finding: TypeScript does not instantiate a
+callback parameter the caller never declares, so every generated query in the bench pays nothing
+for a parameter it ignores. Arm B costs +204 bytes of `.d.ts` and nothing else.
+
+So the decision is not about price, and saying so matters — the obvious argument ("a second
+parameter on every hot-path lambda must cost something") is simply false here. It is about what
+the surface can *express*: `$`'s shape is `P`, `P` arrives at `.prepare<P>()`, and `.prepare()`
+comes **after** the `.where()` that used `$`. Typing it needs `P` threaded through `Query` as a
+fourth type parameter — `04` §1.3 rule 3's forbidden shape — so arm B ships an *untyped* `$`,
+whose members would carry no codec, and therefore no `paramOid` (the `42P18` that `02` §2.3 sends
+OIDs to avoid) and no type-class gate. Arm A's hole carries a codec by construction, reaches
+`ilike`/`gt` through the same `[META].pg` door a column does, and declares its `$n` to `Parse`.
+`P` is written by hand and checked at runtime against `meta.placeholders`; the type layer catches
+a missing or extra key first (`test/query/types/prepared.probe.ts`), and the runtime names it for
+the JavaScript caller.
+
+#### Four findings, three of them measured against a server
+
+1. **`maxRows` does not stop an `INSERT … RETURNING`.** `02`'s own docblock said the portal cap
+   *stops* a row-returning DML statement, and WS6's brief reasons from it. Measured on PG 17.11:
+   `insert … select generate_series(1,5) … returning id` with `maxRows: 1` **inserts all five**,
+   returns one, and reports `rowCount: 1`. The hazard is therefore not data loss but a *wrong
+   count* — the number a caller would log or trust as "rows affected". The `02` docblock is
+   corrected and the behaviour is pinned in `test/driver/cursor.test.ts`; `executeTakeFirst()` is
+   still `rows[0]`, on the two reasons that survive (a chunked batch is N statements, and one
+   method must not mean two things), and `03` §2.6's chunking gives the test that catches the
+   alternative.
+2. **The named-statement cache was per *checkout*, not per physical connection.** The `pg` adapter
+   builds a fresh `PgConnectionImpl` on every `acquire()`, so a `WeakMap` keyed on `PgConnection`
+   minted a new name every time. Measured: five pooled executions of one prepared query left
+   **five** statements on the backend — the feature saving nothing and leaking. Keyed on
+   `conn.serverParameters` (the object the adapter caches per underlying client) it is one, which
+   is what `07` §2.4 asks for.
+3. **`07` §2.4 policy 2 cannot be implemented as written.** "Retry only when not in a *failed*
+   transaction" implies testing `transactionStatus === 'E'`, and over `pg` the error callback fires
+   **before** the `ReadyForQuery` that carries the new status — so the guard reads `'T'`, lets the
+   retry through, and gets `25P02`. The tier-2 case flipped between surfacing `26000` and `25P02`
+   run to run until the guard became "only when the session is **idle**", which is race-free and
+   wants the same thing.
+4. **`DEALLOCATE ALL` through a statement-tracking PgBouncer is FATAL `08P01`**, not `26000`, and
+   nothing can heal it because the session is gone rather than the statement. Measured against
+   PgBouncer 1.25.2 in transaction mode with `max_prepared_statements=200`. That is the strongest
+   argument for `07` §2.4's ban on emitting it, and it is now a pinned tier-2 fact rather than a
+   sentence in a design doc.
+
+Plus one about the test harness itself: **every `requiresConcurrency()` skip message since WS-L has
+been invisible.** vitest intercepts `console.*` emitted during *collection*, which is when a guard
+runs, so `09` §2.2's "skips loudly" was not true. `_harness.ts` now writes to `process.stderr`,
+which is not intercepted, and the PgBouncer guard follows it.
+
+#### Ten decisions
+
+1. **`executeTakeFirst()` is `rows[0]`, over every statement `execute()` would run.** Finding 1
+   above for why not `maxRows: 1`. The compiled SQL is byte-identical to `execute()`'s, which is
+   what the tier-0 golden asserts.
+2. **`.prepare()` and `{ statement: 'named' }` are two features**, per `03` §1.4's one sentence.
+   `07` §2.4's table said `prepare()` pins named mode; `03`/`09` win and `07` §2.4 carries an AS
+   BUILT note saying so. The JS-side name is for logs; the server-side name is
+   `pgprime_<fnv1a(sql)>_<seq>`, because the key has to be per SQL text and per parameter-OID
+   signature and a caller-chosen string is neither.
+3. **A stream's transaction belongs to the runner, not to the cursor.** `Runner.scope` acquires,
+   `BEGIN`s, and on *every* exit ends the transaction and releases: `commit` on completion,
+   `rollback` on `break` (the iterator's `return()` runs the `finally`) and on `throw`. Inside
+   `db.transaction()` it joins and touches neither. Asserted on the mock's statement log with
+   `acquired === released`, because a cursor wrapper that returns the right rows and leaks a
+   connection looks perfect from the consumer's side.
+4. **`assertShape` throws before decoding.** Decoding first hands back a value that is already
+   wrong — the exact bug the check exists to prevent — and `int4.decodeText('10.50')` throwing a
+   `PgDecodeError` would replace a precise message with a vague one.
+5. **`richFieldMetadata: false` is not a skip condition for `assertShape`**, deviating from WS6's
+   own test list: that capability governs typmod / `tableID` / `columnID`, not `dataTypeID`, and
+   gating on it would disable the check on PGlite — where WS6's exit gate requires the lying-codec
+   test to be green. The gate is `fields.length === 0`.
+6. **The `.as(codec)` call site is captured in a side table, not on the AST node.** An AST node is
+   compared with `toStrictEqual` by the compiler suite and by WS4's equivalence oracle, and a field
+   present in dev and absent in production would make those comparisons depend on `NODE_ENV`. The
+   *field* provenance rides on `Compiled.origins` — beside `shape`, not inside a `FieldPlan`, for
+   the same reason.
+7. **A relation / `nest` column is checked against `json` OR `jsonb` and nothing finer.** The
+   declared variant is not in the decode plan and the decoder does not care which (`09` §3.5), so
+   a finer check would be asserting something we do not know. A `nest({...})` group *is* walked
+   into: its members are ordinary columns at their own row positions.
+8. **The description cache caches the resolved decode plan, and the test counts plan builds.**
+   `03` §1.4c's framing — save a `Describe` round trip — does not apply to us: with
+   `rowMode: 'array'` the `RowDescription` arrives with every result, and in unnamed mode `Parse`
+   goes out per execution by definition. What is left to save is exactly what `07` §2.2 identifies
+   as `cachedDescribe`'s real payoff, one `registry.planFor(fields)` walk per result. Counting
+   `Parse` messages would have been counting something that did not change.
+9. **``db.sql`…` `` is the smallest entry point that makes (c) reachable**, and it is deliberately
+   not a second builder: rows are keyed by field name (the one non-positional path in the library —
+   alias your joins), the row type is `Record<string, unknown>` because a single codec cannot
+   describe five columns, and there are no placeholders, no `nest`, no relations and no chunking.
+   Values are still decoded by OID, so they are correct even where the type says `unknown`.
+10. **`statementStats(db)` ships**, a slice of `07` §5.4's `db.diagnose()`. The prepared-statement
+    policy makes two claims a test cannot otherwise check — that a pooler which tracks statements
+    produces *no* self-heals, and that repeated healing downgrades the pool permanently — and a
+    counter nobody can read is a claim nobody can falsify.
+
+#### Appendix A is now also the tier-1 `EXPLAIN` corpus
+
+`test/query/_appendix-a.ts` holds `03` §2's schema and statements as data, parameterised by
+namespace. The tier-0 doc generator builds them with `compileOnly()` and diffs the markdown
+(byte-identical, unchanged); `test/live-query/appendix-explain.test.ts` creates the same five
+tables in `pgprime_q_appendix` and asks PostgreSQL to **plan** each one. That is R1's strongest
+form applied to the whole §2 vocabulary at once: a statement that is well-formed but not *valid*
+fails there and nowhere else, and the negative control (`42P01`, `42703` through the same call)
+proves the check is doing work.
+
+#### R10 — 16 mutations, 16 caught
+
+| # | Mutation | Caught by |
+|---|---|---|
+| M1 | `assertShape` drops the OID comparison | tier 0 ×8, tier 1 ×2 |
+| M2 | `bindsToParams` reverses the slot order | tier 0 ×3, tier 1 ×4 |
+| M3 | the stream's `finally` skips cleanup unless it completed | tier 0 ×3 (`break`, `throw`, and the streamed mismatch) |
+| M4 | no description-cache invalidation on `0A000` | tier 0 ×1 |
+| M5 | `executeTakeFirst` = `maxRows: 1` on the first compiled statement | tier 0 ×1 — **after** the chunked-insert case was added † |
+| M6 | the decoder memo ignores the OID signature | tier 0 ×1 |
+| M7 | the named cache is keyed on `PgConnection` again | tier 0 ×1, **tier 2 ×2** |
+| M8 | LRU eviction forgets instead of sending the protocol `Close` | tier 0 ×1, **tier 2 ×1** |
+| M9 | `assertShape` runs *after* decoding | tier 0 ×2, tier 1 ×1 |
+| M10 | `explain` drops the `ANALYZE` rollback rail | tier 0 ×4, tier 1 ×1 |
+| M11 | the self-heal loses its once-only bound | tier 0 ×2 |
+| M12 | an untyped fragment is never resolved by OID | tier 0 ×2, tier 1 ×1 |
+| M13 | an extra placeholder key is accepted silently | tier 0 ×1 |
+| M14 | `assertShape` is skipped on a streamed result | tier 0 ×1 |
+| M15 | the description cache never reuses a plan | tier 0 ×2, tier 1 ×1 |
+| M16 | the self-heal guard reverts to `=== 'E'` | tier 0 ×1 |
+
+† **M5 is the one that taught something.** It survived the first run *and was not a bug*: the
+premise it was written to test — that a portal cap stops a DML statement — turned out to be false
+(finding 1). The mutation is still worth having, because a capped `executeTakeFirst` runs only the
+**first** of a chunked batch's N statements, and the test that now catches it (five rows at
+`chunkSize: 2`, asserting `begin` + three inserts + `commit` on the mock log) is one nothing else
+covered. Two mutations are caught only by tier 2 — M7 and M8, both claims about what a *server*
+holds — which is what tier 2 is for.
+
+#### Coverage, and what is deliberately not here
+
+Shipped: `executeTakeFirst` on all five builders and on a prepared query; `.prepare<P>(name?,
+opts?)` with `placeholder(name, codec)`; `{ statement: 'named' }` per db and per query, with the
+`pgprime_<hash>_<seq>` naming, the per-physical-connection LRU, protocol-`Close` eviction, the
+five-SQLSTATE self-heal and the downgrade circuit breaker; `stream(opts?)` on `Query` / `SetQuery`
+/ a prepared select / ``db.sql`…` ``; `explain(opts?)` with `07` §7.5's option set and the
+`ANALYZE` rollback rail (savepoint-scoped inside a transaction); `toSQL()` everywhere, which never
+throws; dev-mode `assertShape` with `CodecMismatchError` in both variants; dynamic-OID decode for
+untyped fragments; the description cache with `describeCacheStats()`; `meta.reads`/`writes` on
+prepared queries for five statement kinds; `statementStats(db)`.
+
+Deferred, each with its owner and its reason:
+
+- **`streamBatches`.** WS6's brief says "only if it falls out for free"; it does not. The decoder
+  is positional over a chunk, and a batch API has to decide whether a batch is one `FETCH` or a
+  fixed count that spans them, which is a design question and not a wrapper.
+- **`ExplainOptions.rollback: false`'s type-level acknowledgement** (`07` §7.5's "only accepted in
+  the overload that also demands it"). It needs an overload per builder keyed on statement kind.
+  The runtime rail plus the explicit spelling carry the weight; the type would add a conditional to
+  a method every query has.
+- **`statementTimeoutMs` on a stream, `AbortSignal` end-to-end, per-query timeouts, savepoints,
+  `40001` retry, the pooler profile, `db.diagnose()`.** All `07`'s session layer, which has no
+  workstream in `09`. `signal` is plumbed through `stream`/`explain`/`RunOptions` because the seam
+  already takes it; nothing else of §6.1 is.
+- **`cachedDescribe` as a fourth `execMode`.** Half of what it buys is the decode plan, which the
+  description cache gives to the one statement kind that cannot get it statically; the other half
+  is binary result formats, which `02` §4.4 blocks regardless.
+- **A typed `db.sql<T>`.** `03` §3.2 is that a type parameter without a codec is a lie, and one
+  codec cannot describe a row. A per-column codec list would be a second projection language.
+- **`rowCount` on the public surface.** Nothing exposes it yet, and finding 1 says the day it does
+  is the day `maxRows` has to be re-examined.
+
+Carried unchanged: CTE refs keep `pg: any`; recursive CTEs have no self-reference API; `right` /
+`full` / `cross` joins and `innerJoinLateral` are not on `Query`; `avg`/`min`/`max` over a relation
+and `$all` in a projection are WS5's deferrals.
+
+#### Deviations from the plan as written
+
+1. `placeholder(name, codec)` rather than `03` §1.4's `$` scope — the arm table above; both
+   measured, decided on typeability rather than on cost.
+2. `assertShape` is **not** gated on `richFieldMetadata` — decision 5.
+3. `ExplainResult.plan` is optional, present iff `format: 'json'` — `07` §7.5 AS BUILT.
+4. The description-cache test counts **plan builds**, not `Parse` messages — decision 8, and WS6's
+   own brief anticipates it.
+5. `07` §2.4 policy 2 is amended from "not in a failed transaction" to "only when idle" —
+   finding 3.
+6. The named-statement cache key is `conn.serverParameters`, not the `PgConnection` — finding 2.
+7. `src/compile/{contract,hoist,compiler}.ts` and `src/sql/fragment.ts` were touched, which WS6's
+   Files line does not list. `Compiled.origins` and the `.as()` call site are what
+   `CodecMismatchError`'s two variants are rendered from, and neither is reachable from the
+   executor alone.
+8. `compileExpr` now also returns `placeholders` / `usedUnsafeRaw`, so ``db.sql`…` ``'s `meta` is
+   the truth rather than an invented `usedUnsafeRaw: false`.
+9. `test/query/appendix-a.test.ts`'s statement list moved to `test/query/_appendix-a.ts` so tier 1
+   can `EXPLAIN` the same list instead of a copy of it.
+
+#### Environment, and what is unverified
+
+Tier 2 ran against the Docker PostgreSQL 17.11 the repo already uses, plus a throwaway
+`edoburu/pgbouncer` 1.25.2 in transaction mode with `max_prepared_statements=200`. The CI wiring
+adds that as a service to the `pg` job with `DB_HOST: postgres` (the sibling service's alias) and
+a wait step that fails loudly if the pooler never accepts a connection; the exact service topology
+— two containers on one Docker network, PgBouncer resolving the other by name — was reproduced
+locally and the whole tier-2 suite is green through it. What is **not** verified is that GitHub's
+runner behaves identically; that is one CI run away and the wait step is what makes a
+misconfiguration legible rather than a mysterious connection error inside a test.
+
+Two things are red-adjacent and neither is WS6's, both stated rather than rounded up:
+
+- **`pnpm test:pg` at the monorepo root also runs `@pg-prime/kit`**, whose suite fails 17 of 113
+  against this environment's PostgreSQL container. Verified identical on a **stashed, unmodified
+  tree**, so it is pre-existing and about the kit's own harness (it wants its own database and
+  `pg_dump`), not about the executor. The number quoted above is `pnpm --filter pg-prime test:pg`.
+- **One flake, observed once in five full runs**: `test/driver/cursor.test.ts`'s "breaking out of
+  the loop … leaves the connection clean", on `transactionStatus === 'I'` immediately after the
+  cursor's `COMMIT`. It reproduces neither at HEAD nor on this branch on repeated runs of that
+  file alone.
+---
+
 ### WS5 — Relations (1.5 weeks) · **DONE** — result in §3.5
 
 **Goal.** `u.posts.many(q)`, `.one(q)`, `.all()`, `.count()`, `.sum(f)`, `.exists()`, `.some/.every/.none(p)`, m2m via `through`, composite keys, default `where`/`orderBy` from the declaration — all emitting the `NestedPlan` items `hoist.ts` already consumes.
@@ -1459,7 +1718,7 @@ Carried from WS4, unchanged: CTE refs keep `pg: any`; recursive CTEs have no sel
 
 ---
 
-### WS6 — Executor (1 week)
+### WS6 — Executor (1 week) · **DONE** — result in §3.6
 
 **Goal.** `execute()`, `executeTakeFirst()`, `prepare(name?)`, `stream()`, `explain()`, `toSQL()`; dev-mode `assertShape`; `meta.reads/writes` exposed; `Executor` interface implemented by `db` and (later) `tx`.
 
@@ -1504,7 +1763,7 @@ Carried from WS4, unchanged: CTE refs keep `pg: any`; recursive CTEs have no sel
 - [x] `spikeCodecs` deleted; OID confirmation green for every DSL column builder. (WS2, §3.2)
 - [x] `OPS` manifest: 100% golden + OID differential + semantic differential. (WS3, §3.3 — 88 confirmable rows, 7 deferred with a named reason; `03` §2.9's table regenerated from it)
 - [x] Per-parent LIMIT oracle and depth-3 typed values green on four PG majors. (WS5, §3.5 — PGlite, PG 15.19, 16.15, 17.11 and 18.4)
-- [ ] `CodecMismatchError` fires on a lying codec in dev (WS6); `skip locked` proven on tier 2 — **done** (WS4, §3.4: `test/pg/locking.test.ts`, green on PG 17.11).
+- [x] `CodecMismatchError` fires on a lying codec in dev (WS6, §3.6 — ``sql`sum(amount)`.as(int4)`` over `numeric`, green on PGlite and PG 17.11, with the `.as()` call site and a second schema-drift variant); `skip locked` proven on tier 2 — **done** (WS4, §3.4: `test/pg/locking.test.ts`, green on PG 17.11).
 - [ ] Compile < 25 µs, decode ≤ 1.15× hand mapper, builder fuzz 10k/PR clean.
 - [ ] R10 mutation record in each WS's final PR.
 - [ ] `docs/` examples for the builder compile and run against PGlite in CI (`08` §6.4).

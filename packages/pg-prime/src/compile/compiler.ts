@@ -42,7 +42,7 @@ import type {
   UpdateNode,
   WindowDef,
 } from './ast.js'
-import type { Bind, Compiled, FieldPlan, ResultShape } from './contract.js'
+import type { Bind, Compiled, FieldOrigin, FieldPlan, ResultShape } from './contract.js'
 import { planReturning, planSelect } from './hoist.js'
 
 /** The PostgreSQL wire protocol caps parameters at 65535 (int16). */
@@ -1245,11 +1245,11 @@ function emitTopReturning(
   em: Emitter,
   returning: readonly ProjectionItem[] | undefined,
   target: string | undefined,
-): FieldPlan[] {
-  if (returning === undefined) return []
+): { fields: FieldPlan[]; origins: (FieldOrigin | undefined)[] } {
+  if (returning === undefined) return { fields: [], origins: [] }
   const planned = planReturning(returning)
   emitReturning(em, planned.items, target)
-  return planned.fields
+  return { fields: planned.fields, origins: planned.origins }
 }
 
 function leftmost(n: SetOpNode): SelectNode {
@@ -1264,6 +1264,7 @@ function leftmost(n: SetOpNode): SelectNode {
 export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
   const em = new Emitter()
   let fields: FieldPlan[]
+  let origins: (FieldOrigin | undefined)[]
   let kind: Compiled['meta']['kind']
 
   switch (stmt.k) {
@@ -1271,6 +1272,7 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
       kind = 'select'
       const planned = planSelect(stmt)
       fields = planned.fields
+      origins = planned.origins
       emitSelectBody(em, planned.node)
       break
     }
@@ -1278,19 +1280,19 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
       kind = 'insert'
       emitInsertBody(em, stmt)
       if (stmt.onConflict !== undefined) emitOnConflict(em, stmt.onConflict)
-      fields = emitTopReturning(em, stmt.returning, stmt.into.alias)
+      ;({ fields, origins } = emitTopReturning(em, stmt.returning, stmt.into.alias))
       break
     }
     case 'update': {
       kind = 'update'
       emitUpdateBody(em, stmt)
-      fields = emitTopReturning(em, stmt.returning, updateReturningScope(stmt))
+      ;({ fields, origins } = emitTopReturning(em, stmt.returning, updateReturningScope(stmt)))
       break
     }
     case 'delete': {
       kind = 'delete'
       emitDeleteBody(em, stmt)
-      fields = emitTopReturning(em, stmt.returning, deleteReturningScope(stmt))
+      ;({ fields, origins } = emitTopReturning(em, stmt.returning, deleteReturningScope(stmt)))
       break
     }
     case 'setop': {
@@ -1298,7 +1300,11 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
       // The result shape of a set operation is the LEFT-most branch's: PostgreSQL takes the
       // column names and types from there and requires every other branch to be union-compatible,
       // which `SetMismatch` in `src/query/types.ts` checks at compile time.
-      fields = planSelect(leftmost(stmt)).fields
+      {
+        const planned = planSelect(leftmost(stmt))
+        fields = planned.fields
+        origins = planned.origins
+      }
       emitSetOpBody(em, stmt)
       break
     }
@@ -1312,6 +1318,7 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
     sql: em.sql(),
     binds: Object.freeze(em.binds),
     shape: shapeOf(fields),
+    origins: Object.freeze(origins),
     meta: Object.freeze({
       kind,
       reads: Object.freeze(em.reads),
@@ -1322,9 +1329,25 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
   }) as Compiled<Row>
 }
 
-/** Convenience for tests and `.toSQL()`: compile just an expression, e.g. a `sql` fragment. */
-export function compileExpr(e: Expr): { sql: string; binds: readonly Bind[] } {
+/**
+ * Convenience for tests and `db.sql\`…\``: compile just an expression, e.g. a `sql` fragment.
+ *
+ * `placeholders` / `usedUnsafeRaw` come out too, because the raw-SQL surface (`./raw.ts`) has to
+ * report the same `meta` a compiled statement does and inventing `usedUnsafeRaw: false` there
+ * would quietly break the lint rule and the audit that read it.
+ */
+export function compileExpr(e: Expr): {
+  sql: string
+  binds: readonly Bind[]
+  placeholders: readonly string[]
+  usedUnsafeRaw: boolean
+} {
   const em = new Emitter()
   emitExpr(em, e)
-  return { sql: em.sql(), binds: em.binds }
+  return {
+    sql: em.sql(),
+    binds: em.binds,
+    placeholders: Object.freeze(em.placeholders),
+    usedUnsafeRaw: em.usedUnsafeRaw,
+  }
 }

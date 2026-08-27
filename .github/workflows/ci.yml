@@ -100,8 +100,28 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # design/09 WS6: `07` §5.1's transaction-pooling behaviour is a claim about a POOLER, so it
+      # needs one. `MAX_PREPARED_STATEMENTS=200` is the configuration `07` §2.4 sizes our default
+      # `maxPerConnection: 100` against, and it is what makes the named opt-in work through a
+      # transaction pool at all — with it at 0, PgBouncer forwards our `Parse` to whichever server
+      # connection the transaction lands on and the statement is gone by the next one.
+      # `DB_HOST: postgres` is the other service's network alias; PgBouncer's own resolver reads it
+      # through Docker's embedded DNS.
+      pgbouncer:
+        image: edoburu/pgbouncer:latest
+        env:
+          DB_HOST: postgres
+          DB_PORT: '5432'
+          DB_USER: pgprime
+          DB_PASSWORD: pgprime
+          DB_NAME: pgprime
+          POOL_MODE: transaction
+          MAX_PREPARED_STATEMENTS: '200'
+          AUTH_TYPE: scram-sha-256
+        ports: ['6432:5432']
     env:
       PG_PRIME_TEST_URL: postgres://pgprime:pgprime@127.0.0.1:5432/pgprime
+      PG_PRIME_TEST_PGBOUNCER_URL: postgres://pgprime:pgprime@127.0.0.1:6432/pgprime
       # Debian's pg_wrapper resolves a bare `pg_dump` to the runner's preinstalled 16 even after 17
       # is installed; the kit's oracle refuses a client older than the server, so name the binary.
       PG_PRIME_PG_DUMP: '["/usr/lib/postgresql/17/bin/pg_dump"]'
@@ -122,4 +142,14 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update && sudo apt-get install -y postgresql-client-17
           pg_dump --version
+      # The pgbouncer image ships no health check we can express here (no `pg_isready` in it), and
+      # it starts before Postgres is ready, so it needs a wait rather than a `--health-cmd`. Failing
+      # loudly beats letting `test/pg/executor.test.ts` report a connection error as a pooler bug.
+      - name: Wait for PgBouncer
+        run: |
+          for i in $(seq 1 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/6432) 2>/dev/null; then echo "pgbouncer up"; exit 0; fi
+            sleep 1
+          done
+          echo "pgbouncer never accepted a connection on 6432"; exit 1
       - run: pnpm test:pg

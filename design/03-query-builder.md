@@ -342,7 +342,39 @@ const rows = await byEmail.execute({ email: 'a@b.c' })  // no AST walk, no compi
 > statement kind, because the fix differs by kind (an INSERT wants `strategy: 'unnest'`; a SELECT
 > with a huge list already gets `= any($1)`).
 >
-> (b) `.prepare()` and (c) the description cache are WS6's and are not built.
+> **AS BUILT (WS6, `09` §3.6).** (b) and (c) ship.
+>
+> **(b) `.prepare<P>(name?, opts?)`** returns a `PreparedQuery<P, O>` with `sql`, `meta`,
+> `compile()`, `toSQL()`, `execute` / `executeTakeFirst` / `stream` / `explain`. `execute(params)`
+> walks `binds` once and calls `codec.encode` per slot per execution; it does not compile, does not
+> walk the AST and does not rebuild the decoder, and all three are pinned with spies
+> (`test/query/prepared.test.ts`).
+>
+> The hole is a **free function**, not the `$` scope this section sketches:
+>
+> ```ts
+> .where(({ users: u }) => eq(u.email, placeholder('email', textCodec)))
+> .prepare<{ email: string }>('users_by_email')
+> ```
+>
+> `$` cannot be typed. Its shape is `P`, and `P` arrives at `.prepare<P>()` — *after* the
+> `.where()` that used it — so a typed `$` needs `P` threaded through `Query` as a fourth type
+> parameter, which is what `04` §1.3 rule 3 forbids. Both arms were measured (`09` §3.6): the `$`
+> parameter costs **zero** instantiations, because nobody instantiates a callback parameter the
+> caller never declares, so the decision is about what the surface can *express* and not about its
+> price. `P` is therefore written by hand and checked against `meta.placeholders` at execute time;
+> a missing or extra key throws a `BuilderError` naming it.
+>
+> The name argument is the **JS-side** artifact's, for logs and errors. It never reaches the wire:
+> the server-side name is `pgprime_<fnv1a(sql)>_<seq>` per `07` §2.4, because the cache key has to
+> be per SQL text and per parameter-OID signature, which a caller-chosen string is not.
+>
+> **(c) The description cache** ships as a bounded LRU (256) keyed on SQL text, reached through
+> the one statement kind that needs it: ``db.sql`…` ``. What it caches is the **resolved decode
+> plan**, not a `Describe` round trip, and the difference is a deviation worth reading — see the
+> AS BUILT note in §3.2. `describeCacheStats()` exposes `{ hits, misses, builds, size }` so the
+> claim is falsifiable; a builder-compiled query never touches it, which is asserted rather than
+> assumed.
 
 ### 1.5 Type-level machinery (risk #1 mitigation)
 
@@ -1302,6 +1334,39 @@ Fix: use codecs.numeric, or cast in SQL.
 That single check converts the entire class of "the type says `number`, production says `'1234.56'`" bugs into a test failure. No competitor does it, and it costs one integer comparison per column per query in dev.
 
 **Untyped fragments still decode correctly.** A `Fragment<unknown>` used in a projection decodes *dynamically* via the OID registry using the `RowDescription`. So the escape hatch is honest at the type level (`unknown` forces acknowledgement) and *correct* at the value level (you still get a `Date`, not a string). Kysely gives you `unknown` and the driver's guess; we give you `unknown` and our decoder.
+
+> **AS BUILT (WS6, `09` §3.6).** Both halves ship, with four notes.
+>
+> **The message** is the block above with one substitution: the third line is the captured stack
+> frame (`  at /path/reports.ts:42:19`), not a re-rendering of the expression, because there is no
+> way to recover the *text* of `` sql`sum(…)`.as(codecs.int4) `` at runtime. The file and line —
+> the part that answers "where do I go and fix it" — survive. The frame is captured in `.as()`
+> with `new Error().stack`, **outside production only** and once per `.as()` call (never per row
+> and never per execution), the same mechanism and the same gate `sql.unsafeRaw` already used.
+>
+> **A second variant** exists, because the same mismatch on a *schema column* is a different
+> mistake with a different fix: the caller's source is innocent and the database has moved. It
+> names the column and says so —
+> `  "users"."created_at" is schema drift: the database no longer matches the pgTable(...)
+> declaration.` — and its `Fix:` line points at the migration rather than at a codec.
+>
+> **What is skipped, and why:** a statement with no field metadata (nothing to compare against);
+> a codec with no OID (an enum before `resolveDynamic` — comparing against nothing would fire on
+> every query touching one); an untyped fragment (it declares nothing, so it cannot be wrong); and
+> a relation / `nest` column, which is checked against `json` **or** `jsonb` only, because the
+> decoder does not care which and the declared variant is not in the plan. A `nest({...})` group
+> *is* walked into: its members are ordinary columns at their own row positions.
+>
+> **`richFieldMetadata: false` is deliberately NOT a skip condition**, which deviates from `09`
+> WS6's own test list. That capability governs `dataTypeModifier` / `tableID` / `columnID`, not
+> `dataTypeID`; gating on it would silently disable the check on PGlite, where WS6's exit gate
+> requires the lying-codec test to be green. The gate is `fields.length === 0`.
+>
+> **The dynamic path** resolves any column whose plan carries `unknownCodec` against
+> `registry.forOid(dataTypeID)` at execute time, and an OID with no codec keeps the raw wire text
+> (the same answer `planFor` gives — at runtime an unregistered type must not take the query
+> down). The decode-plan memo is keyed on the resolved OID **signature** as well as the `Compiled`,
+> so a fragment whose type changed after a migration cannot keep decoding with the old codec.
 
 ### 3.3 Fragments are first-class and composable
 

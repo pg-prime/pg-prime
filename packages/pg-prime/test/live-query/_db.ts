@@ -17,6 +17,7 @@
 import { Registry } from '../../src/codec/index.js'
 import type { CodecRegistry } from '../../src/codec/index.js'
 import type { PgConnection } from '../../src/driver/index.js'
+import type { ExecOptions } from '../../src/query/executor.js'
 import { pgPrime } from '../../src/query/run.js'
 import type { Db } from '../../src/query/types.js'
 import type { AnySchema } from '../../src/schema/index.js'
@@ -33,7 +34,13 @@ export interface LiveDb {
    * pool. A test that needs a table the shared fixture must not carry (`03` §2.7's `staging` /
    * `live`) creates it with raw DDL and reaches it through here.
    */
-  dbFor<S extends AnySchema>(schema: S): Db<S>
+  dbFor<S extends AnySchema>(schema: S, opts?: ExecOptions): Db<S>
+  /**
+   * The same fixture schema and the same pool, with the executor configured differently — the
+   * only way to exercise `assertShape: false` / `statement: 'named'` against a live server
+   * without a second harness (design/09 WS6).
+   */
+  dbWith(opts: ExecOptions): Db<Fixture['schema']>
   /** Hand-written SQL, straight to the server. Values come back as raw text (or `null`). */
   raw(text: string, params?: readonly unknown[]): Promise<(string | null)[][]>
   end(): Promise<void>
@@ -61,7 +68,8 @@ export async function makeLiveDb(ns: string): Promise<LiveDb> {
     db,
     registry,
     conn,
-    dbFor: (schema) => pgPrime({ driver: h.driver, schema, registry }),
+    dbFor: (schema, opts) => pgPrime({ ...opts, driver: h.driver, schema, registry }),
+    dbWith: (opts) => pgPrime({ ...opts, driver: h.driver, schema: fx.schema, registry }),
     async raw(text, params = []) {
       const r = await conn.execute({ text, params: params as never })
       return r.rows.map((row) => row.map((v) => (v === null ? null : String(v))))

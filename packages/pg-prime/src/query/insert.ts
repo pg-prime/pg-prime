@@ -56,6 +56,11 @@ import { isAstNode } from '../compile/nodes.js'
 import { isFragment, toNode } from '../sql/fragment.js'
 import { BuilderError } from '../sql/errors.js'
 import type { BulkOpts, BuilderCtx, InsertState } from './builder-state.js'
+import type { ExplainOptions, ExplainResult } from './executor.js'
+import type { PrepareOptions, PreparedQueryImpl } from './prepared.js'
+import { prepareFrom } from './prepared.js'
+import type { SqlSnapshot } from './terminals.js'
+import { explainWith, runnerOf, takeFirst, toSQLOf } from './terminals.js'
 import { metaOf } from './meta.js'
 import type { TableCodecMeta } from './meta.js'
 import type { RefScope } from './ref.js'
@@ -89,13 +94,6 @@ function compact<T extends Record<string, unknown>>(o: T): T {
 
 function call<R>(f: Lambda<R>, ...args: readonly unknown[]): R {
   return (f as unknown as (...a: readonly unknown[]) => R)(...args)
-}
-
-function runnerOf(ctx: BuilderCtx): NonNullable<BuilderCtx['runner']> {
-  if (ctx.runner === undefined) {
-    throw new BuilderError('pg-prime: this statement has no executor; it can be compiled, not executed.')
-  }
-  return ctx.runner
 }
 
 /**
@@ -264,6 +262,44 @@ export class InsertBuilder {
     const all = this.compileAll()
     const runner = runnerOf(this.s.ctx)
     return all.length === 1 ? runner.run(all[0] as Compiled<unknown>) : runner.runChunked(all)
+  }
+
+  /**
+   * `rows[0]` of the RETURNING list, over **every** statement `execute()` would run.
+   *
+   * The tempting alternative — `maxRows: 1` on the first compiled statement — is wrong for two
+   * measured reasons, and `terminals.ts` has the rest: a chunked batch compiles to N statements
+   * and running only the first inserts a fraction of the rows, and `maxRows` makes PostgreSQL
+   * report `rowCount: 1` for an `INSERT … RETURNING` that inserted five (measured on PG 17.11 —
+   * design/09 §3.6 M5).
+   */
+  async executeTakeFirst(): Promise<unknown> {
+    return takeFirst(await this.execute())
+  }
+
+  /**
+   * One prepared artifact means one statement, so a batch that chunked has none — the same rule
+   * `toAst()` states, with the same suggestion.
+   */
+  prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
+    const all = this.compileAll()
+    if (all.length !== 1) {
+      throw new BuilderError(
+        `pg-prime: .prepare() describes ONE statement and this insert compiles to ${all.length} ` +
+          `(the batch was chunked at ${this.#chunkSize()} rows). Use .compileAll(), or lower the ` +
+          `row count.`,
+      )
+    }
+    return prepareFrom(this.s.ctx, all[0] as Compiled<unknown>, name, opts)
+  }
+
+  /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE INSERT` inserts (07 §7.5). */
+  explain(opts?: ExplainOptions): Promise<ExplainResult> {
+    return explainWith(this.s.ctx, this.compile(), opts)
+  }
+
+  toSQL(): SqlSnapshot {
+    return toSQLOf(this.compile())
   }
 
   // ── statement assembly ────────────────────────────────────────────────────

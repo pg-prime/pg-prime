@@ -16,6 +16,7 @@ export type PgPrimeErrorCode =
   | 'DECODE_PLAN'
   | 'BUILDER'
   | 'SCHEMA'
+  | 'CODEC_MISMATCH'
 
 export class PgPrimeError extends Error {
   readonly code: PgPrimeErrorCode

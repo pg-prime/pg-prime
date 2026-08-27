@@ -183,8 +183,20 @@ export function skipCount(): number {
 
 function skip(reason: string): TestDecl {
   skips += 1
-  console.info(`[live] skip #${skips} (${liveTarget().kind}): ${reason}`)
+  announce(`[live] skip #${skips} (${liveTarget().kind}): ${reason}`)
   return it.skip
+}
+
+/**
+ * `process.stderr.write`, not `console.info` — measured (design/09 §3.6).
+ *
+ * A guard runs during *collection*, and vitest intercepts `console.*` from that phase and drops
+ * it unless the test that owns it reports. So every skip reason this harness has printed since
+ * WS-L has in fact been invisible in the default reporter, which is the opposite of design/09
+ * §2.2's "skips loudly". stderr is not intercepted.
+ */
+export function announce(line: string): void {
+  process.stderr.write(`${line}\n`)
 }
 
 /**

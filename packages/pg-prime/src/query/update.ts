@@ -42,6 +42,11 @@ import {
 } from '../compile/nodes.js'
 import { BuilderError } from '../sql/errors.js'
 import type { BuilderCtx, UpdateState } from './builder-state.js'
+import type { ExplainOptions, ExplainResult } from './executor.js'
+import type { PrepareOptions, PreparedQueryImpl } from './prepared.js'
+import { prepareFrom } from './prepared.js'
+import type { SqlSnapshot } from './terminals.js'
+import { explainWith, runnerOf, takeFirst, toSQLOf } from './terminals.js'
 import { setItemsOf } from './insert.js'
 import { metaOf } from './meta.js'
 import type { TableCodecMeta } from './meta.js'
@@ -62,13 +67,6 @@ function compact<T extends Record<string, unknown>>(o: T): T {
 
 function call<R>(f: Lambda<R>, ...args: readonly unknown[]): R {
   return (f as unknown as (...a: readonly unknown[]) => R)(...args)
-}
-
-function runnerOf(ctx: BuilderCtx): NonNullable<BuilderCtx['runner']> {
-  if (ctx.runner === undefined) {
-    throw new BuilderError('pg-prime: this statement has no executor; it can be compiled, not executed.')
-  }
-  return ctx.runner
 }
 
 /** Codecs for a `fromValues` source, by patch key. */
@@ -223,6 +221,25 @@ export class UpdateBuilder {
 
   async execute(): Promise<unknown[]> {
     return runnerOf(this.s.ctx).run(this.compile())
+  }
+
+  /** `rows[0]` of the RETURNING list. See `terminals.ts` for why this is not `maxRows: 1` — on a
+   *  write it is not merely wasteful, it would STOP the statement at the cap. */
+  async executeTakeFirst(): Promise<unknown> {
+    return takeFirst(await this.execute())
+  }
+
+  prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
+    return prepareFrom(this.s.ctx, this.compile(), name, opts)
+  }
+
+  /** `analyze: true` here is wrapped and rolled back unless you say `rollback: false` (07 §7.5). */
+  explain(opts?: ExplainOptions): Promise<ExplainResult> {
+    return explainWith(this.s.ctx, this.compile(), opts)
+  }
+
+  toSQL(): SqlSnapshot {
+    return toSQLOf(this.compile())
   }
 }
 

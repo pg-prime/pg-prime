@@ -234,6 +234,29 @@ describe('PgConnection.stream() — built on the answer above, zero dependencies
     expect(r.rowCount).toBe(5)
   })
 
+  it('maxRows does NOT stop an INSERT … RETURNING — it truncates the OUTPUT and lies about rowCount', async () => {
+    // MEASURED on PG 17.11 (design/09 §3.6, R10 M5). `PgQuery.maxRows`'s docblock used to say the
+    // statement is "stopped, not merely truncated"; it is not. All five rows are inserted, one is
+    // returned, and `CommandComplete` reports 1 — so the number a caller would log or trust as
+    // "rows affected" is wrong by a factor of five while the data is fine.
+    //
+    // That asymmetry is why `executeTakeFirst()` is `rows[0]` and never a portal cap: the cap is
+    // not dangerous the way it was assumed to be, it is *dishonest*, and it would make one method
+    // report a different count depending on the statement kind.
+    await conn.execute({ text: 'create temp table maxrows_probe (id int)', params: [] })
+    const r = await conn.execute({
+      text: 'insert into maxrows_probe select g from generate_series(1, 5) g returning id',
+      params: [],
+      maxRows: 1,
+    })
+    expect(r.rows.map((row) => row[0])).toEqual(['1'])
+    expect(r.rowCount).toBe(1)
+    // The oracle is the table, read back through a second statement.
+    const counted = await conn.execute({ text: 'select count(*) from maxrows_probe', params: [] })
+    expect(counted.rows[0]?.[0]).toBe('5')
+    await conn.execute({ text: 'drop table maxrows_probe', params: [] })
+  })
+
   it('refuses to stream inside a FAILED transaction instead of BEGINning blindly', async () => {
     await conn.execute({ text: 'begin', params: [] })
     await conn.execute({ text: 'select 1/0', params: [] }).catch(() => {})

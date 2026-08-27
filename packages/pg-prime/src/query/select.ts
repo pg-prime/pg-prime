@@ -61,6 +61,11 @@ import {
   toExprNode,
   toOrderItems,
 } from './scope.js'
+import type { ExplainOptions, ExplainResult, StreamOptions } from './executor.js'
+import type { PrepareOptions, PreparedQueryImpl } from './prepared.js'
+import { prepareFrom } from './prepared.js'
+import type { SqlSnapshot } from './terminals.js'
+import { explainWith, runnerOf, streamWith, takeFirst, toSQLOf } from './terminals.js'
 import { oneOf, toWindowDef } from './window.js'
 import type { WindowFn, WindowLiteral, WindowSpec } from './window.js'
 
@@ -94,16 +99,6 @@ function call<R>(f: Lambda<R>, scope: Scope): R {
   // `.compile()` time, so a `Date.now()` inside a callback happens where the reader sees it and
   // two `.compile()` calls cannot produce two different queries.
   return (f as unknown as (t: Scope) => R)(scope)
-}
-
-function runnerOf(ctx: BuilderCtx): NonNullable<BuilderCtx['runner']> {
-  if (ctx.runner === undefined) {
-    throw new BuilderError(
-      'pg-prime: this query has no executor, so it can be compiled but not executed. Build it from ' +
-        '`pgPrime({ driver, schema })` rather than from `compileOnly(schema)`.',
-    )
-  }
-  return ctx.runner
 }
 
 /** A synthetic `TableRuntime` for a derived table — enough to be a handle, claiming nothing. */
@@ -398,9 +393,36 @@ export class SelectBuilder {
     return this.#compiled
   }
 
+
   async execute(): Promise<unknown[]> {
     if (this.s.projection === undefined) throw needsSelect()
     return runnerOf(this.s.ctx).run(this.compile())
+  }
+
+  /** `rows[0]`. See `terminals.ts` for why this is not `maxRows: 1`. */
+  async executeTakeFirst(): Promise<unknown> {
+    return takeFirst(await this.execute())
+  }
+
+  /** The compiled artifact with typed holes (03 §1.4b). */
+  prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
+    if (this.s.projection === undefined) throw needsSelect()
+    return prepareFrom(this.s.ctx, this.compile(), name, opts)
+  }
+
+  /** Transaction-scoped server-side cursor (07 §6.3). */
+  stream(opts?: StreamOptions): AsyncIterable<unknown> {
+    if (this.s.projection === undefined) throw needsSelect()
+    return streamWith(this.s.ctx, this.compile(), opts)
+  }
+
+  explain(opts?: ExplainOptions): Promise<ExplainResult> {
+    return explainWith(this.s.ctx, this.compile(), opts)
+  }
+
+  /** Never throws — not on an unfilled placeholder, and not on a query with no executor. */
+  toSQL(): SqlSnapshot {
+    return toSQLOf(this.compile())
   }
 }
 
@@ -551,8 +573,29 @@ export class SetOpBuilder {
     return this.#compiled
   }
 
+
   async execute(): Promise<unknown[]> {
     return runnerOf(this.s.ctx).run(this.compile())
+  }
+
+  async executeTakeFirst(): Promise<unknown> {
+    return takeFirst(await this.execute())
+  }
+
+  prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
+    return prepareFrom(this.s.ctx, this.compile(), name, opts)
+  }
+
+  stream(opts?: StreamOptions): AsyncIterable<unknown> {
+    return streamWith(this.s.ctx, this.compile(), opts)
+  }
+
+  explain(opts?: ExplainOptions): Promise<ExplainResult> {
+    return explainWith(this.s.ctx, this.compile(), opts)
+  }
+
+  toSQL(): SqlSnapshot {
+    return toSQLOf(this.compile())
   }
 }
 

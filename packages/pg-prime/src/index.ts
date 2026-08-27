@@ -235,6 +235,8 @@ export {
   xmlCodec,
 } from './codec/index.js'
 
+export type { FieldOrigin } from './compile/contract.js'
+
 export type {
   AnyCodec,
   Codec,
@@ -289,8 +291,32 @@ export type {
 // The query builder (design/03 §2)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export { compileOnly, pgPrime } from './query/run.js'
-export type { PgPrimeOptions } from './query/run.js'
+export { compileOnly, pgPrime, statementStats } from './query/run.js'
+export type { PgPrimeOptions, StatementStats } from './query/run.js'
+
+/**
+ * The executor (design/09 WS6). `placeholder` is the `.prepare()` hole — a free function, like
+ * every other operand producer (fork F1); `describeCacheStats` / `clearDescribeCache` are the
+ * description cache's only public surface, and exist so the cache is observable rather than
+ * merely claimed.
+ */
+export { placeholder } from './query/prepared.js'
+export type { PrepareOptions, PreparedQuery } from './query/prepared.js'
+export { clearDescribeCache, describeCacheStats } from './query/executor.js'
+export type {
+  DescribeCacheStats,
+  ExecOptions,
+  ExplainNode,
+  ExplainOptions,
+  ExplainResult,
+  PreparedStatementOptions,
+  StatementMode,
+  StreamOptions,
+} from './query/executor.js'
+export type { PlaceholderRef, SqlSnapshot } from './query/terminals.js'
+export type { RawQuery, RawRow } from './query/raw.js'
+export { CodecMismatchError } from './query/errors.js'
+export type { CodecMismatch } from './query/errors.js'
 
 /**
  * The operator vocabulary (`03` §2.9) and the combinators, ordering and aggregates (`03` §2.4).

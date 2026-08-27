@@ -446,6 +446,29 @@ export function raw(
   })
 }
 
+/**
+ * The `.as(codec)` call site of a raw node, kept in a side table rather than on the node
+ * (design/09 WS6; `03` §3.2's `CodecMismatchError` prints it).
+ *
+ * A WeakMap and not a `RawNode` field for one reason worth stating: an AST node is compared with
+ * `toStrictEqual` by the compiler suite and by the WS4 AST-equivalence oracle, and a field that
+ * is present in dev and absent in production would make those comparisons depend on `NODE_ENV`.
+ * A side table is invisible to structural equality, collectable with the node, and read exactly
+ * once per compile — never per row.
+ */
+const AS_SITES = new WeakMap<object, string>()
+
+/** Record where `.as(codec)` was called. No-op for a falsy site, so the caller need not branch. */
+export function markSite(node: RawNode, site: string | undefined): RawNode {
+  if (site !== undefined) AS_SITES.set(node, site)
+  return node
+}
+
+/** The recorded `.as(codec)` call site, or `undefined` in production (nothing was captured). */
+export function siteOf(node: object): string | undefined {
+  return AS_SITES.get(node)
+}
+
 // ─────────────────────────── Clauses / statements ───────────────────────────
 
 export function order(

@@ -51,7 +51,7 @@ import type {
   SubqueryExprNode,
   WindowDef,
 } from './ast.js'
-import type { FieldPlan, JsonPlan } from './contract.js'
+import type { FieldOrigin, FieldPlan, JsonPlan } from './contract.js'
 import {
   cast,
   col,
@@ -64,6 +64,7 @@ import {
   projection,
   scalarSubquery,
   select,
+  siteOf,
   subquery,
 } from './nodes.js'
 
@@ -887,12 +888,16 @@ function hoistOne(
 export interface PlannedSelect {
   node: SelectNode
   fields: FieldPlan[]
+  /** Positional provenance for `assertShape` (03 §3.2). See `Compiled.origins`. */
+  origins: (FieldOrigin | undefined)[]
 }
 
 /** What {@link flatten} writes into: the emitted projection list and any hoisted laterals. */
 interface FlatOut {
   items: ProjectionItem[]
   joins: JoinNode[]
+  /** Indexed by ROW position, like `FieldPlan.idx` — never by position in `items`. */
+  origins: (FieldOrigin | undefined)[]
   /** `false` for a RETURNING list, which has no FROM clause to hoist a LATERAL onto. */
   hoist: boolean
   seq: Seq
@@ -977,6 +982,7 @@ function flatten(
     // relations comes out of here `toStrictEqual` to what went in (the WS4 AST-equivalence oracle).
     out.items.push(prefix === '' ? item : projection(alias, item.expr))
     fields.push({ key: item.key, k: 'col', idx, codec: codecOf(item.expr) })
+    out.origins[idx] = originOf(item.expr)
     idx += 1
   }
 
@@ -1018,13 +1024,39 @@ function isFlat(items: readonly ProjectionItem[]): boolean {
   return true
 }
 
-function leafFields(items: readonly ProjectionItem[]): FieldPlan[] {
+function leafFields(items: readonly ProjectionItem[]): {
+  fields: FieldPlan[]
+  origins: (FieldOrigin | undefined)[]
+} {
   const fields: FieldPlan[] = []
+  const origins: (FieldOrigin | undefined)[] = []
   for (let i = 0; i < items.length; i++) {
     const item = items[i] as ProjectionItem
     fields.push({ key: item.key, k: 'col', idx: i, codec: codecOf(item.expr) })
+    origins[i] = originOf(item.expr)
   }
-  return fields
+  return { fields, origins }
+}
+
+/**
+ * Where this projection item's codec was **declared** — the two cases `03` §3.2's
+ * `CodecMismatchError` distinguishes, and nothing else.
+ *
+ *  - a schema column reference → the qualified name, so the message can say "schema drift" and
+ *    point at `"users"."created_at"` rather than at the caller's own file (which is innocent);
+ *  - a `` sql`…`.as(codec) `` fragment → the `.as()` call site, which IS the caller's file.
+ *
+ * Everything else — an operator, an aggregate, a cast, a window, a `nest` group — returns
+ * `undefined`, because its codec comes from the operator table and a mismatch there is our bug
+ * to fix, not a sentence to print at a user's call site.
+ */
+function originOf(e: Expr): FieldOrigin | undefined {
+  if (e.k === 'col') return { column: e.q }
+  if (e.k === 'raw' && e.resultCodec !== null) {
+    const site = siteOf(e)
+    return site === undefined ? undefined : { site }
+  }
+  return undefined
 }
 
 /**
@@ -1050,7 +1082,13 @@ export function planSelect(node: SelectNode): PlannedSelect {
   if (memo !== undefined) return memo
   const planned = planSelectUncached(node)
   PLANNED.set(node, planned)
-  if (planned.node !== node) PLANNED.set(planned.node, { node: planned.node, fields: planned.fields })
+  if (planned.node !== node) {
+    PLANNED.set(planned.node, {
+      node: planned.node,
+      fields: planned.fields,
+      origins: planned.origins,
+    })
+  }
   return planned
 }
 
@@ -1060,12 +1098,20 @@ function planSelectUncached(node: SelectNode): PlannedSelect {
   const rewritten = rewriteClauses(node, cse)
 
   if (cse.joins.length === 0 && isFlat(node.projection)) {
-    return { node, fields: leafFields(node.projection) }
+    const leaf = leafFields(node.projection)
+    return { node, fields: leaf.fields, origins: leaf.origins }
   }
 
   // `cse.joins` first: an aggregate lateral is written before a relation lateral, which is the
   // order 03 §2.3's golden shows and the order a reader meets them in the projection.
-  const out: FlatOut = { items: [], joins: [...cse.joins], hoist: true, seq, colSeq: { n: 0 } }
+  const out: FlatOut = {
+    items: [],
+    joins: [...cse.joins],
+    origins: [],
+    hoist: true,
+    seq,
+    colSeq: { n: 0 },
+  }
   const { fields } = flatten(rewritten.projection, '', 0, out)
 
   return {
@@ -1075,6 +1121,7 @@ function planSelectUncached(node: SelectNode): PlannedSelect {
       joins: [...(rewritten.joins ?? []), ...out.joins],
     }),
     fields,
+    origins: out.origins,
   }
 }
 
@@ -1089,9 +1136,20 @@ function planSelectUncached(node: SelectNode): PlannedSelect {
 export function planReturning(items: readonly ProjectionItem[]): {
   items: readonly ProjectionItem[]
   fields: FieldPlan[]
+  origins: (FieldOrigin | undefined)[]
 } {
-  if (isFlat(items)) return { items, fields: leafFields(items) }
-  const out: FlatOut = { items: [], joins: [], hoist: false, seq: { n: 0 }, colSeq: { n: 0 } }
+  if (isFlat(items)) {
+    const leaf = leafFields(items)
+    return { items, fields: leaf.fields, origins: leaf.origins }
+  }
+  const out: FlatOut = {
+    items: [],
+    joins: [],
+    origins: [],
+    hoist: false,
+    seq: { n: 0 },
+    colSeq: { n: 0 },
+  }
   const { fields } = flatten(items, '', 0, out)
-  return { items: out.items, fields }
+  return { items: out.items, fields, origins: out.origins }
 }

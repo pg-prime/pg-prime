@@ -445,6 +445,50 @@ await hot.execute({ id })                                  // named statement + 
 
 `prepare()` throws `ConfigError` at *construction* time if the configured `poolerMode` forbids named statements. `compile()` never throws.
 
+> **AS BUILT (design/09 WS6, §3.6).** Four corrections, three of them measured.
+>
+> **1. `prepare()` does NOT pin named mode.** The table above says `q.prepare()` "pins
+> `execMode: 'prepared'` for this query"; `03` §1.4 says the opposite in one sentence —
+> *`.prepare()` caches our work; `{ statement: 'named' }` caches Postgres's* — and `03`/`09` win.
+> `.prepare()` is client-side only and is safe on every pooler; the server-side statement is a
+> separate opt-in, `pgPrime({ statement: 'named' })` per db or `.prepare(name, { statement:
+> 'named' })` per query. Conflating them is Drizzle's mistake and this table had half-adopted it.
+> There is no `poolerMode` yet, so nothing throws at construction; the pooler profile is the
+> session layer's, which has no workstream in `09`.
+>
+> **2. The cache key is `conn.serverParameters`, not the `PgConnection`.** This section says the
+> key is scoped "per physical connection", and the `PgConnection` object is not that: the `pg`
+> adapter builds a fresh `PgConnectionImpl` on every `acquire()`. Measured on PG 17.11 — five
+> pooled executions of one prepared query minted **five** names and left five statements on the
+> backend, i.e. the feature saved nothing and leaked. `serverParameters` is the object the adapter
+> caches per underlying client, so it is one per physical connection for exactly that connection's
+> lifetime. Pinned by `test/pg/executor.test.ts`.
+>
+> **3. Policy 2 is "only when the session is IDLE", not "not in a *failed* transaction".** The
+> latter cannot be implemented over `pg`: the error callback fires **before** the `ReadyForQuery`
+> that carries the new status, so a guard reading `transactionStatus === 'E'` still sees `'T'` and
+> lets the retry through — which then gets `25P02`. Measured: the tier-2 case flipped between
+> surfacing `26000` and surfacing `25P02` run to run. Requiring `'I'` is race-free and wants the
+> same thing: inside a block the failing statement has already aborted it, so every retry there is
+> a `25P02` waiting to happen.
+>
+> **4. `DEALLOCATE ALL` through a prepared-statement-tracking PgBouncer is FATAL `08P01`**, not
+> `26000`, and no self-heal can recover it because the *session* is gone rather than the
+> statement. Measured against PgBouncer 1.25.2, `pool_mode=transaction`,
+> `max_prepared_statements=200`. That is the strongest possible argument for this section's ban on
+> emitting it, which the implementation obeys: eviction is the protocol `Close`, and
+> `test/pg/executor.test.ts` proves the evicted name really leaves `pg_prepared_statements`.
+>
+> Shipped from this section: the LRU at `maxPerConnection` (default 100), the protocol-`Close`
+> eviction with evict-by-forgetting as the fallback when an adapter has no `closeStatement`, the
+> `pgprime_<fnv1a(sql)>_<seq>` naming with its 63-byte check, the five-SQLSTATE self-heal table,
+> the once-per-execution bound, the process-wide description-cache flush on `0A000`/`42P18`/`42804`
+> (which fires for **unnamed** statements too — the result type changed, not the statement), and
+> the `downgradeAfterFailures` circuit breaker as a one-way door with an `error`-level log.
+> Not shipped: `execMode` as a four-member type (the builder reaches two of them, and `simple` is
+> the migrator's), `cachedDescribe` as a mode (see `03` §1.4c AS BUILT), and §5.5's proactive flush
+> after a local migration run.
+
 ### 2.5 Row mode and result shape
 
 Internally always `rowMode: 'array'` — three independent implementations (Prisma, Drizzle, and `pg-drivers.md` §7.5) converged on it for the same two reasons: no per-row object allocation, and correct handling of duplicate column names from JOINs (`users.id` and `posts.id` both key `id` in object mode and silently clobber). Users never see array rows; the projection layer (agent 04) maps positionally using the field metadata that agent 02's `PgResult.fields` guarantees.
@@ -1099,6 +1143,26 @@ Design points:
 
   Either way the **public API above does not change** — this is an adapter-level choice behind agent 02's `PgConnection.stream()`.
 
+> **AS BUILT (design/09 WS6, §3.6).** The open risk is closed in favour of **(b)**, and it was
+> closed by measurement rather than by preference: `DECLARE … CURSOR` *does* accept bind parameters
+> over the extended protocol on PG 17.11 (`test/driver/cursor.test.ts`, WS4), so `.stream()` needs
+> neither `pg-cursor` nor an optional peer dependency. The FETCH **count** may not be a bind
+> (`42601`) and is inlined as a validated integer the ORM supplies, never the user.
+>
+> `stream(opts?: { batchSize?, signal? })` is on `Query`, `SetQuery`, a prepared select and
+> ``db.sql`…` ``. The transaction is the **runner's**, not the cursor's: at the root it acquires
+> one connection, opens `BEGIN`, and ends the transaction *and releases the connection* on every
+> exit — completion (`commit`), `break` (which calls the iterator's `return()`, so `rollback`),
+> `throw`, and abort. Inside `db.transaction()` it joins and touches neither. Both shapes are
+> asserted on the mock's statement log with `acquired === released`
+> (`test/query/stream.test.ts`), because a cursor wrapper that returns the right rows and leaks a
+> connection looks perfect from the consumer's side.
+>
+> Deviations: `statementTimeoutMs` is not implemented (per-query timeout is the session layer's,
+> and `07` §6.2 has no workstream yet), and **`streamBatches` is not shipped** — it did not fall
+> out for free, because the decoder is positional over a chunk and a batch API would have to
+> decide whether a batch is a FETCH or a fixed count. `Readable.from(db.stream(q))` is unaffected.
+
 ### 6.4 A note on `Promise`-and-`AsyncIterable` results
 
 Prisma Next makes a query result *both* awaitable and async-iterable (`prisma.md` §3.4). It is elegant and it is a trap: `await q` and `for await (const x of q)` differ enormously in memory profile and in whether a transaction is held, and making them the same expression hides that. We keep `.stream()` explicit. One extra token buys an unambiguous cost model.
@@ -1325,6 +1389,33 @@ export interface ExplainResult {
 - The type system reinforces it: `rollback: false` on a mutating builder is only accepted in the overload that also demands the acknowledgement, so it cannot be reached by a stray object spread.
 
 `format: 'json'` gives a typed `ExplainNode` (node type, relation name, estimated vs actual rows, loops, buffers, children) rather than a string, which makes plan assertions viable in tests — `expect(plan).not.toContainNode('Seq Scan', { relation: 'events' })`.
+
+> **AS BUILT (design/09 WS6, §3.6).** `explain(opts?)` is on every builder and on a prepared
+> query, and sends the query's **own binds** — the extended protocol accepts a parameterised
+> `EXPLAIN`, and a plan for an inlined literal is a plan for a different query. (`EXPLAIN
+> (GENERIC_PLAN)` is the other question, and is what `test/live/_harness.ts`'s `planProbe` asks.)
+>
+> Two deviations:
+>
+> - **`plan` is `ExplainNode | undefined`**, present iff `format` is `'json'` (the default). A
+>   typed tree cannot be recovered from PostgreSQL's *text* rendering without writing a parser for
+>   it, and running a second `EXPLAIN` to get both would execute a mutating statement twice under
+>   `analyze`. `text` is always there, and `String(result)` is it, as promised.
+> - **`buffers` / `timing` / `wal` are emitted only with `analyze`.** `EXPLAIN (BUFFERS)` without
+>   it is an error before PG 16, and asking for it is almost always a slip rather than a request.
+>
+> The safety rail ships and is the differentiating bit it was advertised as. "Mutating" is
+> `meta.writes.length > 0` as well as the statement kind, so a **SELECT carrying a writable CTE**
+> is wrapped too — the case a `kind`-only test would miss. Inside an existing transaction the
+> wrapper is a `SAVEPOINT` / `ROLLBACK TO` / `RELEASE`, never a nested `BEGIN`: rolling the
+> caller's whole transaction back because they asked for a plan would be the cure being worse than
+> the disease. `test/live-query/executor.test.ts` proves the rollback with the row itself, read
+> back through a second path, and proves `rollback: false` really writes.
+>
+> The type-level reinforcement this section describes — "`rollback: false` on a mutating builder is
+> only accepted in the overload that also demands the acknowledgement" — is **not** built: it
+> needs an overload per builder keyed on the statement kind, and the runtime rail plus the explicit
+> spelling carry the weight. Recorded as a deferral in `09` §3.6.
 
 **v1.1, flagged now so it is designed for:** `explain().hints()` — a small rule set flagging `Seq Scan` on a large relation, estimate-vs-actual row mismatches over 10×, nested loops with high loop counts, and external (disk) sorts. Deliberately out of v1 scope; the typed plan tree is the enabling structure.
 

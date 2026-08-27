@@ -159,8 +159,13 @@ export interface PgQuery {
   /**
    * Cap on rows fetched via the portal in one Execute. `undefined` = all rows.
    *
-   * The portal is CLOSED at the cap, so for a row-returning DML statement (`INSERT … RETURNING`)
-   * the rows beyond the cap are never produced — the statement is stopped, not merely truncated.
+   * ⚠️ **CORRECTED, measured on PG 17.11** (design/09 §3.6, R10 M5; pinned by
+   * `test/driver/cursor.test.ts`). This docblock previously said that closing the portal at the
+   * cap *stops* a row-returning DML statement. It does not: `insert … select generate_series(1,5)
+   * … returning id` with `maxRows: 1` inserts **all five rows**, returns one, and reports
+   * `rowCount: 1`. So the hazard is not data loss, it is a **wrong count** — the value a caller
+   * would log, trust as "rows affected", or feed to an idempotency check.
+   *
    * `maxRows: 0` still runs the statement (side effects, notices and the command tag are real)
    * and returns no rows.
    */

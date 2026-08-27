@@ -18,8 +18,33 @@ export interface Compiled<Row = unknown> {
   readonly shape: ResultShape
   /** Cheap metadata for cache-invalidation hooks, tracing, and lint rules. */
   readonly meta: CompiledMeta
+  /**
+   * Per result **column** provenance, positionally aligned with the driver's array row — read
+   * only by dev-mode `assertShape` (03 §3.2) and never on the hot path.
+   *
+   * It lives beside `shape` rather than inside a `FieldPlan` for one reason: the decode plan is
+   * the hot structure and is compared field-by-field by the compiler suite, whereas this is
+   * diagnostic metadata whose only consumer is an error message. `undefined` at a position means
+   * "nothing worth saying" — a computed expression that is neither a schema column nor a
+   * `.as(codec)` fragment.
+   */
+  readonly origins?: readonly (FieldOrigin | undefined)[]
   /** Phantom: keeps `Compiled<Row>` invariant in `Row` (D10). */
   readonly __row?: (r: Row) => Row
+}
+
+/**
+ * Where a result column's codec was declared. Both members are optional and at most one is set.
+ *
+ * `03` §3.2's `CodecMismatchError` prints a call site for a `` sql`…`.as(codec) `` fragment and
+ * names `table.column` for a schema column, because the two mistakes have different fixes: the
+ * first is a wrong codec in the caller's own source, the second is schema drift.
+ */
+export interface FieldOrigin {
+  /** The qualified column as it appears in the SQL, e.g. `"users"."created_at"`. */
+  readonly column?: string
+  /** The `.as(codec)` call site, e.g. `at src/reports.ts:42:19`. Captured outside production only. */
+  readonly site?: string
 }
 
 export interface CompiledMeta {

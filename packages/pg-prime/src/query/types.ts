@@ -70,6 +70,10 @@ import type {
   SetOpNeedsSelectMsg,
 } from './errors.js'
 import type { INV, PRJ, ROW } from './symbols.js'
+import type { ExplainOptions, ExplainResult, StreamOptions } from './executor.js'
+import type { PrepareOptions, PreparedQuery } from './prepared.js'
+import type { RawQuery } from './raw.js'
+import type { SqlSnapshot } from './terminals.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reaching the schema — two indexed accesses, never a conditional (04 §1.5)
@@ -583,6 +587,11 @@ export interface SetQuery<O, B extends readonly unknown[]> extends SetOps<O, B> 
   toAst(): SetOpNode
   compile(): Compiled<O>
   execute(): Promise<O[]>
+  executeTakeFirst(): Promise<O | undefined>
+  prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
+  stream(opts?: StreamOptions): AsyncIterable<O>
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -691,6 +700,25 @@ export interface Query<S extends Sources, O, N = never> extends SetOps<O, readon
   /** Memoised on the instance — a builder cannot change, so the memo cannot go stale (03 §1.4a). */
   compile(): Compiled<O>
   execute: Selected<O, () => Promise<O[]>>
+  /** The first row, or `undefined`. Same SQL as `execute()`, byte for byte (09 §3.6). */
+  executeTakeFirst: Selected<O, () => Promise<O | undefined>>
+  /**
+   * A reusable compiled artifact with typed holes (03 §1.4b).
+   *
+   * `P` is written by hand — `.prepare<{ email: string }>('users_by_email')` — and checked against
+   * the declared `placeholder(...)` names at `execute()`. Linking the two statically would need a
+   * fourth type parameter on `Query`, which `04` §1.3 rule 3 rules out; `./prepared.ts` records
+   * the measurement.
+   */
+  prepare: Selected<
+    O,
+    <P = Record<string, never>>(name?: string, opts?: PrepareOptions) => PreparedQuery<P, O>
+  >
+  /** Rows off a transaction-scoped server-side cursor (07 §6.3). Back-pressure is your `await`. */
+  stream: Selected<O, (opts?: StreamOptions) => AsyncIterable<O>>
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  /** The SQL and the encoded binds. Never throws, including on an unfilled placeholder. */
+  toSQL(): SqlSnapshot
 }
 
 /**
@@ -759,6 +787,14 @@ export interface GroupedQuery<S extends Sources, O, N, G extends string>
   toAst(): SelectNode
   compile(): Compiled<O>
   execute: Selected<O, () => Promise<O[]>>
+  executeTakeFirst: Selected<O, () => Promise<O | undefined>>
+  prepare: Selected<
+    O,
+    <P = Record<string, never>>(name?: string, opts?: PrepareOptions) => PreparedQuery<P, O>
+  >
+  stream: Selected<O, (opts?: StreamOptions) => AsyncIterable<O>>
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
 }
 
 /** One indexed access. `InferResult<Q>` is the array form. */
@@ -831,6 +867,13 @@ export interface Executor {
   insertInto<H extends AnyHandle>(t: H): InsertQuery<H, never, {}>
   update<H extends AnyHandle>(t: H): UpdateQuery<H, never, never>
   deleteFrom<H extends AnyHandle>(t: H): DeleteQuery<H, never>
+
+  /**
+   * The fragment-only statement (`03` §1.4c) — the one path whose result OIDs only the server
+   * knows, and therefore the only one the description cache serves. Rows are keyed by field name
+   * and typed `unknown`, decoded by OID. See `./raw.ts` for what it deliberately lacks.
+   */
+  sql(strings: TemplateStringsArray, ...values: readonly unknown[]): RawQuery
 }
 
 /**
@@ -1026,6 +1069,12 @@ export interface InsertQuery<H extends AnyHandle, O, C extends Sources = {}> ext
   /** Every statement this builder will run — more than one iff the batch was chunked. */
   compileAll(): readonly Compiled<O>[]
   execute(): Promise<O[]>
+  executeTakeFirst(): Promise<O | undefined>
+  /** Throws for a chunked batch: one prepared artifact cannot mean N statements. */
+  prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
+  /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE INSERT` inserts (07 §7.5). */
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
 }
 
 /**
@@ -1094,6 +1143,11 @@ export interface UpdateQuery<H extends AnyHandle, O, V> extends RowSource<O> {
   toAst(): UpdateNode
   compile(): Compiled<O>
   execute(): Promise<O[]>
+  executeTakeFirst(): Promise<O | undefined>
+  prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
+  /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE UPDATE` updates (07 §7.5). */
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
 }
 
 /**
@@ -1126,6 +1180,11 @@ export interface DeleteQuery<
   toAst(): DeleteNode
   compile(): Compiled<O>
   execute(): Promise<O[]>
+  executeTakeFirst(): Promise<O | undefined>
+  prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
+  /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE DELETE` deletes (07 §7.5). */
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1174,6 +1233,23 @@ export type { OpClass, OpSpec } from './ops.manifest.js'
 export { nest, nestNullable } from './scope.js'
 export { over } from './window.js'
 export type { Bound, FrameOpts, WindowLiteral, WindowSpec } from './window.js'
-export { pgPrime, compileOnly } from './run.js'
-export type { PgPrimeOptions } from './run.js'
+export { pgPrime, compileOnly, statementStats } from './run.js'
+export type { PgPrimeOptions, StatementStats } from './run.js'
+export { placeholder } from './prepared.js'
+export type { PrepareOptions, PreparedQuery } from './prepared.js'
+export { clearDescribeCache, describeCacheStats } from './executor.js'
+export type {
+  DescribeCacheStats,
+  ExecOptions,
+  ExplainNode,
+  ExplainOptions,
+  ExplainResult,
+  PreparedStatementOptions,
+  StatementMode,
+  StreamOptions,
+} from './executor.js'
+export type { PlaceholderRef, SqlSnapshot } from './terminals.js'
+export type { RawQuery, RawRow } from './raw.js'
+export { CodecMismatchError } from './errors.js'
+export type { CodecMismatch } from './errors.js'
 export type { WindowFn } from './window.js'

@@ -38,6 +38,8 @@ import { NAME } from '../schema/index.js'
 import { BuilderError } from '../sql/errors.js'
 import type { BuilderCtx } from './builder-state.js'
 import { makeDelete } from './delete.js'
+import type { RawQuery } from './raw.js'
+import { makeRaw } from './raw.js'
 import { makeInsert } from './insert.js'
 import { statementAstOf } from './nominal.js'
 import type { DerivedField } from './scope.js'
@@ -202,6 +204,17 @@ export class ExecutorImpl {
 
   deleteFrom(t: object, alias?: string): unknown {
     return makeDelete(this.ctx, this.ctes, t, alias)
+  }
+
+  /**
+   * `db.sql\`select now()\`` — the fragment-only statement (`03` §1.4c, `07` §2.3).
+   *
+   * The declared CTEs are deliberately NOT spliced in: a raw statement is raw, and quietly
+   * prefixing someone's hand-written SQL with a `WITH` they did not write is the kind of help
+   * that produces a `42601` nobody can locate.
+   */
+  sql(strings: TemplateStringsArray, ...values: readonly unknown[]): RawQuery {
+    return makeRaw(this.ctx, strings, values)
   }
 }
 

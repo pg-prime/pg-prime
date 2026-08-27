@@ -36,7 +36,16 @@
  */
 
 import type { Expr, IdentPart, RawNode, RawPart, RawSpliceNode } from '../compile/ast.js'
-import { isAstNode, isRawPart, mkNode, nodeKindOf, param, raw, lit as litNode } from '../compile/nodes.js'
+import {
+  isAstNode,
+  isRawPart,
+  markSite,
+  mkNode,
+  nodeKindOf,
+  param,
+  raw,
+  lit as litNode,
+} from '../compile/nodes.js'
 import type { AnyCodec, CodecOut, CodecPg } from '../codec/index.js'
 import type { META, OUT, SRC } from '../schema/symbols.js'
 import { InvalidFragmentError, UnsafeLiteralError } from './errors.js'
@@ -110,10 +119,14 @@ const FRAGMENT_NODES = new WeakMap<object, RawNode>()
 function mkFragment<T>(node: RawNode): TypedFragment<T> {
   const handle = Object.freeze({
     as<C extends AnyCodec>(codec: C): TypedFragment<CodecOut<C>, CodecPg<C>> {
-      return mkFragment(raw(node.chunks, node.parts, codec)) as TypedFragment<
-        CodecOut<C>,
-        CodecPg<C>
-      >
+      // The call site is captured here, outside production only, because it is what
+      // `CodecMismatchError` prints (03 §3.2): "at src/reports.ts:42  sql`sum(...)`.as(int4)".
+      // A declared codec is a claim about the server's answer, and the claim is made HERE — the
+      // stack is the only place that knows where. It costs one `new Error().stack` per `.as()`
+      // call (not per row, not per execution); design/09 §3.6 records the measurement.
+      return mkFragment(
+        markSite(raw(node.chunks, node.parts, codec), captureSite('as')),
+      ) as TypedFragment<CodecOut<C>, CodecPg<C>>
     },
     // No codec: `raw.resultCodec` stays `null`, which is what tells the decoder to resolve the
     // column dynamically from its `RowDescription` OID. The type is the caller's assertion; the
@@ -292,12 +305,16 @@ function inProduction(): boolean {
   return isProduction
 }
 
-function captureOrigin(): string | undefined {
+function captureSite(label: string): string | undefined {
   if (inProduction()) return undefined
-  const stack = new Error('unsafeRaw').stack
+  const stack = new Error(label).stack
   if (stack === undefined) return undefined
-  // Skip "Error: unsafeRaw", captureOrigin, unsafeRaw -> the caller is line 3.
+  // Skip "Error: <label>", captureSite, the caller of captureSite -> the user is line 3.
   return stack.split('\n')[3]?.trim()
+}
+
+function captureOrigin(): string | undefined {
+  return captureSite('unsafeRaw')
 }
 
 function unsafeRaw(text: string): Fragment<unknown> {

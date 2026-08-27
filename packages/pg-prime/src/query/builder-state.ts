@@ -41,26 +41,43 @@ import type {
   ColumnMeta,
 } from '../compile/ast.js'
 import type { Compiled } from '../compile/contract.js'
+import type { PgConnection } from '../driver/index.js'
+import type { ExecEnv, RunOptions } from './executor.js'
 import type { RelsRecord, Tables } from '../schema/index.js'
 import type { RefScope } from './ref.js'
 
 /**
  * How a builder reaches a database, and what it is allowed to assume about one.
  *
- * WS4 needs exactly this much of WS6's executor: run a `Compiled`, and know whether we are already
- * inside a transaction (which is what decides whether a chunked bulk insert opens its own —
- * `03` §2.6). `prepare` / `stream` / `explain` / `assertShape` are WS6's and are deliberately
- * absent rather than stubbed.
+ * Two shapes implement it (`./run.ts`): `PoolRunner` checks a connection out per operation,
+ * `ConnRunner` reuses the one the caller's `db.transaction()` already holds. **That is the only
+ * difference between `db` and `tx`**, which is why every terminal in `./terminals.ts` and
+ * `./executor.ts` is written against this interface and not against either class.
+ *
+ * WS6 added the last three members. `use` and `scope` exist because `explain`, `stream` and the
+ * raw-SQL surface all need *a connection*, and only the runner knows whether obtaining one means
+ * a pool checkout (which must be released) or the transaction's own (which must not).
  */
 export interface Runner {
   /** Execute and decode. `Compiled` already carries the decode plan and its codecs. */
-  run<Row>(compiled: Compiled<Row>): Promise<Row[]>
+  run<Row>(compiled: Compiled<Row>, opts?: RunOptions): Promise<Row[]>
   /**
    * Execute several statements atomically, concatenating their rows. Opens a transaction unless
    * {@link inTransaction} is already true — nesting `BEGIN` is a 25001 warning and, worse, a
    * commit that does not commit what the caller thinks.
    */
   runChunked<Row>(compiled: readonly Compiled<Row>[]): Promise<Row[]>
+  /** One connection for the duration of `f`, released afterwards iff this runner acquired it. */
+  use<T>(f: (conn: PgConnection) => Promise<T>): Promise<T>
+  /**
+   * One connection **and one transaction** for the duration of the iteration (`07` §6.3): a
+   * cursor is `WITHOUT HOLD`, which is the only form that works under transaction pooling. At the
+   * root this opens and closes the transaction; inside `db.transaction()` it joins the caller's
+   * and touches neither.
+   */
+  scope<T>(f: (conn: PgConnection) => AsyncIterable<T>): AsyncIterable<T>
+  /** Codec registry, dev-mode flag, statement mode, prepared-statement policy. */
+  readonly env: ExecEnv
   readonly inTransaction: boolean
 }
 
