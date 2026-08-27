@@ -108,6 +108,28 @@ CREATE TABLE public.t (
     expect(cmp.missing).toEqual(["CREATE INDEX i ON a (x)"]);
     expect(cmp.extra).toEqual([]);
   });
+
+  /**
+   * The whole class of drift PostgreSQL 18 opened up: a constraint whose NAME is stale
+   * after a rename. Normalising the name away here would make every one of those plans
+   * pass, which is precisely the silent semantic loss the oracle exists to prevent — so
+   * this is a NEGATIVE test on the oracle itself, and it must stay red-if-relaxed.
+   *
+   * `\restrict`'s random token IS normalised away, one line above. That is the narrow,
+   * verified exception: the token differs between two dumps of the SAME database, so it
+   * carries no schema information at all.
+   */
+  it("never normalises a NOT NULL constraint name away", () => {
+    const fresh = "CREATE TABLE public.users ( id bigint NOT NULL, name text NOT NULL );";
+    const stale =
+      "CREATE TABLE public.users ( id bigint NOT NULL, name text CONSTRAINT users_first_name_not_null NOT NULL );";
+    const cmp = compareDumps(stale, fresh);
+    expect(cmp.equal).toBe(false);
+    // nor is it excused as an unrepairable column reordering
+    expect(cmp.reordered).toEqual([]);
+    expect(cmp.missing[0]).toContain("name text NOT NULL");
+    expect(cmp.extra[0]).toContain("users_first_name_not_null");
+  });
 });
 
 describe("column-order classification", () => {

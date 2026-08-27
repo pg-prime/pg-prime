@@ -1,6 +1,8 @@
+import { GENERATED_NAME } from "../catalog/payloads.js";
 import type { Payload } from "../ir/hash.js";
 import { SchemaIR, type DependencyEdge, type Fact } from "../ir/fact.js";
 import { encodeId, parseId, type StableId } from "../ir/stable-id.js";
+import { defaultNotNullName } from "../sql/ident.js";
 import { lexSql } from "../sql/statements.js";
 import type { RenameHint, RenameRecord } from "./delta.js";
 
@@ -179,6 +181,15 @@ export function applyRenameHints(current: SchemaIR, desired: SchemaIR, hints: re
   const renames = new Map<string, string>();
   /** `schema.table` of every table a rename touched — the blast radius of the cascade */
   const affectedTables = new Set<string>();
+  /**
+   * Current (post-remap) encoded id -> the id that fact had BEFORE any rename.
+   *
+   * `remapId` is destructive: once `column:public.tenants.id` has become
+   * `column:public.accounts.id` there is nothing left to say what PostgreSQL actually
+   * named its auto-named dependents. The NOT NULL cascade needs both endpoints, so the
+   * origin is carried alongside instead of being reconstructed by inverting the hints.
+   */
+  let originOf = new Map<string, StableId>(facts.map((f) => [encodeId(f.id), f.id]));
 
   for (const hint of hints) {
     const from = asId(hint.from);
@@ -206,11 +217,14 @@ export function applyRenameHints(current: SchemaIR, desired: SchemaIR, hints: re
     if (from.kind === "table" && to.kind === "table") affectedTables.add(`${to.schema}.${to.name}`);
     if (from.kind === "column") affectedTables.add(`${from.schema}.${from.table}`);
 
+    const nextOrigin = new Map<string, StableId>();
     facts = facts.map((f): Fact => {
       const id = remapId(f.id, from, to);
       const parent = f.parent ? remapId(f.parent, from, to) : undefined;
+      nextOrigin.set(encodeId(id), originOf.get(encodeId(f.id)) ?? f.id);
       return { ...f, id, ...(parent ? { parent } : {}) };
     });
+    originOf = nextOrigin;
     edges = edges.map(
       (e): DependencyEdge => ({ ...e, from: remapId(e.from, from, to), to: remapId(e.to, from, to) }),
     );
@@ -266,6 +280,17 @@ export function applyRenameHints(current: SchemaIR, desired: SchemaIR, hints: re
     }
   }
 
+  /* ---- 3. the NOT NULL constraints PostgreSQL 18 gave names to ---- */
+  for (const c of cascadeNotNullRenames(facts, desired, originOf, affectedTables)) {
+    accepted.push({
+      kind: "constraint",
+      from: encodeId(c.from),
+      to: encodeId(c.to),
+      source: "cascade",
+      confidence: "unambiguous",
+    });
+  }
+
   return { ir: SchemaIR.build(facts, edges), accepted, rejected };
 }
 
@@ -319,6 +344,53 @@ function cascadeRenames(
     if (reverse.length !== 1) continue;
     claimed.add(encodeId(to.id));
     out.push({ from: from.id, to: to.id, definition: definitionOf(to) });
+  }
+  return out;
+}
+
+/**
+ * PostgreSQL 18 gave NOT NULL a `pg_constraint` row, and therefore a name — and did not
+ * teach `RENAME COLUMN` / `RENAME TO` to carry that name along, exactly as it never
+ * carried an auto-named PK or index. `pg_dump` 18 prints `CONSTRAINT <name> NOT NULL`
+ * whenever the name is not the default for the column, so a rename that leaves
+ * `users_first_name_not_null` sitting on `users.name` dumps differently from a fresh
+ * `CREATE TABLE` and D10's oracle — correctly — calls the plan unconverged. This is
+ * PostgreSQL 18's only behavioural change that reaches the differ.
+ *
+ * Unlike `cascadeRenames` this is not a hash join and cannot become rename *inference*:
+ * both endpoints are COMPUTED from identity. The old name is the server's default for
+ * the id the column had before the rename, the new one is its default for the id it has
+ * after, and nothing is emitted unless the payload says the constraint carried a
+ * generated name on BOTH sides. A user-named NOT NULL keeps its name — it is the user's,
+ * and a rename is not permission to change it.
+ *
+ * The `from` id names the constraint on the NEW table, because that is what
+ * `ALTER TABLE … RENAME CONSTRAINT` has to address once the table rename in the same
+ * phase has run; the dependency on the renamed table is what orders the two.
+ */
+function cascadeNotNullRenames(
+  facts: readonly Fact[],
+  desired: SchemaIR,
+  originOf: ReadonlyMap<string, StableId>,
+  affectedTables: ReadonlySet<string>,
+): { readonly from: StableId; readonly to: StableId }[] {
+  const out: { from: StableId; to: StableId }[] = [];
+  for (const f of facts) {
+    if (f.id.kind !== "column") continue;
+    if (!affectedTables.has(`${f.id.schema}.${f.id.table}`)) continue;
+    // Only a generated name is ours to fix, and only when the desired side wants a
+    // generated one too — otherwise this is a real alter, not a cascade.
+    if (f.payload["notNullConstraint"] !== GENERATED_NAME) continue;
+    if (desired.get(f.id)?.payload["notNullConstraint"] !== GENERATED_NAME) continue;
+    const origin = originOf.get(encodeId(f.id));
+    if (origin === undefined || origin.kind !== "column") continue;
+    const from = defaultNotNullName(origin.table, origin.name);
+    const to = defaultNotNullName(f.id.table, f.id.name);
+    if (from === to) continue;
+    out.push({
+      from: { kind: "constraint", schema: f.id.schema, table: f.id.table, name: from },
+      to: { kind: "constraint", schema: f.id.schema, table: f.id.table, name: to },
+    });
   }
   return out;
 }

@@ -100,6 +100,27 @@ export async function destroyDatabase(name: string): Promise<void> {
   await withAdmin((admin) => dropScratch(admin, name));
 }
 
+/**
+ * Does this server catalogue NOT NULL as a `pg_constraint` row (PostgreSQL >= 18)?
+ *
+ * Asked of the CATALOG rather than of `server_version_num`, for the same reason
+ * `Q_COLUMNS` gates that way: the behaviour under test is "is there a row", and a server
+ * that back-ported the feature should take the 18 branch. Memoised because every test
+ * that branches on it would otherwise open a connection to ask again.
+ */
+let notNullProbe: Promise<boolean> | null = null;
+export function catalogsNotNullConstraints(): Promise<boolean> {
+  notNullProbe ??= withAdmin(async (c) => {
+    // A temp table dies with this connection, so nothing is left in the database.
+    await c.query("CREATE TEMP TABLE pgprime_not_null_probe (a int NOT NULL)");
+    const r = await c.query(
+      "SELECT count(*)::int AS n FROM pg_constraint WHERE conrelid = 'pgprime_not_null_probe'::regclass AND contype = 'n'",
+    );
+    return Number(r.rows[0]?.["n"] ?? 0) > 0;
+  });
+  return notNullProbe;
+}
+
 export async function serverAvailable(): Promise<boolean> {
   try {
     await withAdmin(async (c) => {

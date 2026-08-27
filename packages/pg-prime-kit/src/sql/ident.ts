@@ -125,3 +125,61 @@ export function isValidIdent(name: unknown): name is string {
     return false;
   }
 }
+
+/* ------------------- PostgreSQL's own auto-naming rule ------------------- */
+
+/** `NAMEDATALEN`. `MAX_IDENT_BYTES` is this minus the terminating NUL. */
+const NAMEDATALEN = MAX_IDENT_BYTES + 1;
+
+/** Clip to at most `maxBytes` UTF-8 bytes without splitting a character (`pg_mbcliplen`). */
+function clipToBytes(s: string, maxBytes: number): string {
+  const buf = Buffer.from(s, "utf8");
+  if (buf.length <= maxBytes) return s;
+  let n = maxBytes;
+  // 0b10xxxxxx is a UTF-8 continuation byte: cutting there would split a character.
+  while (n > 0 && (buf[n]! & 0xc0) === 0x80) n -= 1;
+  return buf.subarray(0, n).toString("utf8");
+}
+
+/**
+ * A port of PostgreSQL's `makeObjectName` (`src/backend/commands/indexcmds.c`), which is
+ * how the server names every object you do not name yourself.
+ *
+ * The truncation is the whole reason this is a port and not a template string. Names
+ * are clipped to `NAMEDATALEN - 1` BYTES, and when the pieces do not fit the server
+ * shortens the LONGER of the two, one byte at a time, until they do — so
+ * `<30 chars>_<30 chars>_not_null` becomes `<27>_<26>_not_null`, not a right-truncation
+ * of the concatenation. Getting that wrong means `cascadeNotNullRenames` renames a
+ * constraint to a name a fresh `CREATE TABLE` would never have produced, and the D10
+ * dump oracle fails on the very drift this code exists to remove.
+ *
+ * Not ported: `ChooseConstraintName`'s uniquifying suffix (`…_not_null1` when the plain
+ * name is already taken on that relation). A name carrying one does not compare equal to
+ * this function's output, so the extractor classifies it as a USER name and the cascade
+ * leaves it alone — the safe direction: we never invent a name, we only decline to fix one.
+ */
+export function makeObjectName(name1: string, name2: string | null, label: string): string {
+  let overhead = utf8ByteLength(label) + 1;
+  let name1bytes = utf8ByteLength(name1);
+  let name2bytes = 0;
+  if (name2 !== null) {
+    name2bytes = utf8ByteLength(name2);
+    overhead += 1; // the separating underscore
+  }
+  const availBytes = NAMEDATALEN - 1 - overhead;
+  while (name1bytes + name2bytes > availBytes && name1bytes + name2bytes > 0) {
+    if (name1bytes > name2bytes) name1bytes -= 1;
+    else name2bytes -= 1;
+  }
+  const first = clipToBytes(name1, name1bytes);
+  const second = name2 === null ? "" : `_${clipToBytes(name2, name2bytes)}`;
+  return `${first}${second}_${label}`;
+}
+
+/**
+ * The name PostgreSQL >= 18 gives a column's NOT NULL constraint when you do not name
+ * it — `ChooseConstraintName(relname, attname, "not_null", …)`.
+ */
+export function defaultNotNullName(table: string, column: string): string {
+  return makeObjectName(table, column, "not_null");
+}

@@ -1,4 +1,5 @@
 import type { Diagnostic } from "../catalog/extract.js";
+import { GENERATED_NAME } from "../catalog/payloads.js";
 import type {
   ColumnPayload,
   ConstraintPayload,
@@ -8,7 +9,7 @@ import type {
 } from "../catalog/payloads.js";
 import type { Fact, SchemaIR } from "../ir/fact.js";
 import { encodeId, parseId, type StableId } from "../ir/stable-id.js";
-import { quoteIdent, quoteLiteral, quoteQualified } from "../sql/ident.js";
+import { defaultNotNullName, quoteIdent, quoteLiteral, quoteQualified } from "../sql/ident.js";
 import type { Delta } from "./delta.js";
 import type { DiffResult } from "./diff.js";
 import { labelsOf } from "./diff.js";
@@ -40,8 +41,25 @@ export function columnClause(colId: StableId & { kind: "column" }, p: ColumnPayl
   } else if (p.default !== null) {
     bits.push(`DEFAULT ${p.default}`);
   }
-  if (p.notNull) bits.push("NOT NULL");
+  // A generated name is what an unnamed `NOT NULL` produces anyway (PG >= 18), so it is
+  // never spelled out — spelling it would make the DDL depend on a name we derived.
+  if (p.notNull) {
+    bits.push(
+      p.notNullConstraint !== null && p.notNullConstraint !== GENERATED_NAME
+        ? `CONSTRAINT ${quoteIdent(p.notNullConstraint)} NOT NULL`
+        : "NOT NULL",
+    );
+  }
   return bits.join(" ");
+}
+
+/**
+ * The name the NOT NULL constraint carries in the database, resolving `%GENERATED%`
+ * against the column's identity. `null` when the server does not catalogue one.
+ */
+function notNullConstraintName(c: StableId & { kind: "column" }, p: ColumnPayload): string | null {
+  if (!p.notNull || p.notNullConstraint === null) return null;
+  return p.notNullConstraint === GENERATED_NAME ? defaultNotNullName(c.table, c.name) : p.notNullConstraint;
 }
 
 /* ---------------------------- the builder --------------------------- */
@@ -770,6 +788,28 @@ function alterColumn(
         ? mk(`ALTER TABLE ${table} ALTER COLUMN ${col} SET NOT NULL`, { idempotent: true, hazards: ["LK107", "MF104"] })
         : mk(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP NOT NULL`, { idempotent: true }),
     );
+  }
+  /*
+   * PG >= 18 catalogues NOT NULL as a `pg_constraint` row, so its NAME is part of the
+   * schema and `pg_dump` prints it whenever it is not the default. Whatever the
+   * transition above left behind carries the generated name, so reaching the desired
+   * name is one catalog-only `RENAME CONSTRAINT` — never a DROP + ADD, which would cost
+   * the full-table verification scan `SET NOT NULL` already paid for.
+   *
+   * On PG < 18 both sides are `null` and nothing is emitted, which is why the same
+   * schema converges identically on 15/16/17.
+   */
+  const wantNotNullName = notNullConstraintName(c, a);
+  if (wantNotNullName !== null) {
+    const haveNotNullName = b.notNull ? notNullConstraintName(c, b) : defaultNotNullName(c.table, c.name);
+    if (haveNotNullName !== null && haveNotNullName !== wantNotNullName) {
+      out.push(
+        mk(`ALTER TABLE ${table} RENAME CONSTRAINT ${quoteIdent(haveNotNullName)} TO ${quoteIdent(wantNotNullName)}`, {
+          kind: "constraint",
+          hazards: ["BC104"],
+        }),
+      );
+    }
   }
   // A generated column cannot be converted in place: PostgreSQL offers only
   // DROP EXPRESSION (stored -> plain), never plain -> stored, and PG18's VIRTUAL

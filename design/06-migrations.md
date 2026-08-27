@@ -305,6 +305,76 @@ normalize differently.
 Resolve by re-invoking with `--hints-file hints.json` (a `Hint[]`) or by editing the schema. Both
 paths are scriptable; neither hangs.
 
+> **AS BUILT 2026-08-27 — the rename cascade, and what PostgreSQL 18 added to it.**
+>
+> A rename never *recreates* a dependent: `applyRenameHints` rewrites the current IR as if the
+> rename had already happened, and `cascadeRenames` turns each auto-named dependent PostgreSQL
+> declined to rename into an `ALTER … RENAME`. Those entries appear in `diff.renames` with
+> `source: "cascade"` — not inference: annotation is still the only authority (D5), and a
+> cascade only ever lands on a table an annotation already touched.
+>
+> **What 18 changed.** PostgreSQL 18 catalogues NOT NULL as a real `pg_constraint` row
+> (`contype = 'n'`, `conkey = {attnum}`, auto-named `<table>_<column>_not_null`). It is the only
+> 18 change that reaches the differ, and it broke the two rename fixtures on 18 while 15/16/17
+> stayed green. Neither `RENAME COLUMN` nor `RENAME TO` carries the name along — the same rule
+> that already forced the PK and index cascades — and `pg_dump` 18 prints
+> `CONSTRAINT <name> NOT NULL` inline whenever the name is not the default for the column. So a
+> renamed database dumped differently from a fresh create, and D6's oracle correctly refused the
+> plan. The observed diff, `pg_dump` 18.6, `rename-column` after the plan applied:
+>
+> ```diff
+> -    name text NOT NULL,
+> +    name text CONSTRAINT users_first_name_not_null NOT NULL,
+> ```
+>
+> **The cascade now covers it.** `cascadeNotNullRenames` (`src/diff/rename.ts`) emits
+> `ALTER TABLE … RENAME CONSTRAINT "<old>" TO "<new>"` for every column of a renamed table or
+> column whose NOT NULL constraint carried a *generated* name on both sides. Unlike
+> `cascadeRenames` it is not a hash join and cannot drift into inference: both endpoints are
+> **computed** from identity — the old name is the server's default for the id the column had
+> before the rename, the new one is its default for the id it has after. A NOT NULL the user
+> named keeps that name; a rename is not permission to regenerate it.
+>
+> **The IR on < 18.** `ColumnPayload.notNullConstraint` is tri-state: `null` when the server does
+> not catalogue the constraint (15/16/17) or the column is nullable; `"%GENERATED%"` when it
+> carries the server's own default; the name itself when the user chose one. Storing the
+> *generated* name would violate I1 — it is a function of the id, so every column of a renamed
+> table would change hash and the rename would become a phantom alter. Storing nothing would let
+> the stale name survive. The sentinel is the same device as `%ID%` in an index definition.
+>
+> Two things are gated on the **catalog**, not on `server_version_num`: the extractor's
+> `LEFT JOIN pg_constraint … contype = 'n'` (no rows on < 18, so the same fixture yields no
+> spurious diff there) and the tests' `catalogsNotNullConstraints()` probe. A server that
+> back-ports the feature therefore needs no version table.
+>
+> `defaultNotNullName` is a port of the server's `makeObjectName`, truncation included: when the
+> two pieces do not fit in `NAMEDATALEN`, PostgreSQL shortens the **longer** one byte at a time,
+> so a 30+30 pair becomes 27+26 — not a right-cut of the concatenation. `pg_dump` 18 compares
+> against a plain `%s_%s_not_null` and so prints a truncated default as if it were a user name;
+> that is harmless, because both sides of the oracle print it identically.
+>
+> **The oracle was not relaxed.** Constraint names are compared verbatim; normalising them away
+> would hide exactly this class of drift (R10 M5 below). The one thing that *is* stripped from an
+> 18 dump is `\restrict` / `\unrestrict`, whose token is random per invocation — verified by
+> diffing two dumps of the same database — and which is a psql meta-command rather than SQL. That
+> was already handled in `sql/statements.ts` for 17.6+.
+>
+> Still not modelled: `convalidated` on a `contype = 'n'` row. PG 18 accepts
+> `ADD CONSTRAINT … NOT NULL … NOT VALID` and sets `attnotnull` anyway, so an unvalidated NOT NULL
+> reads here as an ordinary one. Same Tier-M gap as before the field existed; the D10 witness is
+> what would catch it.
+>
+> **R10 — five mutations, five caught** (PG 18 unless stated; `pgprime-pg18`, and the 17 run kept
+> green where that is the point):
+>
+> | # | Mutation | Caught by |
+> |---|---|---|
+> | M1 | drop the `cascadeNotNullRenames` call | `rename.ts` — *a column rename renames the auto-named NOT NULL constraint*, *a table rename renames every column's…*, *the cascade computes the TRUNCATED name…*, and both original rename tests (5 failures) |
+> | M2 | `defaultNotNullName` becomes a plain `` `${table}_${column}_not_null` `` (no truncation) | `ident.ts` — *shortens the LONGER piece…*, *only shortens the piece that is too long*, *never splits a multi-byte character…*; `catalog.ts` — *records THAT it is generated…*. The end-to-end rename still converged: `alterColumn`'s name-change path is a second line of defence, so a truncated default is repaired as an alter instead of a cascade |
+> | M3 | drop `contype = 'n'` from the extractor join, so a name is read on 17 too (it picks up the PK) | **on 17**: *table rename: the FK on ANOTHER table follows…* and corpus *acceptance* — the "no spurious diff on < 18" requirement; on 18, 14 tests |
+> | M4 | store the generated name raw instead of `%GENERATED%` (I1 violation) | `catalog.ts` — *records THAT it is generated, never the generated name itself*; `rename.ts` — *column rename: the index is RENAMED…* |
+> | M5 | `normalizeDump` strips `CONSTRAINT <name> NOT NULL` (combined with M1, so there is real drift to hide) | `dump-oracle.ts` — *never normalises a NOT NULL constraint name away*; and the five rename tests still failed on their `pg_constraint` assertions, so the oracle is not the only witness |
+
 ### 3.4 Hazard taxonomy — the concrete v1 rule list
 
 Codes are ours; the DS/MF/BC families and severities follow Atlas, and rule *semantics* follow

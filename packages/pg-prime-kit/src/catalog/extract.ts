@@ -6,6 +6,8 @@ import {
   type Provenance,
 } from "../ir/fact.js";
 import { encodeId, type StableId } from "../ir/stable-id.js";
+import { defaultNotNullName } from "../sql/ident.js";
+import { GENERATED_NAME } from "./payloads.js";
 import type {
   ColumnPayload,
   ConstraintPayload,
@@ -95,10 +97,21 @@ WHERE n.nspname = ANY($1) AND c.relkind IN ('r','p')
        OR EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid OR i.inhparent = c.oid))
 ORDER BY n.nspname, c.relname`;
 
+/**
+ * The `nn` join is the PostgreSQL 18 NOT NULL constraint (`contype = 'n'`), joined on
+ * `conkey = array[attnum]` exactly as `pg_dump` 18's own `getTableAttrs` does.
+ *
+ * It needs no version gate: on PG < 18 no row has `contype = 'n'`, so the LEFT JOIN
+ * yields NULL and the IR records "not catalogued" — which is the truth on those servers,
+ * and is why the same fixture diffs clean on 15/16/17 and on 18. Gating on the CATALOG
+ * rather than on `server_version_num` also means a server that back-ports the feature is
+ * handled without a version table.
+ */
 const Q_COLUMNS = `
 SELECT n.nspname AS schema, c.relname AS "table", a.attname AS name, a.attnum,
        format_type(a.atttypid, a.atttypmod) AS type,
        a.attnotnull AS not_null,
+       nn.conname AS not_null_constraint,
        pg_get_expr(ad.adbin, ad.adrelid) AS default_expr,
        nullif(a.attidentity, '') AS identity,
        nullif(a.attgenerated, '') AS generated,
@@ -115,6 +128,8 @@ LEFT JOIN pg_type ut ON ut.oid = a.atttypid
 LEFT JOIN pg_namespace un ON un.oid = ut.typnamespace
 LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
 LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+LEFT JOIN pg_constraint nn ON nn.conrelid = a.attrelid
+                          AND nn.contype = 'n' AND nn.conkey = array[a.attnum]
 WHERE a.attnum > 0 AND NOT a.attisdropped
   AND c.relkind IN ('r','p') AND n.nspname = ANY($1)
   AND c.oid NOT IN (${EXCLUDED_RELS})
@@ -342,6 +357,7 @@ export async function extractCatalog(
       const table = str(r["table"]);
       const id: StableId = { kind: "column", schema, table, name: str(r["name"]) };
       const defaultExpr = nstr(r["default_expr"]);
+      const notNullName = nstr(r["not_null_constraint"]);
       facts.push({
         id,
         parent: { kind: "table", schema, name: table },
@@ -349,6 +365,15 @@ export async function extractCatalog(
           kind: "column",
           type: str(r["type"]),
           notNull: bool(r["not_null"]),
+          // Fold the server-generated name away rather than storing it (I1): it is a
+          // function of the id, so keeping it would give every column of a renamed
+          // table a different hash and turn a rename into a phantom alter.
+          notNullConstraint:
+            notNullName === null
+              ? null
+              : notNullName === defaultNotNullName(table, id.name)
+                ? GENERATED_NAME
+                : notNullName,
           default: defaultExpr,
           identity: nstr(r["identity"]),
           generated: nstr(r["generated"]),

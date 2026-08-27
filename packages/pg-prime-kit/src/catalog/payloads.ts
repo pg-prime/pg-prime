@@ -18,11 +18,40 @@ export interface TablePayload extends Payload {
   readonly rowSecurity: boolean;
 }
 
+/**
+ * Stands in for a name PostgreSQL generated from the object's own identity, so the
+ * payload can record THAT a name exists without recording the name (I1). Same device as
+ * `%ID%` in an index definition: substitute the identity back in and you have the name.
+ */
+export const GENERATED_NAME = "%GENERATED%";
+
 export interface ColumnPayload extends Payload {
   readonly kind: "column";
   /** `format_type(atttypid, atttypmod)` — always schema-qualified for user types */
   readonly type: string;
   readonly notNull: boolean;
+  /**
+   * The NOT NULL constraint's name, on servers that have one (design/06 §3.3 AS BUILT).
+   *
+   * PostgreSQL 18 catalogues NOT NULL as a real `pg_constraint` row (`contype = 'n'`), so
+   * for the first time it has a name a user can choose and `pg_dump` can print. Three
+   * states, and the difference between them is the whole point:
+   *
+   *  - `null`   — the server does not catalogue NOT NULL constraints (PG < 18), or the
+   *               column is nullable. There is nothing to name, so the same fixture
+   *               extracted on 15/16/17 and on 18-with-default-names produces no diff;
+   *  - `%GENERATED%` — catalogued under the server's own default,
+   *               `defaultNotNullName(table, column)`. Derivable from the id, so it is
+   *               not stored: a rename must not perturb the column's hash (I1);
+   *  - anything else — the USER named it. That is a real attribute of the schema, it is
+   *               carried into `CREATE TABLE`, and a rename leaves it alone.
+   *
+   * Not modelled: `convalidated` for a `contype = 'n'` row. PG 18 lets you add one
+   * `NOT VALID`, and `attnotnull` is set either way, so an unvalidated NOT NULL reads
+   * here as an ordinary one. The D10 dump oracle is what would catch that; it is the
+   * same Tier-M gap it was before this field existed.
+   */
+  readonly notNullConstraint: string | null;
   /** `pg_get_expr(adbin, adrelid)` or null */
   readonly default: string | null;
   /** `a` always, `d` by default, null = not an identity column */

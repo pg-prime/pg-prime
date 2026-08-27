@@ -16,3 +16,6 @@ packages/*/src/**/*.d.ts
 
 # generated runtime-bench build (packages/pg-prime emitted for the bench to import)
 bench/runtime/.gen/
+
+# Agent worktrees (Claude Code) — never part of the repo
+.claude/worktrees/

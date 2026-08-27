@@ -14,12 +14,19 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { evaluatedEnumLabels, extractCatalog } from "../src/catalog/extract.js";
+import { GENERATED_NAME } from "../src/catalog/payloads.js";
 import { buildStatements } from "../src/diff/ddl.js";
 import { diffIR } from "../src/diff/diff.js";
 import { runSqlScript, withClient } from "../src/db/pg.js";
 import { SchemaIR } from "../src/ir/fact.js";
 import { encodeId } from "../src/ir/stable-id.js";
-import { ADMIN, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
+import {
+  ADMIN,
+  catalogsNotNullConstraints,
+  destroyDatabase,
+  makeDatabase,
+  serverAvailable,
+} from "./support/db.js";
 
 const PART = "pgprime_cat_part";
 const EXT = "pgprime_cat_ext";
@@ -178,6 +185,76 @@ describe("live catalog exclusions", () => {
         extractCatalog(c, { schemas: ["public"], statementTimeout: "5s" }),
       );
       expect(ok.pgVersionNum).toBeGreaterThanOrEqual(150000);
+    },
+    T,
+  );
+});
+
+/**
+ * What the IR records about a PostgreSQL 18 NOT NULL constraint — and, just as
+ * load-bearing, what it records on 15/16/17, where there is no such constraint to record.
+ *
+ * The two failure modes this pins down are opposites. Store the generated name and every
+ * column of a renamed table gets a new hash, so a rename becomes a phantom alter (I1).
+ * Store nothing at all and a stale `users_first_name_not_null` survives on a column
+ * called `name`, which `pg_dump` 18 prints and D10 rejects.
+ */
+describe("the NOT NULL constraint's name", () => {
+  const NN = "pgprime_cat_notnull";
+  const NN2 = "pgprime_cat_notnull_twin";
+  // 30 + 30 does not fit in NAMEDATALEN, so the server truncates its own default name
+  const LONG_T = "a".repeat(30);
+  const LONG_C = "b".repeat(30);
+  const SCHEMA = `
+    CREATE TABLE public.t (
+      plain    int NOT NULL,
+      named    int CONSTRAINT named_required NOT NULL,
+      nullable int
+    );
+    CREATE TABLE public.${LONG_T} (${LONG_C} int NOT NULL);`;
+
+  beforeAll(async () => {
+    expect(await serverAvailable(), `no PostgreSQL at ${ADMIN.host}:${ADMIN.port}`).toBe(true);
+  }, T);
+
+  afterAll(async () => {
+    for (const db of [NN, NN2]) await destroyDatabase(db).catch(() => undefined);
+  }, T);
+
+  it(
+    "records THAT it is generated, never the generated name itself",
+    async () => {
+      const conn = await makeDatabase(NN);
+      await runSqlScript(conn, SCHEMA);
+      const r = await withClient(conn, (c) => extractCatalog(c, { schemas: ["public"] }));
+      const nn = (table: string, name: string): unknown =>
+        r.ir.get({ kind: "column", schema: "public", table, name })?.payload["notNullConstraint"];
+
+      const catalogued = await catalogsNotNullConstraints();
+      // a nullable column has no constraint on ANY server
+      expect(nn("t", "nullable")).toBe(null);
+      // and on PG < 18 neither does a NOT NULL one — there is no row to read
+      expect(nn("t", "plain")).toBe(catalogued ? GENERATED_NAME : null);
+      // a name the USER chose is a real attribute and is kept verbatim
+      expect(nn("t", "named")).toBe(catalogued ? "named_required" : null);
+      // the TRUNCATED default is still a default. A plain `<table>_<column>_not_null`
+      // test would misread it as a user name and freeze it into the payload.
+      expect(nn(LONG_T, LONG_C)).toBe(catalogued ? GENERATED_NAME : null);
+    },
+    T,
+  );
+
+  it(
+    "produces no diff between two databases built from the same SQL",
+    async () => {
+      const a = await makeDatabase(NN);
+      const b = await makeDatabase(NN2);
+      await runSqlScript(a, SCHEMA);
+      await runSqlScript(b, SCHEMA);
+      const left = await withClient(a, (c) => extractCatalog(c, { schemas: ["public"] }));
+      const right = await withClient(b, (c) => extractCatalog(c, { schemas: ["public"] }));
+      expect(left.ir.fingerprint).toBe(right.ir.fingerprint);
+      expect(diffIR(left.ir, right.ir).deltas).toEqual([]);
     },
     T,
   );

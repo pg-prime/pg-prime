@@ -10,9 +10,11 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  defaultNotNullName,
   hasLoneSurrogate,
   hasNul,
   isValidIdent,
+  makeObjectName,
   quoteIdent,
   quoteLiteral,
   quoteQualified,
@@ -90,5 +92,43 @@ describe("byte and surrogate probes", () => {
     expect(hasLoneSurrogate(String.fromCharCode(0xde00))).toBe(true);
     expect(hasNul("ok")).toBe(false);
     expect(hasNul(`o${NUL}k`)).toBe(true);
+  });
+});
+
+/**
+ * `makeObjectName` is a PORT, so the oracles here are names a real PostgreSQL 18 printed
+ * (`select conname from pg_constraint where contype = 'n'`), never a re-derivation of the
+ * implementation. Getting this wrong makes `cascadeNotNullRenames` rename a constraint to
+ * a name no `CREATE TABLE` would produce, which the D10 dump oracle then reports as drift.
+ */
+describe("the server's own auto-naming rule", () => {
+  it("is the plain concatenation when everything fits", () => {
+    expect(defaultNotNullName("users", "first_name")).toBe("users_first_name_not_null");
+    expect(defaultNotNullName("t", "a")).toBe("t_a_not_null");
+    expect(makeObjectName("orders", "customer_id", "fkey")).toBe("orders_customer_id_fkey");
+  });
+
+  it("shortens the LONGER piece, not the concatenation, when it does not fit", () => {
+    // observed on PostgreSQL 18.6: CREATE TABLE p.<30×a> (<30×b> int NOT NULL)
+    expect(defaultNotNullName("a".repeat(30), "b".repeat(30))).toBe(
+      `${"a".repeat(27)}_${"b".repeat(26)}_not_null`,
+    );
+    // a right-truncation of `<30×a>_<30×b>_not_null` would have kept 30 a's and lost
+    // the `_not_null` suffix entirely, which is the mutation this case exists to catch
+    expect(defaultNotNullName("a".repeat(30), "b".repeat(30)).endsWith("_not_null")).toBe(true);
+    expect(utf8ByteLength(defaultNotNullName("a".repeat(30), "b".repeat(30)))).toBe(MAX_IDENT_BYTES);
+  });
+
+  it("only shortens the piece that is too long", () => {
+    // 60 + 1: name2 cannot shrink below the point where name1 becomes the longer one
+    expect(defaultNotNullName("a".repeat(60), "b")).toBe(`${"a".repeat(52)}_b_not_null`);
+  });
+
+  it("never splits a multi-byte character while clipping", () => {
+    // "é" is 2 bytes, so a byte budget landing mid-character must back off a whole one
+    const name = defaultNotNullName("é".repeat(30), "b".repeat(30));
+    expect(name).toBe(`${"é".repeat(13)}_${"b".repeat(26)}_not_null`);
+    expect(utf8ByteLength(name)).toBeLessThanOrEqual(MAX_IDENT_BYTES);
+    expect(name.includes("�")).toBe(false);
   });
 });
