@@ -193,8 +193,14 @@ describe('codecFor — failing loudly, at seam time', () => {
    */
   it('EVERY builder the DSL ships resolves to a codec', () => {
     const r = new Registry()
-    const names = Object.keys(kit) as (keyof typeof kit)[]
+    // `raw` is the ONE exception and it is the exception on purpose (design/05 §5.3 at
+    // column grain): its type is a string this package cannot reason about, so there is no
+    // codec to resolve and `.$type<T>()` is the documented narrowing. Listing it here
+    // rather than filtering by shape keeps the test's claim exact — a twelfth builder with
+    // no codec still fails.
+    const names = (Object.keys(kit) as (keyof typeof kit)[]).filter((n) => n !== 'raw')
     expect(names.length).toBeGreaterThan(0)
+    expect(Object.keys(kit)).toContain('raw')
 
     const built: Record<string, AnyCol> = {}
     for (const n of names) {

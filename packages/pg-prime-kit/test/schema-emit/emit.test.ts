@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { pgEnum, pgSchema, pgTable, sql, defineSchema, foreignKey, primaryKey } from "pg-prime";
+import { pgEnum, pgExtension, pgSchema, pgTable, sql, defineSchema, foreignKey, primaryKey } from "pg-prime";
 import { emitSchema } from "../../src/schema/emit.js";
 import { schema as corpus } from "./fixture.js";
 
@@ -22,20 +22,33 @@ describe("determinism", () => {
   it("the registry's key order does not change the output", () => {
     const forward = emitSchema(corpus);
     const reversed = emitSchema({
+      ...corpus,
       tables: Object.fromEntries(Object.entries(corpus.tables).reverse()),
     });
     expect(reversed.sql).toEqual(forward.sql);
   });
 
-  it("puts schemas, then types, then tables, then deferred FKs, then indexes, then comments", () => {
+  it("puts schemas, types, domains, sequences, tables, FKs, indexes, CLUSTER, OWNED BY, comments", () => {
     const kinds = emitSchema(corpus).sql.map((s) => s.split(" ").slice(0, 3).join(" "));
     const firstOf = (prefix: string): number => kinds.findIndex((k) => k.startsWith(prefix));
     const lastOf = (prefix: string): number => kinds.map((k) => k.startsWith(prefix)).lastIndexOf(true);
     expect(lastOf("CREATE SCHEMA")).toBeLessThan(firstOf("CREATE TYPE"));
-    expect(lastOf("CREATE TYPE")).toBeLessThan(firstOf("CREATE TABLE"));
-    expect(lastOf("CREATE TABLE")).toBeLessThan(firstOf("ALTER TABLE"));
-    expect(lastOf("ALTER TABLE")).toBeLessThan(firstOf("CREATE UNIQUE") < 0 ? firstOf("CREATE INDEX") : firstOf("CREATE UNIQUE"));
+    expect(lastOf("CREATE TYPE")).toBeLessThan(firstOf("CREATE DOMAIN"));
+    // A domain is a column TYPE and a sequence is a column DEFAULT, so both have to exist
+    // before the first `CREATE TABLE` that names one.
+    expect(lastOf("CREATE DOMAIN")).toBeLessThan(firstOf("CREATE SEQUENCE"));
+    expect(lastOf("CREATE SEQUENCE")).toBeLessThan(firstOf("CREATE TABLE"));
+    // The deferred FK — the cycle breaker — comes after every table. `ATTACH PARTITION` is
+    // also an `ALTER TABLE` and sits with its child's `CREATE`, so the two are told apart
+    // by the whole statement rather than by its first three words.
+    const all = emitSchema(corpus).sql;
+    const lastCreateTable = all.map((s) => s.startsWith("CREATE TABLE")).lastIndexOf(true);
+    expect(lastCreateTable).toBeLessThan(all.findIndex((s) => s.startsWith("ALTER TABLE") && s.includes(" ADD ")));
     expect(lastOf("CREATE INDEX")).toBeLessThan(firstOf("COMMENT ON"));
+    // `CLUSTER ON` names an index, and `OWNED BY` names a column, so both come after the
+    // objects they name and before the comments.
+    expect(firstOf("CREATE INDEX")).toBeLessThan(kinds.findIndex((k) => k.startsWith("ALTER SEQUENCE")));
+    expect(kinds.findIndex((k) => k.startsWith("ALTER SEQUENCE"))).toBeLessThan(firstOf("COMMENT ON"));
   });
 });
 
@@ -128,8 +141,68 @@ describe("dependency order", () => {
     expect(out.some((s) => s.startsWith("ALTER TABLE"))).toBe(false);
   });
 
+  /**
+   * The index options of design/05 §2.4, as TEXT.
+   *
+   * The round-trip test cannot see these: it builds database B from database A's extracted
+   * IR, so an option the emitter drops is missing from both sides and `pg_dump` agrees with
+   * itself. The clause ORDER is PostgreSQL's grammar and getting it wrong is a syntax
+   * error, which the round-trip would catch — but a silently dropped `DESC` is not, and
+   * that is what this pins.
+   */
+  it("writes every index option, in PostgreSQL's own clause order", () => {
+    const out = emitSchema(corpus).sql;
+    const index = (name: string): string => out.find((s) => s.includes(`INDEX "${name}"`)) ?? `<no ${name}>`;
+    expect(index("tickets_label_pattern_idx")).toBe(
+      'CREATE INDEX "tickets_label_pattern_idx" ON "public"."tickets" ("label" text_pattern_ops)',
+    );
+    expect(index("tickets_created_desc_idx")).toBe(
+      'CREATE INDEX "tickets_created_desc_idx" ON "public"."tickets" ("created_at" DESC NULLS LAST)',
+    );
+    expect(index("tickets_doc_idx")).toBe(
+      'CREATE INDEX "tickets_doc_idx" ON "public"."tickets" USING "gin" ("doc" jsonb_path_ops)',
+    );
+    expect(index("tickets_open_idx")).toBe(
+      'CREATE INDEX "tickets_open_idx" ON "public"."tickets" ("org_id") INCLUDE ("label") WHERE ("amount" IS NULL)',
+    );
+    expect(index("tickets_org_label_key")).toBe(
+      'CREATE UNIQUE INDEX "tickets_org_label_key" ON "public"."tickets" ("org_id", "label") NULLS NOT DISTINCT',
+    );
+    // …and the three table nodes an adopted database needs.
+    expect(out).toContain('ALTER TABLE "public"."tickets" CLUSTER ON "PK_Tickets"');
+    expect(out.find((s) => s.startsWith('CREATE TABLE "public"."readings" '))).toContain(
+      "PARTITION BY RANGE (at)",
+    );
+    expect(out).toContain(
+      `ALTER TABLE "public"."readings" ATTACH PARTITION "public"."readings_2024" ` +
+        `FOR VALUES FROM ('2024-01-01 00:00:00+00') TO ('2025-01-01 00:00:00+00')`,
+    );
+    expect(out).toContain('ALTER SEQUENCE "public"."tickets_no_seq" OWNED BY "public"."tickets"."no"');
+  });
+
+  /**
+   * `pgExtension` is not in the shared fixture — an extension belongs to the DATABASE and
+   * tier 3 cannot normalise one (design/06 §3.2), so declaring it there would make two true
+   * properties of `test/shadow/ladder.test.ts` false. Its emitter path is asserted here, and
+   * end to end by AdventureWorks' two extensions in `test/pull/roundtrip.test.ts`.
+   */
+  it("emits an extension first, declare-only, and warns that tier 3 cannot normalise it", () => {
+    const t = pgTable("x", (c) => ({ id: c.uuid().primaryKey() }));
+    const registry = { ...defineSchema({ t }), extensions: [pgExtension("uuid-ossp", { schema: "public" })] };
+    const plain = emitSchema(registry);
+    expect(plain.sql[0]).toBe('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" SCHEMA "public"');
+    expect(plain.diagnostics).toEqual([]);
+
+    const mapped = emitSchema(registry, { schemaMap: new Map([["public", "pgprime_shadow_dead_public"]]) });
+    const note = mapped.diagnostics.find((d) => d.code === "shadow_extension_fixed_schema");
+    expect(note?.severity).toBe("warning");
+    expect(note?.message).toContain("design/06 §3.2");
+    // …and the statement still names the REAL schema, because that is where it has to go.
+    expect(mapped.sql[0]).toBe('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" SCHEMA "public"');
+  });
+
   it("breaks a cycle with ALTER TABLE … ADD CONSTRAINT, one statement, not two", () => {
-    const alters = emitSchema(corpus).sql.filter((s) => s.startsWith("ALTER TABLE"));
+    const alters = emitSchema(corpus).sql.filter((s) => s.startsWith("ALTER TABLE") && s.includes(" ADD "));
     expect(alters).toHaveLength(1);
     expect(alters[0]).toMatch(/ALTER TABLE "public"\."(orgs|users)"/);
     expect(alters[0]).toContain("FOREIGN KEY");

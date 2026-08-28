@@ -51,6 +51,15 @@ export const MASKED: readonly string[] = [
   "schemaDrift",              // the generated SQL; asserted with toContain instead
   "hazards[].message",        // quotes the statement, which embeds identifiers
   "findings[].message",
+
+  /* ---- K4: checkpoints, seeds, pull. Paths only — every count stays evidence. ---- */
+  "seedsDir",                 // an absolute path under the scratch project
+  "written.ir",               // ditto — `migrate checkpoint`'s third artifact
+  "written.schema",           // ditto — `pull`'s output
+  "written.report",
+  "out",                      // pull's --out, an absolute path
+  "sqlDir",                   // pull's --sql-dir, an absolute path
+  "report",                   // pull's report path
 ];
 
 /**

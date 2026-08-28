@@ -4,8 +4,8 @@ Migration engine for [pg-prime](https://github.com/pg-prime/pg-prime) — catalo
 generation, prove-on-shadow-clone, apply.
 
 > **Status: pre-alpha.** The package builds and installs — ESM-only, TypeScript ≥ 5.9, `pg` as its
-> one runtime dependency — but it is still `0.0.0` and the API will change. Ten commands ship;
-> `migrate checkpoint` and `db seed` do not exist yet and `pg-prime --help` says so.
+> one runtime dependency — but it is still `0.0.0` and the API will change. All twelve of
+> [design/06 §6.2](../../design/06-migrations.md)'s commands ship, and `pull` besides.
 > Follow progress at <https://github.com/pg-prime/pg-prime>.
 
 ```
@@ -92,6 +92,9 @@ with a restricted role the shadow is a temp schema inside your own database, and
 | `pg-prime migrate push --dev` | Dev loop only: applies the diff straight to the database, writing no files and no history rows. Refuses without the literal `--dev`, under `PG_PRIME_ENV=production`, on a `--prod-pattern` match, and against any database under versioned management. | `0` · `1` · `2` |
 | `pg-prime migrate doctor` | Read-only health report: INVALID indexes, `_ccnew%` leftovers, NOT VALID constraints, catalog-vs-history drift, stale leases, orphaned repeatables, the Tier-O and Tier-U census. | `0` healthy · `4` findings |
 | `pg-prime migrate unlock` | Inspects the migration lease; `--force` breaks a stale one. | `0` free, stale or released · `6` a live deploy holds it |
+| `pg-prime migrate checkpoint` | Writes `NNNN_checkpoint.sql` holding the whole current schema, plus `NNNN_checkpoint.plan.json` and `checkpoints/NNNN.ir.json`. A **fresh** database then applies that file and everything after it instead of replaying four hundred; an **existing** one records it as `superseded` and continues linearly. Nothing is deleted, and the `.ir.json` is what lets `apply` and `status` NAME the objects that drifted. | `0` · `1` |
+| `pg-prime db seed [--set <name>]` | Runs `seeds/*.sql` and `seeds/*.ts` in filename order, each file in its own transaction. **Never recorded in `pgprime.migrations`** — it does not even create the history schema. A `.ts` seed gets a real, typed `Db`. Refuses under `PG_PRIME_ENV=production` or a `--prod-pattern` match without `--force`. | `0` seeded or nothing to do · `1` refused or failed |
+| `pg-prime pull --out <file>` | Introspects the database and writes a deterministic TypeScript schema file in the DSL's own spelling, with views/functions/triggers/policies going to `sql/` as repeatables and anything the DSL cannot express into a `-- pull: unsupported` header block and `pull.report.json`. A second `pull` over the result is byte-identical, and `migrate generate` against the same database reports an empty diff. | `0` · `1` |
 
 Every command takes `--output json` and then always prints one envelope with `status` and
 `exitCode`, on stdout, including for a usage error. Exit codes are
@@ -102,7 +105,49 @@ Every command takes `--output json` and then always prints one envelope with `st
 4 drift                      5 pending 6 lock unavailable  7 proof failed
 ```
 
-Run `pg-prime migrate <command> --help` for the flags.
+Run `pg-prime migrate <command> --help` for the flags. `db seed` and `pull` are their own verbs
+rather than `migrate` ones, and that is the point: neither writes a migration.
+
+## Backfills are a runner feature, not a documentation page
+
+A data migration is a hand-written file in the same ordered history as the DDL, tagged
+`-- pg-prime:data` and `-- pg-prime:batch` (design/06 §7 lane 2). `migrate generate --data --name
+backfill_country` scaffolds one, and the directive is interpreted by the **runner**:
+
+```sql
+-- pg-prime:txmode    none
+-- pg-prime:batch     size=1000 pause=100ms max-replica-lag=10s
+```
+
+Every statement in the file is re-executed, **each in its own transaction**, until it reports zero
+rows. Between iterations the runner sleeps `pause` and waits while replica lag exceeds
+`max-replica-lag` — read from `pg_stat_replication` on the primary by default, or from
+`pg_last_wal_replay_lsn()` on each URL in the config's `replicas`. After every batch it writes
+`{ rows_done, watermark }` to `pgprime.data_progress` **inside the batch's own transaction**, so a
+backfill killed at 3 000 of 50 000 rows resumes at row 3 001 rather than starting again, and
+`migrate status` shows how far it got.
+
+The statement talks to the runner through two settings and two columns:
+
+```sql
+-- pg-prime:stmt 0 lock=rowExclusive idempotent
+WITH batch AS (
+  SELECT id FROM public.users
+   WHERE country IS NULL
+     AND (nullif(current_setting('pgprime.watermark', true), '') IS NULL
+          OR id > nullif(current_setting('pgprime.watermark', true), '')::bigint)
+   ORDER BY id
+   LIMIT current_setting('pgprime.batch_size')::int
+), updated AS (
+  UPDATE public.users AS t SET country = DEFAULT
+    FROM batch AS b WHERE t.id = b.id RETURNING t.id AS id
+)
+SELECT count(*)::bigint AS rows_done, max(id)::text AS watermark FROM updated;
+```
+
+A statement that reports no `rows_done` falls back to its command tag's row count, which is the
+simpler `WHERE id IN (SELECT … LIMIT n)` shape — it works, but it re-scans from the top of the
+table on every iteration and has nothing to resume from. The template writes the keyset form.
 
 ## Renames are annotations, never guesses
 
@@ -171,6 +216,15 @@ export default defineConfig({
   // The managed schema set. It scopes the diff, the fingerprint AND the advisory lock key,
   // so `apply` must be given the same set the migration was generated with.
   schemas: ['public'],
+
+  // `db seed`'s directory. Files at the top level are the base set; a subdirectory is a
+  // named set, run only when `--set <name>` asks for it.
+  seeds: './db/seeds',
+
+  // Standby URLs for `-- pg-prime:batch max-replica-lag=…`. Without them the ceiling is
+  // read primary-side from pg_stat_replication, which needs no second credential but is
+  // invisible to a role outside pg_monitor.
+  replicas: [],
 
   // design/06 §5.2's defaults, if you need to move them.
   lockTimeout: '3s',

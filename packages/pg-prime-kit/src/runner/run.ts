@@ -21,6 +21,13 @@ import { hostname } from "node:os";
 import pg from "pg";
 import { extractCatalog, type CatalogClient, type Diagnostic } from "../catalog/extract.js";
 import { RUNNER_EXIT, type ExitCode, type RunnerStatus } from "../cli/exit.js";
+import {
+  describeDrift,
+  driftSentence,
+  listCheckpoints,
+  type DriftReport,
+} from "../checkpoint/checkpoint.js";
+import { runBatchStatement, type BatchEvent, type LagEvent } from "../data/batch.js";
 import type { Segment } from "../diff/order.js";
 import { withClient, type ConnInfo } from "../db/pg.js";
 import { ensureHistory, historyPresent, HISTORY_SCHEMA } from "../history/schema.js";
@@ -28,6 +35,9 @@ import {
   beginRow,
   breakLease,
   currentFingerprint,
+  readDataProgress,
+  EMPTY_WATERMARK,
+  type DataProgress,
   heartbeatLease,
   markApplied,
   markFailed,
@@ -37,6 +47,8 @@ import {
   readMigrationRows,
   readRepeatableRows,
   recordAppliedSql,
+  recordCheckpoint,
+  recordSuperseded,
   releaseLease,
   takeLease,
   upsertRepeatable,
@@ -88,6 +100,12 @@ export interface AppliedMigration {
   /** the statement index a resume started at; null for a first run */
   readonly resumedFrom: number | null;
   readonly retries: number;
+  /**
+   * design/06 §7 lane 2: the batched data migration's totals, null for every other file.
+   * `rowsDone` is cumulative across a resume — it is read back out of
+   * `pgprime.data_progress`, not counted from this process's own iterations.
+   */
+  readonly batch: { readonly rowsDone: number; readonly iterations: number; readonly resumed: boolean } | null;
 }
 
 export interface PreflightReport {
@@ -128,6 +146,8 @@ export interface RunnerFailure {
   readonly sqlState?: string;
   readonly sql?: string;
   readonly attempts?: number;
+  /** design/12 decision 16 — the drifted objects, when a checkpoint IR can name them */
+  readonly drift?: DriftReport;
 }
 
 export interface ApplyPendingResult {
@@ -163,6 +183,25 @@ export interface ApplyPendingOptions {
   readonly verifyFingerprint?: boolean;
   readonly repeatables?: RepeatablesPass;
   readonly repeatablesDir?: string;
+  /**
+   * design/12 decision 13 — the explicit opt-in for `-- pg-prime:batch
+   * max-replica-lag=…`. Absent, the ceiling is read primary-side from
+   * `pg_stat_replication`; present, each of these is asked for
+   * `pg_last_wal_replay_lsn()`, which is design/06 §7's literal shape.
+   */
+  readonly replicas?: readonly ConnInfo[];
+  /**
+   * design/06 §4.5. `auto` (the default) is the design's rule: a fresh database jumps to
+   * the newest checkpoint, an existing one records the checkpoint files as superseded and
+   * continues linearly.
+   *
+   * `ignore` is what `migrate verify` passes, because §6.2 defines `verify` as "replay
+   * **every** migration from empty" — and `verify` always replays into a fresh ephemeral
+   * database, so `auto` would silently turn every `verify` into a checkpoint jump and
+   * report a partial replay as a full one. `verify --from-checkpoint` is the flag that
+   * asks for the jump, and it selects `auto`.
+   */
+  readonly checkpoints?: "auto" | "ignore";
   /** hostname / CI run id recorded on every row */
   readonly appliedFrom?: string;
   readonly engineVersion?: string;
@@ -197,6 +236,8 @@ export type RunnerEvent =
   | { readonly kind: "lock"; readonly state: "waiting" | "acquired" | "unavailable"; readonly waitedMs: number }
   | { readonly kind: "migration"; readonly id: string; readonly state: "start" | "done" | "retry" | "failed"; readonly detail?: string }
   | { readonly kind: "statement"; readonly id: string; readonly index: number; readonly total: number }
+  | BatchEvent
+  | LagEvent
   | { readonly kind: "warning"; readonly message: string };
 
 /* --------------------------------- defaults ------------------------------- */
@@ -287,6 +328,17 @@ export function resumeFrom(row: MigrationRow | undefined): number {
 
 const segmentOf = (segments: readonly Segment[], i: number): number =>
   segments.find((s) => s.statements.includes(i))?.index ?? 0;
+
+/**
+ * A file this run will not touch again.
+ *
+ * `superseded` belongs here as much as `applied` does: design/06 §4.5's checkpoint rule
+ * records the files it jumped over, and a jumped file that read as *pending* would be
+ * re-offered on the next `apply` and fail its own fingerprint gate — which is exactly what
+ * the recording exists to prevent.
+ */
+const isSettled = (r: MigrationRow): boolean =>
+  r.status === "applied" || r.status === "baselined" || r.status === "superseded";
 
 /** `0007` or `0007_add_orders` both name the same file. */
 function matchesTarget(file: MigrationFile, target: string): boolean {
@@ -434,7 +486,7 @@ export async function applyPendingOn(
 
   const readRows = async (): Promise<MigrationRow[]> => (present ? readMigrationRows(client) : []);
   const pendingIdsOf = (rows: readonly MigrationRow[]): string[] => {
-    const settled = new Set(rows.filter((r) => r.status === "applied" || r.status === "baselined").map((r) => r.id));
+    const settled = new Set(rows.filter(isSettled).map((r) => r.id));
     return files.filter((f) => !settled.has(f.id)).map((f) => f.id);
   };
 
@@ -550,8 +602,51 @@ export async function applyPendingOn(
       }
     }
 
+    /* 5-bis. Checkpoints — design/06 §4.5, design/12 decision 16.
+     *
+     * "A FRESH database applies the newest checkpoint and then everything after it; an
+     * EXISTING database ignores checkpoints entirely and continues linearly."
+     *
+     * "Fresh" is `pgprime.migrations` being empty, which is the only definition available
+     * before anything has run and the only one that cannot be wrong: a database with one
+     * recorded migration has a history to continue, whatever its catalog looks like.
+     *
+     * Both branches RECORD what they skipped, as `superseded` (§4.4's own value). Leaving
+     * the jumped files "pending" would make `status` exit 5 for ever on a fully applied
+     * repository and `check` fail on every commit after a checkpoint landed; leaving them
+     * absent would make the reconciler above unable to tell a jumped file from a deleted
+     * one. `superseded` says what happened: never executed here, and never will be.
+     */
+    const settled = new Set(rows.filter(isSettled).map((r) => r.id));
+    const recorded = new Set(rows.map((r) => r.id));
+    const checkpointFiles = await listCheckpoints(migrationsDir);
+    const newest = checkpointFiles.length === 0 ? undefined : checkpointFiles[checkpointFiles.length - 1]!;
+    // `checkpoints: "ignore"` is the EXISTING-database rule applied unconditionally, not
+    // "pretend the files are not there": a checkpoint's `from.fingerprint` is the fresh
+    // database's, so running one after the history it stands in for has already been
+    // applied fails its own gate. Ignoring a checkpoint means superseding it, always.
+    const jump = newest !== undefined && rows.length === 0 && options.checkpoints !== "ignore" ? newest : undefined;
+    const checkpointIds = new Set(checkpointFiles.map((c) => c.id));
+    const superseded =
+      jump !== undefined
+        ? files.filter((f) => f.seq < jump.seq || (f.seq === jump.seq && f.name < jump.name))
+        : files.filter((f) => checkpointIds.has(f.id) && !recorded.has(f.id));
+    if (superseded.length > 0 && !dryRun) {
+      for (const file of superseded) {
+        await recordSuperseded(client, file, engineVersion, appliedFrom);
+        settled.add(file.id);
+      }
+      warnings.push(
+        jump !== undefined
+          ? `fresh database: jumped to checkpoint ${jump.id} and recorded ${superseded.length} earlier file(s) as superseded`
+          : `existing database: recorded ${superseded.length} checkpoint file(s) as superseded and continued linearly ` +
+            `(${superseded.map((f) => f.id).join(", ")})`,
+      );
+    } else if (superseded.length > 0) {
+      for (const file of superseded) settled.add(file.id);
+    }
+
     /* 7 (selection). */
-    const settled = new Set(rows.filter((r) => r.status === "applied" || r.status === "baselined").map((r) => r.id));
     let pending = files.filter((f) => !settled.has(f.id));
     if (options.to !== undefined) {
       const target = pending.concat(files).find((f) => matchesTarget(f, options.to!));
@@ -642,6 +737,17 @@ export async function applyPendingOn(
         const live = needsExtract ? (await extractCatalog(client, { schemas })).ir.fingerprint : fingerprint;
         verified = true;
         if (live !== expected) {
+          // design/12 decision 16 closes design/11 K1's open item (a): a fingerprint is a
+          // hash and a hash names nothing, but a checkpoint's `.ir.json` IS an IR of the
+          // expected state, so the drifted objects can be named by diffing the live
+          // catalog against the newest checkpoint at or before where history says we are.
+          const drift = await describeDrift({
+            client,
+            migrationsDir,
+            schemas,
+            appliedIds: rows.filter((r) => r.status === "applied" || r.status === "baselined").map((r) => r.id),
+          }).catch(() => null);
+          const named = drift === null ? null : driftSentence(drift);
           return await finish(
             done("drift", {
               lock, applied, preflight,
@@ -653,8 +759,12 @@ export async function applyPendingOn(
                   `${file.id} expects the schema to be at ${expected} but ${needsExtract ? "the live catalog is" : "the last applied row records"} ` +
                   `${String(live)} (schemas: ${schemas.join(", ")}). Someone changed the database outside the migration ` +
                   `history, or the runner's --schema set differs from the one the plan was generated with. ` +
-                  `Run \`pg-prime migrate status --verify-fingerprint\` to re-extract.`,
+                  (named === null
+                    ? `No checkpoint is available to name the drifted objects — run \`pg-prime migrate checkpoint\` so the ` +
+                      `next mismatch can. Run \`pg-prime migrate status --verify-fingerprint\` to re-extract.`
+                    : named),
                 migration: file.id,
+                ...(drift === null || drift.checkpoint === null ? {} : { drift }),
               },
             }),
           );
@@ -665,12 +775,20 @@ export async function applyPendingOn(
 
       /* 7c. Dispatch on txmode. */
       const target: CatalogClient = dryRun ? capture : client;
+      // design/06 §7: a batched file's position lives in `pgprime.data_progress`, keyed by
+      // migration id, and it is read BEFORE the file runs — that read is the whole of
+      // "a killed backfill continues from its watermark, never restarts" (R15).
+      const progress =
+        file.directives.batch !== null && present && !dryRun ? await readDataProgress(client, file.id) : null;
       const outcome = await runFile(target, file, exec, byId.get(file.id), {
         engineVersion, appliedFrom, sleep, emit,
         lockTimeout: options.lockTimeout ?? DEFAULTS.lockTimeout,
         ...(options.statementTimeout === undefined ? {} : { statementTimeout: options.statementTimeout }),
         retryBaseMs: options.retryBaseMs ?? DEFAULTS.retryBaseMs,
         random: options.random ?? Math.random,
+        dataProgress: progress,
+        ...(options.replicas === undefined ? {} : { replicas: options.replicas }),
+        onInfo: (m: string): void => void warnings.push(m),
       });
       if (outcome.failure) {
         emit({ kind: "migration", id: file.id, state: "failed", detail: outcome.failure.message });
@@ -686,6 +804,12 @@ export async function applyPendingOn(
       emit({ kind: "migration", id: file.id, state: "done" });
       applied.push(outcome.record);
       fingerprint = file.plan?.to.fingerprint ?? file.directives.to ?? fingerprint;
+      // design/06 §4.4's `pgprime.checkpoints`: written when a checkpoint is actually
+      // APPLIED, which only a fresh database ever does. A checkpoint that was written but
+      // never jumped to anywhere has no business claiming a row.
+      if (file.directives.checkpoint && !dryRun) {
+        await recordCheckpoint(client, file.id, fingerprint ?? file.checksum);
+      }
     }
 
     /* 8. Repeatables. */
@@ -722,6 +846,10 @@ interface FileContext {
   readonly random: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly emit: (event: RunnerEvent) => void;
+  /** `pgprime.data_progress` as it stood before this file ran; null when there is none */
+  readonly dataProgress?: DataProgress | null;
+  readonly replicas?: readonly ConnInfo[];
+  readonly onInfo?: (message: string) => void;
 }
 
 interface FileOutcome {
@@ -741,15 +869,21 @@ async function runFile(
   const startedAt = Date.now();
   const total = exec.statements.length;
   const record = newRow(file, total, ctx.engineVersion, ctx.appliedFrom);
-  const outcome = (durationMs: number, resumedFrom: number | null, retries: number, failure: RunnerFailure | null): FileOutcome => ({
-    record: { id: file.id, txmode: file.txmode, statements: total, durationMs, resumedFrom, retries },
+  const outcome = (
+    durationMs: number,
+    resumedFrom: number | null,
+    retries: number,
+    failure: RunnerFailure | null,
+    batch: AppliedMigration["batch"] = null,
+  ): FileOutcome => ({
+    record: { id: file.id, txmode: file.txmode, statements: total, durationMs, resumedFrom, retries, batch },
     failure,
   });
 
   if (file.txmode === "none") {
     const from = resumeFrom(row);
     const result = await runBare(client, file, exec, record, from, ctx);
-    return outcome(Date.now() - startedAt, row ? from : null, result.retries, result.failure);
+    return outcome(Date.now() - startedAt, row ? from : null, result.retries, result.failure, result.batch);
   }
 
   // Transactional / segmented. The history INSERT is appended to the LAST transactional
@@ -823,11 +957,29 @@ async function runBare(
   record: NewMigrationRow,
   from: number,
   ctx: FileContext,
-): Promise<{ retries: number; failure: RunnerFailure | null }> {
+): Promise<{ retries: number; failure: RunnerFailure | null; batch: AppliedMigration["batch"] }> {
   const total = exec.statements.length;
   await beginRow(client, { ...record, statementsApplied: from, status: "running" });
   await setConfig(client, "lock_timeout", ctx.lockTimeout, false);
   await setConfig(client, "search_path", "pg_catalog", false);
+
+  /* design/06 §7 lane 2. `batch` is a property of the FILE, so every statement in it is
+   * re-executed until it reports zero rows; a statement whose command tag carries no row
+   * count (a DDL one) reports zero on its first execution and therefore runs exactly once.
+   * The whole file shares one `pgprime.data_progress` row — the table is keyed by
+   * migration id (§4.4) — and the runner threads the state through. */
+  const directive = file.directives.batch;
+  let progress: Omit<DataProgress, "updatedAt" | "migrationId"> =
+    ctx.dataProgress === null || ctx.dataProgress === undefined
+      ? { ...EMPTY_WATERMARK }
+      : {
+          rowsDone: ctx.dataProgress.rowsDone,
+          statement: ctx.dataProgress.statement,
+          iterations: ctx.dataProgress.iterations,
+          values: ctx.dataProgress.values,
+          done: ctx.dataProgress.done,
+        };
+  const resumedBatch = directive !== null && (ctx.dataProgress?.iterations ?? 0) > 0;
 
   let retries = 0;
   for (let i = from; i < total; i++) {
@@ -840,6 +992,30 @@ async function runBare(
     let attempt = 0;
     for (;;) {
       try {
+        if (directive !== null) {
+          const done = await runBatchStatement(client, s.sql, i, progress, {
+            migrationId: file.id,
+            directive,
+            sleep: ctx.sleep,
+            onEvent: ctx.emit,
+            lockTimeout: ctx.lockTimeout,
+            ...(ctx.onInfo === undefined ? {} : { onInfo: ctx.onInfo }),
+            ...(ctx.replicas === undefined ? {} : { replicas: ctx.replicas }),
+            ...(s.timeouts.statement === null
+              ? ctx.statementTimeout === undefined
+                ? {}
+                : { statementTimeout: ctx.statementTimeout }
+              : { statementTimeout: s.timeouts.statement }),
+          });
+          progress = {
+            rowsDone: done.rowsDone,
+            statement: i,
+            iterations: done.iterations,
+            values: { ...progress.values, [String(i)]: done.watermark },
+            done: true,
+          };
+          break;
+        }
         await client.query(s.sql);
         break;
       } catch (err) {
@@ -863,6 +1039,7 @@ async function runBare(
         }, i).catch(() => undefined);
         return {
           retries,
+          batch: directive === null ? null : { rowsDone: progress.rowsDone, iterations: progress.iterations, resumed: resumedBatch },
           failure: {
             code: "sql_error",
             message: `${file.id} failed at statement ${i}: ${message(err)}`,
@@ -879,7 +1056,11 @@ async function runBare(
   }
   await resetSessionGucs(client);
   await markApplied(client, file.id, total);
-  return { retries, failure: null };
+  return {
+    retries,
+    failure: null,
+    batch: directive === null ? null : { rowsDone: progress.rowsDone, iterations: progress.iterations, resumed: resumedBatch },
+  };
 }
 
 /** Exponential with full jitter, capped. `attempt` is 1-based. */

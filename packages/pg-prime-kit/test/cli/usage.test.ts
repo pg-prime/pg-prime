@@ -46,16 +46,17 @@ describe("the binary's usage surface", () => {
     for (const argv of [[], ["--help"]]) {
       const r = await runCli(argv);
       expect(r.code).toBe(EXIT.ok);
-      expect(r.stdout).toContain("Usage: pg-prime migrate <command> [options]");
+      expect(r.stdout).toContain("Usage: pg-prime <command> [options]");
       expect(r.stdout).toContain("Exit codes (design/06 §6.1");
     }
   });
 
-  it("prints a help page for `migrate` and for each of the ten commands", async () => {
+  it("prints a help page for `migrate` and for each of its eleven commands", async () => {
     const migrate = await runCli(["migrate", "--help"]);
     expect(migrate.code).toBe(EXIT.ok);
     for (const name of [
       "generate", "apply", "status", "baseline", "check", "verify", "lint", "push", "doctor", "unlock",
+      "checkpoint",
     ]) {
       expect(migrate.stdout).toContain(name);
       const r = await runCli(["migrate", name, "--help"]);
@@ -66,20 +67,47 @@ describe("the binary's usage surface", () => {
     }
   });
 
+  it("`db seed` and `pull` are their own verbs, not migrate ones (design/06 §6.2)", async () => {
+    const db = await runCli(["db", "--help"]);
+    expect(db.code).toBe(EXIT.ok);
+    expect(db.stdout).toContain("pg-prime db <command>");
+    expect(db.stdout).toContain("seed");
+
+    const seed = await runCli(["db", "seed", "--help"]);
+    expect(seed.code, seed.stderr).toBe(EXIT.ok);
+    expect(seed.stdout).toContain("pg-prime db seed");
+    expect(seed.stdout).toContain("--set <name>");
+
+    const pull = await runCli(["pull", "--help"]);
+    expect(pull.code, pull.stderr).toBe(EXIT.ok);
+    expect(pull.stdout).toContain("pg-prime pull");
+    expect(pull.stdout).toContain("--out <file>");
+
+    // …and neither is reachable under `migrate`, which is what makes them their own verbs.
+    const wrong = await runCli(["migrate", "seed"]);
+    expect(wrong.code).toBe(EXIT.error);
+    expect(wrong.stderr).toContain("unknown command `migrate seed`");
+  });
+
   it("--version prints something semver-shaped", async () => {
     const r = await runCli(["--version"]);
     expect(r.code).toBe(EXIT.ok);
     expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
   });
 
-  it("names the commands it does not have yet rather than pretending", async () => {
+  it("lists design/06 §6.2's twelve commands plus `pull`, and no 'not in this release' section", async () => {
     const r = await runCli(["--help"]);
-    expect(r.stdout).toContain("Not in this release:");
-    for (const later of ["checkpoint", "db seed"]) {
-      expect(r.stdout).toContain(later);
+    for (const command of [
+      "migrate generate", "migrate apply", "migrate status", "migrate baseline", "migrate check",
+      "migrate verify", "migrate lint", "migrate push", "migrate doctor", "migrate unlock",
+      "migrate checkpoint", "db seed", "pull",
+    ]) {
+      expect(r.stdout, `root help should list ${command}`).toContain(command);
     }
-    // …and the one that graduated out of that list is now above it, with an exit-code line.
-    expect(r.stdout).toContain("migrate generate  build a migration from the TypeScript schema");
+    // design/06 §6.4 is twelve of twelve, so the list of what is missing is now empty and
+    // the heading that introduced it is gone rather than left over an empty list.
+    expect(r.stdout).not.toContain("Not in this release:");
+    expect(r.stdout).toContain("migrate generate    build a migration from the TypeScript schema");
   });
 
   it("a missing or unknown command exits 1", async () => {

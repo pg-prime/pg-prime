@@ -247,7 +247,7 @@ export default defineSchema({ widgets })
   /* -------------------------------- verify -------------------------------- */
 
   it(
-    "verify replays from empty; --from-checkpoint is refused with a sentence",
+    "verify replays from empty; --from-checkpoint with no checkpoint on disk is refused",
     async () => {
       const p = await scratch("verify");
       expect((await cli(p, "generate", "--name", "init")).code).toBe(EXIT.ok);
@@ -256,11 +256,15 @@ export default defineSchema({ widgets })
       const ok = await cli(p, "verify");
       expect(ok.code, ok.stdout + ok.stderr).toBe(EXIT.ok);
       expect(envelopeOf(ok)["status"]).toBe("verified");
+      expect(envelopeOf(ok)["fromCheckpoint"]).toBe(false);
       await expectGolden("verify.verified", envelopeOf(ok));
 
+      // The flag is built (design/12 decision 16) but it cannot replay from a checkpoint
+      // that does not exist, and silently doing a full replay under its name would report
+      // a full replay as a checkpoint one — the failure the old blanket refusal prevented.
       const refused = await cli(p, "verify", "--from-checkpoint");
       expect(refused.code).toBe(EXIT.error);
-      expect((envelopeOf(refused)["error"] as { message: string }).message).toContain("checkpoint");
+      expect((envelopeOf(refused)["error"] as { message: string }).message).toContain("NNNN_checkpoint.sql");
       await expectGolden("verify.refused", envelopeOf(refused));
     },
     T,

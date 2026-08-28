@@ -23,7 +23,8 @@
       "statements": 2,
       "durationMs": "<masked>",
       "resumedFrom": null,
-      "retries": 0
+      "retries": 0,
+      "batch": null
     },
     {
       "id": "0002_index_widgets",
@@ -31,7 +32,8 @@
       "statements": 2,
       "durationMs": "<masked>",
       "resumedFrom": null,
-      "retries": 0
+      "retries": 0,
+      "batch": null
     }
   ],
   "pending": [],

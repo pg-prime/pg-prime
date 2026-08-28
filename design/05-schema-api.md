@@ -727,6 +727,25 @@ TS-only (`$` prefix — never in the IR, per D4):
 > phantom slot symbol. Measured cost across the 100-table headline: 63 instantiations on TS 5.9.3,
 > 19 on TS 7.0.2 (0.08% / 0.01%).
 
+> **AS BUILT 2026-08-29 (design/12 K4) — one more column builder, and it is an escape hatch.**
+>
+> **`t.raw(pgType, name?)`** declares a column of ANY PostgreSQL type, named as text:
+> `t.raw('character varying(40)')`, `t.raw('xml')`, `t.raw('public."Name"')`. The eleven typed
+> builders cover eleven types; PostgreSQL has hundreds, plus every domain and composite a schema
+> declares. §5.3's rule for that gap is that the escape hatch lives INSIDE the model or the
+> un-modelled part becomes permanent drift, and this is that rule at **column** grain. It is also
+> what makes `pg-prime pull` able to emit a schema that round-trips a database it did not create:
+> all four third-party corpora do, with an empty residue.
+>
+> The read type is `unknown` and that is deliberate — the type name is a string this package
+> cannot reason about, so pretending to know what a `real` decodes to would be a lie the codec
+> layer cannot honour. Narrow it with `.$type<T>()`. `test/query/meta.test.ts`'s "EVERY builder
+> resolves to a codec" names `raw` as the single exception rather than filtering by shape, so a
+> twelfth builder with no codec still fails that test.
+>
+> Cost: zero. `raw` returns `Base<unknown, string>`, introduces no type parameter, and
+> `bench:types` moved not one per-declaration or per-query number.
+
 ### 2.4 Table-level nodes (the extras array)
 
 ```ts
@@ -792,6 +811,24 @@ TS-only (`$` prefix — never in the IR, per D4):
 > **Not built:** `exclude`, `partitionBy`, `partitions`, `unlogged`, `withOptions`, `tablespace`,
 > `replicaIdentity`, `rls.*`, `dropColumn`, `external`. `EXCLUDE`, partitions and `comment`-as-a-fact
 > are K3's; the rest have no IR to land in yet.
+
+> **AS BUILT 2026-08-29 (design/12 K4).** Six more, every one of them a Tier-M fact the differ
+> already models — which is the bar: a fact the differ can DROP is a fact the DSL has to be able
+> to declare, or every adopted database's first migration destroys it.
+>
+> | node | spelling as built |
+> |---|---|
+> | `index` / `uniqueIndex` | **the options are built**: `index('i', { using, where, include, nullsNotDistinct })`, and the same four as chained methods (`.using('gin')`, `.where(sql\`…\`)`, `.include(t.b, t.c)`, `.nullsNotDistinct()`). Per-column `desc` / `nulls` / `opclass` are **item objects** — `index('i').on(t.a, { column: t.b, desc: true, nulls: 'last', opclass: 'text_pattern_ops' })`. The plain-column form is unchanged and fills the options in with "not stated", so the emitted `CREATE INDEX` is byte-identical to what it was before they existed. Still not built: `.with({ … })`, `.concurrently(false)`, `.tablespace()`, and **expression** indexes — `pull` records an expression index as unsupported rather than approximating it. |
+> | `primaryKey` | **the `{ name, columns }` object form is built.** §2.4 always listed it; K2a's "the emitter always names it `<table>_pkey`" turned out to be exactly what stops an adopted database round-tripping — AdventureWorks names all 68 of its primary keys `PK_Something`, and without a name the first generated migration renames every one of them. |
+> | `clusterOn('idx')` | **built**, beyond §2.4's list. `pg_index.indisclustered` became a Tier-M fact in design/11 K2b (the D10 witness found it missing on all 68 AdventureWorks tables); a fact that is diffed and cannot be declared is a fact that gets dropped. |
+> | `partitionBy(strategy, key)` / `partitionOf(parent, bound, { schema? })` | **built.** The parent gets `PARTITION BY RANGE (…)`; the child is emitted as a standalone `CREATE TABLE` followed by `ALTER TABLE parent ATTACH PARTITION child …`, which is `pg_dump`'s own form and the only one that round-trips on PostgreSQL 18 — `CREATE TABLE … PARTITION OF` clones the parent's constraints *including their names*, and PG 18 catalogues NOT NULL as a named `pg_constraint` row. The key travels as **text**, because `pg_get_partkeydef` is an expression (`RANGE (date_trunc('month', at))` is legal) and a column-list-only spelling would round-trip some partitioned tables and silently mangle the rest. `partitions({ manage, unknown })` is still not built. |
+>
+> The item-object spelling for `desc` / `nulls` / `opclass` **diverges from §2.4's sketch**, which
+> writes them as methods on the column reference (`t.b.desc().nullsLast()`). `Ref` is the hottest
+> type in the package — it is what `[REFS]` holds for every column of every table — and three more
+> methods on it would be paid for by every schema in every program, for a feature that appears in
+> a handful of index declarations. The item object costs nothing at the type level and says the
+> same thing. `bench:types`: not one per-declaration or per-query number moved.
 
 ---
 
@@ -1156,6 +1193,20 @@ Interactive `--interactive` mode does not "resolve" anything — it **writes the
 > exists and `new` does not") are evaluated by K2b's `generate` against the current IR, feeding the
 > kit's existing `RenameHint[]` — which is what makes `--hints-file` and the annotation one
 > mechanism with two spellings (`11` §1.8).
+
+> **AS BUILT 2026-08-29 (design/12 K4).** `pgEnum(name, values, { renamedFrom })` is now built,
+> so **all four** spellings of the annotation exist: the column method, the extras node,
+> `pgSchema(…, { renamedFrom })` (K2a) and `pgEnum(…, { renamedFrom })`. `pgDomain` and
+> `pgSequence` take one too, for the same reason.
+>
+> **`generate` now READS all of them**, which is what K2b left undone. `annotationHints` walks
+> `schema.schemas` / `schema.enums` / `schema.domains` / `schema.sequences` — populated by
+> `loadSchema` off the module's own exports — and produces `RenameHint`s keyed by the right fact
+> kind (`schema`, `type` for both enums and domains, since `05` §7.2 gives them the same identity
+> tuple, and `sequence`). `acceptHints` applies §5.1's firing rule to them unchanged: old exists,
+> new does not, so an annotation left in the source after its migration shipped is inert.
+>
+> `renamedValues` (`ALTER TYPE … RENAME VALUE`) is still not built.
 
 ### 5.2 Destructive-change acknowledgment (D9)
 

@@ -1,0 +1,28 @@
+{
+  "command": "db seed",
+  "status": "seeded",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "seedsDir": "<masked>",
+  "sets": [],
+  "applied": [
+    {
+      "path": "seeds/010_base.sql",
+      "kind": "sql",
+      "set": null,
+      "statements": 2,
+      "durationMs": "<masked>"
+    },
+    {
+      "path": "seeds/020_typed.ts",
+      "kind": "ts",
+      "set": null,
+      "statements": 1,
+      "durationMs": "<masked>"
+    }
+  ],
+  "skipped": [],
+  "error": null
+}

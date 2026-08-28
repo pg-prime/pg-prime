@@ -42,6 +42,9 @@ export async function runApply(config: ResolvedConfig, argv: ParseResult): Promi
     // pass, not a failure — `scanRepeatables` answers `[]` for ENOENT and nothing else.
     repeatables: createRepeatablesPass(),
     repeatablesDir: config.repeatablesDir,
+    // design/12 decision 13: only when the config named standbys. Empty means the
+    // `max-replica-lag` check reads `pg_stat_replication` on this connection instead.
+    ...(config.replicas.length === 0 ? {} : { replicas: config.replicas }),
     ...(str(argv.values, "to") === undefined ? {} : { to: str(argv.values, "to")! }),
     ...(str(argv.values, "applied-from") === undefined ? {} : { appliedFrom: str(argv.values, "applied-from")! }),
     ...(bool(argv.values, "dry-run") ? { dryRun: true } : {}),
@@ -93,6 +96,7 @@ function envelope(config: ResolvedConfig, r: ApplyPendingResult): CommandOutput 
         durationMs: a.durationMs,
         resumedFrom: a.resumedFrom,
         retries: a.retries,
+        batch: a.batch,
       })),
       pending: r.pending,
       fingerprint: r.fingerprint,
@@ -132,7 +136,11 @@ function text(config: ResolvedConfig, r: ApplyPendingResult): string {
         lines.push(
           `  ${a.id}  ${a.txmode}  ${plural(a.statements, "statement")}  ${String(a.durationMs)} ms` +
             (a.resumedFrom === null ? "" : `  (resumed at statement ${String(a.resumedFrom)})`) +
-            (a.retries === 0 ? "" : `  (${plural(a.retries, "retry", "retries")})`),
+            (a.retries === 0 ? "" : `  (${plural(a.retries, "retry", "retries")})`) +
+            (a.batch === null
+              ? ""
+              : `  (${plural(a.batch.rowsDone, "row")} in ${plural(a.batch.iterations, "batch", "batches")}` +
+                `${a.batch.resumed ? ", resumed from the recorded watermark" : ""})`),
         );
       }
       break;

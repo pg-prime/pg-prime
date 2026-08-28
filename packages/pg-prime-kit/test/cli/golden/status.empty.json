@@ -16,6 +16,7 @@
   "fingerprint": "<masked>",
   "fingerprintSource": null,
   "fingerprintDrift": false,
+  "drift": null,
   "recordedFingerprint": "<masked>",
   "migrations": [],
   "pending": [],
@@ -33,6 +34,7 @@
     "drift": [],
     "passImplemented": true
   },
+  "data": [],
   "diagnostics": [],
   "error": null
 }

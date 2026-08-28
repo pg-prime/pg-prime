@@ -22,6 +22,7 @@ import type { Diagnostic } from "../catalog/extract.js";
 import type { Segment } from "../diff/order.js";
 import type { LockClass } from "../diff/statement.js";
 import type { Plan, PlanStatement } from "../plan/plan.js";
+import { parseDuration } from "../cli/args.js";
 import { canonicalize, lexSql, splitStatements } from "../sql/statements.js";
 
 /** `NNNN_name.sql`, with `name` restricted exactly as `plan.ts`'s `MIGRATION_NAME` is. */
@@ -36,6 +37,29 @@ export interface FileDirective {
   readonly line: number;
 }
 
+/**
+ * `-- pg-prime:batch size=1000 pause=100ms max-replica-lag=10s` (design/06 §7 lane 2).
+ *
+ * Interpreted by the runner, not by a template: every statement in a file carrying this
+ * directive is re-executed, each time in its OWN transaction, until it reports zero
+ * affected rows. See `src/data/batch.ts` for the loop and for what the two GUCs mean.
+ */
+export interface BatchDirective {
+  /** rows per iteration; published to the statement as `pgprime.batch_size` */
+  readonly size: number;
+  /** milliseconds slept between iterations */
+  readonly pauseMs: number;
+  /** the replica-lag ceiling in ms, or null when the directive did not state one */
+  readonly maxReplicaLagMs: number | null;
+  /**
+   * A hard ceiling on iterations per statement. Not in design/06 §7 — added because an
+   * unbounded loop is the one failure a batch runner can produce that a deploy cannot
+   * recover from on its own. `0` means "no ceiling", which is what the directive means
+   * when it does not say `max-iterations`.
+   */
+  readonly maxIterations: number;
+}
+
 export interface FileDirectives {
   readonly migration: string | null;
   readonly plan: string | null;
@@ -47,6 +71,8 @@ export interface FileDirectives {
   readonly requiresPg: number | null;
   readonly checkpoint: boolean;
   readonly data: boolean;
+  /** design/06 §7 lane 2; null when the file carries no `-- pg-prime:batch` */
+  readonly batch: BatchDirective | null;
   /** every directive as it was written, including the ones this release ignores */
   readonly all: readonly FileDirective[];
 }
@@ -122,6 +148,64 @@ function parseTimeout(args: string): { lock: string | null; statement: string | 
   return { lock, statement };
 }
 
+/** design/06 §7's defaults, taken from the section's own example line. */
+export const BATCH_DEFAULTS = { size: 1000, pauseMs: 100, maxIterations: 0 } as const;
+
+/**
+ * `size=1000 pause=100ms max-replica-lag=10s max-iterations=0`.
+ *
+ * A malformed value is a **diagnostic**, never a silent default: a `size=1oooo` typo that
+ * quietly became 1000 would run a backfill ten times longer than the author asked for and
+ * nothing would say so.
+ */
+function parseBatch(args: string, subject: string, line: number, diagnostics: Diagnostic[]): BatchDirective {
+  const num = (key: string, fallback: number): number => {
+    const raw = new RegExp(`(?:^|\\s)${key}=(\\S+)`).exec(args)?.[1];
+    if (raw === undefined) return fallback;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) {
+      diagnostics.push({
+        code: "batch_directive_invalid",
+        severity: "error",
+        subject,
+        message: `-- pg-prime:batch ${key}=${JSON.stringify(raw)} on line ${String(line)} is not a non-negative integer`,
+      });
+      return fallback;
+    }
+    return value;
+  };
+  const dur = (key: string, fallback: number | null): number | null => {
+    const raw = new RegExp(`(?:^|\\s)${key}=(\\S+)`).exec(args)?.[1];
+    if (raw === undefined) return fallback;
+    const ms = parseDuration(raw);
+    if (ms === null) {
+      diagnostics.push({
+        code: "batch_directive_invalid",
+        severity: "error",
+        subject,
+        message: `-- pg-prime:batch ${key}=${JSON.stringify(raw)} on line ${String(line)} is not a duration (e.g. 100ms, 10s, 2m)`,
+      });
+      return fallback;
+    }
+    return ms;
+  };
+  const size = num("size", BATCH_DEFAULTS.size);
+  if (size === 0) {
+    diagnostics.push({
+      code: "batch_directive_invalid",
+      severity: "error",
+      subject,
+      message: `-- pg-prime:batch size=0 on line ${String(line)} would never make progress`,
+    });
+  }
+  return {
+    size: size === 0 ? BATCH_DEFAULTS.size : size,
+    pauseMs: dur("pause", BATCH_DEFAULTS.pauseMs) ?? BATCH_DEFAULTS.pauseMs,
+    maxReplicaLagMs: dur("max-replica-lag", null),
+    maxIterations: num("max-iterations", BATCH_DEFAULTS.maxIterations),
+  };
+}
+
 const LOCK_CLASSES = new Set<string>([
   "accessExclusive", "shareRowExclusive", "share", "shareUpdateExclusive", "rowExclusive", "none",
 ]);
@@ -183,6 +267,7 @@ export function parseMigrationSql(text: string, subject: string): ParsedSql {
     });
   }
   const requiresPgRaw = first("requires-pg")?.args;
+  const batchHit = first("batch");
   const directives: FileDirectives = {
     migration: first("migration")?.args ?? null,
     plan: first("plan")?.args ?? null,
@@ -194,8 +279,24 @@ export function parseMigrationSql(text: string, subject: string): ParsedSql {
     requiresPg: requiresPgRaw === undefined ? null : Number(requiresPgRaw),
     checkpoint: hits.some((h) => h.name === "checkpoint"),
     data: hits.some((h) => h.name === "data"),
+    batch: batchHit === undefined ? null : parseBatch(batchHit.args, subject, batchHit.line, diagnostics),
     all,
   };
+  if (directives.batch !== null && txmode !== null && txmode !== "none") {
+    // A batched statement is re-executed once per iteration, each iteration in its own
+    // transaction. Under `transactional` the whole file would be one transaction, so the
+    // "never one long-running UPDATE holding locks for an hour" property design/06 §7 is
+    // built for would be exactly inverted.
+    diagnostics.push({
+      code: "batch_requires_txmode_none",
+      severity: "error",
+      subject,
+      message:
+        `${subject} carries -- pg-prime:batch with -- pg-prime:txmode ${txmode}. A batch is one ` +
+        `transaction per iteration, which txmode ${txmode} cannot express; write ` +
+        `-- pg-prime:txmode none.`,
+    });
+  }
 
   const markers = hits.filter((h) => h.name === "stmt" || h.name === "segment");
   const stmtMarkers = markers.filter((h) => h.name === "stmt");

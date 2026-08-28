@@ -159,6 +159,8 @@ export interface BuildPlanInput {
   readonly schemas?: readonly string[];
   /** design/06 §7 lane 2 — write `-- pg-prime:data` into the header */
   readonly data?: boolean;
+  /** design/06 §4.5 — write `-- pg-prime:checkpoint` into the header */
+  readonly checkpoint?: boolean;
   /** design/06 §4.3's `repeatables`: the `sql/` files loaded into the shadow */
   readonly repeatables?: readonly { readonly path: string; readonly sha256: string }[];
 }
@@ -281,6 +283,7 @@ export function buildPlan(input: BuildPlanInput): Plan {
     to: input.toFingerprint,
     pgMin: 150000,
     ...(input.data === true ? { data: true } : {}),
+    ...(input.checkpoint === true ? { checkpoint: true } : {}),
   });
 
   const core = {
@@ -330,6 +333,8 @@ export interface RenderInput {
   readonly pgMin: number;
   /** design/06 §7 lane 2 — emit `-- pg-prime:data` in the header. */
   readonly data?: boolean;
+  /** design/06 §4.5 — emit `-- pg-prime:checkpoint` in the header. */
+  readonly checkpoint?: boolean;
 }
 
 /** The `.sql` is the executable artifact and must be runnable by psql. */
@@ -352,6 +357,7 @@ export function renderSql(r: RenderInput): string {
     `-- pg-prime:timeout   lock=${lock} statement=${statement}`,
     `-- pg-prime:requires-pg ${r.pgMin}`,
     ...(r.data === true ? ["-- pg-prime:data"] : []),
+    ...(r.checkpoint === true ? ["-- pg-prime:checkpoint"] : []),
     "",
     // Every identifier the emitter writes is schema-qualified, and extraction ran
     // under the same search_path, so pinning it makes the file mean the same thing

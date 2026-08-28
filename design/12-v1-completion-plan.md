@@ -489,6 +489,161 @@ tests in `packages/pg-prime/test/schema` (tier 0) for the new options. R10 recor
 **Gate:** the four round-trips are empty; a killed backfill resumes from its watermark; checkpoint jump
 matches linear apply; kit suite green on PG 15/16/17/18; `06` §6.4's table shows twelve of twelve.
 
+### K4 — RESULT (2026-08-29)
+
+**Done, and the gate came out one better than §6 sized it: `pull` round-trips ALL FOUR corpus
+schemas with an EMPTY unsupported block, not three plus a named residue.**
+
+One correction to this plan's own arithmetic before the numbers: §3 K4 item 4 calls `pull`
+"`06` §6.2's missing twelfth command". §6.2's twelve are the ten design/11 K2b shipped plus
+`checkpoint` and `db seed`, so its twelfth is **`db seed`**; `pull` is a thirteenth that §6.2
+never listed and that `00` decision 5 specifies. All thirteen ship. Recorded in `06` §6.5.
+
+**Numbers.** Kit suite **379 → 411** (405 passed + 6 pooler-gated skips), 51 → 56 files, green on
+**all four majors**: PG 15 `:54335` 64.4 s · PG 16 `:54336` 44.4 s · PG 17 `:54333` 38.6–69.8 s ·
+PG 18 `:54332` 45.1 s. `pnpm test` (tier 0) 46 → 47 files, 778 → **790 tests**, **4.69–5.32 s**
+across five runs on a busy design machine (ceiling 5.0 s; the run is transform-dominated and the
+new file's own twelve tests measure 4 ms) · `pnpm test:live` 80 files, **1 519 passed + 2
+skipped** · root `pnpm typecheck` clean · `pnpm build` clean ·
+`pnpm api-snapshot` `@pg-prime/kit` 162 → **174 values / 166 types**, `pg-prime` **234v/234t**
+(root) and **51v/80t** (`./schema`) · `pnpm package:check` green (8/8 size gates, emit parity
+0 FAIL, `check:dts` clean, tree-shake ok after one re-baseline, publint/attw clean, the tarball's
+`pg-prime --help` runs).
+
+11 new source files (**2 984 lines**: `src/data/{batch,lag}.ts`, `src/seed/{run,db}.ts`,
+`src/checkpoint/checkpoint.ts`, `src/pull/{pull,emit-ts,parse,tier-r}.ts`,
+`src/cli/commands/{checkpoint,seed,pull}.ts`) plus one new DSL file
+(`packages/pg-prime/src/schema/objects.ts`); 6 new test files (**1 428 lines**) and 4 new
+envelope goldens.
+
+| # | deliverable | files |
+|---|---|---|
+| 1 | the `-- pg-prime:batch` runner: directive, loop, watermark, lag, `status`, the working template | `src/runner/files.ts` (`BatchDirective`), `src/data/{batch,lag}.ts`, `src/history/store.ts` (`data_progress`), `src/runner/{run,status}.ts`, `src/cli/commands/{apply,status}.ts`, `src/generate.ts` (`dataMigrationSql`), `src/config/{define,load}.ts` (`replicas`) |
+| 2 | `db seed`, `.sql` + typed `.ts`, sets, the production refusal | `src/seed/{run,db}.ts`, `src/cli/commands/seed.ts`, `src/config/{define,load}.ts` (`seeds`) |
+| 3 | checkpoints: write, the fresh-database jump, `verify --from-checkpoint`, drift naming | `src/checkpoint/checkpoint.ts`, `src/cli/commands/{checkpoint,verify,status}.ts`, `src/runner/{run,status}.ts`, `src/history/store.ts` (`recordSuperseded`, `recordCheckpoint`), `src/plan/plan.ts` (the `checkpoint` directive) |
+| 4 | `pull` | `src/pull/{pull,emit-ts,parse,tier-r}.ts`, `src/cli/commands/pull.ts`, `src/cli/main.ts` (the noun table) |
+| 5 | the DSL and its emitter half | `packages/pg-prime/src/schema/{extras,column,objects,index}.ts`, `packages/pg-prime/src/index.ts`, kit `src/schema/{emit,types}.ts`, `src/config/load.ts`, `src/generate.ts` (`annotationHints`) |
+| 6 | AS BUILT notes | `06` §3.2 · §4.5 · §6.4 · **§6.5** (new) · **§7.1** (new), `05` §2.3 · §2.4 · §5.1, `00-overview`, the kit README |
+
+#### The `pull` gate, per corpus
+
+Every row: load the committed corpus → `pull` through the binary → `pull` again (byte-identical)
+→ `migrate generate` against **the same database** → `up_to_date`. "Build from empty" is a second
+`generate` against a fresh database, which produces the one plan a pulled schema can produce and
+proves it on a clone; `--dump-oracle strict` is asked for only where the schema has no Tier-R
+objects, because the proof's clone gets the plan's DDL and the desired shadow also gets `sql/`
+(`06` §3.8), so on a schema with views `pg_dump` is *expected* to differ by exactly those.
+
+| schema | schemas | pulled objects | `sql/` repeatables | unsupported | `generate` | build-from-empty |
+|---|---|---|---|---|---|---|
+| chinook | 1 | 11 table | 0 | **0** | `up_to_date` | proof passed, D10 **strict** `passed` |
+| northwind | 1 | 14 table | 0 | **0** | `up_to_date` | proof passed, D10 **strict** `passed` |
+| adventureworks | 11 | 68 table, 6 domain, 36 sequence, 2 extension, 10 schema | 93 (87 view, 2 matview, 3 function, 1 prelude) | **0** | `up_to_date` | proof passed, D10 `warn` |
+| pagila | 1 | 22 table (incl. a RANGE-partitioned parent and 7 children), 13 sequence, 2 domain, 1 enum | 33 (9 function, 15 trigger, 7 view, 1 matview, 1 prelude) | **0** | `up_to_date` | proof passed, D10 `warn` |
+
+§6's fallback row sized this at "three plus a named residue". The four shapes that would have been
+that residue were each an option on an existing builder and were built instead — `t.raw(pgType)`,
+`primaryKey({ name })`, `clusterOn()`, `partitionBy()`/`partitionOf()` — together with the three
+standalone declarations `pgDomain` / `pgSequence` / `pgExtension`, which are **Tier-M facts the
+differ would otherwise DROP out of any adopted database**. That is the bar the additions were
+judged against, and it is a correctness argument rather than a convenience one.
+
+#### `bench:types` — before / after
+
+Not one per-declaration or per-query number moved, on either compiler. That is the property
+design/12 §3 K4 asks for ("runtime-metadata-only additions must not move the instantiation
+counts"), and it holds exactly:
+
+| metric | before | after |
+|---|---|---|
+| instantiations / column (5.9.3 · 7.0.2) | 3 · 3.08 | **3 · 3.08** |
+| instantiations / table | 36 · 37 | **36 · 37** |
+| instantiations / declared relation | 32.5 · 32.5 | **32.5 · 32.5** |
+| instantiations / table, all row shapes | 342 · 387 | **342 · 387** |
+| marginal instantiations / query (25/100/300 tables) | 40 | **40** |
+| schema-size independence ratio | 1.000 | **1.000** |
+
+Three numbers did move, all by a **constant**, and the constant is the point: the
+`fixedSchemaRegistryTouch` family on TS 7.0.2 rose by exactly **+59** at 25, 100 *and* 300
+tables (16 395 → 16 454, 24 050 → 24 109, 44 450 → 44 509), with `perTable` unchanged at 102.1 —
+i.e. the new exported declarations are checked once, not once per table. Headline: 80 485 →
+80 822 on 5.9.3 (**+0.42 %**) and 131 388 → 131 560 on 7.0.2 (**+0.13 %**), both far inside the
++2 % gate. `.d.ts` bytes 377 261 → 389 448 (+3.2 %), budget 409 600.
+
+One packaging budget moved: `treeshake.root-import-all` 52 224 → **53 248 B** by
+`tools/budgets.json`'s own rule (`min(design, ceil(measured/1024)*1024)`), +1 182 B measured,
+still **2.3× below** design/08 §1.2's 122 880. `connect-one-select` and `full-crud-tx` grew by
++48 B and +46 B *inside* their existing budgets, which is the evidence that the new declarations
+are not reachable from a program that only opens a handle and runs a select.
+
+#### Divergences from the brief, with reasons
+
+| # | Brief / design says | Built | Why |
+|---|---|---|---|
+| 1 | `index(cols, { using, where, include, nullsNotDistinct })` with per-column `{ column, desc, nulls, opclass }` | `index(name, opts?)` / `uniqueIndex(name, opts?)` **plus** the four chained methods, with the item objects on `.on(...)` | `05` §2.4's built spelling is `index('name').on(...)` and `06`/`12` §0 say a decision recorded in `05` is not re-opened here. Both option forms exist; the name stays first because an index's name is the thing a migration renames |
+| 2 | `05` §2.4 spells per-column options as `t.b.desc().nullsLast()` | item objects — `{ column: t.b, desc: true, nulls: 'last' }` | `Ref` is the hottest type in the package (`[REFS]` holds one per column of every table). Three methods on it are paid for by every schema in every program, for a feature that appears in a handful of index declarations. Recorded in `05` §2.4 AS BUILT |
+| 3 | K4 owns "**only** the index options and the two `renamedFrom` spellings" in `packages/pg-prime/src/schema/` | five more additions: `t.raw`, `primaryKey({ name })`, `clusterOn`, `partitionBy`/`partitionOf`, and `pgDomain`/`pgSequence`/`pgExtension` | Each is a **Tier-M fact the differ already models**, so a DSL that cannot declare it makes `pull` emit a schema whose first migration DROPS it. §6's own fallback row anticipates growing the DSL "when it is an option on an existing builder"; the three standalone declarations are the exception to that phrasing and are justified by the same DROP argument. All are non-generic runtime metadata — see the bench table |
+| 4 | `pull` emits `from 'pg-prime'` | `from 'pg-prime/schema'` (+ `'pg-prime/sql'` when a CHECK or a partial index needs `sql.unsafeRaw`) | Both are documented public subpaths, and it keeps the pulled file's imports off the root barrel, which `S` owns this round. The names are exported from the root too |
+| 5 | `verify --from-checkpoint` "replays from the newest checkpoint" | built, and the **default is OFF** | `verify` always replays into a fresh ephemeral database, which is exactly §4.5's jump condition — `auto` would silently turn every `verify` into a partial replay reported as a full one. `--from-checkpoint` with no checkpoint on disk is still refused |
+| 6 | §4.5: an existing database "ignores checkpoints entirely" | ignoring is **recorded**, as `superseded` | Left pending, a checkpoint makes `status` exit 5 for ever and `check` fail on every commit after it landed. Left absent, §5.1 step 5 cannot tell a jumped file from a deleted one |
+| 7 | §7's batch example is `UPDATE … WHERE id IN (SELECT … LIMIT n)` | the template writes a **keyset** batch; both shapes run | The `IN (SELECT … LIMIT n)` form has no watermark, so every iteration re-scans from the top of the table (O(N²/n) row reads, each batch slower than the last) and a crash leaves nothing to resume from. A statement with no `rows_done` column still falls back to the command tag, which IS §7's shape |
+| 8 | §7: `data_progress` "persisted after each batch" | written **inside** the batch's transaction | Strictly stronger and, unlike §5.4's DDL, available here — a data migration's work is ordinary DML. It is what makes R15's "never restarts" an invariant instead of a likelihood |
+| 9 | — | a partition child is `CREATE TABLE` + `ALTER TABLE parent ATTACH PARTITION`, not `CREATE TABLE … PARTITION OF` | Found by pagila **on PG 18**: `PARTITION OF` clones the parent's constraints *with their names*, and PG 18 catalogues NOT NULL as a named `pg_constraint` row, so the next `generate` planned a rename of an inherited constraint, which PostgreSQL refuses. `pg_dump` uses the same two-step form |
+| 10 | — | `pull` writes `sql/000_prelude.sql` containing `SET check_function_bodies = false` when the schema has functions | A `LANGUAGE sql` body is parsed at CREATE time, so a function that calls another cannot be created before it — and the call graph is not in `pg_depend` for non-atomic SQL bodies, so there is no order to sort them into. `pg_dump` emits exactly this line in its own preamble |
+| 11 | design/11 K2b: "the emitter does not rewrite `defaultSql`" | one exception, `remapNextval` | A `serial`-shaped column's `nextval('public.s'::regclass)` pointed at the *real* sequence under a temp-schema shadow, so the desired IR silently lost the `column → sequence` edge: a fingerprint difference with **no delta**. The rewrite parses the `regclass` literal as a qualified name and fires only when it names a sequence the registry declares |
+
+#### R10 — fifteen mutations, fifteen caught (one after a test was added)
+
+PG 17 (`:54333`) unless stated; the suite named is the one run, and each mutation was reverted
+before the next.
+
+| # | file · mutation | caught by |
+|---|---|---|
+| 1 | `data/batch.ts` — delete `if (progress.watermark !== null) watermark = progress.watermark` | `data/batch.test.ts` ×2 — "expected '3000' to be '50000'" |
+| 2 | `history/store.ts` — `dataProgressSql` writes `rows_done` as `0` | `data/batch.test.ts` ×2 — the committed watermark and the committed rows stop agreeing |
+| 3 | `data/batch.ts` — swallow `options.onInfo?.(…)` in `waitForLag`'s no-replica branch | `data/batch.test.ts` — "expected [] to have a length of 1" |
+| 4 | `runner/run.ts` — `const resumedBatch = false` | `data/batch.test.ts` — `applied[0].batch.resumed` |
+| 5 | `runner/files.ts` — `first("batch")` → `first("batches")` | `data/batch.test.ts` ×8 |
+| 6 | `runner/files.ts` — ignore `max-iterations` | `data/batch.test.ts` — the directive parser |
+| 7 | `runner/run.ts` — drop `superseded` from `isSettled` | `checkpoint/checkpoint.test.ts` — the second apply on a jumped database exits 4 |
+| 8 | `runner/run.ts` — jump even when `rows.length > 0` | `checkpoint/checkpoint.test.ts` ×3 |
+| 9 | `checkpoint/checkpoint.ts` — `exact: true` unconditionally | `checkpoint/checkpoint.test.ts` — the drift report |
+| 10 | `seed/run.ts` — remove the `production` refusal branch | `seed/seed.test.ts` |
+| 11 | `seed/run.ts` — `--set` never collects the set's files | `seed/seed.test.ts` |
+| 12 | `pull/emit-ts.ts` — drop `.nullable()` from the column chain | `pull/roundtrip.test.ts` ×4 |
+| 13 | `pull/parse.ts` — drop `ON DELETE` / `ON UPDATE` from the FK recogniser | `pull/roundtrip.test.ts` ×2 (adventureworks, pagila) |
+| 14 | `schema/emit.ts` — do not emit `ALTER TABLE … CLUSTER ON` | `pull/roundtrip.test.ts` (adventureworks) |
+| 15 | `schema/emit.ts` — drop `DESC` from an index item | **NOT caught at first.** `roundtrip.test.ts` builds database B from A's extracted IR, so an option the emitter drops is missing from *both* sides and `pg_dump` agrees with itself. `emit.test.ts` gained an exact-text assertion for every index option, and the mutation is caught by it |
+
+One earlier attempt (`const size = BATCH_DEFAULTS.size` in `parseBatch`) did not compile once
+mutated and was rewritten as #5 before being counted.
+
+#### Not done / uncertain
+
+- **`renamedValues`** on `pgEnum` (`ALTER TYPE … RENAME VALUE`, `05` §3.2) is still not built.
+  The four `renamedFrom` spellings all are, and `generate` reads all four.
+- **`pull` cannot express**, and records as residue when it meets them: expression indexes,
+  `WITH (…)` / `TABLESPACE` on an index, `EXCLUDE` constraints, `NOT VALID` constraints,
+  composite types, generated columns, column collations, unlogged tables. None appears in the
+  four corpora; each has an exact `reason` string and a `pull.report.json` entry.
+- **`pull` on shadow tier 3 is untested.** The round-trip runs on tier 2 because the corpus
+  databases have `CREATEDB`. Two tier-3 text paths were fixed here (`remapTypeQualifier`,
+  `remapNextval`) and are covered by `schema-emit/roundtrip.test.ts`'s tier-3 case, but nobody
+  has run `pull` → `generate` as a `NOCREATEDB` role.
+- **An extension cannot be normalised in shadow tier 3** and now says so with a
+  `shadow_extension_fixed_schema` warning. This is `06` §3.2's stated constraint, not a
+  regression; it is why `pgExtension` is deliberately absent from the shared emitter fixture,
+  with the reason written in the fixture.
+- **The batch runner's lag wait is unbounded** by design (see `06` §7.1). An operator who wants
+  it to stop kills the process; the watermark is committed, so the next `apply` resumes.
+- **`--offline` / shadow tier 4 stays refused**, per decision 14, and `06` §3.2 AS BUILT now says
+  why at length: checkpoints give an IR of a *past* state, never IR(desired), and IR(desired) is
+  a function of a database by construction (`11` §1.5).
+- **`db seed` has no `--dry-run`.** `--list` prints what would run; actually rehearsing a seed
+  would mean opening a transaction and rolling it back, which is a different feature.
+
+---
+
 ### S — The session layer (`07`)
 
 **Owns:** `packages/pg-prime/src/{session,errors,pooler,observe}/**` (new), `src/query/{run,executor,

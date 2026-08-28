@@ -44,6 +44,7 @@ function envelope(config: ResolvedConfig, r: StatusReport): Readonly<Record<stri
     fingerprint: r.fingerprint,
     fingerprintSource: r.fingerprintSource,
     fingerprintDrift: r.fingerprintDrift,
+    drift: r.drift,
     recordedFingerprint: r.recordedFingerprint,
     migrations: r.migrations.map((m) => ({
       id: m.id,
@@ -67,6 +68,16 @@ function envelope(config: ResolvedConfig, r: StatusReport): Readonly<Record<stri
       holder: r.lock.lease,
     },
     repeatables: { tracked: r.repeatables.tracked, drift: r.repeatables.drift, passImplemented: r.repeatables.passImplemented },
+    data: r.data.map((d) => ({
+      migrationId: d.migrationId,
+      migrationState: d.migrationState,
+      rowsDone: d.rowsDone,
+      statement: d.statement,
+      iterations: d.iterations,
+      watermark: d.values,
+      done: d.done,
+      updatedAt: d.updatedAt,
+    })),
     diagnostics: r.diagnostics.map((d) => ({ code: d.code, severity: d.severity, subject: d.subject ?? null, message: d.message })),
     error: null,
   };
@@ -96,6 +107,17 @@ function text(config: ResolvedConfig, r: StatusReport): string {
         (m.checksumOk === false ? "  CHECKSUM DRIFT" : ""),
     );
   }
+  lines.push(
+    bullets(
+      "data migrations (design/06 §7):",
+      r.data.map(
+        (d) =>
+          `${d.migrationId}  ${d.migrationState}  ${String(d.rowsDone)} row(s) in ${plural(d.iterations, "batch", "batches")}` +
+          `${d.done ? "" : `, statement ${String(d.statement)} in flight`}` +
+          `${d.values[String(d.statement)] == null ? "" : `, watermark ${String(d.values[String(d.statement)])}`}`,
+      ),
+    ),
+  );
   lines.push(bullets("missing files (recorded but not on disk):", r.missingFiles));
   lines.push(bullets("checksum drift:", r.checksumDrift));
   lines.push(bullets("repeatable drift:", r.repeatables.drift));

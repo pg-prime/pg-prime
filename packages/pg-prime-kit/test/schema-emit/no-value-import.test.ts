@@ -39,19 +39,43 @@ function pgPrimeImports(): { file: string; line: string }[] {
   return out;
 }
 
+/**
+ * design/12 decision 12 — the ONE allowed runtime use of the peer.
+ *
+ * A `.ts` seed gets a real `Db`, and there is no way to build one without the DSL at
+ * runtime. The exception is allowed because it is **dynamic** (so the package still loads
+ * with no peer installed), it is on the `db seed` path only, and it resolves from the
+ * user's project. It is allowed HERE, by exact file and exact form, so a second one
+ * anywhere still fails.
+ */
+const DYNAMIC_IMPORT_ALLOWED: ReadonlyMap<string, number> = new Map([["seed/db.ts", 1]]);
+
 describe("the kit imports pg-prime for types only (design/11 §1.3)", () => {
   it("finds at least one import, so the test cannot pass by looking at nothing", () => {
     expect(pgPrimeImports().length).toBeGreaterThan(0);
   });
 
-  it("has no value import of pg-prime anywhere in src/", () => {
+  it("has no value import of pg-prime anywhere in src/, except design/12 decision 12's one site", () => {
     const offenders = pgPrimeImports().filter(
       (i) => !/^\s*(?:import|export)\s+type\b/.test(i.line),
     );
-    expect(
-      offenders.map((o) => `${o.file.slice(SRC.length + 1)}: ${o.line}`),
-      "pg-prime is a peerDependency; only `import type` / `export type` may name it",
-    ).toEqual([]);
+    const allowed: string[] = [];
+    const rest: string[] = [];
+    for (const o of offenders) {
+      const file = o.file.slice(SRC.length + 1).replaceAll("\\", "/");
+      const budget = DYNAMIC_IMPORT_ALLOWED.get(file);
+      // Only the dynamic form is allowed, and only in the named file: a static
+      // `import { pgPrime } from 'pg-prime'` there would still be an offender.
+      if (budget !== undefined && /^import\s*\(\s*["']pg-prime["']$/.test(o.line)) allowed.push(file);
+      else rest.push(`${file}: ${o.line}`);
+    }
+    expect(rest, "pg-prime is a peerDependency; only `import type` / `export type` may name it").toEqual([]);
+    for (const [file, budget] of DYNAMIC_IMPORT_ALLOWED) {
+      expect(
+        allowed.filter((f) => f === file).length,
+        `${file} may hold exactly ${String(budget)} dynamic import('pg-prime') (design/12 decision 12)`,
+      ).toBe(budget);
+    }
   });
 
   it("declares pg-prime as a peerDependency and a workspace devDependency, not a dependency", () => {

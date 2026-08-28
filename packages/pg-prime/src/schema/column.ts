@@ -385,11 +385,19 @@ export interface PgEnum<N extends string, V extends readonly string[]> {
    * enum, and letting the placement follow the first user makes the DDL order-dependent.
    */
   readonly schema: string | undefined
+  /**
+   * design/05 §5.1's fourth spelling. A carrier, exactly like `.renamedFrom()` on a column:
+   * it says what the annotation CLAIMS, and `generate` decides whether it fires (old exists,
+   * new does not) against the current IR.
+   */
+  readonly renamedFrom: string | undefined
 }
 
 /** `pgEnum(name, values, options?)` — design/05 §3.2. */
 export interface PgEnumOptions {
   readonly schema?: string
+  /** design/05 §5.1 — the rename annotation. Inert unless the old type exists and this one does not. */
+  readonly renamedFrom?: string
 }
 
 export type AnyPgEnum = PgEnum<string, readonly string[]>
@@ -421,6 +429,7 @@ export function pgEnum<N extends string, const V extends readonly [string, ...st
 ): PgEnum<N, V> {
   checkName(name, `pgEnum("${name}") type name`)
   if (options?.schema !== undefined) checkName(options.schema, `pgEnum("${name}") schema name`)
+  if (options?.renamedFrom !== undefined) checkName(options.renamedFrom, `pgEnum("${name}", { renamedFrom })`)
   const seen = new Set<string>()
   for (const label of values) {
     // An enum LABEL is a literal, not an identifier — PostgreSQL accepts `''` — but it is still
@@ -434,7 +443,7 @@ export function pgEnum<N extends string, const V extends readonly [string, ...st
     }
     seen.add(label)
   }
-  return { kind: 'enum', name, values, schema: options?.schema }
+  return { kind: 'enum', name, values, schema: options?.schema, renamedFrom: options?.renamedFrom }
 }
 
 /** `Infer<typeof memberRole>` → `'owner' | 'admin' | 'member'`. */
@@ -496,6 +505,27 @@ export function numeric(name?: string): Base<string, 'numeric'> {
 export function jsonb(name?: string): Base<unknown, 'jsonb'> {
   return make<unknown, 'jsonb'>('jsonb', name)
 }
+/**
+ * A column of any PostgreSQL type, named as text — `t.raw('varchar(50)')`, `t.raw('xml')`,
+ * `t.raw('public."Name"')`.
+ *
+ * The typed builders cover eleven types; PostgreSQL has hundreds, plus every domain and
+ * composite a schema declares. design/05 §5.3's rule for that gap is that the escape hatch
+ * lives INSIDE the model rather than outside it, or the un-modelled part becomes permanent
+ * drift — and this is that rule at column grain. It is also what makes `pg-prime pull` able
+ * to emit a real, round-tripping schema for a database it did not create.
+ *
+ * The read type is `unknown`: the type name is a string this package has no way to reason
+ * about, so pretending to know what a `real` decodes to would be a lie the codec layer
+ * cannot honour. Narrow it with `.$type<T>()`, which is the documented, honest cast.
+ */
+export function raw(pgType: string, name?: string): Base<unknown, string> {
+  if (typeof pgType !== 'string' || pgType.trim() === '') {
+    throw new SchemaError(`pg-prime: t.raw() needs a PostgreSQL type name, e.g. t.raw('varchar(50)').`)
+  }
+  return make<unknown, string>(pgType, name)
+}
+
 export function enumColumn<E extends AnyPgEnum>(e: E, name?: string): Base<E['values'][number], E['name']> {
   const ddl: ColumnDdl = {
     ...baseDdl(e.name, name),
@@ -525,6 +555,8 @@ export interface ColumnKit {
   numeric: typeof numeric
   jsonb: typeof jsonb
   enum: typeof enumColumn
+  /** Any PostgreSQL type, by name (design/05 §5.3's escape hatch, at column grain). */
+  raw: typeof raw
 }
 
 export const kit: ColumnKit = {
@@ -540,4 +572,5 @@ export const kit: ColumnKit = {
   numeric,
   jsonb,
   enum: enumColumn,
+  raw,
 }

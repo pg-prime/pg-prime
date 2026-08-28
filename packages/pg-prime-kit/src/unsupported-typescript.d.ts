@@ -27,16 +27,21 @@
 
 type Unsupported<Message = { ERROR: '@pg-prime/kit requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' }> = Message
 
+export declare const BATCH_DEFAULTS: Unsupported
+export declare const BatchStalledError: Unsupported
 export declare const CATALOG_PROVENANCE: Unsupported
 export declare const CONFIG_FILENAMES: Unsupported
 export declare const ConfigError: Unsupported
 export declare const DUMP_SAMPLE_CAP: Unsupported
 export declare const DUMP_TIMEOUT_MS: Unsupported
 export declare const DesiredLoadError: Unsupported
+export declare const EMPTY_WATERMARK: Unsupported
 export declare const ENGINE: Unsupported
 export declare const ENV_VAR: Unsupported
 export declare const EXIT: Unsupported
 export declare const EmitError: Unsupported
+export declare const GUC_BATCH_SIZE: Unsupported
+export declare const GUC_WATERMARK: Unsupported
 export declare const GenerateRefusedError: Unsupported
 export declare const HISTORY_DDL: Unsupported
 export declare const HISTORY_SCHEMA: Unsupported
@@ -55,6 +60,7 @@ export declare const RUNNER_EXIT: Unsupported
 export declare const RepeatableApplyError: Unsupported
 export declare const SHADOW_PREFIX: Unsupported
 export declare const SQLSTATE_OBJECT_IN_USE: Unsupported
+export declare const STALL_LIMIT: Unsupported
 export declare const STRIP_TYPES_MARKER: Unsupported
 export declare const STYLE_CODES: Unsupported
 export declare const SchemaIR: Unsupported
@@ -90,6 +96,7 @@ export declare const createDatabase: Unsupported
 export declare const createRepeatablesPass: Unsupported
 export declare const currentFingerprint: Unsupported
 export declare const dataMigrationSql: Unsupported
+export declare const dataProgressSql: Unsupported
 export declare const defaultId: Unsupported
 export declare const defaultNotNullName: Unsupported
 export declare const defineConfig: Unsupported
@@ -162,10 +169,14 @@ export declare const provisionShadow: Unsupported
 export declare const quoteIdent: Unsupported
 export declare const quoteLiteral: Unsupported
 export declare const quoteQualified: Unsupported
+export declare const readAllDataProgress: Unsupported
+export declare const readDataProgress: Unsupported
 export declare const readHintsFile: Unsupported
 export declare const readMigrationRows: Unsupported
 export declare const readMigrationsDir: Unsupported
+export declare const readPrimaryLag: Unsupported
 export declare const readRepeatableRows: Unsupported
+export declare const readReplicaLag: Unsupported
 export declare const releaseSessionLock: Unsupported
 export declare const remapDiagnostics: Unsupported
 export declare const remapIr: Unsupported
@@ -174,6 +185,7 @@ export declare const renameCandidates: Unsupported
 export declare const renderSql: Unsupported
 export declare const resolveConfig: Unsupported
 export declare const resolvePgDump: Unsupported
+export declare const runBatchStatement: Unsupported
 export declare const runSqlScript: Unsupported
 export declare const sameId: Unsupported
 export declare const scanRepeatables: Unsupported
@@ -200,6 +212,11 @@ export type ApplyOptions = Unsupported
 export type ApplyPendingOptions = Unsupported
 export type ApplyPendingResult = Unsupported
 export type ApplyReport = Unsupported
+export type BatchDirective = Unsupported
+export type BatchEvent = Unsupported
+export type BatchOptions = Unsupported
+export type BatchOutcome = Unsupported
+export type BatchStalledError = Unsupported
 export type BuildOptions = Unsupported
 export type BuildResult = Unsupported
 export type CatalogClient = Unsupported
@@ -209,6 +226,8 @@ export type CommentPayload = Unsupported
 export type ConfigError = Unsupported
 export type ConnInfo = Unsupported
 export type ConstraintPayload = Unsupported
+export type DataProgress = Unsupported
+export type DataProgressEntry = Unsupported
 export type DataStubInput = Unsupported
 export type DatabaseGenerateInput = Unsupported
 export type DatabaseGenerateResult = Unsupported
@@ -254,6 +273,8 @@ export type IndexPayload = Unsupported
 export type InvalidIdentifierError = Unsupported
 export type InvalidMigrationIdError = Unsupported
 export type IssuedQuery = Unsupported
+export type LagEvent = Unsupported
+export type LagReading = Unsupported
 export type LeaseInspection = Unsupported
 export type LintFinding = Unsupported
 export type LintFormat = Unsupported

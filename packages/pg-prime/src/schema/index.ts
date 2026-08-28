@@ -52,6 +52,7 @@ export {
   kit,
   numeric,
   pgEnum,
+  raw,
   smallint,
   text,
   timestamptz,
@@ -74,15 +75,38 @@ export type {
 
 export {
   check,
+  clusterOn,
   comment,
   foreignKey,
   index,
+  partitionBy,
+  partitionOf,
   primaryKey,
   renamedFrom,
   unique,
   uniqueIndex,
 } from './extras.js'
-export type { ForeignKeyExtraInput, TableExtra } from './extras.js'
+export type {
+  ForeignKeyExtraInput,
+  IndexColumn,
+  IndexColumnLike,
+  IndexItem,
+  IndexNulls,
+  IndexOptions,
+  PartitionOfOptions,
+  PrimaryKeyInput,
+  TableExtra,
+} from './extras.js'
+
+export { pgDomain, pgExtension, pgSequence } from './objects.js'
+export type {
+  PgDomain,
+  PgDomainOptions,
+  PgExtension,
+  PgExtensionOptions,
+  PgSequence,
+  PgSequenceOptions,
+} from './objects.js'
 
 export { pgSchema, pgTable, snakeCase, table } from './table.js'
 export type {

@@ -56,6 +56,7 @@
     "node_modules/pg-prime/dist/schema/ddl.js",
     "node_modules/pg-prime/dist/schema/extras.js",
     "node_modules/pg-prime/dist/schema/index.js",
+    "node_modules/pg-prime/dist/schema/objects.js",
     "node_modules/pg-prime/dist/schema/relations.js",
     "node_modules/pg-prime/dist/schema/symbols.js",
     "node_modules/pg-prime/dist/schema/table.js",

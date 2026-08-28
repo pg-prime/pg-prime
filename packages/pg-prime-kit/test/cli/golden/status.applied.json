@@ -16,6 +16,7 @@
   "fingerprint": "<masked>",
   "fingerprintSource": null,
   "fingerprintDrift": false,
+  "drift": null,
   "recordedFingerprint": "<masked>",
   "migrations": [
     {
@@ -56,6 +57,7 @@
     "drift": [],
     "passImplemented": true
   },
+  "data": [],
   "diagnostics": [
     {
       "code": "plan_missing",

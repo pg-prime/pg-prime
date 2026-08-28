@@ -31,6 +31,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extractCatalog, probeEmptiness, type Diagnostic, type ExtractResult } from "./catalog/extract.js";
+import { GUC_BATCH_SIZE, GUC_WATERMARK } from "./data/batch.js";
+import { HISTORY_SCHEMA } from "./history/schema.js";
+import { BATCH_DEFAULTS } from "./runner/files.js";
 import { renameCandidates, type RenameCandidate } from "./diff/candidates.js";
 import type { RenameHint } from "./diff/delta.js";
 import { buildStatements, type BuildOptions } from "./diff/ddl.js";
@@ -518,6 +521,31 @@ async function proveIt(
  */
 export function annotationHints(schema: SchemaLike, defaultSchema = "public"): RenameHint[] {
   const out: RenameHint[] = [];
+
+  /* design/05 §5.1's other two spellings, which design/11 K2b left hints-file-only:
+   * `pgSchema(name, { renamedFrom })` and `pgEnum(name, values, { renamedFrom })`, plus the
+   * same option on `pgDomain` and `pgSequence`. They are reachable now because `loadSchema`
+   * discovers the standalone declarations off the module's exports (design/12 K4). */
+  for (const s of schema.schemas ?? []) {
+    if (s.renamedFrom === undefined) continue;
+    out.push({ from: { kind: "schema", schema: s.renamedFrom }, to: { kind: "schema", schema: s.name } });
+  }
+  // enum and domain share the `type` fact kind — `05` §7.2 gives both `[schema, name]`.
+  for (const t of [...(schema.enums ?? []), ...(schema.domains ?? [])]) {
+    const renamedFrom = (t as { renamedFrom?: string }).renamedFrom;
+    if (renamedFrom === undefined) continue;
+    const ns = t.schema ?? defaultSchema;
+    out.push({ from: { kind: "type", schema: ns, name: renamedFrom }, to: { kind: "type", schema: ns, name: t.name } });
+  }
+  for (const s of schema.sequences ?? []) {
+    if (s.renamedFrom === undefined) continue;
+    const ns = s.schema ?? defaultSchema;
+    out.push({
+      from: { kind: "sequence", schema: ns, name: s.renamedFrom },
+      to: { kind: "sequence", schema: ns, name: s.name },
+    });
+  }
+
   for (const table of Object.values(schema.tables)) {
     const runtime = table.$;
     const ns = runtime.schema ?? defaultSchema;
@@ -675,6 +703,16 @@ export interface DataStubInput {
   readonly origin?: string;
   /** the column the volatile-default split (design/06 §3.5 row 7) left un-backfilled */
   readonly backfill?: { readonly schema: string; readonly table: string; readonly column: string };
+  /**
+   * The keyset column the template orders and resumes by, and the cast that turns the
+   * watermark text back into it. `generate` cannot know either — the volatile-default
+   * split names a column, not a key — so they default to `id` / `bigint` and step 1 of
+   * the template's own checklist is "check them".
+   */
+  readonly key?: string;
+  readonly keyCast?: string;
+  /** rows per batch written into the directive; design/06 §7's example is 1000 */
+  readonly size?: number;
 }
 
 /** Fold any identifier into `MIGRATION_NAME`'s alphabet, so the runner can see the file. */
@@ -684,39 +722,91 @@ export const slug = (text: string): string =>
 /**
  * `migrate generate --data`, and the §3.5 row-7 backfill stub — design/06 §7 lane 2.
  *
- * The generated `UPDATE` is **commented out** and the file's one live statement RAISES.
- * A stub that applied silently would be marked `applied` in `pgprime.migrations` while the
- * rows it exists to fix stayed unfixed, and the next `generate` would see a converged
- * schema and never mention it again. Failing loudly, once, with the file's own path in the
- * message, is the only spelling of "TODO" a deploy pipeline can hear.
+ * The file is a **working batched backfill with a guard in front of it**, not a sketch in
+ * a comment. Two statements:
+ *
+ *  - `stmt 0` is a `DO … RAISE EXCEPTION`, marked `non-idempotent` so `migrate lint`
+ *    reports TX201 on it and `migrate apply` stops on it. A stub that applied silently
+ *    would be recorded `applied` in `pgprime.migrations` while the rows it exists to fix
+ *    stayed unfixed, and the next `generate` would see a converged schema and never
+ *    mention it again. This is the only spelling of "TODO" a deploy pipeline can hear.
+ *  - `stmt 1` is the real batch: a **keyset** `WITH batch AS (SELECT … WHERE key >
+ *    watermark ORDER BY key LIMIT size)` that reads the runner's two GUCs and reports
+ *    `rows_done` / `watermark` back. Deleting the guard and renumbering this to `0` is the
+ *    whole edit, and forgetting the renumber is a `stmt_marker_out_of_order` error rather
+ *    than a silent misordering.
+ *
+ * **Why keyset rather than design/06 §7's `WHERE id IN (SELECT … LIMIT n)`.** That form
+ * has no watermark: every iteration re-scans from the start of the table looking for rows
+ * the predicate still matches, so N rows in batches of n cost O(N²/n) row reads and each
+ * batch is slower than the last — and after a crash it restarts that scan from zero,
+ * because there is nothing to resume from. The keyset form reads each row once, resumes at
+ * the recorded key, and gives `pgprime.data_progress.watermark` something true to hold.
+ * The runner supports both — a statement with no `rows_done` column falls back to its
+ * command tag, which is exactly §7's shape — and the template picks the better one.
  */
 export function dataMigrationSql(input: DataStubInput): string {
   const id = `${String(input.seq).padStart(4, "0")}_${input.name}`;
   const b = input.backfill;
-  const qualified = b ? `${b.schema}.${b.table}` : "your_table";
+  const qualified = b ? `${b.schema}.${b.table}` : "your_schema.your_table";
   const column = b?.column ?? "your_column";
+  const key = input.key ?? "id";
+  const cast = input.keyCast ?? "bigint";
+  const size = input.size ?? BATCH_DEFAULTS.size;
+  const mark = `nullif(current_setting('${GUC_WATERMARK}', true), '')`;
   return [
     `-- pg-prime:migration ${id}`,
     "-- pg-prime:data",
     "-- pg-prime:txmode    none",
-    "-- pg-prime:batch     size=1000 pause=100ms max-replica-lag=10s",
+    `-- pg-prime:batch     size=${String(size)} pause=${String(BATCH_DEFAULTS.pauseMs)}ms max-replica-lag=10s`,
     "",
     b ? `-- TODO: backfill ${qualified}.${column}.` : "-- TODO: write the data migration.",
     b
       ? [
-          `-- ${input.origin ?? "the migration beside this one"}.sql added ${column} NULLABLE and set`,
+          `-- ${input.origin ?? "The migration beside this one"}.sql added ${column} NULLABLE and set`,
           "-- its DEFAULT, so new rows already carry a value and the table was not rewritten under",
           "-- ACCESS EXCLUSIVE (design/06 §3.5 row 7). The rows that were already there are NULL.",
         ].join("\n")
       : "-- design/06 §7 lane 2: one statement, re-executed by the runner until it reports 0 rows.",
     "--",
-    "-- Replace the RAISE below with the UPDATE (review the predicate and the batch size).",
+    "-- The `-- pg-prime:batch` directive above is interpreted by the RUNNER, not by a",
+    "-- template (design/06 §7). It re-executes every statement in this file, each in its",
+    "-- OWN transaction, until that statement reports zero rows; it pauses `pause` between",
+    "-- iterations; it waits while replica lag exceeds `max-replica-lag`; and it commits",
+    `-- { rows_done, watermark } to ${HISTORY_SCHEMA}.data_progress in the SAME transaction as the`,
+    "-- batch, so a killed backfill resumes from its watermark instead of restarting.",
+    "--",
+    "-- The contract between this file and the runner is two settings and two columns:",
+    "--",
+    `--   current_setting('${GUC_BATCH_SIZE}')        the directive's \`size\`, as text`,
+    `--   current_setting('${GUC_WATERMARK}', true)    the last watermark THIS statement`,
+    "--                                              reported; '' on the first iteration",
+    "--   … AS rows_done, … AS watermark             what the statement reports back",
+    "--",
+    "-- TO SHIP THIS FILE:",
+    `--   1. check that \`${key}\` is this table's ordering key and that \`::${cast}\` is its type;`,
+    "--   2. check the predicate — it must match exactly the rows that still need the write;",
+    "--   3. delete statement 0 (the guard) and renumber statement 1 to 0.",
     "",
     "-- pg-prime:stmt 0 lock=none non-idempotent",
     `DO $pgprime$ BEGIN RAISE EXCEPTION 'pg-prime: ${id}.sql is a generated data-migration STUB and was applied unedited'; END $pgprime$;`,
     "",
-    `-- UPDATE ${qualified} SET ${column} = DEFAULT`,
-    `--  WHERE ctid IN (SELECT ctid FROM ${qualified} WHERE ${column} IS NULL LIMIT 1000);`,
+    "-- pg-prime:stmt 1 lock=rowExclusive idempotent",
+    "WITH batch AS (",
+    `  SELECT ${key}`,
+    `    FROM ${qualified}`,
+    `   WHERE ${column} IS NULL`,
+    `     AND (${mark} IS NULL OR ${key} > ${mark}::${cast})`,
+    `   ORDER BY ${key}`,
+    `   LIMIT current_setting('${GUC_BATCH_SIZE}')::int`,
+    "), updated AS (",
+    `  UPDATE ${qualified} AS t`,
+    `     SET ${column} = DEFAULT`,
+    "    FROM batch AS b",
+    `   WHERE t.${key} = b.${key}`,
+    `  RETURNING t.${key} AS ${key}`,
+    ")",
+    `SELECT count(*)::bigint AS rows_done, max(${key})::text AS watermark FROM updated;`,
     "",
   ].join("\n");
 }
