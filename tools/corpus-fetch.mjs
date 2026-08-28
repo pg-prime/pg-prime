@@ -145,8 +145,11 @@ const DROP = [
   /^GRANT\b/i,
   /^REVOKE\b/i,
   /^ALTER\s+DEFAULT\s+PRIVILEGES\b/i,
-  /^ALTER\s+\w+(\s+\w+)*\s+OWNER\s+TO\b/i,
-  /^ALTER\s+TABLE\s+(ONLY\s+)?\S+\s+OWNER\s+TO\b/i,
+  // Any ALTER that assigns an owner. The object name may be quoted, schema-qualified or carry a
+  // signature (`ALTER DOMAIN public."bıgınt" …`, `ALTER FUNCTION public.f(text, text) …`), which a
+  // `\w+` chain never matches — CI run 33162089194 went red on exactly that, on a cluster whose
+  // superuser is not called `postgres`.
+  /^ALTER\s[\s\S]*\bOWNER\s+TO\b/i,
   /^ANALYZE\b/i,
   /^VACUUM\b/i,
   /^CHECKPOINT\b/i,

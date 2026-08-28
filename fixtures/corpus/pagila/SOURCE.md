@@ -6,7 +6,7 @@
 - sha256(schema, upstream):  `8ce358e4c8014087b85296694a0893887bd7a4190e3ce407f2721b86b98e5707`
 - sha256(LICENSE, upstream): `516e7dac679ac1eeb62d5614b01c4e7318154e9a147377d6264954215997ff38`
 
-Trimmed to schema-only DDL by `tools/corpus-fetch.mjs`: 187 statements kept, 46 dropped (1× ALTER SCHEMA, 1× GRANT ALL, 1× REVOKE USAGE, 43× ALTER TABLE).
+Trimmed to schema-only DDL by `tools/corpus-fetch.mjs`: 174 statements kept, 59 dropped (1× ALTER AGGREGATE, 1× ALTER SCHEMA, 1× ALTER TYPE, 1× GRANT ALL, 1× REVOKE USAGE, 2× ALTER DOMAIN, 43× ALTER TABLE, 9× ALTER FUNCTION).
 
 This file is committed so the corpus is reproducible from a pinned upstream, which is
 what makes `01` §11.6 #5 (`verify` green on three real third-party schemas) a gate

@@ -5,7 +5,7 @@
 --
 -- TRIMMED to schema-only DDL by tools/corpus-fetch.mjs. Regenerate with:
 --   node tools/corpus-fetch.mjs pagila
--- Dropped: 1×ALTER SCHEMA, 1×GRANT ALL, 1×REVOKE USAGE, 43×ALTER TABLE
+-- Dropped: 1×ALTER AGGREGATE, 1×ALTER SCHEMA, 1×ALTER TYPE, 1×GRANT ALL, 1×REVOKE USAGE, 2×ALTER DOMAIN, 43×ALTER TABLE, 9×ALTER FUNCTION
 SET statement_timeout = 0;
 
 SET lock_timeout = 0;
@@ -28,15 +28,9 @@ SET row_security = off;
 
 CREATE DOMAIN public."bıgınt" AS bigint;
 
-ALTER DOMAIN public."bıgınt" OWNER TO postgres;
-
 CREATE TYPE public.mpaa_rating AS ENUM ( 'G', 'PG', 'PG-13', 'R', 'NC-17' );
 
-ALTER TYPE public.mpaa_rating OWNER TO postgres;
-
 CREATE DOMAIN public.year AS integer CONSTRAINT year_check CHECK (((VALUE >= 1901) AND (VALUE <= 2155)));
-
-ALTER DOMAIN public.year OWNER TO postgres;
 
 CREATE FUNCTION public._group_concat(text, text) RETURNS text LANGUAGE sql IMMUTABLE AS $_$
 SELECT CASE
@@ -46,8 +40,6 @@ SELECT CASE
 END
 $_$;
 
-ALTER FUNCTION public._group_concat(text, text) OWNER TO postgres;
-
 CREATE FUNCTION public.film_in_stock(p_film_id integer, p_store_id integer, OUT p_film_count integer) RETURNS SETOF integer LANGUAGE sql AS $_$
      SELECT inventory_id
      FROM inventory
@@ -56,8 +48,6 @@ CREATE FUNCTION public.film_in_stock(p_film_id integer, p_store_id integer, OUT 
      AND inventory_in_stock(inventory_id);
 $_$;
 
-ALTER FUNCTION public.film_in_stock(p_film_id integer, p_store_id integer, OUT p_film_count integer) OWNER TO postgres;
-
 CREATE FUNCTION public.film_not_in_stock(p_film_id integer, p_store_id integer, OUT p_film_count integer) RETURNS SETOF integer LANGUAGE sql AS $_$
     SELECT inventory_id
     FROM inventory
@@ -65,8 +55,6 @@ CREATE FUNCTION public.film_not_in_stock(p_film_id integer, p_store_id integer, 
     AND store_id = $2
     AND NOT inventory_in_stock(inventory_id);
 $_$;
-
-ALTER FUNCTION public.film_not_in_stock(p_film_id integer, p_store_id integer, OUT p_film_count integer) OWNER TO postgres;
 
 CREATE FUNCTION public.get_customer_balance(p_customer_id integer, p_effective_date timestamp with time zone) RETURNS numeric LANGUAGE plpgsql AS $$
        --#OK, WE NEED TO CALCULATE THE CURRENT BALANCE GIVEN A CUSTOMER_ID AND A DATE
@@ -104,8 +92,6 @@ BEGIN
 END
 $$;
 
-ALTER FUNCTION public.get_customer_balance(p_customer_id integer, p_effective_date timestamp with time zone) OWNER TO postgres;
-
 CREATE FUNCTION public.inventory_held_by_customer(p_inventory_id integer) RETURNS integer LANGUAGE plpgsql AS $$
 DECLARE
     v_customer_id INTEGER;
@@ -118,8 +104,6 @@ BEGIN
 
   RETURN v_customer_id;
 END $$;
-
-ALTER FUNCTION public.inventory_held_by_customer(p_inventory_id integer) OWNER TO postgres;
 
 CREATE FUNCTION public.inventory_in_stock(p_inventory_id integer) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
@@ -149,8 +133,6 @@ BEGIN
     END IF;
 END $$;
 
-ALTER FUNCTION public.inventory_in_stock(p_inventory_id integer) OWNER TO postgres;
-
 CREATE FUNCTION public.last_day(timestamp with time zone) RETURNS date LANGUAGE sql IMMUTABLE STRICT AS $_$
   SELECT CASE
     WHEN EXTRACT(MONTH FROM $1) = 12 THEN
@@ -160,15 +142,11 @@ CREATE FUNCTION public.last_day(timestamp with time zone) RETURNS date LANGUAGE 
     END
 $_$;
 
-ALTER FUNCTION public.last_day(timestamp with time zone) OWNER TO postgres;
-
 CREATE FUNCTION public.last_updated() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     NEW.last_update = CURRENT_TIMESTAMP;
     RETURN NEW;
 END $$;
-
-ALTER FUNCTION public.last_updated() OWNER TO postgres;
 
 CREATE SEQUENCE public.customer_customer_id_seq START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
 
@@ -233,11 +211,7 @@ RETURN;
 END
 $_$;
 
-ALTER FUNCTION public.rewards_report(min_monthly_purchases integer, min_dollar_amount_purchased numeric) OWNER TO postgres;
-
 CREATE AGGREGATE public.group_concat(text) ( SFUNC = public._group_concat, STYPE = text );
-
-ALTER AGGREGATE public.group_concat(text) OWNER TO postgres;
 
 CREATE SEQUENCE public.actor_actor_id_seq START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
 
