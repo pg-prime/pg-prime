@@ -223,7 +223,8 @@ describe("tier 3 — a role WITHOUT CREATEDB (design/06 §3.2's managed-PostgreS
         const desired = await loadDesired(corpus, shadow);
 
         // Every fact is back in the CALLER's schema names…
-        const schemas = new Set(desired.ir.facts().map((f) => f.id.schema));
+        // (`extension` facts — `plpgsql` is in every database — are keyed `[name]` and carry no schema)
+        const schemas = new Set(desired.ir.facts().flatMap((f) => ("schema" in f.id ? [f.id.schema] : [])));
         expect([...schemas].sort()).toEqual(["audit", "public"]);
         expect(desired.ir.has({ kind: "table", schema: "public", name: "orgs" })).toBe(true);
         expect(desired.ir.has({ kind: "table", schema: "audit", name: "events" })).toBe(true);
@@ -236,7 +237,7 @@ describe("tier 3 — a role WITHOUT CREATEDB (design/06 §3.2's managed-PostgreS
         // the cross-schema FK edge points at the user's `public.orgs`
         const fk = desired.ir
           .factsOfKind("constraint")
-          .find((f) => f.id.schema === "audit" && f.payload["contype"] === "f");
+          .find((f) => "schema" in f.id && f.id.schema === "audit" && f.payload["contype"] === "f");
         expect(fk).toBeDefined();
         const targets = desired.ir
           .outgoingEdges(fk!.id)

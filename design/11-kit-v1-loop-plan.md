@@ -457,6 +457,32 @@ catches it*).
 
 ---
 
+### Round-1 integration — K3 over K2a · 2026-08-28
+
+K2a merged first (`31639c6`), K3 was cherry-picked on top (`caf3848`). Three things broke at the seam,
+all in K2a's code against K3's new facts, all fixed in the integration commit that follows K3's:
+
+1. **`extension` ids have no `schema`** (`05` §7.2's `[name]`), and `plpgsql` is in every database —
+   so the remapper's `id()` and two tests that read `f.id.schema` off every fact were wrong the
+   moment the extractor emitted its first extension fact. `id()` now leaves schema-less ids alone.
+2. **`comment` ids carry their target's *encoded* id** (`comment:column:pgprime_shadow_…`) — a schema
+   one level down, which neither `id()` nor the payload rewrite reached. `id()` now parses, remaps
+   and re-encodes the target. The payload rewrite itself moved from an enumerated field list to a
+   recursive walk over every string: K3 added `default.expression`, `typeAttribute.type`,
+   `type.checks[]` and `table.partition*` in one workstream, and a list would have been stale again
+   by K4. Rewriting blindly is safe by construction — the only text replaced is a shadow name
+   minted after the schema was written, matched as a whole identifier.
+3. **A fresh database's `public` schema carries initdb's `'standard public schema'` comment.** With
+   `comment` a fact, tier 2 (a fresh database) saw it and tier 3 (a bare shadow schema) did not, and
+   the two tiers' fingerprints diverged by exactly that fact — found by diffing the two IRs
+   fact-by-fact, not by guessing. Neither tier was right: a real target has *its own* comment, and
+   the DSL declares none (`pgSchema` has no `.comment()` yet). `Shadow` now carries `target`, and
+   `loadDesired` **mirrors the target's schema comments onto the shadow after the load**, so the
+   desired state asserts nothing about a comment the DSL never wrote. Recorded under `06` §3.2.
+
+Also: K2a's witness test (`roundtrip.test.ts`) went red as designed — the five `COMMENT ON` statements
+it allowed to be missing now round-trip — and its assertion is now `missing === []`.
+
 ## 4. Round 2 (after K1/K2a/K3 merge)
 
 **K2b** wires `generate` to `loadDesired` + `provisionShadow` + repeatables + rename annotations, adds

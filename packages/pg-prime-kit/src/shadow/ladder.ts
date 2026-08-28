@@ -57,6 +57,14 @@ export interface ProvisionShadowOptions {
 export interface Shadow {
   /** Where the desired DDL is loaded and where `extractCatalog` is pointed. */
   readonly conn: ConnInfo;
+  /**
+   * The database whose state is being diffed against. `loadDesired` reads the comments of the
+   * managed schemas that already exist here and mirrors them onto the shadow, so that a schema
+   * the DSL never *declares* (`public`, created by initdb with `'standard public schema'`) does
+   * not turn into a phantom `COMMENT ON SCHEMA` delta: tier 2 would otherwise carry a fresh
+   * database's default comment, tier 3 none at all, and neither would be what the target has.
+   */
+  readonly target: ConnInfo;
   /** User schema name → the schema the DDL is emitted into. Identity for tiers 1 and 2. */
   readonly schemaMap: ReadonlyMap<string, string>;
   readonly tier: 1 | 2 | 3;
@@ -201,7 +209,7 @@ export async function provisionShadow(
   if (strategy === "offline") throw new OfflineShadowError();
 
   if (typeof strategy === "object") {
-    return tier1(parseShadowUrl(strategy.url), schemas, "shadow url supplied");
+    return tier1(parseShadowUrl(strategy.url), target, schemas, "shadow url supplied");
   }
   if (strategy === "temp-schema") return tier3(target, schemas, options.token, "requested");
   if (strategy === "createdb") {
@@ -229,7 +237,12 @@ export async function provisionShadow(
 
 /* ---- tier 1 ---- */
 
-async function tier1(conn: ConnInfo, schemas: readonly string[], reason: string): Promise<Shadow> {
+async function tier1(
+  conn: ConnInfo,
+  target: ConnInfo,
+  schemas: readonly string[],
+  reason: string,
+): Promise<Shadow> {
   const diagnostics: Diagnostic[] = [
     {
       code: "shadow_url_reset",
@@ -243,6 +256,7 @@ async function tier1(conn: ConnInfo, schemas: readonly string[], reason: string)
   await resetSchemas(conn, schemas);
   return {
     conn,
+    target,
     schemaMap: identityMap(schemas),
     tier: 1,
     reason,
@@ -275,6 +289,7 @@ async function tier2(
   const conn = withDatabase(target, name);
   return {
     conn,
+    target,
     schemaMap: identityMap(schemas),
     tier: 2,
     reason,
@@ -327,6 +342,7 @@ async function tier3(
 
   return {
     conn: target,
+    target,
     schemaMap: map,
     tier: 3,
     reason,

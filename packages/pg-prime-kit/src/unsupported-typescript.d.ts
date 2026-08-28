@@ -127,6 +127,7 @@ export declare const quoteQualified: Unsupported
 export declare const releaseSessionLock: Unsupported
 export declare const remapDiagnostics: Unsupported
 export declare const remapIr: Unsupported
+export declare const remapObserved: Unsupported
 export declare const renderSql: Unsupported
 export declare const resolvePgDump: Unsupported
 export declare const runSqlScript: Unsupported

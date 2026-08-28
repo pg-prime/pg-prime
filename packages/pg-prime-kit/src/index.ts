@@ -123,7 +123,7 @@ export { generate, type GenerateInput, type GenerateResult } from "./generate.js
  */
 export { emitSchema, EmitError, type EmitOptions, type EmitResult } from "./schema/emit.js";
 export { desiredSql, loadDesired, DesiredLoadError, type LoadDesiredOptions } from "./schema/load.js";
-export { makeRemapper, remapDiagnostics, remapIr, type Remapper } from "./schema/remap.js";
+export { makeRemapper, remapDiagnostics, remapIr, remapObserved, type Remapper } from "./schema/remap.js";
 export type { ColumnDdl, RefRuntime, SchemaLike, TableExtra, TableLike, TableRuntime } from "./schema/types.js";
 export {
   parseShadowUrl,

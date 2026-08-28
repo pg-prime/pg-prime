@@ -351,6 +351,16 @@ normalize differently.
 > gets `permission denied to create database`, and runs the whole `provisionShadow` →
 > `loadDesired` → `dispose` path as it. The tier-3 IR and the tier-2 IR of the same schema have the
 > **same fingerprint**, which is the property the map exists to preserve.
+>
+> **Integration note (K3 × K2a, 2026-08-28).** Once `comment` became a fact kind, the tiers stopped
+> agreeing on one object: a fresh tier-2 database's `public` carries initdb's
+> `'standard public schema'` comment, a tier-3 shadow schema carries none, and a real target carries
+> whatever it carries. The DSL declares no schema comments, so the desired state must not assert one:
+> `Shadow.target` records the diffed-against database and `loadDesired` copies the target's comment
+> for every managed schema onto its shadow counterpart after the load (`NULL` when the target has
+> none). Tier-2 and tier-3 fingerprints are byte-identical again, and a target whose `public` comment
+> was customised does not get a phantom `COMMENT ON SCHEMA` reset. When `pgSchema(...).comment()`
+> lands, the emitter's value wins by running after this mirror.
 
 ### 3.3 Rename resolution
 

@@ -46,6 +46,7 @@ let irA: ExtractResult;
 function shadowOf(conn: ConnInfo): Shadow {
   return {
     conn,
+    target: conn,
     schemaMap: new Map(SCHEMAS.map((s) => [s, s])),
     tier: 2,
     reason: "test fixture",
@@ -111,7 +112,7 @@ describe("emit → load → extract → re-emit → load (R1)", () => {
   it("names its constraints exactly as PostgreSQL would have", () => {
     const names = irA.ir
       .factsOfKind("constraint")
-      .map((f) => `${f.id.schema}.${(f.id as { name: string }).name}`)
+      .map((f) => `${(f.id as { schema: string; name: string }).schema}.${(f.id as { name: string }).name}`)
       .sort();
     expect(names).toEqual([
       "audit.events_org_id_fkey",
@@ -207,7 +208,7 @@ describe("emit → load → extract → re-emit → load (R1)", () => {
 });
 
 describe("the D10 pg_dump witness (strict)", () => {
-  it("dumps A and B identically, apart from the comments the IR is still blind to", async () => {
+  it("dumps A and B identically — comments included, now that `comment` is a fact kind", async () => {
     const pgDump = await resolvePgDump();
     // The kit has no non-server tier; a missing pg_dump is an environment the suite refuses to
     // pass silently in, because silence is what the witness exists to remove.
@@ -223,13 +224,12 @@ describe("the D10 pg_dump witness (strict)", () => {
     // Nothing may be in B that is not in A: the catalog-side renderer must not invent anything.
     expect(cmp.extra).toEqual([]);
     /**
-     * R16, honestly stated: `comment` is not a fact kind yet (design/06 §2.2, K3 item 3), so the
-     * extractor cannot see the COMMENTs in A and `ddl.ts` cannot put them into B. The witness
-     * catches exactly that and nothing else — which is the strongest form this assertion can take
-     * until K3 lands, and it will start failing the moment K3 makes it stale.
+     * R16, as it stood when K2a landed: `comment` was not a fact kind, so this assertion allowed
+     * exactly the five `COMMENT ON` statements to be missing and nothing else. design/11 K3 made
+     * `comment` a fact (extractor + `ddl.ts`), so the witness now demands byte-equality: the five
+     * comments the emitter wrote into A come back out of the extracted IR into B.
      */
-    expect(cmp.missing.filter((s) => !s.startsWith("COMMENT ON"))).toEqual([]);
-    expect(cmp.missing).toHaveLength(5);
+    expect(cmp.missing).toEqual([]);
     expect(cmp.statementCount).toBeGreaterThan(30);
   }, T);
 });

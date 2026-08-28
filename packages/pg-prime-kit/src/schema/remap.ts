@@ -23,6 +23,7 @@
 import { SchemaIR, type DependencyEdge, type Fact } from "../ir/fact.js";
 import type { Payload, PayloadValue } from "../ir/hash.js";
 import { encodeId, parseId, type StableId } from "../ir/stable-id.js";
+import type { ObservedObject } from "../catalog/payloads.js";
 import type { Diagnostic } from "../catalog/extract.js";
 import { quoteIdent } from "../sql/ident.js";
 
@@ -32,18 +33,17 @@ const BARE_IDENT = /^[a-z_][a-z0-9_$]*$/;
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * Payload members that can embed a schema-qualified name, by payload `kind`.
+ * Every string in every payload is rewritten, recursively — `column.type`, `default.expression`,
+ * `constraint.definition`, `index.definition`, `typeAttribute.type`, `type.baseType` / `checks`,
+ * `table.partitionKey` / `partitionOf` / `partitionBound`, `extension.schema`, and whatever the
+ * next fact kind adds. An enumerated field list was the first version of this file, and design/11
+ * K3 made it stale the day it landed (tier-3 fingerprints diverged on `default.expression`).
  *
- * Enumerated rather than "rewrite every string in the payload", because rewriting blindly would
- * also touch `ColumnPayload.collation` and `SequencePayload.dataType`, and a collation literally
- * named after a shadow schema is a bug we would then create rather than avoid.
+ * Rewriting blindly is safe *by construction*: the only text ever replaced is a shadow schema
+ * name, `pgprime_shadow_<8 random hex>_<schema>`, matched as a whole identifier. Nothing in the
+ * user's desired schema can spell a token minted after the schema was written, so a collation or
+ * a sequence data type "literally named after a shadow schema" cannot exist on the desired side.
  */
-const TEXT_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  column: ["type", "default"],
-  constraint: ["definition"],
-  index: ["definition"],
-};
-
 export interface Remapper {
   /** Rewrite one piece of server-produced SQL text. */
   readonly text: (s: string) => string;
@@ -83,6 +83,11 @@ export function makeRemapper(reverse: ReadonlyMap<string, string>): Remapper {
   };
 
   const id = (input: StableId): StableId => {
+    // `comment` is keyed by its TARGET's encoded id (`comment:column:pgprime_shadow_…\.users…`),
+    // so the schema lives one level down: parse, remap the target, re-encode.
+    if (input.kind === "comment") return { kind: "comment", target: encodeId(id(parseId(input.target))) };
+    // `extension` is keyed `[name]` alone (05 §7.2): nothing to remap, and no `schema` to read.
+    if (!("schema" in input)) return input;
     const to = reverse.get(input.schema);
     return to === undefined || to === input.schema
       ? input
@@ -92,17 +97,24 @@ export function makeRemapper(reverse: ReadonlyMap<string, string>): Remapper {
   return { text, id };
 }
 
-function remapPayload(kind: string, payload: Payload, r: Remapper): Payload {
-  const fields = TEXT_FIELDS[kind];
-  const out: Record<string, PayloadValue> = { ...payload };
-  for (const key of fields ?? []) {
-    const value = out[key];
-    if (typeof value === "string") out[key] = r.text(value);
+function remapValue(value: PayloadValue, r: Remapper): PayloadValue {
+  if (typeof value === "string") return r.text(value);
+  if (Array.isArray(value)) return value.map((v) => remapValue(v, r));
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, PayloadValue> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = remapValue(v, r);
+    return out;
   }
+  return value;
+}
+
+function remapPayload(kind: string, payload: Payload, r: Remapper): Payload {
+  const out: Record<string, PayloadValue> = {};
+  for (const [key, value] of Object.entries(payload)) out[key] = remapValue(value, r);
   // `ownedBy` is an ENCODED StableId, not free text: parsed and re-encoded so the escaping rules
   // of `stable-id.ts` stay the single definition of that string's shape.
   if (kind === "sequence") {
-    const owned = out["ownedBy"];
+    const owned = payload["ownedBy"];
     if (typeof owned === "string" && owned !== "") out["ownedBy"] = encodeId(r.id(parseId(owned)));
   }
   return out;
@@ -139,4 +151,17 @@ export function remapDiagnostics(
     message: r.text(d.message),
     ...(d.subject === undefined ? {} : { subject: r.text(d.subject) }),
   }));
+}
+
+/**
+ * Tier-O observations (roles, ACLs, publications, …) carry their identity as text, so the same
+ * spelling rule applies: a grant on `pgprime_shadow_ab_public.users` is reported against
+ * `public.users`, the name the user wrote.
+ */
+export function remapObserved(
+  observed: readonly ObservedObject[],
+  reverse: ReadonlyMap<string, string>,
+): ObservedObject[] {
+  const r = makeRemapper(reverse);
+  return observed.map((o) => ({ ...o, name: r.text(o.name), detail: r.text(o.detail) }));
 }

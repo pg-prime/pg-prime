@@ -12,7 +12,8 @@ import { extractCatalog, type ExtractResult } from "../catalog/extract.js";
 import type { Diagnostic } from "../catalog/extract.js";
 import { withClient } from "../db/pg.js";
 import { emitSchema, type EmitOptions } from "./emit.js";
-import { remapDiagnostics, remapIr } from "./remap.js";
+import { remapDiagnostics, remapIr, remapObserved } from "./remap.js";
+import { quoteIdent, quoteLiteral } from "../sql/ident.js";
 import type { SchemaLike } from "./types.js";
 import type { Shadow } from "../shadow/ladder.js";
 
@@ -63,6 +64,23 @@ export async function loadDesired(
 
   const shadowSchemas = [...new Set(shadow.schemaMap.values())].sort();
 
+  // Schema comments are not declared by the DSL (no `pgSchema(...).comment()` yet), so the desired
+  // state MIRRORS the target's: `public` is created by initdb with 'standard public schema', a
+  // fresh tier-2 database has the same default, a tier-3 shadow schema has none — and only the
+  // target's own value is not a phantom delta. Read before the load, written after it, so a schema
+  // the emitter creates (`audit`) is covered as well as one it finds (`public`).
+  const targetComments = await withClient(shadow.target, async (client) => {
+    const r = await client.query(
+      "SELECT nspname, obj_description(oid, 'pg_namespace') AS comment FROM pg_namespace WHERE nspname = ANY($1)",
+      [[...shadow.schemaMap.keys()]],
+    );
+    const out = new Map<string, string>();
+    for (const row of r.rows as { nspname: string; comment: string | null }[]) {
+      if (row.comment !== null) out.set(row.nspname, row.comment);
+    }
+    return out;
+  });
+
   const extracted = await withClient(shadow.conn, async (client) => {
     for (const statement of emitted.sql) {
       try {
@@ -75,6 +93,12 @@ export async function loadDesired(
           emitted.diagnostics,
         );
       }
+    }
+    for (const [user, shadowName] of shadow.schemaMap) {
+      const comment = targetComments.get(user);
+      await client.query(
+        `COMMENT ON SCHEMA ${quoteIdent(shadowName)} IS ${comment === undefined ? "NULL" : quoteLiteral(comment)}`,
+      );
     }
     return extractCatalog(client, {
       schemas: shadowSchemas,
@@ -90,6 +114,7 @@ export async function loadDesired(
   return {
     ir: remapIr(extracted.ir, reverse),
     pgVersionNum: extracted.pgVersionNum,
+    observed: remapObserved(extracted.observed, reverse),
     diagnostics: [
       ...emitted.diagnostics,
       ...shadow.diagnostics,

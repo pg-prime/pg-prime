@@ -104,6 +104,7 @@
         "releaseSessionLock",
         "remapDiagnostics",
         "remapIr",
+        "remapObserved",
         "renderSql",
         "resolvePgDump",
         "runSqlScript",
