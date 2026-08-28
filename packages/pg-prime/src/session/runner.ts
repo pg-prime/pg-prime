@@ -366,8 +366,16 @@ export interface TxRuntime {
   /** `rollbackWith()` sets this; every later statement then throws `TransactionAbandonedError`. */
   doomed: boolean
   closed: boolean
-  /** The error that put the transaction into the aborted state, retained for `25P02` (§3.3). */
-  poisonedBy: PgPrimeError | undefined
+  /**
+   * The error that put the transaction into the aborted state, retained for `25P02` (§3.3).
+   *
+   * A **shared box**, not a field, because a savepoint's `TxRuntime` is a copy of its parent's: a
+   * failure inside the savepoint has to be visible to the enclosing transaction (it is the same
+   * PostgreSQL transaction), and `ROLLBACK TO SAVEPOINT` has to be able to clear it for everyone.
+   * With a plain field the child recorded the poison and the parent never saw it, so the clear was
+   * a no-op and the `25P02` message blamed nothing — caught by R10 mutation M4.
+   */
+  readonly poison: { error: PgPrimeError | undefined }
   /** In-flight statements, for §3.2's warning. */
   inFlight: number
   warned: boolean
@@ -435,7 +443,7 @@ export class ConnRunner extends BaseRunner {
       return await f(this.conn)
     } catch (e) {
       const mapped = this.#mapped(e, undefined)
-      if (mapped instanceof PgPrimeErrorClass && isPoisoning(mapped)) this.tx.poisonedBy ??= mapped
+      if (mapped instanceof PgPrimeErrorClass && isPoisoning(mapped)) this.tx.poison.error ??= mapped
       throw mapped
     }
   }
@@ -527,7 +535,7 @@ export class ConnRunner extends BaseRunner {
       errors: this.state.errors,
       sql,
       schema: this.state.schema,
-      poisonedBy: this.tx.poisonedBy,
+      poisonedBy: this.tx.poison.error,
     })
   }
 }
@@ -730,7 +738,7 @@ export async function execute<Row>(
   } catch (raw) {
     const durationMs = performance.now() - started
     const error = mapStatementError(state, raw, desc, o, handle, tx, callSite, timer.fired())
-    if (tx !== undefined && isPoisoning(error)) tx.poisonedBy ??= error
+    if (tx !== undefined && isPoisoning(error)) tx.poison.error ??= error
     if (start !== undefined) {
       hooks.queryError({
         ...start,
@@ -836,7 +844,7 @@ function mapStatementError<Row>(
     paramTypes: desc.paramTypes,
     ...(callSite === undefined ? {} : { callSite }),
     schema: state.schema,
-    ...(tx?.poisonedBy === undefined ? {} : { poisonedBy: tx.poisonedBy }),
+    ...(tx?.poison.error === undefined ? {} : { poisonedBy: tx.poison.error }),
   }) as PgPrimeError
   if (!timedOut) return mapped
   // Our own timer fired. Whatever the server said afterwards, the caller's question is "did *we*

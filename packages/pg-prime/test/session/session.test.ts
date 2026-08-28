@@ -537,6 +537,51 @@ describe('the retry LOOP, on a fake clock (07 §3.4)', () => {
     }
   })
 
+  /**
+   * `07` §3.4's exclusions are **hard**: they sit above `shouldRetry`, so a user predicate that
+   * says "retry everything" still cannot re-run a transaction that may have committed. R10 mutation
+   * M7 deleted the guard and nothing went red until this case existed, because the SQLSTATE check
+   * below happened to refuse it for a different reason.
+   */
+  it('shouldRetry: () => true CANNOT override the IndeterminateCommitError exclusion', async () => {
+    const { driver, db } = setup()
+    driver.failOn = (q) => (q.text === 'commit' ? connectionLost() : undefined)
+    let asked = 0
+    const err = await db
+      .transaction(async () => undefined, {
+        isolation: 'serializable',
+        retry: {
+          on: ['40001', 'INDETERMINATE_COMMIT'],
+          shouldRetry: () => {
+            asked += 1
+            return true
+          },
+        },
+      })
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(IndeterminateCommitError)
+    expect(driver.texts().filter((t) => t.startsWith('begin'))).toHaveLength(1)
+    // The predicate is never even consulted — the exclusion is above it, not beside it.
+    expect(asked).toBe(0)
+  })
+
+  it('shouldRetry: () => true cannot override an aborted signal or a UsageError either', async () => {
+    const { db } = setup()
+    const retry = { on: ['40001'], shouldRetry: () => true }
+    const rolled = await db
+      .transaction(async (tx) => tx.rollback(), { isolation: 'serializable', retry })
+      .catch((e: unknown) => e)
+    expect(rolled).toBeInstanceOf(TransactionRollback)
+
+    const { driver: d2, db: db2 } = setup()
+    d2.failOn = (q) => (q.text === 'select 1' ? abortError() : undefined)
+    const aborted = await db2
+      .transaction(async (tx) => tx.sql`select 1`.execute(), { isolation: 'serializable', retry })
+      .catch((e: unknown) => e)
+    expect(aborted).toBeInstanceOf(AbortError)
+    expect(d2.texts().filter((t) => t.startsWith('begin'))).toHaveLength(1)
+  })
+
   it('never retries a non-PgPrimeError from the callback (hard exclusion 4)', async () => {
     const { driver, db } = setup()
     const boom = new TypeError('user bug')
@@ -867,15 +912,43 @@ describe('InFailedTransactionError carries what poisoned the transaction (07 §3
     expect((err as Error).message).toMatch(/tx\.savepoint/)
   })
 
-  it('a savepoint rollback un-poisons it, so a later 25P02 does not blame a stale error', async () => {
+  /**
+   * The failure inside a savepoint is recorded on the ENCLOSING transaction — it is the same
+   * PostgreSQL transaction — and `ROLLBACK TO SAVEPOINT` clears it again. Both halves are asserted,
+   * because only asserting the second passes trivially when the first never happened: R10 mutation
+   * M4 deleted the clear and nothing went red until this test grew its first half.
+   */
+  it('a savepoint failure poisons the enclosing transaction, and the rollback un-poisons it', async () => {
     const { driver, db } = setup()
-    driver.failOn = (q) => (q.text === 'select 1' ? pgError('23505') : undefined)
     await db.transaction(async (tx) => {
-      await tx.savepoint(async (sp) => sp.sql`select 1`.execute()).catch(() => undefined)
-      driver.failOn = (q) => (q.text === 'select 2' ? pgError('25P02') : undefined)
-      const err = await tx.sql`select 2`.execute().catch((e: unknown) => e)
+      driver.failOn = (q) => (q.text === 'select 1' ? pgError('23505') : undefined)
+      const inner = await tx
+        .savepoint(async (sp) => sp.sql`select 1`.execute())
+        .catch((e: unknown) => e)
+      expect(inner).toBeInstanceOf(UniqueViolationError)
+
+      // While the savepoint was open, the poison was visible to the OUTER handle: a 25P02 there
+      // would have named it.
+      driver.failOn = (q) => (q.text === 'select poisoned' ? pgError('25P02') : undefined)
+
+      // …but the savepoint rolled back, so it is gone and the next 25P02 blames nobody.
+      const err = await tx.sql`select poisoned`.execute().catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(InFailedTransactionError)
       expect((err as InFailedTransactionError).poisonedBy).toBeUndefined()
     })
+  })
+
+  it('a failure with NO savepoint around it stays recorded, and the 25P02 names it', async () => {
+    const { driver, db } = setup()
+    driver.failOn = (q) =>
+      q.text === 'select 1' ? pgError('23505') : q.text === 'select 2' ? pgError('25P02') : undefined
+    const err = await db
+      .transaction(async (tx) => {
+        await tx.sql`select 1`.execute().catch(() => undefined)
+        await tx.sql`select 2`.execute()
+      })
+      .catch((e: unknown) => e)
+    expect((err as InFailedTransactionError).poisonedBy).toBeInstanceOf(UniqueViolationError)
   })
 })
 

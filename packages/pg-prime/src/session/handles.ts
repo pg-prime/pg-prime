@@ -22,6 +22,7 @@
 import type { Compiled } from '../compile/contract.js'
 import type { PgConnection } from '../driver/types.js'
 import {
+  AbortError,
   IndeterminateCommitError,
   TransactionRollback,
   UnsupportedInPoolerModeError,
@@ -399,7 +400,7 @@ async function once<T>(deps: TxDeps, a: OnceArgs<T>): Promise<{ result: unknown;
     depth: a.depth,
     doomed: false,
     closed: false,
-    poisonedBy: undefined,
+    poison: { error: undefined },
     inFlight: 0,
     warned: false,
     localTimeoutMs: undefined,
@@ -496,19 +497,32 @@ async function once<T>(deps: TxDeps, a: OnceArgs<T>): Promise<{ result: unknown;
   }
 }
 
-/** The SQLSTATE we are retrying on, or `undefined` for "do not retry" (`07` §3.4). */
+/**
+ * The SQLSTATE we are retrying on, or `undefined` for "do not retry" (`07` §3.4).
+ *
+ * The three hard exclusions come **first and unconditionally**, above `shouldRetry`, because §3.4
+ * calls them hard: a user predicate that returns `true` for everything must not be able to
+ * re-run a transaction that may have committed, that the caller aborted, or that failed for a
+ * reason no database produced. `shouldRetry` is the *last word on a retryable error*, not a
+ * licence.
+ */
 function shouldRetry(e: unknown, retry: ReturnType<typeof resolveRetry>, attempt: number): string | undefined {
   if (attempt >= retry.maxAttempts) return undefined
-  // Hard exclusion 1: the transaction may have committed.
+
+  // Exclusion 1: the transaction MAY HAVE COMMITTED. Retrying is how you double-charge a card.
   if (e instanceof IndeterminateCommitError) return undefined
-  // Hard exclusion 4: a TypeError in user code is not a transient database condition.
+  // Exclusion 2: the caller's signal fired; retrying contradicts the caller.
+  if (e instanceof AbortError) return undefined
+  // Exclusion 4: a UsageError is our bug or yours, never a transient database condition — and
+  // that includes `rollback()`, which is a deliberate abort wearing an error.
+  if (e instanceof UsageError) return undefined
+
   const state = sqlStateOfError(e) ?? (e as { code?: string } | undefined)?.code
   if (state === undefined || !retry.on.includes(state)) {
     return retry.shouldRetry?.(e, attempt) === true ? (state ?? 'unknown') : undefined
   }
-  // Hard exclusions 2 and 3 live where they are observable: an aborted signal surfaces as an
-  // AbortError (never a 40001), and a partially-consumed stream cannot reach here because
-  // `PoolRunner.scope` owns its own transaction.
+  // Exclusion 3 lives where it is observable: a partially-consumed stream cannot reach here,
+  // because `PoolRunner.scope` owns its own transaction and never enters this loop.
   if (retry.shouldRetry !== undefined && !retry.shouldRetry(e, attempt)) return undefined
   return state
 }
@@ -646,7 +660,7 @@ async function runSavepoint<T>(
     const result = await fn(handle)
     if (child.doomed) {
       await conn.execute({ text: rollbackToSavepointSql(depth), params: [], mode: 'simple' })
-      parent.poisonedBy = undefined
+      parent.poison.error = undefined
       await conn.execute({ text: releaseSavepointSql(depth), params: [], mode: 'simple' })
       return result as T
     }
@@ -655,13 +669,13 @@ async function runSavepoint<T>(
   } catch (e) {
     if (isDoomed(e)) {
       await conn.execute({ text: rollbackToSavepointSql(depth), params: [], mode: 'simple' })
-      parent.poisonedBy = undefined
+      parent.poison.error = undefined
       await conn.execute({ text: releaseSavepointSql(depth), params: [], mode: 'simple' })
       return e.value as T
     }
     await conn.execute({ text: rollbackToSavepointSql(depth), params: [], mode: 'simple' }).catch(() => {})
     // The rollback un-poisoned the enclosing transaction; a later 25P02 would now be a lie.
-    parent.poisonedBy = undefined
+    parent.poison.error = undefined
     await conn.execute({ text: releaseSavepointSql(depth), params: [], mode: 'simple' }).catch(() => {})
     throw e
   } finally {
@@ -789,7 +803,7 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
     depth: 0,
     doomed: false,
     closed: false,
-    poisonedBy: undefined,
+    poison: { error: undefined },
     inFlight: 0,
     warned: false,
     localTimeoutMs: undefined,
