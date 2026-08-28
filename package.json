@@ -21,6 +21,8 @@
     "lint:knip:full": "knip --include exports,types,nsExports,nsTypes,duplicates",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
+    "changeset": "changeset",
+    "changeset:status": "changeset status --since=origin/main",
     "bench:types": "pnpm --filter @pg-prime/bench-types bench",
     "bench:forks": "pnpm --filter @pg-prime/bench-types bench:forks",
     "bench:runtime": "pnpm --filter @pg-prime/bench-runtime bench",

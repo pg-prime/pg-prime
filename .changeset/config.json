@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+  "changelog": ["@changesets/changelog-github", { "repo": "pg-prime/pg-prime" }],
+  "commit": false,
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "fixed": [["pg-prime", "@pg-prime/kit"]],
+  "linked": [],
+  "ignore": [],
+  "privatePackages": { "version": false, "tag": false }
+}
