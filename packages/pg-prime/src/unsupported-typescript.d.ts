@@ -260,6 +260,7 @@ export declare const numericCodec: Unsupported
 export declare const numericNumberCodec: Unsupported
 export declare const numrangeCodec: Unsupported
 export declare const oidCodec: Unsupported
+export declare const omit: Unsupported
 export declare const or: Unsupported
 export declare const over: Unsupported
 export declare const overlaps: Unsupported
@@ -335,6 +336,7 @@ export type AccessError = Unsupported
 export type AccessMode = Unsupported
 export type AdvisoryLock = Unsupported
 export type AdvisoryLockOptions = Unsupported
+export type AllRefs<T0 = any> = Unsupported
 export type AnyCodec = Unsupported
 export type AnyCol = Unsupported
 export type AnyFragment = Unsupported
@@ -431,6 +433,7 @@ export type ForeignKeyOptions = Unsupported
 export type ForeignKeyViolationError = Unsupported
 export type Fragment<T0 = any> = Unsupported
 export type FrameOpts = Unsupported
+export type FromRawOpts<T0 = any> = Unsupported
 export type FromValuesOpts = Unsupported
 export type GroupedQuery<T0 = any, T1 = any, T2 = any, T3 = any> = Unsupported
 export type Grouping = Unsupported
@@ -562,7 +565,9 @@ export type RangeOperand<T0 = any> = Unsupported
 export type RangePg = Unsupported
 export type RawQuery = Unsupported
 export type RawRow = Unsupported
+export type RawShape<T0 = any> = Unsupported
 export type ReadOnlySqlTransactionError = Unsupported
+export type RecursiveOpts = Unsupported
 export type Ref<T0 = any, T1 = any, T2 = any> = Unsupported
 export type RefLike = Unsupported
 export type RefRuntime = Unsupported
@@ -575,7 +580,7 @@ export type Registry = Unsupported
 export type RelAccessor<T0 = any, T1 = any> = Unsupported
 export type RelAggs<T0 = any, T1 = any> = Unsupported
 export type RelBuilders<T0 = any> = Unsupported
-export type RelConfig = Unsupported
+export type RelConfig<T0 = any> = Unsupported
 export type RelMeta<T0 = any> = Unsupported
 export type RelNode = Unsupported
 export type RelOpts = Unsupported

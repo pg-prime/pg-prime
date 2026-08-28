@@ -1,7 +1,7 @@
 {
   "name": "pg-prime",
   "version": "0.0.0",
-  "description": "PostgreSQL-only, type-safe TypeScript ORM. Zero dependencies, ESM-only. Pre-alpha — the API will change.",
+  "description": "PostgreSQL-only, type-safe TypeScript ORM. Zero dependencies, ESM-only. Pre-alpha \u2014 the API will change.",
   "license": "MPL-2.0",
   "type": "module",
   "engines": {
@@ -71,5 +71,8 @@
     "typescript",
     "migrations",
     "typesafe"
-  ]
+  ],
+  "devDependencies": {
+    "pg": "^8.23.0"
+  }
 }

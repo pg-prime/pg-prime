@@ -235,6 +235,27 @@
     // default-export by the runner's contract; and the type-aware program for a file that is in no
     // `tsc` project is a guess, which is most of what `no-unnecessary-condition` reports there.
     {
+      // design/12 §1 decision 2: `pgPrime({ connection })` builds its pool through ONE lazy
+      // `import('pg')`, in this file and nowhere else — `pg` is an OPTIONAL peer, and the
+      // tree-shake goldens (`fixtures/treeshake/*/expected-modules.json`) prove it never enters a
+      // hello-world graph. The file lives in src/session because it reads the session config; the
+      // driver layer stays structural (src/driver/pg-like.ts) and still never names `pg`.
+      "files": ["packages/pg-prime/src/session/pg-lazy.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "pg-native",
+                "message": "design/08 §2.1: `pg-native` is never a dependency of this workspace."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": [
         "packages/*/test/**",
         "packages/*/vitest.config.ts",
@@ -244,7 +265,12 @@
       "rules": {
         "no-restricted-imports": "off",
         "import/no-default-export": "off",
-        "typescript/no-unnecessary-condition": "off"
+        "typescript/no-unnecessary-condition": "off",
+        // A test callback written `async () => value` exists to satisfy a Promise-returning
+        // signature (`db.transaction`, `db.session`, `PgDriver.destroy`); the rule's target — a
+        // library function that was meant to await and does not — is `src/`, where it stays on.
+        // Recorded in design/08 §3.4 AS BUILT (round-A integration, 2026-08-29).
+        "typescript/require-await": "off"
       }
     },
 
@@ -261,7 +287,8 @@
       "rules": {
         "no-unused-vars": "off",
         "no-unused-expressions": "off",
-        "typescript/no-floating-promises": "off"
+        "typescript/no-floating-promises": "off",
+        "typescript/require-await": "off"
       }
     }
   ]

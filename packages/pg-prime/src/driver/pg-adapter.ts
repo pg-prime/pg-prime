@@ -937,6 +937,7 @@ class PgDriverImpl implements PgDriver {
     return conn
   }
 
+  // oxlint-disable-next-line typescript/require-await -- implements `PgDriver.release`, an async seam
   async release(connection: PgConnection, options?: { dispose?: boolean }): Promise<void> {
     const client = this.#live.get(connection)
     if (!client) return

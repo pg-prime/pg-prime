@@ -171,7 +171,7 @@ describe('a transaction profile only ever restricts (07 §5.2, §5.3)', () => {
       poolOptions: { max: 4 },
     })
     await ddl(db)
-    const err = await db.session(async () => 1).catch((e: unknown) => e)
+    const err = await db.session(() => Promise.resolve(1)).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(UnsupportedInPoolerModeError)
     expect((err as Error).message).toMatch(/db\.transaction\(\)/)
 

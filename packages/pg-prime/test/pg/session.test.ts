@@ -348,7 +348,7 @@ describe('advisory locks are real, and pg_locks is the oracle (07 §3.7)', () =>
         expect(typeof lock).toBe('object')
         // It survives a whole transaction on the same session — that is what "session" means, and
         // it is exactly the property a transaction pooler cannot give you (07 §5.2).
-        await s.transaction(async () => undefined)
+        await s.transaction(() => Promise.resolve(undefined))
         expect(await advisoryCount(watcher, key)).toBe(1)
         expect(await (lock as { unlock(): Promise<boolean> }).unlock()).toBe(true)
       })

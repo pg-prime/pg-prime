@@ -155,7 +155,7 @@ describe('COPY vs insertMany — the crossover (07 §6.6)', () => {
       .select(({ events: e }) => ({ amount: e.amount, at: e.at }))
       .execute()
     expect(row?.amount).toBe('12345678.91')
-    expect((row?.at as Date).toISOString()).toBe(AT.toISOString())
+    expect(row && (row.at as Date).toISOString()).toBe(AT.toISOString())
   }, 120_000)
 
   requiresConcurrency()('the driver advertises the capability it now really has', () => {

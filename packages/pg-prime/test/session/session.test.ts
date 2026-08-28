@@ -51,7 +51,6 @@ import {
   ReadOnlySqlTransactionError,
   RestrictViolationError,
   SQLSTATE_MAP,
-  SchemaObjectError,
   SerializationFailureError,
   SqlSyntaxError,
   StringDataRightTruncationError,
@@ -601,7 +600,7 @@ describe('IndeterminateCommitError (07 §3.4 exclusion 1, §4.2)', () => {
     const { driver, db } = setup()
     driver.failOn = (q) => (q.text === 'commit' ? connectionLost() : undefined)
     const err = await db
-      .transaction(async () => undefined, { isolation: 'serializable' })
+      .transaction(() => Promise.resolve(undefined), { isolation: 'serializable' })
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(IndeterminateCommitError)
     expect(err).not.toBeInstanceOf(ConnectionError)
@@ -616,7 +615,7 @@ describe('IndeterminateCommitError (07 §3.4 exclusion 1, §4.2)', () => {
       const { driver, db } = setup()
       let n = 0
       driver.failOn = (q) => (q.text === 'commit' && n++ < 1 ? serverError('40001') : undefined)
-      const p = db.transaction(async () => 'done', { isolation: 'serializable' })
+      const p = db.transaction(() => Promise.resolve('done'), { isolation: 'serializable' })
       await vi.runAllTimersAsync()
       expect(await p).toBe('done')
       expect(driver.texts().filter((t) => t.startsWith('begin'))).toHaveLength(2)
@@ -648,7 +647,7 @@ describe("a connection whose transactionStatus is not 'I' is destroyed, not pool
       return release(conn, opts)
     }
     driver.forceTxStatus = status
-    await db.transaction(async () => undefined).catch(() => undefined)
+    await db.transaction(() => Promise.resolve(undefined)).catch(() => undefined)
     expect(disposed).toStrictEqual([true])
     driver.forceTxStatus = undefined
   })
@@ -661,7 +660,7 @@ describe("a connection whose transactionStatus is not 'I' is destroyed, not pool
       disposed.push(opts?.dispose === true)
       return release(conn, opts)
     }
-    await db.transaction(async () => undefined)
+    await db.transaction(() => Promise.resolve(undefined))
     expect(disposed).toStrictEqual([false])
   })
 })
@@ -1059,7 +1058,7 @@ describe('POOLER_PROFILES is data, and a profile only ever restricts (07 §5.1)'
 
   it('db.session() is refused under a transaction profile, naming what to do instead', async () => {
     const { db } = setup({ poolerMode: 'pgbouncer-transaction' })
-    const err = await db.session(async () => 1).catch((e: unknown) => e)
+    const err = await db.session(() => Promise.resolve(1)).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(UnsupportedInPoolerModeError)
     expect((err as Error).message).toMatch(/db\.transaction\(\)/)
   })
@@ -1126,7 +1125,7 @@ describe('config validation is eager and names the key (07 §1.1)', () => {
   it('await using — Symbol.asyncDispose is db.end()', async () => {
     const { driver, db } = setup()
     const destroyed = vi.fn()
-    driver.destroy = async () => void destroyed()
+    driver.destroy = () => Promise.resolve(void destroyed())
     driver.rows.push([['1']])
     await db.sql`select 1`.execute()
     await (db as unknown as { [Symbol.asyncDispose](): Promise<void> })[Symbol.asyncDispose]()
@@ -1152,12 +1151,13 @@ describe('config validation is eager and names the key (07 §1.1)', () => {
       driver.rows.push([['1']])
       await scoped.savepoint(async (sp) => sp.sql`select 1`.execute())
     })
-    await db.session(async (s) => {
+    await db.session((s) => {
       const scoped = s.withOptions({ label: 'scoped' })
       expect(scoped.kind).toBe('session')
       expect(typeof scoped.set).toBe('function')
       expect(typeof scoped.advisoryLock).toBe('function')
       expect(typeof scoped.transaction).toBe('function')
+      return Promise.resolve()
     })
   })
 
@@ -1166,7 +1166,7 @@ describe('config validation is eager and names the key (07 §1.1)', () => {
    * database to honour them with. They must raise the sentence that names the fix, not
    * `TypeError: db.run is not a function`.
    */
-  it('compileOnly() answers every Queryable member with the sentence, never a TypeError', async () => {
+  it('compileOnly() answers every Queryable member with the sentence, never a TypeError', () => {
     const q = compileOnly(schema)
     expect(q.kind).toBe('db')
     expect(q.schema).toBe(schema)
@@ -1189,12 +1189,13 @@ describe('config validation is eager and names the key (07 §1.1)', () => {
     const { db } = setup()
     expect(db.kind).toBe('db')
     expect(db.schema).toBe(schema)
-    await db.transaction(async (tx) => {
+    await db.transaction((tx) => {
       expect(tx.kind).toBe('tx')
       expect(tx.schema).toBe(schema)
       expect(tx.isolation).toBe('read committed')
       expect(tx.accessMode).toBe('read write')
       expect(tx.status).toBe('active')
+      return Promise.resolve()
     })
   })
 })
@@ -1235,7 +1236,7 @@ describe('QueryHooks (07 §7.1)', () => {
     expect(seen).toStrictEqual(['tx start', 'err UniqueViolationError', 'tx error'])
   })
 
-  it('a throwing hook is disabled once, reported through onInternal, and never breaks the query', async () => {
+  it('a throwing hook is disabled once, reported through onInternal, and never breaks the query', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
       const internal: string[] = []

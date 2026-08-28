@@ -486,6 +486,15 @@ when a concrete rule justifies it.
 Formatting: `oxlint`'s formatter if stable, else `prettier` with zero config beyond `.editorconfig`.
 Formatting is not a design decision and should not consume review time.
 
+**Round-A integration · 2026-08-29.** Two scope adjustments after the session layer (`12` §3 S) and
+the builder gaps (`12` §3 B) merged over the lint rules: `typescript/require-await` is **off for
+`packages/*/test/**` and `**/*.probe.ts`** — a test callback written `async () => value` exists to
+satisfy a Promise-returning signature (`db.transaction`, `db.session`, `PgDriver.destroy`), and the
+rule's target, a library function that was meant to await and does not, is `src/`, where it stays on
+(one directive in `src/driver/pg-adapter.ts`'s `release`, the async seam). And `no-restricted-imports`
+has a one-file override for `src/session/pg-lazy.ts`, the single `import('pg')` that `12` §1
+decision 2 allows; the driver layer still never names `pg`.
+
 ---
 
 ## 4. Test infrastructure

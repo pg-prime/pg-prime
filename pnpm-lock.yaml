@@ -47,9 +47,6 @@ importers:
       oxlint-tsgolint:
         specifier: 7.0.2001
         version: 7.0.2001
-      pg:
-        specifier: ^8.23.0
-        version: 8.23.0
       publint:
         specifier: ^0.3.24
         version: 0.3.24
@@ -77,7 +74,11 @@ importers:
 
   bench/types: {}
 
-  packages/pg-prime: {}
+  packages/pg-prime:
+    devDependencies:
+      pg:
+        specifier: ^8.23.0
+        version: 8.23.0
 
   packages/pg-prime-create: {}
 
@@ -3606,7 +3607,7 @@ snapshots:
   vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0):
     dependencies:
       lightningcss: 1.33.0
-      picomatch: 4.0.5
+      picomatch: 4.0.7
       postcss: 8.5.26
       rolldown: 1.2.4
       tinyglobby: 0.2.17

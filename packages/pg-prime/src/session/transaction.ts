@@ -7,7 +7,7 @@
  */
 
 import { ConfigError, UsageError } from '../errors/index.js'
-import type { AccessMode, IsolationLevel, RetryPolicy, SavepointOptions, TxOptions } from './types.js'
+import type { AccessMode, IsolationLevel, RetryPolicy } from './types.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3.1 — BEGIN, as ONE statement

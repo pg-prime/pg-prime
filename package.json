@@ -54,7 +54,6 @@
     "oxfmt": "0.65.0",
     "oxlint": "1.80.0",
     "oxlint-tsgolint": "7.0.2001",
-    "pg": "^8.23.0",
     "publint": "^0.3.24",
     "rollup": "^4.63.0",
     "sherif": "1.13.0",
