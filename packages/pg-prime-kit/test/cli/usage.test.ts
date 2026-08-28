@@ -95,7 +95,7 @@ describe("the binary's usage surface", () => {
     expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
   });
 
-  it("lists all twelve of design/06 §6.2's commands, and no 'not in this release' section", async () => {
+  it("lists design/06 §6.2's twelve commands plus `pull`, and no 'not in this release' section", async () => {
     const r = await runCli(["--help"]);
     for (const command of [
       "migrate generate", "migrate apply", "migrate status", "migrate baseline", "migrate check",

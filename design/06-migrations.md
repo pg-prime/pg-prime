@@ -1680,10 +1680,16 @@ envelope.
 
 ---
 
-### 6.5 AS BUILT · 2026-08-29 (design/12 K4) — twelve of twelve
+### 6.5 AS BUILT · 2026-08-29 (design/12 K4) — twelve of twelve, plus `pull`
 
 `pg-prime --help` lists every command in §6.2 and there is no "Not in this release" section
-left. The three that landed here are:
+left. **Thirteen rows**, and the arithmetic is worth stating because design/12 §3 K4 gets it
+slightly wrong: §6.2's twelve are the ten design/11 K2b shipped plus `checkpoint` and
+`db seed`, so §6.2's *twelfth* is `db seed`, not `pull`. `pull` is a thirteenth command that
+§6.2 never listed — it is specified by `00` decision 5 ("`pull` annotates legacy views with
+their real `securityInvoker`") and by design/12 §3 K4 item 4, and it is built here.
+
+The three that landed:
 
 | Command | Spelling | `status` values | Exit |
 |---|---|---|---|

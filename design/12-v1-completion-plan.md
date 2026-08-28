@@ -274,6 +274,11 @@ matches linear apply; kit suite green on PG 15/16/17/18; `06` §6.4's table show
 **Done, and the gate came out one better than §6 sized it: `pull` round-trips ALL FOUR corpus
 schemas with an EMPTY unsupported block, not three plus a named residue.**
 
+One correction to this plan's own arithmetic before the numbers: §3 K4 item 4 calls `pull`
+"`06` §6.2's missing twelfth command". §6.2's twelve are the ten design/11 K2b shipped plus
+`checkpoint` and `db seed`, so its twelfth is **`db seed`**; `pull` is a thirteenth that §6.2
+never listed and that `00` decision 5 specifies. All thirteen ship. Recorded in `06` §6.5.
+
 **Numbers.** Kit suite **379 → 411** (405 passed + 6 pooler-gated skips), 51 → 56 files:
 **38.6 s** on PG 17 (`:54333`) and **45.1 s** on PG 18 (`:54332`), both green. `pnpm test`
 (tier 0) 46 → 47 files, 778 → **790 tests, 4.69 s** (ceiling 5.0 s) · `pnpm test:live` 80 files,
