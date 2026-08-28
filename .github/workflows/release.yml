@@ -1,0 +1,127 @@
+# design/08 §6.3 + design/12 §3 C item 4. One job, two shapes:
+#
+#   push to `main`   → `changesets/action` either opens/updates the "Version Packages" PR (when
+#                      `.changeset/*.md` files are waiting) or, when that PR has just merged and
+#                      there are no changesets left, runs `publish` — which is `pnpm build`,
+#                      `pnpm package:check`, then `pnpm changeset publish`.
+#   workflow_dispatch → the identical build and checks, then `pnpm publish -r --dry-run
+#                      --no-git-checks` instead of publishing, so the whole path can be exercised
+#                      on the runner before anything is real. `dry_run` defaults to TRUE: a manual
+#                      run of this workflow must never publish by accident.
+#
+# **There is no NPM_TOKEN, here or in the repository's secrets.** Publishing is npm *trusted
+# publishing*: the workflow authenticates to npm with a short-lived GitHub OIDC token, which is
+# what `permissions.id-token: write` below is for, and `NPM_CONFIG_PROVENANCE` attaches a
+# provenance attestation naming this workflow, this commit and this runner. After the 2025
+# supply-chain incidents a long-lived publish token in a secret is the thing to avoid, and it is
+# also what makes design/08 §6.2 criterion #11 (two humans with publish rights) a permissions
+# change rather than a secret hand-off.
+#
+# The npm side is an operator step and is NOT automated — see RELEASING.md. npm requires the
+# FIRST publish of a package to be manual, and the trusted publisher (this repository, this
+# workflow file name) to be configured per package on npmjs.com. Until that is done for a
+# package, `changeset publish` will fail on it with an auth error, which is the correct
+# behaviour: it means nobody configured the publisher, not that the token is missing.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run the full build + package checks and `pnpm publish --dry-run`, publishing nothing.'
+        type: boolean
+        required: false
+        default: true
+
+# Never two releases at once, and never cancel one half-way: a cancelled `changeset publish` can
+# leave some packages of a fixed group published and others not.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: release (${{ github.event_name == 'workflow_dispatch' && 'dry run' || 'main' }})
+    runs-on: ubuntu-latest
+    permissions:
+      # `contents: write` and `pull-requests: write` are for the "Version Packages" PR that
+      # `changesets/action` opens and force-updates; `id-token: write` is the npm OIDC exchange.
+      contents: write
+      pull-requests: write
+      id-token: write
+    env:
+      # Attach a provenance attestation to every tarball. With trusted publishing this needs no
+      # token; npm mints one from the OIDC assertion.
+      NPM_CONFIG_PROVENANCE: 'true'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Changesets needs the tags and the full history to work out what has already shipped.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+          # Required for the OIDC exchange: npm has to know which registry it is authenticating to.
+          registry-url: 'https://registry.npmjs.org'
+
+      # design/12 decision 20. Without an OIDC token there is no way to authenticate, and the
+      # honest failure is here with a sentence rather than forty lines later inside `npm publish`
+      # with `ENEEDAUTH`. This fires when the workflow is run from a fork, when a repository or
+      # organisation policy has switched id-token off, or when `permissions:` above was edited.
+      - name: Assert an OIDC token is available
+        run: |
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo '::error::No GitHub OIDC token. This workflow publishes with npm trusted publishing'
+            echo '::error::and holds no NPM_TOKEN, so it cannot authenticate without one. Check that'
+            echo '::error::permissions.id-token: write is still set on this job, that the run is not'
+            echo '::error::from a fork, and that the org has not disabled id-token for this repository.'
+            exit 1
+          fi
+          echo 'OIDC token endpoint present.'
+
+      - run: pnpm install --frozen-lockfile
+
+      # The same two commands the `package` job runs on every PR — repeated here because this is
+      # the run whose output is published, and because `changeset publish` does not build.
+      #   package:check = size-budget · api-snapshot --check · emit-parity · check:dts ·
+      #                   treeshake · pack-smoke (publint --strict + attw --pack)
+      - run: pnpm build
+      - run: pnpm package:check
+
+      # ── workflow_dispatch: exercise the path, publish nothing ────────────────────────────────
+      - name: Dry run (publishes nothing)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: pnpm publish -r --dry-run --no-git-checks
+
+      - name: Refuse a manual publish
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+        run: |
+          echo '::error::dry_run:false is not a way to publish. A release is a merge of the'
+          echo '::error::"Version Packages" PR into main; see RELEASING.md. Re-run with dry_run on.'
+          exit 1
+
+      # ── push to main: the Version Packages PR, or the publish ────────────────────────────────
+      #
+      # `changesets/action` decides which. If `.changeset/*.md` files exist it runs `version` and
+      # opens/updates the PR. If none do — which is the state immediately after that PR merges —
+      # it runs `publish`, and `changeset publish` publishes exactly the packages whose version in
+      # `package.json` is not on the registry yet, then pushes the git tags.
+      - name: Version PR or publish
+        if: github.event_name == 'push'
+        uses: changesets/action@v1
+        with:
+          version: pnpm changeset version
+          publish: pnpm changeset publish
+          commit: 'chore(release): version packages'
+          title: 'chore(release): version packages'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -40,6 +40,53 @@ env:
   PG_PRIME_FUZZ_CASES: '10000'
 
 jobs:
+  lint:
+    # design/08 §4.6's `lint` row and §3.4's "two gates, not three". Budget: under 60 s.
+    #
+    #   pnpm lint = oxlint --type-aware · tsgo --noEmit (`pnpm typecheck`) · sherif · knip
+    #
+    # `--type-aware` is what drives `oxlint-tsgolint`, which is typescript-go and therefore runs
+    # on the SAME TypeScript 7.0.2 install that builds the packages — no second compiler pinned
+    # just for linting, which is the whole reason §3.4 refuses typescript-eslint.
+    #
+    # Node is pinned rather than matrixed: a linter's findings are a function of the source and
+    # the rule set, not of the runtime.
+    name: lint (design/08 §3.4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # `changeset status --since=origin/main` diffs against the base branch, so the shallow
+          # clone actions/checkout does by default is not enough. 0 is the honest depth: a
+          # fetch-depth guess large enough today is a mystery failure on a long-running branch.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+
+      # design/08 §1.1: "CI enforces `changeset status --since=origin/main` on every PR touching
+      # `packages/`." Both halves matter — a PR that changes a package without a changeset is a
+      # release that silently ships nothing, and a PR that touches only CI or design/ must not be
+      # made to write one.
+      - name: Does this PR touch packages/?
+        id: touches
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
+          if git diff --name-only "origin/$GITHUB_BASE_REF...HEAD" -- packages/ | grep -q .; then
+            echo 'packages=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'packages=false' >> "$GITHUB_OUTPUT"
+            echo 'No change under packages/ — skipping the changeset check.'
+          fi
+      - name: Every packages/ change carries a changeset
+        if: github.event_name == 'pull_request' && steps.touches.outputs.packages == 'true'
+        run: pnpm changeset status --since=origin/${{ github.base_ref }}
+
   unit:
     name: unit (tier 0) · node ${{ matrix.node }}
     runs-on: ubuntu-latest
