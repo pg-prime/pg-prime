@@ -29,6 +29,16 @@
 
 import { HandleMisuseError } from '../errors/index.js'
 
+/**
+ * `Symbol.asyncDispose`, or the registry key every polyfill uses when the runtime has none.
+ *
+ * Node 20.4+ has the well-known symbol; a runtime that does not gets `Symbol.for(...)`, which is
+ * what the TypeScript/`disposablestack` polyfills install, so `await using` finds the same method
+ * either way. Resolved once, at module load.
+ */
+export const ASYNC_DISPOSE: symbol =
+  (Symbol as { asyncDispose?: symbol }).asyncDispose ?? Symbol.for('Symbol.asyncDispose')
+
 /** The two members of `AsyncLocalStorage` we use, declared structurally so `@types/node` is not in the emit. */
 interface AlsLike<T> {
   getStore(): T | undefined

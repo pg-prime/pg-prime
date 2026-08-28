@@ -47,6 +47,7 @@ import {
   runTransaction,
 } from '../session/handles.js'
 import type { CopyFromApi, CopyToApi, TxDeps } from '../session/handles.js'
+import { ASYNC_DISPOSE } from '../session/guard.js'
 import { ListenHub, listenUnsupported } from '../session/listen.js'
 import { buildPool } from '../session/pg-lazy.js'
 import { PoolRunner } from '../session/runner.js'
@@ -413,7 +414,7 @@ function installDbMembers(
     await state.driver.destroy()
   }
   install(db, 'end', end)
-  install(db, Symbol.asyncDispose as unknown as string, end)
+  install(db, ASYNC_DISPOSE as unknown as string, end)
 }
 
 function hostOfConfig(config: DbConfig<AnySchema>): string | undefined {

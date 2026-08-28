@@ -13,6 +13,9 @@
  * than one file of a hundred and sixty.
  */
 
+import { readFileSync, readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import { defaultRegistry } from '../../src/codec/index.js'
 import {
@@ -1355,5 +1358,51 @@ describe('PoolTimeoutError carries pool stats (07 §1.2, §4.2)', () => {
     expect(e).toBeInstanceOf(PoolTimeoutError)
     expect(e).toBeInstanceOf(ConnectionError)
     expect(e.stats).toStrictEqual({ total: 10, idle: 0, waiting: 4, max: 10 })
+  })
+})
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The module graph: two static imports that must never exist
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('src/** never STATICALLY imports pg or node:async_hooks (decision 2, 07 §1.6)', () => {
+  const walk = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith('.ts') ? [join(dir, e.name)] : [],
+    )
+  const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src')
+  const sources = walk(SRC).map((f) => [f.slice(SRC.length + 1), readFileSync(f, 'utf8')] as const)
+
+  it('has sources to check at all — a guard that passes by finding nothing is not a guard', () => {
+    expect(sources.length).toBeGreaterThan(40)
+  })
+
+  /**
+   * `pg` is an OPTIONAL peer (design/12 §1 decision 2). A static import would make it a hard
+   * dependency for every consumer, would put it in the hello-world bundle — which
+   * `fixtures/treeshake/connect-one-select/expected-modules.json` also asserts — and would break
+   * the `pool:` / `driver:` paths on a runtime where it cannot be resolved at all.
+   */
+  it('reaches pg only through the lazy import in src/session/pg-lazy.ts', () => {
+    const offenders = sources.filter(
+      ([, text]) =>
+        /^\s*import\s[^\n]*from\s+['"]pg['"]/m.test(text) || /require\(['"]pg['"]\)/.test(text),
+    )
+    expect(offenders.map(([f]) => f)).toStrictEqual([])
+    const lazy = sources.find(([f]) => f.endsWith('pg-lazy.ts'))?.[1] ?? ''
+    expect(lazy).toContain("await import(/* @vite-ignore */ 'pg')")
+  })
+
+  /**
+   * `07` §1.6: ALS ships for the dev guard and nothing else, and it must stay off the graph of a
+   * bundle that never opens a transaction — a Cloudflare Worker has no `node:async_hooks` at all,
+   * and a static import there is a load-time failure rather than a missing feature.
+   */
+  it('reaches node:async_hooks only through the dynamic import in src/session/guard.ts', () => {
+    const offenders = sources.filter(([, text]) => /^\s*import\s[^\n]*node:async_hooks/m.test(text))
+    expect(offenders.map(([f]) => f)).toStrictEqual([])
+    const guard = sources.find(([f]) => f.endsWith('guard.ts'))?.[1] ?? ''
+    expect(guard).toContain("await import('node:async_hooks')")
   })
 })

@@ -15,7 +15,8 @@
   "instantiationsPerDistinctQuery20ChainedJoins": 12000,
   "instantiationsPerDistinctQueryNestedRelation4Deep": 1500,
   "schemaSizeIndependenceRatio": 1.15,
-  "packageDtsBytes": 409600,
+  "packageDtsBytes": 524288,
+  "_packageDtsBytesWhy": "Raised from 409 600 to 524 288 B (512 KB) by design/12 §3 S, the session layer. Measured 377 261 B before and 504 595 B after: design/07 §4.2 s ~50 error classes (errors/classes.d.ts 13.4 KB), §1.3 s four handle interfaces inside query/types.d.ts (+7.6 KB), and the declaration files for src/session, src/observe and src/pooler. This is a SIZE gate and not a type-performance one — the headline instantiation counts did not move (ts5.9 80 485 unchanged, ts7 131 388 -> 131 354, i.e. noise), which is the prediction design/12 §3 S made: session types are not on the query hot path. tools/budgets.json gates the same bytes at 900 KB against design/08 §1.2 and passes; this number is the tighter of the two and still ratchets.",
   "headline": {
     "instantiations": 200000,
     "checkTimeSeconds": {

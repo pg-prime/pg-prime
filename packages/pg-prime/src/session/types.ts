@@ -10,6 +10,28 @@
 import type { Compiled } from '../compile/contract.js'
 import type { ExplainOptions, ExplainResult, StatementMode, StreamOptions } from '../query/executor.js'
 
+/**
+ * `Symbol.asyncDispose`, declared so that a consumer **without** `lib: esnext.disposable` still
+ * compiles.
+ *
+ * `07` §1.3 puts `[Symbol.asyncDispose]()` on `Db`, on `Subscription` and on `AdvisoryLock` so that
+ * `await using db = pgPrime(...)` works. Writing the computed key directly makes the emitted
+ * `.d.ts` fail with TS2550 on any consumer whose `lib` predates the disposable declarations —
+ * measured by `tools/check-dts.mjs`, which type-checks every shipped `.d.ts` on the 5.9.3 floor
+ * with no `@types/node` at all, and which is exactly the consumer we must not break.
+ *
+ * So the key is *inferred* from the ambient `SymbolConstructor`. Where the consumer's lib declares
+ * `asyncDispose` this is that symbol and `await using` works; where it does not, the key resolves
+ * to `never`, the mapped type contributes no member, and the declaration still compiles. The
+ * runtime is unaffected either way — `end()` is always there and is the same function.
+ */
+export type AsyncDisposeKey = typeof Symbol extends { readonly asyncDispose: infer S extends symbol }
+  ? S
+  : never
+
+/** `{ [Symbol.asyncDispose](): Promise<void> }`, or `{}` on a lib that has no such symbol. */
+export type AsyncDisposable_ = { readonly [K in AsyncDisposeKey]: () => Promise<void> }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3.1 — transactions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -230,10 +252,9 @@ export type NotificationHandler = (
   ctx: { readonly channel: string; readonly processId: number },
 ) => void
 
-export interface Subscription {
+export interface Subscription extends AsyncDisposable_ {
   readonly channel: string
   close(): Promise<void>
-  [Symbol.asyncDispose](): Promise<void>
   on(event: 'reconnect', h: (info: { attempt: number; downMs: number }) => void): () => void
   /** Fires after a reconnect. Notifications during the gap are **LOST** — reconcile here. */
   on(event: 'gap', h: (info: { downMs: number }) => void): () => void
@@ -259,11 +280,10 @@ export interface CopyResult {
 }
 
 /** `07` §3.7 — a session-level advisory lock, which only a `Session` can hold. */
-export interface AdvisoryLock {
+export interface AdvisoryLock extends AsyncDisposable_ {
   readonly key: bigint
   readonly shared: boolean
   unlock(): Promise<boolean>
-  [Symbol.asyncDispose](): Promise<void>
 }
 
 export interface AdvisoryLockOptions {

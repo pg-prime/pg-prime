@@ -88,6 +88,7 @@ import type {
   AccessMode,
   AdvisoryLock,
   AdvisoryLockOptions,
+  AsyncDisposable_,
   CallOptions,
   IsolationLevel,
   ListenOptions,
@@ -972,7 +973,7 @@ export type SchemaExecutor<Sc extends AnySchema> = Queryable<Sc>
  * declares `tx: Tx<S>` cannot be handed the root `db`, which kills a large class of real bugs for
  * free and is the thing Drizzle lacks.
  */
-export interface Db<Sc extends AnySchema = AnySchema> extends Queryable<Sc> {
+export interface Db<Sc extends AnySchema = AnySchema> extends Queryable<Sc>, AsyncDisposable_ {
   readonly kind: 'db'
 
   /**
@@ -999,7 +1000,6 @@ export interface Db<Sc extends AnySchema = AnySchema> extends Queryable<Sc> {
   /** Optional eager warm-up. `pgPrime` itself opens no socket. */
   connect(): Promise<void>
   end(): Promise<void>
-  [Symbol.asyncDispose](): Promise<void>
 }
 
 /** Inside a transaction. Same query surface; different capabilities. */
@@ -1397,6 +1397,8 @@ export type {
   AccessMode,
   AdvisoryLock,
   AdvisoryLockOptions,
+  AsyncDisposable_,
+  AsyncDisposeKey,
   CallOptions,
   ConnectionParams,
   CopyOptions,

@@ -65,6 +65,15 @@ export function measure(pkgDir) {
     mapBytes: sum(maps),
     dependencies: Object.keys(pkgJson.dependencies ?? {}),
     peerDependencies: Object.keys(pkgJson.peerDependencies ?? {}),
+    /**
+     * Peers the package declares AND marks optional. Design/08 §6.2 #7's "zero peer dependencies"
+     * is about what a consumer is FORCED to install; an optional peer forces nothing, and
+     * design/12 §1 decision 2 makes `pg` one so that `connection:` can build a pool. The gate
+     * below still fails on a REQUIRED peer, and on an optional one the budget does not name.
+     */
+    optionalPeerDependencies: Object.entries(pkgJson.peerDependenciesMeta ?? {})
+      .filter(([, v]) => v?.optional === true)
+      .map(([k]) => k),
     top10Dts: largest.slice(0, 10).map((f) => [f.path, f.size]),
   }
 }
@@ -112,13 +121,19 @@ export function run({ json = false } = {}) {
       console.log(`  WARN total .d.ts ${kb(m.dtsBytes)} is past the ${kb(spec.dtsWarnBytes)} warn line (design/08 §1.2)`)
     }
     if (spec.zeroDependencies) {
-      const ok = m.dependencies.length === 0 && m.peerDependencies.length === 0
+      const allowed = spec.optionalPeers ?? []
+      const requiredPeers = m.peerDependencies.filter((d) => !m.optionalPeerDependencies.includes(d))
+      const unlistedOptional = m.optionalPeerDependencies.filter((d) => !allowed.includes(d))
+      const ok = m.dependencies.length === 0 && requiredPeers.length === 0 && unlistedOptional.length === 0
       checks.push({
-        label: `${m.name} zero runtime deps / zero peer deps`,
+        label: `${m.name} zero runtime deps / zero REQUIRED peer deps`,
         ok,
-        why: ok ? undefined : `dependencies=[${m.dependencies}] peerDependencies=[${m.peerDependencies}]`,
+        why: ok
+          ? undefined
+          : `dependencies=[${m.dependencies}] requiredPeers=[${requiredPeers}] unlistedOptionalPeers=[${unlistedOptional}]`,
       })
-      console.log(`  ${'deps / peerDeps'.padEnd(30)} ${'0 / 0'.padStart(12)} ${`${m.dependencies.length} / ${m.peerDependencies.length}`.padStart(12)} ${'0 / 0'.padStart(12)}  ${ok ? 'ok' : 'FAIL'}`)
+      const shown = `${m.dependencies.length} / ${requiredPeers.length}${m.optionalPeerDependencies.length > 0 ? ` (+${m.optionalPeerDependencies.length} opt)` : ''}`
+      console.log(`  ${'deps / required peerDeps'.padEnd(30)} ${'0 / 0'.padStart(12)} ${shown.padStart(12)} ${'0 / 0'.padStart(12)}  ${ok ? 'ok' : 'FAIL'}`)
     }
     const failedDts = checks.some((c) => !c.ok && c.label.includes('.d.ts'))
     if (failedDts) {

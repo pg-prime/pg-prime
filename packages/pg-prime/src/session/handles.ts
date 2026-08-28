@@ -49,7 +49,7 @@ import {
   encodeCopyRows,
 } from './copy.js'
 import { assertPayloadSize } from './listen.js'
-import { ensureGuardStore, withFrame, withoutFrames } from './guard.js'
+import { ASYNC_DISPOSE, ensureGuardStore, withFrame, withoutFrames } from './guard.js'
 import { ConnRunner, PoolRunner, acquire, release } from './runner.js'
 import type { SessionState, StatementOptions, TxRuntime } from './runner.js'
 import {
@@ -913,7 +913,15 @@ async function sessionAdvisoryLock(
     const cell = r.rows[0]?.[0]
     return cell === 't' || cell === 'true'
   }
-  return { key: k, shared, unlock, [Symbol.asyncDispose]: async () => void (await unlock()) }
+  // The cast is the price of `AsyncDisposeKey` being inferred rather than a `unique symbol` we
+  // declare: TypeScript only accepts a computed key from a `const x: unique symbol`, and declaring
+  // our own would not be the well-known symbol `await using` looks for. One cast, one place.
+  return {
+    key: k,
+    shared,
+    unlock,
+    [ASYNC_DISPOSE]: async () => void (await unlock()),
+  } as unknown as AdvisoryLock
 }
 
 export { attachDeps, install, installGetter, installQueryable, isTransactionPooled }

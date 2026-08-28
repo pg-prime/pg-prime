@@ -322,6 +322,8 @@ export type {
   AccessMode,
   AdvisoryLock,
   AdvisoryLockOptions,
+  AsyncDisposable_,
+  AsyncDisposeKey,
   CallOptions,
   ConnectionParams,
   CopyOptions,

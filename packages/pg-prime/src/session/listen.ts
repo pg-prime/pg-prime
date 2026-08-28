@@ -26,6 +26,7 @@
 import type { PgConnection, PgNotification } from '../driver/types.js'
 import { ConfigError, UnsupportedInPoolerModeError, UsageError, mapError } from '../errors/index.js'
 import type { ResolvedErrorOptions } from '../errors/index.js'
+import { ASYNC_DISPOSE } from './guard.js'
 import type { Subscription } from './types.js'
 
 /**
@@ -148,12 +149,13 @@ export class ListenHub {
       set.add(h)
       return () => void set?.delete(h)
     }
+    // See `sessionAdvisoryLock` in ./handles.ts for why the computed key needs a cast.
     return {
       channel,
       close,
-      [Symbol.asyncDispose]: close,
+      [ASYNC_DISPOSE]: close,
       on: on as Subscription['on'],
-    }
+    } as unknown as Subscription
   }
 
   async #connection(): Promise<PgConnection> {

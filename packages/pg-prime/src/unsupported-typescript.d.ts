@@ -28,38 +28,104 @@
 type Unsupported<Message = { ERROR: 'pg-prime requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' }> = Message
 
 export declare const ALTERNATE_CODECS: Unsupported
+export declare const AbortError: Unsupported
+export declare const AccessError: Unsupported
+export declare const AuthenticationError: Unsupported
 export declare const BuilderError: Unsupported
 export declare const COLS: Unsupported
+export declare const CachedPlanChangedError: Unsupported
+export declare const CheckViolationError: Unsupported
 export declare const CodecMismatchError: Unsupported
+export declare const ConfigError: Unsupported
+export declare const ConnectionError: Unsupported
+export declare const ConnectionRefusedError: Unsupported
+export declare const ConnectionTerminatedError: Unsupported
+export declare const ConnectionTimeoutError: Unsupported
 export declare const DATE_BRAND: Unsupported
+export declare const DataError: Unsupported
+export declare const DbClosedError: Unsupported
+export declare const DeadlockDetectedError: Unsupported
 export declare const DecodePlanError: Unsupported
+export declare const DiskFullError: Unsupported
+export declare const DivisionByZeroError: Unsupported
+export declare const DuplicateStatementError: Unsupported
+export declare const DuplicateTableError: Unsupported
 export declare const ERR: Unsupported
+export declare const ExclusionViolationError: Unsupported
+export declare const ForeignKeyViolationError: Unsupported
+export declare const HandleMisuseError: Unsupported
 export declare const INS: Unsupported
+export declare const IdleInTransactionTimeoutError: Unsupported
+export declare const InFailedTransactionError: Unsupported
+export declare const IndeterminateCommitError: Unsupported
+export declare const InsufficientPrivilegeError: Unsupported
+export declare const InsufficientResourcesError: Unsupported
+export declare const IntegrityConstraintError: Unsupported
+export declare const InvalidDatetimeFormatError: Unsupported
 export declare const InvalidFragmentError: Unsupported
 export declare const InvalidIdentifierError: Unsupported
+export declare const InvalidPasswordError: Unsupported
+export declare const InvalidStatementNameError: Unsupported
+export declare const InvalidTextRepresentationError: Unsupported
+export declare const LockNotAvailableError: Unsupported
 export declare const MAX_IDENT_BYTES: Unsupported
+export declare const MAX_NOTIFY_PAYLOAD_BYTES: Unsupported
 export declare const META: Unsupported
 export declare const NAME: Unsupported
 export declare const NoCodecError: Unsupported
+export declare const NotNullViolationError: Unsupported
 export declare const NullOperandError: Unsupported
+export declare const NumericValueOutOfRangeError: Unsupported
 export declare const OUT: Unsupported
+export declare const OperatorInterventionError: Unsupported
+export declare const OutOfMemoryError: Unsupported
+export declare const POOLER_MODES: Unsupported
+export declare const POOLER_PROFILES: Unsupported
 export declare const PgDecodeError: Unsupported
 export declare const PgDriverError: Unsupported
 export declare const PgEncodeError: Unsupported
 export declare const PgPrimeError: Unsupported
+export declare const PoolTimeoutError: Unsupported
+export declare const PreparedStatementError: Unsupported
+export declare const QueryCanceledError: Unsupported
+export declare const QueryError: Unsupported
+export declare const QueryTimeoutError: Unsupported
 export declare const REFS: Unsupported
 export declare const RELS: Unsupported
+export declare const ReadOnlySqlTransactionError: Unsupported
 export declare const Registry: Unsupported
+export declare const RestrictViolationError: Unsupported
 export declare const SCHEMA: Unsupported
 export declare const SEL: Unsupported
 export declare const SELECT_SOURCE: Unsupported
+export declare const SEMCONV: Unsupported
+export declare const SQLSTATE_CLASS_FALLBACK: Unsupported
+export declare const SQLSTATE_MAP: Unsupported
 export declare const SRC: Unsupported
 export declare const SchemaError: Unsupported
+export declare const SchemaObjectError: Unsupported
+export declare const SerializationFailureError: Unsupported
+export declare const SqlSyntaxError: Unsupported
+export declare const StringDataRightTruncationError: Unsupported
 export declare const TABLES: Unsupported
+export declare const TimeoutError: Unsupported
+export declare const TooManyConnectionsError: Unsupported
 export declare const TooManyParametersError: Unsupported
+export declare const TransactionAbandonedError: Unsupported
+export declare const TransactionClosedError: Unsupported
+export declare const TransactionError: Unsupported
+export declare const TransactionRollback: Unsupported
+export declare const TransactionTimeoutError: Unsupported
 export declare const UPD: Unsupported
+export declare const UndefinedColumnError: Unsupported
+export declare const UndefinedFunctionError: Unsupported
+export declare const UndefinedTableError: Unsupported
+export declare const UniqueViolationError: Unsupported
+export declare const UnknownQueryError: Unsupported
 export declare const UnsafeLiteralError: Unsupported
+export declare const UnsupportedInPoolerModeError: Unsupported
 export declare const UnsupportedNodeError: Unsupported
+export declare const UsageError: Unsupported
 export declare const abs: Unsupported
 export declare const add: Unsupported
 export declare const adjacent: Unsupported
@@ -86,6 +152,7 @@ export declare const cast: Unsupported
 export declare const charCodec: Unsupported
 export declare const check: Unsupported
 export declare const cidrCodec: Unsupported
+export declare const classForSqlState: Unsupported
 export declare const clearDescribeCache: Unsupported
 export declare const coalesce: Unsupported
 export declare const comment: Unsupported
@@ -136,16 +203,20 @@ export declare const int8rangeCodec: Unsupported
 export declare const integer: Unsupported
 export declare const intervalCodec: Unsupported
 export declare const iregex: Unsupported
+export declare const isCheckViolation: Unsupported
 export declare const isDistinctFrom: Unsupported
 export declare const isFalse: Unsupported
+export declare const isForeignKeyViolation: Unsupported
 export declare const isFragment: Unsupported
 export declare const isNotDistinctFrom: Unsupported
 export declare const isNotFalse: Unsupported
 export declare const isNotNull: Unsupported
+export declare const isNotNullViolation: Unsupported
 export declare const isNotTrue: Unsupported
 export declare const isNull: Unsupported
 export declare const isServerErrorShape: Unsupported
 export declare const isTrue: Unsupported
+export declare const isUniqueViolation: Unsupported
 export declare const isValidIdentPart: Unsupported
 export declare const jsonCodecJson: Unsupported
 export declare const jsonConcat: Unsupported
@@ -201,7 +272,9 @@ export declare const pgPrime: Unsupported
 export declare const pgSchema: Unsupported
 export declare const pgTable: Unsupported
 export declare const placeholder: Unsupported
+export declare const presets: Unsupported
 export declare const primaryKey: Unsupported
+export declare const profileOf: Unsupported
 export declare const quoteIdentPart: Unsupported
 export declare const quoteIdentPath: Unsupported
 export declare const quoteStringLiteral: Unsupported
@@ -218,6 +291,8 @@ export declare const resolveRelations: Unsupported
 export declare const similarTo: Unsupported
 export declare const smallint: Unsupported
 export declare const snakeCase: Unsupported
+export declare const spanAttributes: Unsupported
+export declare const spanName: Unsupported
 export declare const sql: Unsupported
 export declare const startsWith: Unsupported
 export declare const statementStats: Unsupported
@@ -255,6 +330,11 @@ export declare const varcharCodec: Unsupported
 export declare const writeArrayLiteral: Unsupported
 export declare const xmlCodec: Unsupported
 
+export type AbortError = Unsupported
+export type AccessError = Unsupported
+export type AccessMode = Unsupported
+export type AdvisoryLock = Unsupported
+export type AdvisoryLockOptions = Unsupported
 export type AnyCodec = Unsupported
 export type AnyCol = Unsupported
 export type AnyFragment = Unsupported
@@ -266,11 +346,17 @@ export type AnyRef = Unsupported
 export type AnySchema = Unsupported
 export type AnyTable = Unsupported
 export type ArrayOperand<T0 = any> = Unsupported
+export type AsyncDisposable_ = Unsupported
+export type AsyncDisposeKey = Unsupported
+export type AuthenticationError = Unsupported
 export type BoolOperand = Unsupported
 export type Bound = Unsupported
 export type BuilderError = Unsupported
 export type BulkOpts = Unsupported
+export type CachedPlanChangedError = Unsupported
+export type CallOptions = Unsupported
 export type CheckSpec = Unsupported
+export type CheckViolationError = Unsupported
 export type ClassOperand<T0 = any, T1 = any> = Unsupported
 export type Codec<T0 = any, T1 = any, T2 = any> = Unsupported
 export type CodecContext = Unsupported
@@ -288,20 +374,48 @@ export type ColsAtH<T0 = any> = Unsupported
 export type ColsOf<T0 = any> = Unsupported
 export type ColumnDdl = Unsupported
 export type ColumnKit = Unsupported
+export type ColumnRef = Unsupported
 export type ColumnRuntime = Unsupported
 export type ColumnTsMeta = Unsupported
+export type ConfigError = Unsupported
 export type ConflictBuilder<T0 = any> = Unsupported
+export type ConnectionError = Unsupported
+export type ConnectionParams = Unsupported
+export type ConnectionRefusedError = Unsupported
+export type ConnectionTerminatedError = Unsupported
+export type ConnectionTimeoutError = Unsupported
+export type ConstraintKind = Unsupported
+export type ConstraintRef = Unsupported
+export type CopyFromApi = Unsupported
+export type CopyOptions = Unsupported
+export type CopyResult = Unsupported
+export type CopyToApi = Unsupported
 export type CteExecutor<T0 = any> = Unsupported
 export type CteHandle<T0 = any, T1 = any> = Unsupported
+export type DataError = Unsupported
 export type DateString = Unsupported
 export type Db<T0 = any> = Unsupported
+export type DbClosedError = Unsupported
+export type DbConfig<T0 = any> = Unsupported
+export type DbDiagnosis = Unsupported
+export type DeadlockDetectedError = Unsupported
 export type DecodePlanError = Unsupported
 export type DecoderMode = Unsupported
 export type DefaultSpec = Unsupported
 export type Defer<T0 = any> = Unsupported
 export type DeleteQuery<T0 = any, T1 = any, T2 = any> = Unsupported
 export type DescribeCacheStats = Unsupported
+export type DiagnosePoolerOptions = Unsupported
+export type DiagnosticSignal = Unsupported
+export type DiskFullError = Unsupported
+export type DivisionByZeroError = Unsupported
+export type DuplicateStatementError = Unsupported
+export type DuplicateTableError = Unsupported
+export type Duration = Unsupported
 export type DynamicTypeRequest = Unsupported
+export type ErrorContext = Unsupported
+export type ErrorOptions = Unsupported
+export type ExclusionViolationError = Unsupported
 export type ExecOptions = Unsupported
 export type Executor = Unsupported
 export type ExplainNode = Unsupported
@@ -314,13 +428,19 @@ export type FkAction = Unsupported
 export type Fn = Unsupported
 export type ForeignKeyExtraInput = Unsupported
 export type ForeignKeyOptions = Unsupported
+export type ForeignKeyViolationError = Unsupported
 export type Fragment<T0 = any> = Unsupported
 export type FrameOpts = Unsupported
 export type FromValuesOpts = Unsupported
 export type GroupedQuery<T0 = any, T1 = any, T2 = any, T3 = any> = Unsupported
 export type Grouping = Unsupported
 export type Handle<T0 = any, T1 = any> = Unsupported
+export type HandleKind = Unsupported
+export type HandleMisuseError = Unsupported
 export type IdentRejectReason = Unsupported
+export type IdleInTransactionTimeoutError = Unsupported
+export type InFailedTransactionError = Unsupported
+export type IndeterminateCommitError = Unsupported
 export type Infer<T0 = any> = Unsupported
 export type InferResult<T0 = any> = Unsupported
 export type Insert<T0 = any> = Unsupported
@@ -328,28 +448,49 @@ export type InsertPatch<T0 = any> = Unsupported
 export type InsertQuery<T0 = any, T1 = any, T2 = any> = Unsupported
 export type InsertRow<T0 = any> = Unsupported
 export type Insertable<T0 = any> = Unsupported
+export type InsufficientPrivilegeError = Unsupported
+export type InsufficientResourcesError = Unsupported
+export type IntegrityConstraintError = Unsupported
+export type InternalEvent = Unsupported
+export type InvalidDatetimeFormatError = Unsupported
 export type InvalidFragmentError = Unsupported
 export type InvalidIdentifierError = Unsupported
+export type InvalidPasswordError = Unsupported
+export type InvalidStatementNameError = Unsupported
+export type InvalidTextRepresentationError = Unsupported
+export type IsolationLevel = Unsupported
 export type JsonEncode = Unsupported
 export type JsonOperand = Unsupported
 export type JsonbOperand = Unsupported
+export type ListenOptions = Unsupported
 export type Loaded<T0 = any, T1 = any, T2 = any> = Unsupported
+export type LockNotAvailableError = Unsupported
 export type LockOpts<T0 = any> = Unsupported
+export type LogLevel = Unsupported
+export type LogOptions = Unsupported
+export type LogRecord = Unsupported
 export type ManyRel<T0 = any, T1 = any> = Unsupported
 export type NetOperand = Unsupported
 export type NoCodecError = Unsupported
+export type NoHandleEscape<T0 = any> = Unsupported
 export type NonNullOperand<T0 = any> = Unsupported
+export type NotNullViolationError = Unsupported
+export type NoticeEvent = Unsupported
+export type NotificationHandler = Unsupported
 export type NullOperandError = Unsupported
 export type NullRef<T0 = any> = Unsupported
 export type NullRow<T0 = any> = Unsupported
 export type NumOperand<T0 = any, T1 = any> = Unsupported
 export type NumPg = Unsupported
+export type NumericValueOutOfRangeError = Unsupported
 export type OneRel<T0 = any, T1 = any> = Unsupported
 export type Operand<T0 = any> = Unsupported
+export type OperatorInterventionError = Unsupported
 export type Order = Unsupported
 export type OrderArg = Unsupported
 export type OrderBy = Unsupported
 export type OrmTypeError<T0 = any> = Unsupported
+export type OutOfMemoryError = Unsupported
 export type PgAcquireOptions = Unsupported
 export type PgArrayLiteral = Unsupported
 export type PgCapabilities = Unsupported
@@ -371,6 +512,7 @@ export type PgExecMode = Unsupported
 export type PgField = Unsupported
 export type PgInterval = Unsupported
 export type PgLikeClient = Unsupported
+export type PgLikeDedicatedClient = Unsupported
 export type PgLikePool = Unsupported
 export type PgLikeQueryConfig = Unsupported
 export type PgLikeResult = Unsupported
@@ -390,18 +532,37 @@ export type PgServerErrorData = Unsupported
 export type PgTimestampString = Unsupported
 export type PkOf<T0 = any> = Unsupported
 export type PlaceholderRef = Unsupported
+export type PoolEvent = Unsupported
+export type PoolOptions = Unsupported
+export type PoolStats = Unsupported
+export type PoolTimeoutError = Unsupported
+export type PoolerDiagnosis = Unsupported
+export type PoolerMode = Unsupported
+export type PoolerProfile = Unsupported
 export type PrepareOptions = Unsupported
 export type PreparedQuery<T0 = any, T1 = any> = Unsupported
+export type PreparedStatementError = Unsupported
 export type PreparedStatementOptions = Unsupported
 export type Project<T0 = any> = Unsupported
 export type ProjectPreJoin<T0 = any> = Unsupported
 export type Projectable = Unsupported
 export type Projection = Unsupported
 export type Query<T0 = any, T1 = any, T2 = any> = Unsupported
+export type QueryCanceledError = Unsupported
+export type QueryEndEvent = Unsupported
+export type QueryError = Unsupported
+export type QueryErrorCtor = Unsupported
+export type QueryErrorEvent = Unsupported
+export type QueryHooks = Unsupported
+export type QueryOperation = Unsupported
+export type QueryStartEvent = Unsupported
+export type QueryTimeoutError = Unsupported
+export type Queryable<T0 = any> = Unsupported
 export type RangeOperand<T0 = any> = Unsupported
 export type RangePg = Unsupported
 export type RawQuery = Unsupported
 export type RawRow = Unsupported
+export type ReadOnlySqlTransactionError = Unsupported
 export type Ref<T0 = any, T1 = any, T2 = any> = Unsupported
 export type RefLike = Unsupported
 export type RefRuntime = Unsupported
@@ -426,51 +587,91 @@ export type RelsRecord<T0 = any> = Unsupported
 export type ResolvedRelation = Unsupported
 export type ResolvedRelations = Unsupported
 export type ResolvedThrough = Unsupported
+export type RestrictViolationError = Unsupported
 export type ResultRefs<T0 = any> = Unsupported
+export type RetryEvent = Unsupported
+export type RetryPolicy = Unsupported
 export type Row<T0 = any> = Unsupported
 export type RowOf<T0 = any> = Unsupported
 export type RowSource<T0 = any> = Unsupported
+export type RunCallOptions = Unsupported
+export type RunOptions = Unsupported
+export type RunTiming = Unsupported
+export type Runnable<T0 = any> = Unsupported
+export type SavepointOptions = Unsupported
 export type Schema<T0 = any, T1 = any> = Unsupported
 export type SchemaError = Unsupported
 export type SchemaExecutor<T0 = any> = Unsupported
+export type SchemaObjectError = Unsupported
 export type ScopeOf<T0 = any, T1 = any> = Unsupported
 export type SelAt<T0 = any, T1 = any> = Unsupported
 export type SelectAt<T0 = any> = Unsupported
 export type SelectRow<T0 = any> = Unsupported
 export type SelectSource<T0 = any> = Unsupported
 export type Selectable<T0 = any> = Unsupported
+export type SerializationFailureError = Unsupported
+export type Session<T0 = any> = Unsupported
+export type SessionDefaults = Unsupported
 export type SetOps<T0 = any, T1 = any> = Unsupported
 export type SetPatch<T0 = any> = Unsupported
 export type SetQuery<T0 = any, T1 = any> = Unsupported
 export type Simplify<T0 = any> = Unsupported
 export type Sources = Unsupported
+export type SpanAttributes = Unsupported
+export type SpanContext = Unsupported
 export type SqlSnapshot = Unsupported
+export type SqlState = Unsupported
+export type SqlSyntaxError = Unsupported
 export type SqlTag = Unsupported
 export type StatementMode = Unsupported
 export type StatementStats = Unsupported
+export type StreamCallOptions = Unsupported
 export type StreamOptions = Unsupported
+export type StringDataRightTruncationError = Unsupported
 export type SubQuery<T0 = any, T1 = any, T2 = any> = Unsupported
+export type Subscription = Unsupported
 export type Table<T0 = any, T1 = any, T2 = any> = Unsupported
 export type TableAt<T0 = any> = Unsupported
 export type TableExtra = Unsupported
 export type TableOf<T0 = any, T1 = any> = Unsupported
 export type TableOptions = Unsupported
+export type TableRef = Unsupported
 export type TableRuntime = Unsupported
 export type Tables = Unsupported
 export type TextOperand = Unsupported
 export type TextPg = Unsupported
+export type TimeoutError = Unsupported
+export type TooManyConnectionsError = Unsupported
 export type TooManyParametersError = Unsupported
+export type TransactionAbandonedError = Unsupported
+export type TransactionClosedError = Unsupported
+export type TransactionDefaults = Unsupported
+export type TransactionError = Unsupported
+export type TransactionRollback = Unsupported
+export type TransactionTimeoutError = Unsupported
 export type TsqueryOperand = Unsupported
 export type TsvectorOperand = Unsupported
+export type Tx<T0 = any> = Unsupported
+export type TxEndEvent = Unsupported
+export type TxOptions = Unsupported
+export type TxOptionsBase = Unsupported
+export type TxStartEvent = Unsupported
 export type TypeClass = Unsupported
 export type TypedFragment<T0 = any, T1 = any> = Unsupported
+export type UndefinedColumnError = Unsupported
+export type UndefinedFunctionError = Unsupported
+export type UndefinedTableError = Unsupported
 export type UniqueSpec = Unsupported
+export type UniqueViolationError = Unsupported
+export type UnknownQueryError = Unsupported
 export type UnsafeLiteralError = Unsupported
+export type UnsupportedInPoolerModeError = Unsupported
 export type UnsupportedNodeError = Unsupported
 export type Update<T0 = any> = Unsupported
 export type UpdateQuery<T0 = any, T1 = any, T2 = any> = Unsupported
 export type UpdateRow<T0 = any> = Unsupported
 export type Updateable<T0 = any> = Unsupported
+export type UsageError = Unsupported
 export type ValueRefs<T0 = any> = Unsupported
 export type WindowFn = Unsupported
 export type WindowLiteral = Unsupported
