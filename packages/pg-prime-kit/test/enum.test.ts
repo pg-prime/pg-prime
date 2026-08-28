@@ -70,13 +70,20 @@ describe("regression #1: ALTER TYPE … ADD VALUE is ordered before every use of
       // DEFAULT, the CHECK, and the partial index — is ordered after it...
       const consumers = statements.filter((s) => s.consumes.includes(LABEL));
       expect(consumers.length).toBeGreaterThanOrEqual(4);
-      // two columns (changed DEFAULT + new column), the CHECK's ADD…NOT VALID
-      // and its VALIDATE, and the partial index's predicate
+      // The new column's `ADD COLUMN` (which carries its DEFAULT inline — a separate
+      // `SET DEFAULT` would let `NOT NULL` see rows the default has not reached), the
+      // changed DEFAULT on `status`, the CHECK's ADD…NOT VALID and its VALIDATE, and the
+      // partial index's predicate.
+      //
+      // One of these says `default` rather than `column` since K3 split the DEFAULT into
+      // its own fact (`05` §7.2). The `evaluates` edge is carried on BOTH the column and
+      // its default, deliberately: a folded-in default has to reach the commit boundary
+      // through the column, and a standalone one through itself.
       expect(consumers.map((s) => s.kind).sort()).toEqual([
         "column",
-        "column",
         "constraint",
         "constraint",
+        "default",
         "index",
       ]);
       for (const c of consumers) expect(statements.indexOf(c)).toBeGreaterThan(addValue);

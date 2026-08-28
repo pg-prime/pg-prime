@@ -15,18 +15,46 @@ export interface DiffResult {
 
 export interface DiffOptions {
   readonly renameHints?: readonly RenameHint[];
+  /**
+   * `--strict-unmodeled` (design/06 §2.2's completeness rule): a non-empty Tier-U census
+   * stops being an `info` and becomes an `error`, which `buildPlan` turns into an
+   * unacknowledged hazard and `writePlan` refuses. Off by default — a census is a report,
+   * and making it fatal by default would refuse to migrate any database with a `citext`
+   * cast in it.
+   */
+  readonly strictUnmodeled?: boolean;
+  /**
+   * The extractor's own diagnostics for the CURRENT and DESIRED sides, so
+   * `strictUnmodeled` has something to re-classify. `diffIR` never queries.
+   */
+  readonly diagnostics?: readonly Diagnostic[];
 }
 
 const ORDER: Record<StableId["kind"], number> = {
-  schema: 0,
-  type: 1,
-  enumLabel: 2,
-  sequence: 3,
-  table: 4,
-  column: 5,
-  constraint: 6,
-  index: 7,
+  extension: 0,
+  schema: 1,
+  type: 2,
+  enumLabel: 3,
+  typeAttribute: 4,
+  sequence: 5,
+  table: 6,
+  column: 7,
+  default: 8,
+  constraint: 9,
+  index: 10,
+  comment: 11,
 };
+
+/** Tier-U kinds are what `--strict-unmodeled` is about; Tier R is authored on purpose. */
+const TIER_R_CENSUS: ReadonlySet<string> = new Set([
+  "view",
+  "materializedView",
+  "function",
+  "procedure",
+  "trigger",
+  "policy",
+  "rule",
+]);
 
 export function diffIR(currentIn: SchemaIR, desired: SchemaIR, options: DiffOptions = {}): DiffResult {
   const { ir: current, accepted, rejected } = applyRenameHints(currentIn, desired, options.renameHints ?? []);
@@ -38,6 +66,54 @@ export function diffIR(currentIn: SchemaIR, desired: SchemaIR, options: DiffOpti
 
   const cur = byId(current);
   const des = byId(desired);
+
+  /**
+   * `partitions({ unknown: 'adopt' })` — `05` §7.2: "the IR asserts *nothing* about
+   * undeclared partitions; they must never enter the drop set."
+   *
+   * A partition of a declared parent that the desired state does not mention is a
+   * production reality (yesterday's daily partition; a `pg_partman` child), and dropping
+   * it destroys data nobody asked to destroy. It is skipped on BOTH sides of the diff —
+   * skipping only the delta would leave the shadow proof reporting it as residual drift
+   * and refusing every plan.
+   */
+  const adoptedPartitions = new Set<string>();
+  for (const [key, f] of cur) {
+    if (f.id.kind !== "table" || f.payload["partitionOf"] === null) continue;
+    if (des.has(key)) continue;
+    adoptedPartitions.add(key);
+    for (const d of current.descendantsOf(f.id)) adoptedPartitions.add(encodeId(d.id));
+    diagnostics.push({
+      code: "adopted_partition",
+      severity: "info",
+      message:
+        `${key} is a partition of ${String(f.payload["partitionOf"])} that the desired state does ` +
+        `not declare; it is adopted, never dropped (design/05 §7.2)`,
+      subject: key,
+    });
+  }
+  for (const key of adoptedPartitions) cur.delete(key);
+
+  /**
+   * Extensions are declare-only (`06` §2.2): created if absent, **never dropped**.
+   *
+   * Skipped on both sides for the same reason adopted partitions are — leaving the drop
+   * delta out but keeping the fact would make the shadow proof report the surviving
+   * extension as residual drift and refuse every plan that stopped declaring one. The
+   * retention is reported, so it is a decision rather than a silence.
+   */
+  for (const [key, f] of cur) {
+    if (f.id.kind !== "extension" || des.has(key)) continue;
+    cur.delete(key);
+    diagnostics.push({
+      code: "extension_retained",
+      severity: "info",
+      message:
+        `${key} is no longer declared but is never dropped (design/06 §2.2, declare-only); ` +
+        `drop it by hand if that is what you meant`,
+      subject: key,
+    });
+  }
 
   // `contentHashOf` is memoised on the IR: hashing the payload inline here AND
   // again inside `rollupOf` hashed every fact on both sides twice per diff.
@@ -95,6 +171,26 @@ export function diffIR(currentIn: SchemaIR, desired: SchemaIR, options: DiffOpti
     const ib = b.op === "rename" ? encodeId(b.to) : encodeId(b.id);
     return ia < ib ? -1 : ia > ib ? 1 : 0;
   });
+
+  /* ---- the completeness rule, escalated on demand (design/06 §2.2) ---- */
+  if (options.strictUnmodeled) {
+    const seen = new Set<string>();
+    for (const d of options.diagnostics ?? []) {
+      if (d.code !== "unmodeled_kind") continue;
+      const kind = d.subject ?? "?";
+      if (TIER_R_CENSUS.has(kind) || seen.has(kind)) continue;
+      seen.add(kind);
+      diagnostics.push({
+        code: "unmodeled_kind_strict",
+        severity: "error",
+        message:
+          `${d.count ?? 0} ${kind} object(s) are present and not modelled; --strict-unmodeled ` +
+          `makes a non-empty Tier-U census a failure`,
+        subject: kind,
+        ...(d.count === undefined ? {} : { count: d.count }),
+      });
+    }
+  }
 
   return { deltas, renames: accepted, rejectedHints: rejected, diagnostics, current };
 }

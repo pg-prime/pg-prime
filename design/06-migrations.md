@@ -176,6 +176,48 @@ surfaced as an `unmodeled_kind` diagnostic with a count.
 catalog, subtract Tiers M/R/O, and *report the remainder*. Silence is never an option. `verify`
 prints the unmodeled census; `--strict-unmodeled` makes a non-empty census a failure.
 
+> **AS BUILT 2026-08-28 (K3) — the four tiers.**
+>
+> **Tier M has no unimplemented kind.** `FactKind` is now `schema · table · column · default ·
+> constraint · index · type · enumLabel · typeAttribute · sequence · comment · extension` — twelve
+> where the spike had eight. Three notes on the mapping to the list above:
+>
+> - `enum`, `domain` and `composite` share the **`type`** kind, discriminated by `typtype`. `05`
+>   §7.2 gives all three the identity tuple `[schema, name]` and `stable-id.ts` has exactly one
+>   arity entry for that shape; three near-duplicate kinds would be three copies of the same id.
+>   A domain's CHECKs live in `TypePayload.checks` (they are keyed by `contypid`, not `conrelid`,
+>   so they cannot be `constraint` facts — that id says `[schema, table, name]`).
+> - `partition` is not a kind. A partitioned parent and a partition are **tables**, carrying
+>   `partitionStrategy` / `partitionKey` / `partitionOf` / `partitionBound`; `ATTACH` / `DETACH`
+>   are the deltas. `05` §7.2's `partitions({ unknown: 'adopt' })` is enforced in `diffIR`, which
+>   removes an undeclared partition from **both** sides of the diff — omitting only the DROP would
+>   leave it as residual drift and make the D6 proof refuse every plan.
+> - `extension` is keyed `[name]`, not `[schema, name]`: PostgreSQL allows one extension of a given
+>   name per database, so a schema in the id would make a relocated extension a different object —
+>   and since it is never dropped, that is a `CREATE … IF NOT EXISTS` that no-ops forever.
+>
+> Still **not** modelled, and reported as an error diagnostic rather than converged silently:
+> classic table `INHERITS` (`unsupported_kind`), in-place composite attribute changes while a
+> column uses the type (PostgreSQL refuses; `CASCADE` does not reach plain columns), and a
+> partition-key change (PostgreSQL requires a new table).
+>
+> **Tier R** is `src/repeatables/` — `scanRepeatables` (directory-lexicographic over `sql/**/*.sql`,
+> sha256, `-- pg-prime:` header directives, statements via the real lexer), `checkIdempotence`
+> (TX201), `planRepeatables` (hash diff + orphan report), `applyRepeatables` (all files in ONE
+> transaction) and `loadRepeatables` (the shadow load during `generate`, §3.8).
+>
+> **Tier O** is `ExtractResult.observed` — 16 families, each behind its own `SAVEPOINT` so a
+> `permission denied` on `pg_subscription` degrades to a diagnostic instead of aborting the
+> snapshot transaction. Deliberately **not** facts: a fact is diffed and a fact is hashed into the
+> fingerprint, so one `GRANT SELECT` would read as drift and refuse every pending migration through
+> §4.3's gate.
+>
+> **Tier U** is the census, now `06` §2.2's list in full: casts, operator classes/families, the
+> five text-search catalogs, statistics objects, transforms, user-defined languages, parameter ACLs
+> and large objects, alongside the Tier-R kinds (which are counted too, and say "Tier R" in their
+> message so a caller can tell them apart). `diffIR`'s `strictUnmodeled` escalates the Tier-U half
+> — and only that half — to `error`; escalating an authored view would make the flag unusable.
+
 ### 2.3 Serialization
 
 The IR serializes to a **checkpoint file** (`migrations/checkpoints/0000.ir.json`) — never
@@ -397,10 +439,8 @@ paths are scriptable; neither hangs.
 > diffing two dumps of the same database — and which is a psql meta-command rather than SQL. That
 > was already handled in `sql/statements.ts` for 17.6+.
 >
-> Still not modelled: `convalidated` on a `contype = 'n'` row. PG 18 accepts
-> `ADD CONSTRAINT … NOT NULL … NOT VALID` and sets `attnotnull` anyway, so an unvalidated NOT NULL
-> reads here as an ordinary one. Same Tier-M gap as before the field existed; the D10 witness is
-> what would catch it.
+> ~~Still not modelled: `convalidated` on a `contype = 'n'` row.~~ **Closed 2026-08-28 (K3)** —
+> see the addendum below.
 >
 > **R10 — five mutations, five caught** (PG 18 unless stated; `pgprime-pg18`, and the 17 run kept
 > green where that is the point):
@@ -412,6 +452,41 @@ paths are scriptable; neither hangs.
 > | M3 | drop `contype = 'n'` from the extractor join, so a name is read on 17 too (it picks up the PK) | **on 17**: *table rename: the FK on ANOTHER table follows…* and corpus *acceptance* — the "no spurious diff on < 18" requirement; on 18, 14 tests |
 > | M4 | store the generated name raw instead of `%GENERATED%` (I1 violation) | `catalog.ts` — *records THAT it is generated, never the generated name itself*; `rename.ts` — *column rename: the index is RENAMED…* |
 > | M5 | `normalizeDump` strips `CONSTRAINT <name> NOT NULL` (combined with M1, so there is real drift to hide) | `dump-oracle.ts` — *never normalises a NOT NULL constraint name away*; and the five rename tests still failed on their `pg_constraint` assertions, so the oracle is not the only witness |
+
+> **AS BUILT 2026-08-28 (K3) — the two gaps this section left open are closed.**
+>
+> **1. `convalidated` on a `contype = 'n'` row.** `ColumnPayload.notNullValidated` is the third
+> state: `null` when the server does not catalogue NOT NULL constraints *or* the column is
+> nullable, `true` for a validated one, `false` for a `NOT VALID` one. Same catalog gate as
+> `notNullConstraint` — the `LEFT JOIN pg_constraint … contype = 'n'` yields no row on 15/16/17, so
+> the field is `null` there and the same fixture still diffs clean across the matrix.
+>
+> Two things follow. `columnClause` appends `NOT VALID` after an inline `NOT NULL` when the desired
+> state wants one, so a fresh replay of the repo does not produce a schema that is *stricter* than
+> the one it describes. And `notNullTransition` (`diff/ddl.ts`) treats validity as an orthogonal
+> axis: `false → true` is a bare `VALIDATE CONSTRAINT` (SHARE UPDATE EXCLUSIVE, no rewrite),
+> `true → false` is a `DROP CONSTRAINT` + `ADD … NOT VALID`, because PostgreSQL cannot un-validate.
+> Before the field, an unvalidated NOT NULL and a validated one were byte-identical facts, so the
+> plan silently claimed a guarantee the data did not have. `test/kinds/not-null-validity.test.ts`.
+>
+> **2. `ChooseConstraintName`'s uniquifying suffix.** `sql/ident.ts` gains `chooseConstraintName`,
+> a port of the server's loop: `makeObjectName` with a pass number appended to the **label**
+> (`t_a_not_null1`, not `t_a_not_null_1`) so the suffix lands inside the truncation window, retried
+> against a caller-supplied `taken` predicate — `pg_constraint` in the namespace for
+> `ChooseConstraintName`, plus `pg_class` for `ChooseRelationName`.
+>
+> The consumer that makes it load-bearing is the §3.5 row-5 rewrite, which INVENTS a temporary
+> CHECK constraint on PG 15–17. A schema that already has a `<table>_<column>_not_null` — which is
+> exactly what `fixtures/diff/name-collision` has — turns a blind `makeObjectName` into
+> `constraint "t_a_not_null" for relation "t" already exists` at apply time.
+>
+> What did **not** change is the extractor's classification, and that is deliberate. A NOT NULL
+> whose name carries a suffix is still recorded as a USER name, because PostgreSQL picks the suffix
+> from the catalog state at the moment the constraint is created, and for a plan that moment is the
+> middle of an apply rather than the end of it. Widening the `%GENERATED%` test to accept
+> `t_a_not_null1` would make the emitter write a bare `NOT NULL`, the server would name it
+> `t_a_not_null`, and the squatting CHECK in the same plan would then fail to be added. We never
+> invent a name we cannot also spell out.
 
 ### 3.4 Hazard taxonomy — the concrete v1 rule list
 
@@ -497,6 +572,69 @@ truncated · `ST106` unqualified table reference.
 Escape hatch: `-- pg-orm:nolint LK101 "index is on a 200-row lookup table"` — the reason string is
 **mandatory**, so the suppression is reviewable.
 
+> **AS BUILT 2026-08-28 (K3) — all 35 codes, and where each one lives.**
+>
+> Two producers, and the split is not arbitrary. **`diff/ddl.ts`** attaches a hazard when it knows
+> something the catalog told it: this constraint is validated, that column is populated, this
+> default calls a volatile function. **`lint/rules.ts`** computes the rest from the assembled
+> `Plan`, because they are properties of the FILE — whether a `CONCURRENTLY` ended up inside a
+> transaction, whether a `txmode none` file is re-runnable, whether a trigger or a materialised
+> view (Tier R, never diffed) appears in hand-written SQL at all. `lintPlan(plan, sqlText, opts)`
+> unions the two, re-derives severity through `hazardSeverity` rather than trusting the `.plan.json`
+> on disk, and applies `-- pg-prime:nolint CODE "reason"`.
+>
+> | Code | Built | Where |
+> |---|---|---|
+> | DS101 drop schema | ✅ | `ddl.ts` drop `schema` |
+> | DS102 drop table | ✅ | `ddl.ts` drop `table` |
+> | DS103 drop non-generated column | ✅ | `ddl.ts` drop `column`, drop `typeAttribute` |
+> | DS104 enum value removal/reorder | ✅ | `ddl.ts` drop `type`; `diff.ts` raises EN102 first |
+> | DS105 drop materialized view | ✅ | `lint/rules.ts` (Tier R: never a delta, always possible in a `.sql`) |
+> | DS106 drop the only uniqueness guarantee | ✅ | `ddl.ts` `dropConstraint` on `p`/`u` |
+> | MF101 add UNIQUE to a populated column | ✅ | `ddl.ts` `addConstraint`, suppressed `onFreshTable` |
+> | MF102 non-unique → unique index | ✅ | `ddl.ts` alter `index`, only when uniqueness actually changes |
+> | MF103 add NOT NULL column with no default | ✅ | `ddl.ts` create `column` |
+> | MF104 nullable → NOT NULL | ✅ | `ddl.ts` `notNullTransition`, on the ADD half of both §3.5 rewrites |
+> | MF105 narrowing type change | ✅ | `ddl.ts` `alterColumn` type branch |
+> | MF106 add validated CHECK/FK to a populated table | ✅ | `ddl.ts` `addConstraint`, on the `NOT VALID` ADD and on the literal form |
+> | BC101 rename table | ✅ | `ddl.ts` rename `table` |
+> | BC102 rename column | ✅ | `ddl.ts` rename `column` |
+> | BC103 in-place column type change | ✅ | `ddl.ts` `alterColumn`; also composite `ALTER ATTRIBUTE` |
+> | BC104 rename an index/constraint | ✅ | `ddl.ts` rename `constraint`/`index`, and the NOT NULL name repair |
+> | LK101 `CREATE INDEX` without CONCURRENTLY | ✅ | `ddl.ts` `createIndex` |
+> | LK102 `DROP INDEX` without CONCURRENTLY | ✅ | `ddl.ts` `dropIndex` |
+> | LK103 CONCURRENTLY inside a transaction | ✅ | `lint/rules.ts`, from `plan.segments` |
+> | LK104 `ADD PRIMARY KEY`/`UNIQUE` builds under ACCESS EXCLUSIVE | ✅ | `ddl.ts` `addConstraint` (`p`/`u`/`x`) |
+> | LK105 `ADD FOREIGN KEY` without NOT VALID | ✅ | `ddl.ts` `addConstraint`; reachable only under `--no-safe-rewrite`, because the default path removes the hazard rather than reporting it |
+> | LK106 `ADD CHECK` without NOT VALID | ✅ | as LK105 |
+> | LK107 `SET NOT NULL` full scan | ✅ | `ddl.ts` — domain `SET NOT NULL` and `ATTACH PARTITION` (the bound scan). The column case no longer emits it: §3.5 row 4/5 removed the scan |
+> | LK108 `ALTER COLUMN TYPE` rewrite | ✅ | `ddl.ts` `alterColumn` |
+> | LK109 `ADD COLUMN` with a volatile default | ✅ | `ddl.ts` create `column`. The `provolatile <> 'i'` question is asked of the catalog by `Q_VOLATILE_DEFAULTS` and travels as a `volatile_default` diagnostic; `mentionsVolatileFunction` is the fallback when a caller does not thread it in |
+> | LK110 `ADD … IDENTITY`/`GENERATED STORED` | ✅ | `ddl.ts` `alterColumn` identity branch |
+> | LK111 `CREATE TRIGGER` takes SHARE ROW EXCLUSIVE | ✅ | `lint/rules.ts` (Tier R) |
+> | LK112 `SET LOGGED`/`UNLOGGED` | ✅ | `ddl.ts` alter `table` persistence |
+> | TX101 non-transactional statement without `txmode none` | ✅ | `lint/rules.ts` |
+> | TX102 mixed transactionality without a segment boundary | ✅ | `lint/rules.ts`, from `plan.segments` |
+> | TX201 non-idempotent statement in a `txmode none` file | ✅ | `lint/rules.ts` over a plan; `repeatables/idempotence.ts` over a `sql/` file's statements |
+> | EN101 new enum label used before its `ADD VALUE` committed | ✅ | `diff/order.ts` |
+> | EN102 enum removal/reorder | ✅ | `diff/diff.ts` |
+> | ST101–ST106 style | ✅ | `lint/rules.ts`, **opt-in** (`{ style: true }`, or naming one in `--rules`). Their severities live there and not in `plan/plan.ts`'s table: `hazardSeverity` answers `error` for an unknown code, which is right for a hazard and wrong for advice, and a plan that carried them would put opt-in style into every `.plan.json` in the repo |
+>
+> **The emptiness probe.** `06` above says MF rules stay at `error` unless the table is proven
+> empty. Built as `probeEmptiness(client, tables)` in `diff/ddl.ts`'s caller contract: a
+> `SELECT EXISTS (SELECT 1 FROM t LIMIT 1)` per subject table against the TARGET, folded into
+> `BuildOptions.emptyTables`. Offline — no client — the set is empty and every MF rule stays
+> `error`, which is the documented behaviour and the safe direction.
+>
+> **`nolint`.** `-- pg-prime:nolint CODE "reason"` (both the `pg-prime:` and legacy `pg-orm:`
+> spellings are parsed, since `renderSql`'s rename is K1's file this round). A directive under a
+> `-- pg-prime:stmt N` marker scopes to statement N; one in the header block is file-wide. The
+> reason is **mandatory**: a `nolint` without a quoted, non-empty one is a `DirectiveError` and
+> forces exit 3 on its own, because an unreviewable suppression that silently succeeds is worse
+> than no escape hatch. Suppression is recorded on the finding as `suppressedBy`, never removed
+> from the report. Directives are found through the SQL **lexer**, so a `nolint` inside a string
+> literal or a `$$ … $$` body is data, not a suppression.
+
 ### 3.5 Lock-safe rewriting (not just warning)
 
 Where an unambiguously safer equivalent exists, **emit it**. This is where we differentiate from
@@ -515,6 +653,26 @@ every ORM-bundled migrator, and it is the layer pg-delta explicitly does not pro
 The `DROP INDEX CONCURRENTLY IF EXISTS` prefix is Squawk's `prefer-robust-stmts` and is what makes
 a failed CIC retryable instead of permanently wedged. Disable the whole layer with
 `--no-safe-rewrite` for a literal diff.
+
+> **AS BUILT 2026-08-28 (K3) — the rewrite table, row by row.**
+>
+> | Desired | Built | Where |
+> |---|---|---|
+> | `CREATE INDEX` → `DROP INDEX CONCURRENTLY IF EXISTS` + CIC in a `txmode none` file | ⛔ **not built** | `ddl.ts` `createIndex` emits the literal form and reports LK101. The rewrite needs the emitter to split one plan across two `txmode` files, which is a *file-format* change the runner (K1) owns, not a differ change. Recorded for K2b |
+> | `ADD FOREIGN KEY` → `ADD … NOT VALID` + `VALIDATE CONSTRAINT` | ✅ | `ddl.ts` `addConstraint`, `contype = 'f'` |
+> | `ADD CHECK` → same split | ✅ | `ddl.ts` `addConstraint`, `contype = 'c'` |
+> | `SET NOT NULL` (PG ≥ 18) → `ADD CONSTRAINT … NOT NULL … NOT VALID` + `VALIDATE` | ✅ | `ddl.ts` `notNullTransition`, taken when the DESIRED column's `notNullConstraint` is non-null — a catalog gate, not a version gate |
+> | `SET NOT NULL` (PG 15–17) → `ADD CHECK (c IS NOT NULL) NOT VALID` → `VALIDATE` → `SET NOT NULL` → `DROP CONSTRAINT` | ✅ | same function, the other branch. The temporary constraint is named through `chooseConstraintName`, so a schema that already holds `<table>_<column>_not_null` gets `…_not_null1` instead of a duplicate-name error |
+> | `ADD PRIMARY KEY` / `UNIQUE` → `CREATE UNIQUE INDEX CONCURRENTLY` + `ADD CONSTRAINT … USING INDEX` | ⛔ **not built** | Same reason as row 1: CIC needs `txmode none`. `ddl.ts` reports LK104 (+ MF101 when the table is not proven empty) and emits the literal form |
+> | `ADD COLUMN` w/ volatile default → split + backfill stub | ⛔ **not built** | `ddl.ts` reports LK109 and marks the statement `rewrite: true`. The backfill stub is a *data* migration (§7), which is K4 |
+>
+> So four of seven rows are built, and the three that are not are all blocked on the same
+> thing — emitting a second file with a different `txmode` — rather than on the differ. That
+> dependency is named here so K2b does not rediscover it.
+>
+> `--no-safe-rewrite` is `BuildOptions.noSafeRewrite`. Under it the FK/CHECK split collapses back to
+> the literal `ADD CONSTRAINT`, and LK105 / LK106 — which exist to describe exactly that form —
+> become reachable for the first time.
 
 ### 3.6 Destructive-change gating
 

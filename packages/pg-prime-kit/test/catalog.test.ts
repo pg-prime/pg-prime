@@ -29,6 +29,7 @@ import {
 } from "./support/db.js";
 
 const PART = "pgprime_cat_part";
+const INH = "pgprime_cat_inh";
 const EXT = "pgprime_cat_ext";
 const GEN = "pgprime_cat_gen";
 const T = 180_000;
@@ -89,32 +90,60 @@ describe("live catalog exclusions", () => {
   }, T);
 
   afterAll(async () => {
-    for (const db of [PART, EXT, GEN]) await destroyDatabase(db).catch(() => undefined);
+    for (const db of [PART, INH, EXT, GEN]) await destroyDatabase(db).catch(() => undefined);
   }, T);
 
   it(
-    "partitioned and inherited tables are reported, not silently flattened",
+    "classic INHERITS is reported, not silently flattened",
     async () => {
-      const conn = await makeDatabase(PART, "partitioned/current.sql");
+      const conn = await makeDatabase(INH, "inheritance/current.sql");
       const r = await withClient(conn, (c) => extractCatalog(c, { schemas: ["public"] }));
 
       const unsupported = r.diagnostics.filter((d) => d.code === "unsupported_kind");
       expect(unsupported.map((d) => d.subject).sort()).toEqual([
         "table:public.animals",
         "table:public.dogs",
-        "table:public.events",
-        "table:public.events_2026",
       ]);
       expect(unsupported.every((d) => d.severity === "error")).toBe(true);
 
       // no facts at all for the excluded relations - not the table, not its columns,
       // not its indexes; and no orphans left behind by a half-applied filter
       const ids = r.ir.facts().map((f) => encodeId(f.id));
-      expect(ids.filter((s) => /events|animals|dogs/.test(s))).toEqual([]);
+      expect(ids.filter((s) => /animals|dogs/.test(s))).toEqual([]);
       expect(r.ir.orphans()).toEqual([]);
       // the ordinary table in the same schema is untouched
       expect(r.ir.has({ kind: "table", schema: "public", name: "plain" })).toBe(true);
       expect(r.ir.has({ kind: "column", schema: "public", table: "plain", name: "id" })).toBe(true);
+    },
+    T,
+  );
+
+  it(
+    "a partitioned parent and its partitions ARE facts, with strategy, key and bounds",
+    async () => {
+      const conn = await makeDatabase(PART, "partitioned/current.sql");
+      const r = await withClient(conn, (c) => extractCatalog(c, { schemas: ["public"] }));
+
+      // The negative half: partitioning stopped being an `unsupported_kind` when it
+      // became Tier M, and a leftover diagnostic would make every partitioned schema
+      // fail the corpus's "no error diagnostics" gate.
+      expect(r.diagnostics.filter((d) => d.code === "unsupported_kind")).toEqual([]);
+      expect(r.ir.orphans()).toEqual([]);
+
+      const parent = r.ir.get({ kind: "table", schema: "public", name: "events" });
+      expect(parent?.payload["relkind"]).toBe("p");
+      expect(parent?.payload["partitionStrategy"]).toBe("r");
+      expect(parent?.payload["partitionKey"]).toBe("RANGE (at)");
+      expect(parent?.payload["partitionOf"]).toBeNull();
+
+      const child = r.ir.get({ kind: "table", schema: "public", name: "events_2025" });
+      expect(child?.payload["partitionOf"]).toBe("table:public.events");
+      expect(String(child?.payload["partitionBound"])).toMatch(/^FOR VALUES FROM \('2025-01-01/);
+      // The partition's columns are facts of their own: pg_dump writes a partition as a
+      // full CREATE TABLE + ATTACH, and so do we.
+      expect(r.ir.has({ kind: "column", schema: "public", table: "events_2025", name: "at" })).toBe(true);
+      // The parent's ordinary sibling is unaffected.
+      expect(r.ir.has({ kind: "table", schema: "public", name: "plain" })).toBe(true);
     },
     T,
   );

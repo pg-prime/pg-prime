@@ -386,6 +386,75 @@ re-applied, unchanged → skipped, non-idempotent → TX201); `test/lint/*` per 
 negative control (R4). PG 18 container `pgprime-pg18` (:54332) for the `'n'` work; PG 17 for the rest.
 R10 record with ≥ 8 mutations.
 
+#### K3 — result (2026-08-28)
+
+**Done.** 125 → **217 tests** green on PG 17 (`:54334`, 26.3 s) and PG 18 (`:54332`, 26.9 s); 15 → 27
+test files. `pnpm --filter @pg-prime/kit typecheck`, root `pnpm typecheck`, `pnpm build` and
+`pnpm package:check` (after `pnpm api-snapshot`; the kit barrel went 66 → 102 values) all clean.
+
+- **`convalidated` on `contype = 'n'`** — `ColumnPayload.notNullValidated`, catalog-gated, with the
+  §3.5 row-4/row-5 rewrite behind the same gate. `06` §3.3's AS BUILT note is amended in place.
+- **`ChooseConstraintName`** — `sql/ident.ts` `chooseConstraintName`, suffix on the label, `taken`
+  supplied by the caller. Its consumer is the row-5 temporary CHECK; the extractor's `%GENERATED%`
+  test deliberately did **not** widen (see `06` §3.3 AS BUILT for why that would break convergence).
+- **Tier M complete** — `FactKind` gains `default`, `typeAttribute`, `comment`, `extension`; `type`
+  covers enum + domain + composite; partitioning is modelled on `table`. `06` §2.2 AS BUILT has the
+  mapping and the three things still refused.
+- **Tier R** `src/repeatables/`, **Tier O** `ExtractResult.observed` (16 families), **Tier U** the
+  full §2.2 census + `diffIR({ strictUnmodeled })`.
+- **Hazards** — all 35 codes emit; `06` §3.4 has the AS BUILT table naming the file for each, the
+  emptiness probe (`probeEmptiness`) and the `nolint` grammar. `src/lint/` is `lintPlan(plan,
+  sqlText, opts) → { findings, directives, directiveErrors, exitCode }`.
+
+**Divergences from the brief, with reasons.**
+
+1. `DS105`, `LK103`, `LK111`, `TX101`, `TX102`, `TX201` and `ST101–106` are emitted by
+   **`src/lint/rules.ts`**, not by `ddl.ts`. Every one of them is a property of the assembled file
+   (segment framing, `txmode`, idempotence) or of a Tier-R object the differ never sees. Putting
+   them on a delta would mean inventing a delta for a trigger.
+2. The ST family's severities live in `lint/rules.ts` rather than in `plan/plan.ts`'s
+   `HAZARD_SEVERITY`, because `plan.ts` is K1's file this round *and* because `hazardSeverity`
+   answers `error` for an unknown code — right for a hazard, wrong for opt-in advice.
+3. `LK109`'s `pg_proc.provolatile` check runs in the **extractor** (`Q_VOLATILE_DEFAULTS`) and
+   travels as a `volatile_default` diagnostic, with a built-in list as the fallback. It is not a
+   `DefaultPayload` field: volatility belongs to the function, and hashing it would turn "somebody
+   redefined `bump()`" into a delta with no DDL — a plan that can never converge.
+4. `fixtures/diff/partitioned` covers *declared* partitions only. The adopt case is
+   `test/kinds/partition.test.ts`: the D10 witness would correctly report the surviving partition as
+   a dump difference, and a `strict` corpus fixture is by definition one that dumps identically.
+   Same for the retained extension (`test/kinds/extension.test.ts`).
+5. `buildStatements` grew an optional third parameter (`BuildOptions`: `volatileDefaults`,
+   `emptyTables`, `noSafeRewrite`). `generate.ts` is K2b's file, so it does not pass one yet — the
+   fallbacks are the documented offline behaviour (MF stays `error`, LK109 uses the built-in list).
+   **K2b: thread `desired.diagnostics` and `probeEmptiness(target, …)` through.**
+6. `prove.ts` waives the whole-IR **fingerprint** equality — and only that; the delta check stays
+   exact — when the residual diff reported `adopted_partition` or `extension_retained`. Those are
+   facts the clone keeps on purpose, and demanding fingerprint equality there demands a DROP the
+   design forbids.
+
+**R10 — eleven mutations, eleven caught** (PG 17 `:54334` unless stated; the full suite each time):
+
+| # | Mutation (line blinded) | Caught by |
+|---|---|---|
+| M1 | `extract.ts` `Q_COLUMNS`: `nn.convalidated` → `true`, so every NOT NULL reads validated | **PG 18**, 2: `kinds/not-null-validity.ts` — *an unvalidated NOT NULL is a different fact…*, *a desired state that WANTS NOT VALID gets it…*. Green on 17, which is the catalog gate working |
+| M2 | `ddl.ts` `notNullTransition`: return a bare `SET NOT NULL`, skipping both §3.5 rewrites | `evolve.ts` — *covers the M-subset alter paths and converges*, on **both** 17 and 18 (the two branches of the gate) |
+| M3 | `ident.ts` `chooseConstraintName`: drop the pass loop, always `makeObjectName(name1, name2, label)` | corpus *name-collision* — the plan applies `ADD CONSTRAINT "t_a_not_null" CHECK …` onto a relation that already has that name. **17 only**: on 18 the CHECK detour is not taken, which is itself the point |
+| M4 | `extract.ts` `Q_TYPES`: drop `relkind = 'c'`, so every table's row type becomes a composite | 18 tests: corpus *acceptance*, *multi-schema/up*, *serial*, *dollar-names*, *partitioned*; `catalog.ts`, `ddl.ts`, `dump-oracle.ts`, `oracle-strict.ts`, `provisioning.ts`, `rename.ts`, `roundtrip.ts` |
+| M5 | `extract.ts` `templatizeIndexDef`: keep `ON ONLY` on a partitioned index | corpus *partitioned* — the parent index is created with no children and PostgreSQL marks it `indisvalid = false`, so the plan applies and then fails its own proof |
+| M6 | `diff.ts`: stop removing adopted partitions from the current side | `kinds/partition.ts` — *plans no DROP for a partition the desired state never mentions* |
+| M7 | `diff.ts`: stop removing a retained extension from the current side | `kinds/extension.ts` — *an undeclared extension yields no DROP, no delta, and one info diagnostic* |
+| M8 | `extract.ts`: emit no `comment` facts at all | corpus *comment* (the D10 witness — `pg_dump` prints `COMMENT ON` and we did not) and `kinds/payloads.ts` — *comment: keyed by the target's id* |
+| M9 | `extract.ts`: emit no `default` facts | 19 tests: corpus *acceptance*, *enum-ordering*, *multi-schema/up*, *serial*, *enum-quoted*, *evolve*, *exclude*, *column-default*; `ddl.ts`, `dump-oracle.ts` ×2, `enum.ts` |
+| M10 | `lint/rules.ts`: drop the TX201 clause | `lint/rules.ts` — *fires on a non-idempotent statement in a bare segment* |
+| M11 | `ddl.ts` `columnClause`: stop emitting `NOT VALID` after an inline `NOT NULL` | **PG 18**: `kinds/not-null-validity.ts` — *a desired state that WANTS NOT VALID gets it — inline on a fresh table* |
+
+The negative control still fails as designed: `fixtures/diff/unmodeled` (two databases differing only
+by `WITH (fillfactor = 70)`) produces zero deltas, `proof.driftDeltas === 0`, and
+`dumpOracle.status === "failed"` with `missingCount === 1` naming `fillfactor` — `strict` propagates
+that to `proof.status === "failed"`, `warn` records it and lets the plan through
+(`test/dump-oracle.test.ts`, *the differ sees nothing, the IR proof converges, and the oracle still
+catches it*).
+
 ---
 
 ## 4. Round 2 (after K1/K2a/K3 merge)

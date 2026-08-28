@@ -153,10 +153,8 @@ function clipToBytes(s: string, maxBytes: number): string {
  * constraint to a name a fresh `CREATE TABLE` would never have produced, and the D10
  * dump oracle fails on the very drift this code exists to remove.
  *
- * Not ported: `ChooseConstraintName`'s uniquifying suffix (`…_not_null1` when the plain
- * name is already taken on that relation). A name carrying one does not compare equal to
- * this function's output, so the extractor classifies it as a USER name and the cascade
- * leaves it alone — the safe direction: we never invent a name, we only decline to fix one.
+ * The uniquifying suffix lives in `chooseConstraintName` below, which calls this in a
+ * loop exactly as the server does.
  */
 export function makeObjectName(name1: string, name2: string | null, label: string): string {
   let overhead = utf8ByteLength(label) + 1;
@@ -177,8 +175,60 @@ export function makeObjectName(name1: string, name2: string | null, label: strin
 }
 
 /**
+ * More passes than any real schema needs. A `taken` predicate that answers `true`
+ * unconditionally is a caller bug, and looping forever hides it.
+ */
+const MAX_NAME_PASSES = 1000;
+
+/**
+ * A port of `ChooseConstraintName` (`src/backend/catalog/index.c`) — `makeObjectName`
+ * in a loop, with a **uniquifying suffix on the LABEL**, not on the finished name.
+ *
+ * The distinction matters twice. The suffix goes inside the truncation window, so the
+ * server re-derives the whole name at every pass (`<27>_<26>_not_null1`, not
+ * `<27>_<26>_not_null` + `1`, which would be 64 bytes and get clipped somewhere else).
+ * And it has no underscore: PostgreSQL writes `t_a_key1`, never `t_a_key_1`.
+ *
+ * `taken` is the caller's view of the namespace, because the two server functions that
+ * wrap this loop consult different catalogs and we need both:
+ *
+ *  - `ChooseConstraintName` — `pg_constraint` rows in the relation's namespace. This is
+ *    what names an unnamed NOT NULL (PG >= 18) and an unnamed CHECK;
+ *  - `ChooseRelationName` — `pg_class` names in the namespace, plus `pg_constraint`
+ *    when the name is also a constraint's. This is what names `t_a_key` / `t_pkey` /
+ *    `t_a_idx` / `t_a_excl`.
+ *
+ * The consumer that makes this load-bearing rather than decorative is §3.5's lock-safe
+ * `SET NOT NULL` rewrite on PG 15–17: it INVENTS a temporary CHECK constraint, and a
+ * schema that already has a constraint under the plain name is exactly the case where a
+ * blind `makeObjectName` emits DDL PostgreSQL rejects with "constraint … already exists"
+ * (`fixtures/diff/name-collision`).
+ */
+export function chooseConstraintName(
+  name1: string,
+  name2: string | null,
+  label: string,
+  taken: (candidate: string) => boolean,
+): string {
+  for (let pass = 0; pass <= MAX_NAME_PASSES; pass++) {
+    const candidate = makeObjectName(name1, name2, pass === 0 ? label : `${label}${pass}`);
+    if (!taken(candidate)) return candidate;
+  }
+  throw new Error(
+    `chooseConstraintName: ${MAX_NAME_PASSES} candidates for ${name1}/${name2 ?? "-"}/${label} were all reported taken`,
+  );
+}
+
+/**
  * The name PostgreSQL >= 18 gives a column's NOT NULL constraint when you do not name
- * it — `ChooseConstraintName(relname, attname, "not_null", …)`.
+ * it — `ChooseConstraintName(relname, attname, "not_null", …)` with nothing in the way.
+ *
+ * Deliberately the *unsuffixed* form, and deliberately what the extractor compares
+ * against. A suffixed name does not compare equal, so the extractor classifies it as a
+ * USER name and carries it verbatim — the safe direction, and the only one that
+ * converges: PostgreSQL picks the suffix from the catalog state at the moment the
+ * constraint is created, which for a plan is the middle of an apply, not the end of it.
+ * We never invent a name we cannot also spell out.
  */
 export function defaultNotNullName(table: string, column: string): string {
   return makeObjectName(table, column, "not_null");

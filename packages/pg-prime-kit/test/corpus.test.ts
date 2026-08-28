@@ -72,6 +72,57 @@ const CORPUS: readonly Case[] = [
     current: "uniqueness/current.sql",
     desired: "uniqueness/desired.sql",
   },
+  // ---- K3: one pair per Tier-M kind (design/11 §2 R16) ----
+  // PG 18's `contype = 'n'` validity, and the §3.5 lock-safe SET NOT NULL on both sides
+  // of the catalog gate.
+  {
+    name: "not-null-validity",
+    slug: "nnv",
+    current: "not-null-validity/current.sql",
+    desired: "not-null-validity/desired.sql",
+  },
+  // `ChooseConstraintName`'s uniquifying suffix: without it the 15-17 rewrite collides.
+  {
+    name: "name-collision",
+    slug: "nco",
+    current: "name-collision/current.sql",
+    desired: "name-collision/desired.sql",
+  },
+  { name: "exclude", slug: "exc", current: "exclude/current.sql", desired: "exclude/desired.sql" },
+  { name: "domain", slug: "dom", current: "domain/current.sql", desired: "domain/desired.sql" },
+  {
+    name: "composite",
+    slug: "cmp",
+    current: "composite/current.sql",
+    desired: "composite/desired.sql",
+  },
+  {
+    name: "comment",
+    slug: "cmt",
+    current: "comment/current.sql",
+    desired: "comment/desired.sql",
+    schemas: ["public", "docs"],
+  },
+  {
+    name: "extension",
+    slug: "ext",
+    current: "extension/current.sql",
+    desired: "extension/desired.sql",
+  },
+  {
+    name: "partitioned",
+    slug: "par",
+    current: "partitioned/current.sql",
+    desired: "partitioned/desired.sql",
+  },
+  {
+    name: "column-default",
+    slug: "cdf",
+    current: "column-default/current.sql",
+    desired: "column-default/desired.sql",
+    // `fresh` is appended by ADD COLUMN, which is the only place it can go.
+    reordered: [],
+  },
   {
     name: "multi-schema/down",
     slug: "msd",

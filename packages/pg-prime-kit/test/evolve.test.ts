@@ -12,7 +12,13 @@ import { withClient } from "../src/db/pg.js";
 import { diffIR } from "../src/diff/diff.js";
 import { generate } from "../src/generate.js";
 import { applySegments } from "../src/runner/apply.js";
-import { ADMIN, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
+import {
+  ADMIN,
+  catalogsNotNullConstraints,
+  destroyDatabase,
+  makeDatabase,
+  serverAvailable,
+} from "./support/db.js";
 
 const CURRENT_DB = "pgprime_spike_evolve_current";
 const DESIRED_DB = "pgprime_spike_evolve_desired";
@@ -52,7 +58,20 @@ describe("evolution: diffing two populated catalogs", () => {
       const has = (re: RegExp): boolean => sql.some((s) => re.test(s));
       expect(has(/ALTER COLUMN "legacy_code" TYPE character varying\(16\)/)).toBe(true);
       expect(has(/ALTER COLUMN "signup_source" DROP DEFAULT/)).toBe(true);
-      expect(has(/ALTER COLUMN "signup_source" SET NOT NULL/)).toBe(true);
+      // §3.5 rows 4 and 5 — `SET NOT NULL` is lock-safely rewritten, and which rewrite
+      // depends on the CATALOG, not on `server_version_num`: PG >= 18 catalogues NOT NULL
+      // as a `pg_constraint` row and can add one `NOT VALID`, PG 15-17 has to prove it
+      // with a temporary CHECK and then let `SET NOT NULL` skip its scan.
+      if (await catalogsNotNullConstraints()) {
+        expect(has(/ADD CONSTRAINT "customers_signup_source_not_null" NOT NULL "signup_source" NOT VALID/)).toBe(true);
+        expect(has(/VALIDATE CONSTRAINT "customers_signup_source_not_null"/)).toBe(true);
+        expect(has(/ALTER COLUMN "signup_source" SET NOT NULL/)).toBe(false);
+      } else {
+        expect(has(/ADD CONSTRAINT "customers_signup_source_not_null" CHECK \("signup_source" IS NOT NULL\) NOT VALID/)).toBe(true);
+        expect(has(/VALIDATE CONSTRAINT "customers_signup_source_not_null"/)).toBe(true);
+        expect(has(/ALTER COLUMN "signup_source" SET NOT NULL/)).toBe(true);
+        expect(has(/DROP CONSTRAINT IF EXISTS "customers_signup_source_not_null"/)).toBe(true);
+      }
       expect(has(/ADD COLUMN IF NOT EXISTS "country" text DEFAULT 'US'::text NOT NULL/)).toBe(true);
       expect(has(/DROP COLUMN IF EXISTS "note"/)).toBe(true);
       expect(has(/DROP INDEX IF EXISTS "public"."orders_note_idx"/)).toBe(true);

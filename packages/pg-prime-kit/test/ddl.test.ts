@@ -28,7 +28,16 @@ function irWithIndex(indexName: string): SchemaIR {
     {
       id: { kind: "table", schema: "public", name: "t" },
       parent: { kind: "schema", schema: "public" },
-      payload: { kind: "table", relkind: "r", persistence: "p", rowSecurity: false },
+      payload: {
+        kind: "table",
+        relkind: "r",
+        persistence: "p",
+        rowSecurity: false,
+        partitionStrategy: null,
+        partitionKey: null,
+        partitionOf: null,
+        partitionBound: null,
+      },
       provenance: CATALOG_PROVENANCE,
     },
     {

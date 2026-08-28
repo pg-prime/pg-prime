@@ -194,7 +194,16 @@ export async function proveOnShadowClone(input: ProveInput): Promise<ProofResult
       });
     }
     // Fingerprint equality is the stronger statement: it covers edges too.
-    if (after.ir.fingerprint !== input.desired.fingerprint) {
+    //
+    // Except where the differ deliberately refuses to converge. An adopted partition and
+    // a retained extension are facts the clone keeps ON PURPOSE (design/05 §7.2, design/06
+    // §2.2) — demanding fingerprint equality there would demand a DROP the design forbids,
+    // and every plan touching a partitioned table would be refused. The delta check above
+    // is still exact; only the whole-IR hash is waived, and only when the diff said why.
+    const adopted = residual.diagnostics.filter(
+      (d) => d.code === "adopted_partition" || d.code === "extension_retained",
+    );
+    if (adopted.length === 0 && after.ir.fingerprint !== input.desired.fingerprint) {
       return await fail({
         status: "failed",
         at: new Date().toISOString(),

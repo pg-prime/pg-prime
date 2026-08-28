@@ -9,7 +9,18 @@
  */
 
 export { canonicalize, contentHash, sha256, type Hash, type Payload } from "./ir/hash.js";
-export { encodeId, parseId, idName, parentOf, type FactKind, type StableId } from "./ir/stable-id.js";
+export {
+  encodeId,
+  parseId,
+  idName,
+  idSchema,
+  parentOf,
+  commentId,
+  defaultId,
+  sameId,
+  type FactKind,
+  type StableId,
+} from "./ir/stable-id.js";
 export {
   SchemaIR,
   CATALOG_PROVENANCE,
@@ -21,13 +32,29 @@ export {
   type Provenance,
 } from "./ir/fact.js";
 
-export { extractCatalog, evaluatedEnumLabels, type CatalogClient, type Diagnostic, type ExtractResult } from "./catalog/extract.js";
+export {
+  extractCatalog,
+  evaluatedEnumLabels,
+  observationDiagnostics,
+  observedCounts,
+  probeEmptiness,
+  type CatalogClient,
+  type Diagnostic,
+  type ExtractOptions,
+  type ExtractResult,
+} from "./catalog/extract.js";
 export type * from "./catalog/payloads.js";
 
 export { diffIR, isEmptyDiff, labelsOf, type DiffOptions, type DiffResult } from "./diff/diff.js";
 export { applyRenameHints, definitionsAgreeUnderRename, tokenizeDefinition } from "./diff/rename.js";
 export type { Delta, RenameHint, RenameRecord } from "./diff/delta.js";
-export { buildStatements, columnClause, type BuildResult } from "./diff/ddl.js";
+export {
+  buildStatements,
+  columnClause,
+  mentionsVolatileFunction,
+  type BuildOptions,
+  type BuildResult,
+} from "./diff/ddl.js";
 export { orderStatements, type OrderResult, type Segment } from "./diff/order.js";
 export { PHASE, type LockClass, type Statement, type Transactionality } from "./diff/statement.js";
 
@@ -125,6 +152,9 @@ export {
 } from "./db/pg.js";
 
 export {
+  chooseConstraintName,
+  defaultNotNullName,
+  makeObjectName,
   quoteIdent,
   quoteLiteral,
   quoteQualified,
@@ -136,4 +166,47 @@ export {
   MAX_IDENT_BYTES,
   type IdentifierProblem,
 } from "./sql/ident.js";
-export { canonicalize as canonicalizeSql, dollarTagAt, lexSql, splitStatements, type Segment as SqlSegment } from "./sql/statements.js";
+export {
+  canonicalize as canonicalizeSql,
+  codeMask,
+  dollarTagAt,
+  lexSql,
+  splitStatements,
+  type Segment as SqlSegment,
+} from "./sql/statements.js";
+
+/* ---- Tier R: repeatables (design/06 §3.8, §5.1 step 8) ---- */
+export {
+  applyRepeatables,
+  checkIdempotence,
+  createRepeatablesPass,
+  loadRepeatables,
+  parseDirectives,
+  planRepeatables,
+  RepeatableApplyError,
+  scanRepeatables,
+  type AppliedRepeatable,
+  type Directive,
+  type IdempotenceResult,
+  type IdempotenceViolation,
+  type RepeatableClient,
+  type RepeatableFile,
+  type RepeatablesPass,
+  type RepeatablesPlan,
+  type ScanOptions,
+} from "./repeatables/index.js";
+
+/* ---- `migrate lint`, as a pure function (design/06 §3.4, §6.2) ---- */
+export {
+  formatFindings,
+  lintPlan,
+  parseNolint,
+  unusedDirectives,
+  type DirectiveError,
+  type LintFinding,
+  type LintFormat,
+  type LintOptions,
+  type LintResult,
+  type NolintDirective,
+} from "./lint/lint.js";
+export { planRules, isStyleCode, STYLE_CODES, type RuleHit } from "./lint/rules.js";
