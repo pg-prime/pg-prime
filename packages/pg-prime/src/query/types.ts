@@ -80,6 +80,31 @@ import type { SqlSnapshot } from './terminals.js'
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The `Table` behind a handle. */
+/**
+ * The session layer's vocabulary (`07` §1, §3, §6). Types only, from `src/session/types.ts`, so
+ * naming a handle costs no runtime import.
+ */
+import type {
+  AccessMode,
+  AdvisoryLock,
+  AdvisoryLockOptions,
+  CallOptions,
+  IsolationLevel,
+  ListenOptions,
+  NoHandleEscape,
+  NotificationHandler,
+  RunCallOptions,
+  Runnable,
+  SavepointOptions,
+  StreamCallOptions,
+  Subscription,
+  TxOptions,
+} from '../session/types.js'
+import type { CopyFromApi, CopyToApi } from '../session/handles.js'
+import type { PoolStats } from '../errors/index.js'
+import type { QueryHooks } from '../observe/index.js'
+import type { DbDiagnosis, DiagnosePoolerOptions, PoolerDiagnosis } from '../pooler/index.js'
+
 export type TableAt<H extends AnyHandle> = TableOf<H[typeof SCHEMA], H[typeof NAME]>
 
 /**
@@ -877,23 +902,156 @@ export interface Executor {
 }
 
 /**
- * The database handle — an {@link Executor} plus the schema's table handles and `transaction`.
+ * **Anything you can run a query against** (`07` §1.3). Helper functions should take THIS.
  *
  * `db.h.users` rather than the bare `users` from the schema file: `03` §2 sketches `db.from(users)`,
  * but WS1 typed the builder against `AnyHandle` (a `[SCHEMA]` + `[NAME]` pair) rather than against
  * `Table`, because relations live on the schema and a bare table would silently have none. The
  * handle is the thing that knows which schema it belongs to; `h` is where they live.
+ *
+ * Two divergences from `07` §1.3's listing, both inherited from `03`'s as-built builder:
+ *
+ *  - the query entry points are `from` / `insertInto` / `update` / `deleteFrom` (on {@link Executor}),
+ *    not `select` / `insert` / `update` / `delete` — `03` §2's spelling, which every golden uses;
+ *  - `run` / `explain` / `stream` accept anything that compiles (a builder, a prepared query, or a
+ *    `Compiled`), which is strictly wider than `07`'s `CompiledQuery<T> | Query<T>`.
  */
-export interface SchemaExecutor<Sc extends AnySchema> extends Executor {
+export interface Queryable<Sc extends AnySchema> extends Executor {
   readonly h: { readonly [K in keyof Sc[typeof TABLES] & string]: Handle<Sc, K> }
+
+  /** `'db' | 'tx' | 'session'`. The discriminant that makes the three mutually non-assignable. */
+  readonly kind: 'db' | 'tx' | 'session'
+
+  /** The schema this handle was built from. */
+  readonly schema: Sc
+
+  /** Execute an already-built query (`07` §1.3, §2.5). */
+  run<O>(q: Runnable<O>, opts?: RunCallOptions): Promise<O[]>
+
+  /** `EXPLAIN` any query, with `07` §7.5's rollback rail for a mutating statement under `analyze`. */
+  explain<O>(q: Runnable<O>, opts?: ExplainOptions): Promise<ExplainResult>
+
+  /** Server-side cursor as an async iterable (`07` §6.3). Transaction-scoped, `WITHOUT HOLD`. */
+  stream<O>(q: Runnable<O>, opts?: StreamCallOptions): AsyncIterable<O>
+
+  /** The same cursor, one array per `FETCH` (decision 10 of design/12 §1). */
+  streamBatches<O>(q: Runnable<O>, opts?: StreamCallOptions): AsyncIterable<O[]>
+
+  /**
+   * `pg_notify($1, $2)` — works in **every** pooler profile, including the two where `listen()`
+   * does not. The matrix is asymmetric and this is the asymmetry.
+   */
+  notify(channel: string, payload?: string): Promise<void>
+
+  /**
+   * The same handle with per-statement defaults folded in: `db.withOptions({ signal }).from(...)`.
+   *
+   * `07` §6.1 spells `signal` and `timeout` as builder methods; they live here because `Query` and
+   * `src/query/select.ts` belong to another workstream. `run(q, { signal })` is the other spelling.
+   */
+  withOptions(opts: CallOptions): Queryable<Sc>
+
+  /** `07` §1.5 layer 3's per-call opt-out from the dev guard, for a deliberate out-of-band query. */
+  outsideTransaction(): Queryable<Sc>
+
+  copyFrom: CopyFromApi
+  copyTo: CopyToApi
 }
 
-export interface Db<Sc extends AnySchema = AnySchema> extends SchemaExecutor<Sc> {
+/**
+ * @deprecated Renamed to {@link Queryable} (`07` §1.3, decision 3 of design/12 §1). The alias stays
+ * for one release.
+ */
+export type SchemaExecutor<Sc extends AnySchema> = Queryable<Sc>
+
+/**
+ * **The root handle.** Pool-backed; every statement may land on a different backend.
+ *
+ * `Db`, `Tx` and `Session` are mutually **non-assignable** — none is a subtype of the others, only
+ * {@link Queryable} is shared — and that is load-bearing (`07` §1.5 layer 2): a function that
+ * declares `tx: Tx<S>` cannot be handed the root `db`, which kills a large class of real bugs for
+ * free and is the thing Drizzle lacks.
+ */
+export interface Db<Sc extends AnySchema = AnySchema> extends Queryable<Sc> {
+  readonly kind: 'db'
+
   /**
-   * Everything inside runs on one connection inside one `BEGIN … COMMIT`, and a bulk insert
-   * within it does NOT open its own (03 §2.6). Rolls back and rethrows on any rejection.
+   * Everything inside runs on one connection inside one `BEGIN … COMMIT`, and a bulk insert within
+   * it does NOT open its own (`03` §2.6). Rolls back and rethrows on any rejection; retries a
+   * `40001` at repeatable read / serializable (`07` §3.4).
+   *
+   * Name the parameter `db`, not `tx`: shadowing the outer handle is `07` §1.5 layer 1 and it is
+   * the cheapest, highest-yield half of the whole footgun story.
    */
-  transaction<T>(f: (tx: SchemaExecutor<Sc>) => Promise<T>): Promise<T>
+  transaction<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: TxOptions): Promise<NoHandleEscape<T>>
+  transaction<T>(opts: TxOptions, fn: (db: Tx<Sc>) => Promise<T>): Promise<NoHandleEscape<T>>
+
+  /** Pin one pool connection without opening a transaction (`07` §1.4). */
+  session<T>(fn: (s: Session<Sc>) => Promise<T>): Promise<NoHandleEscape<T>>
+
+  listen(channel: string, handler: NotificationHandler, opts?: ListenOptions): Promise<Subscription>
+
+  diagnosePooler(opts?: DiagnosePoolerOptions): Promise<PoolerDiagnosis>
+  diagnose(): Promise<DbDiagnosis>
+  observe(hooks: QueryHooks): () => void
+  stats(): PoolStats | undefined
+
+  /** Optional eager warm-up. `pgPrime` itself opens no socket. */
+  connect(): Promise<void>
+  end(): Promise<void>
+  [Symbol.asyncDispose](): Promise<void>
+}
+
+/** Inside a transaction. Same query surface; different capabilities. */
+export interface Tx<Sc extends AnySchema = AnySchema> extends Queryable<Sc> {
+  readonly kind: 'tx'
+  /** 1 for the first attempt; increments on serialization retry (`07` §3.4). */
+  readonly attempt: number
+  /** 0 = outermost; > 0 = savepoint. */
+  readonly depth: number
+  readonly isolation: IsolationLevel
+  readonly accessMode: AccessMode
+
+  /**
+   * Nested → `SAVEPOINT`. Isolation, access mode, deferrable and retry are absent **by
+   * construction** (`07` §3.3): PostgreSQL cannot change the first three mid-transaction, and a
+   * `40001` aborts the whole transaction so retrying at savepoint level is meaningless.
+   */
+  transaction<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: SavepointOptions): Promise<NoHandleEscape<T>>
+  savepoint<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: SavepointOptions): Promise<NoHandleEscape<T>>
+
+  /** Transaction-local GUCs via parameterised `set_config(…, true)` (`07` §3.5). RLS in one line. */
+  setLocal(name: string, value: string | number | boolean): Promise<void>
+  setLocal(settings: Readonly<Record<string, string | number | boolean>>): Promise<void>
+
+  /** `pg_advisory_xact_lock` and friends — the only advisory locks safe behind a pooler. */
+  advisoryLock(key: bigint | string, opts?: AdvisoryLockOptions): Promise<boolean>
+
+  /** Abort. Throws `TransactionRollback`, which `db.transaction` rethrows. */
+  rollback(): never
+  /** Abort but resolve the transaction with `value`, fully typed, no `| undefined` (`07` §3.7). */
+  rollbackWith<V>(value: V): V
+
+  /** Live server-side transaction state, for assertions and diagnostics. */
+  readonly status: 'idle' | 'active' | 'failed'
+
+  withOptions(opts: CallOptions): Tx<Sc>
+  outsideTransaction(): Tx<Sc>
+}
+
+/** A pinned connection with no open transaction (`07` §1.4). */
+export interface Session<Sc extends AnySchema = AnySchema> extends Queryable<Sc> {
+  readonly kind: 'session'
+  transaction<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: TxOptions): Promise<NoHandleEscape<T>>
+  /** Session-level GUCs, `set_config(…, false)`. Refused under a transaction-pooler profile. */
+  set(name: string, value: string | number | boolean): Promise<void>
+  set(settings: Readonly<Record<string, string | number | boolean>>): Promise<void>
+  /** Session-level advisory lock. Refused under a transaction pooler; use `tx.advisoryLock`. */
+  advisoryLock(key: bigint | string, opts?: AdvisoryLockOptions): Promise<AdvisoryLock | boolean>
+  readonly backendPid: number | undefined
+
+  withOptions(opts: CallOptions): Session<Sc>
+  outsideTransaction(): Session<Sc>
 }
 
 /**
@@ -1235,6 +1393,31 @@ export { over } from './window.js'
 export type { Bound, FrameOpts, WindowLiteral, WindowSpec } from './window.js'
 export { pgPrime, compileOnly, statementStats } from './run.js'
 export type { PgPrimeOptions, StatementStats } from './run.js'
+export type {
+  AccessMode,
+  AdvisoryLock,
+  AdvisoryLockOptions,
+  CallOptions,
+  ConnectionParams,
+  CopyOptions,
+  CopyResult,
+  Duration,
+  IsolationLevel,
+  ListenOptions,
+  NoHandleEscape,
+  NotificationHandler,
+  PoolOptions,
+  RetryPolicy,
+  RunCallOptions,
+  Runnable,
+  SavepointOptions,
+  SessionDefaults,
+  StreamCallOptions,
+  Subscription,
+  TransactionDefaults,
+  TxOptions,
+  TxOptionsBase,
+} from '../session/types.js'
 export { placeholder } from './prepared.js'
 export type { PrepareOptions, PreparedQuery } from './prepared.js'
 export { clearDescribeCache, describeCacheStats } from './executor.js'

@@ -290,6 +290,7 @@ export type {
   PgExecMode,
   PgField,
   PgLikeClient,
+  PgLikeDedicatedClient,
   PgLikePool,
   PgLikeQueryConfig,
   PgLikeResult,
@@ -308,7 +309,162 @@ export type {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export { compileOnly, pgPrime, statementStats } from './query/run.js'
-export type { PgPrimeOptions, StatementStats } from './query/run.js'
+export type { CopyFromApi, CopyToApi, DbConfig, PgPrimeOptions, StatementStats } from './query/run.js'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The session layer (design/07). Handles, transactions, errors, pooler profiles,
+// observability. `src/query/types.ts` owns the four handle TYPES; everything else lives under
+// `src/{session,errors,pooler,observe}/`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export { presets } from './session/config.js'
+export type {
+  AccessMode,
+  AdvisoryLock,
+  AdvisoryLockOptions,
+  CallOptions,
+  ConnectionParams,
+  CopyOptions,
+  CopyResult,
+  Duration,
+  IsolationLevel,
+  ListenOptions,
+  NoHandleEscape,
+  NotificationHandler,
+  PoolOptions,
+  RetryPolicy,
+  RunCallOptions,
+  Runnable,
+  SavepointOptions,
+  SessionDefaults,
+  StreamCallOptions,
+  Subscription,
+  TransactionDefaults,
+  TxOptions,
+  TxOptionsBase,
+} from './session/types.js'
+export { MAX_NOTIFY_PAYLOAD_BYTES } from './session/listen.js'
+
+/**
+ * The error hierarchy (`07` §4.2), the SQLSTATE table as data (§4.5), the redaction policy (§4.3)
+ * and the constraint→schema-object predicates (§4.4).
+ *
+ * `PgPrimeError` is the root of everything, including the builder's own errors, and is exported
+ * from the `sql` block above.
+ */
+export {
+  AbortError,
+  AccessError,
+  AuthenticationError,
+  CachedPlanChangedError,
+  CheckViolationError,
+  ConfigError,
+  ConnectionError,
+  ConnectionRefusedError,
+  ConnectionTerminatedError,
+  ConnectionTimeoutError,
+  DataError,
+  DbClosedError,
+  DeadlockDetectedError,
+  DiskFullError,
+  DivisionByZeroError,
+  DuplicateStatementError,
+  DuplicateTableError,
+  ExclusionViolationError,
+  ForeignKeyViolationError,
+  HandleMisuseError,
+  IdleInTransactionTimeoutError,
+  InFailedTransactionError,
+  IndeterminateCommitError,
+  InsufficientPrivilegeError,
+  InsufficientResourcesError,
+  IntegrityConstraintError,
+  InvalidDatetimeFormatError,
+  InvalidPasswordError,
+  InvalidStatementNameError,
+  InvalidTextRepresentationError,
+  LockNotAvailableError,
+  NotNullViolationError,
+  NumericValueOutOfRangeError,
+  OperatorInterventionError,
+  OutOfMemoryError,
+  PoolTimeoutError,
+  PreparedStatementError,
+  QueryCanceledError,
+  QueryError,
+  QueryTimeoutError,
+  ReadOnlySqlTransactionError,
+  RestrictViolationError,
+  SQLSTATE_CLASS_FALLBACK,
+  SQLSTATE_MAP,
+  SchemaObjectError,
+  SerializationFailureError,
+  SqlSyntaxError,
+  StringDataRightTruncationError,
+  TimeoutError,
+  TooManyConnectionsError,
+  TransactionAbandonedError,
+  TransactionClosedError,
+  TransactionError,
+  TransactionRollback,
+  TransactionTimeoutError,
+  UndefinedColumnError,
+  UndefinedFunctionError,
+  UndefinedTableError,
+  UniqueViolationError,
+  UnknownQueryError,
+  UnsupportedInPoolerModeError,
+  UsageError,
+  classForSqlState,
+  isCheckViolation,
+  isForeignKeyViolation,
+  isNotNullViolation,
+  isUniqueViolation,
+} from './errors/index.js'
+export type {
+  ColumnRef,
+  ConstraintKind,
+  ConstraintRef,
+  ErrorContext,
+  ErrorOptions,
+  HandleKind,
+  PoolStats,
+  QueryErrorCtor,
+  SqlState,
+  TableRef,
+} from './errors/index.js'
+
+/** Pooler profiles as data (§5.1) and the two read-only diagnostics (§5.4). */
+export { POOLER_MODES, POOLER_PROFILES, profileOf } from './pooler/index.js'
+export type {
+  DbDiagnosis,
+  DiagnosePoolerOptions,
+  DiagnosticSignal,
+  PoolerDiagnosis,
+  PoolerMode,
+  PoolerProfile,
+} from './pooler/index.js'
+
+/** Hooks, the OTel mapping as pure data + functions (§7.2), and the slow-query log (§7.3). */
+export { SEMCONV, spanAttributes, spanName } from './observe/index.js'
+export type {
+  InternalEvent,
+  LogLevel,
+  LogOptions,
+  LogRecord,
+  NoticeEvent,
+  PoolEvent,
+  QueryEndEvent,
+  QueryErrorEvent,
+  QueryHooks,
+  QueryOperation,
+  QueryStartEvent,
+  RetryEvent,
+  SpanAttributes,
+  SpanContext,
+  TxEndEvent,
+  TxStartEvent,
+} from './observe/index.js'
 
 /**
  * The executor (design/09 WS6). `placeholder` is the `.prepare()` hole — a free function, like
@@ -326,6 +482,8 @@ export type {
   ExplainOptions,
   ExplainResult,
   PreparedStatementOptions,
+  RunOptions,
+  RunTiming,
   StatementMode,
   StreamOptions,
 } from './query/executor.js'
@@ -499,6 +657,7 @@ export type {
   RelOpts,
   RelPickers,
   ResultRefs,
+  Queryable,
   RowOf,
   RowSource,
   ScopeOf,
@@ -510,7 +669,9 @@ export type {
   Sources,
   SubQuery,
   SchemaExecutor,
+  Session,
   TableAt,
+  Tx,
   UpdateQuery,
   ValueRefs,
   WithOpts,

@@ -14,6 +14,7 @@ import {
   executeCappedViaSubmittable,
   toPgField,
 } from './submittable.js'
+import { copyInViaSubmittable, copyOutViaSubmittable } from './copy.js'
 import { PgDriverError, normaliseError, toServerErrorData, isServerErrorShape } from './errors.js'
 import type { NormaliseOptions } from './errors.js'
 import type {
@@ -21,6 +22,7 @@ import type {
   PgLikeCancelClient,
   PgLikeClient,
   PgLikeConnection,
+  PgLikeDedicatedClient,
   PgLikePool,
   PgLikePoolClient,
   PgLikeQueryConfig,
@@ -31,6 +33,8 @@ import type {
   PgAcquireOptions,
   PgCapabilities,
   PgConnection,
+  PgCopyOptions,
+  PgCopyResult,
   PgDescribeResult,
   PgDriver,
   PgField,
@@ -679,6 +683,34 @@ class PgConnectionImpl implements PgConnection {
   }
 
   /**
+   * `COPY … FROM STDIN` (design/07 §6.6, decision 9 of design/12 §1).
+   *
+   * The statement goes out over the simple query protocol — COPY carries no bind parameters, so
+   * there is nothing the extended protocol could add — and the payload rides pg's own
+   * `sendCopyData` / `sendCopyDone`. That is the API `pg-copy-streams` itself uses, which is why
+   * `07` §6.6's optional peer dependency is not needed.
+   */
+  async copyIn(
+    sql: string,
+    source: AsyncIterable<Uint8Array>,
+    options?: PgCopyOptions,
+  ): Promise<PgCopyResult> {
+    this.#assertUsable(sql)
+    return this.#run({ text: sql, params: [], ...(options?.signal ? { signal: options.signal } : {}) }, async (entry) =>
+      Promise.race([
+        copyInViaSubmittable(this.#client, sql, source, options?.signal, entry.notices),
+        entry.failed,
+      ]),
+    )
+  }
+
+  /** `COPY … TO STDOUT`. Raw `CopyData` payloads; the caller owns framing (text/csv/binary). */
+  copyOut(sql: string, options?: PgCopyOptions): AsyncIterable<Uint8Array> {
+    this.#assertUsable(sql)
+    return copyOutViaSubmittable(this.#client, sql, options?.signal)
+  }
+
+  /**
    * Cancel whatever is currently on this connection's wire. No-op when nothing is running (§2.2).
    *
    * Two paths: a protocol CancelRequest on its own socket when the caller supplied
@@ -771,6 +803,8 @@ class PgDriverImpl implements PgDriver {
   #destroyed = false
   #capabilities: PgCapabilities
   readonly #live = new Map<PgConnection, PgLikePoolClient>()
+  /** Connections handed out by `connect()`: not the pool's, so `release` ends them instead. */
+  readonly #dedicated = new WeakSet<PgConnection>()
 
   constructor(config: PgDriverConfig) {
     this.#config = config
@@ -783,8 +817,10 @@ class PgDriverImpl implements PgDriver {
       describe: true,
       richFieldMetadata: true,
       cursors: true,
-      copyIn: false,
-      copyOut: false,
+      // Real since design/12 §3 S: `./copy.ts` drives pg's connection-level COPY messages, so
+      // there is no optional peer and no capability to apologise for.
+      copyIn: true,
+      copyOut: true,
       listenNotify: true,
       // Honest, not aspirational: without `createCancelClient` the only cancel we can perform is
       // `pg_cancel_backend` from a second POOLED connection (§5.4). Supply `createCancelClient`
@@ -865,6 +901,42 @@ class PgDriverImpl implements PgDriver {
     return conn
   }
 
+  /**
+   * A connection the pool does not own — `07` §6.5's requirement for `LISTEN`.
+   *
+   * Two paths, and the second is a deliberate, documented compromise.
+   *
+   *  1. **`createDedicatedClient`** (what `pgPrime({ connection })` always supplies, derived from
+   *     the same config the pool was built from): a fresh client, connected here, closed on
+   *     `release(conn, { dispose: true })`. This is the design.
+   *  2. **No factory** — a bring-your-own `pool:` we cannot construct a sibling client for. Rather
+   *     than refuse `db.listen()` outright for every such user, we check a connection out of the
+   *     pool and never give it back for the subscription's lifetime, which costs exactly one pool
+   *     slot. The runtime warns, once, and names `createDedicatedClient` as the fix. `07` §6.5's
+   *     objection to a pool client is that it *silently* shrinks `max`; saying so out loud is the
+   *     difference.
+   */
+  async connect(options?: PgAcquireOptions): Promise<PgConnection> {
+    const make = this.#config.createDedicatedClient
+    if (make === undefined) return this.acquire(options)
+    const client = make()
+    await client.connect()
+    const wrapped = asPoolClient(client)
+    const conn = new PgConnectionImpl(wrapped, this)
+    conn.attachClientListeners()
+    try {
+      await conn.loadServerParameters()
+    } catch (e) {
+      conn.detachClientListeners()
+      await client.end().catch(() => {})
+      if (e instanceof PgDriverError) throw e
+      throw new PgDriverError(normaliseError(e, { adapter: ADAPTER, sql: SERVER_PARAMS_SQL }))
+    }
+    this.#live.set(conn, wrapped)
+    this.#dedicated.add(conn)
+    return conn
+  }
+
   async release(connection: PgConnection, options?: { dispose?: boolean }): Promise<void> {
     const client = this.#live.get(connection)
     if (!client) return
@@ -881,6 +953,11 @@ class PgDriverImpl implements PgDriver {
       status === 'E'
     if (connection instanceof PgConnectionImpl) connection.detachClientListeners()
     client.release(dispose ? true : undefined)
+  }
+
+  /** @internal — `connect()`'s connections are ended, not returned. */
+  isDedicated(connection: PgConnection): boolean {
+    return this.#dedicated.has(connection)
   }
 
   async destroy(): Promise<void> {
@@ -955,6 +1032,25 @@ class PgDriverImpl implements PgDriver {
       client.release()
     }
   }
+}
+
+/**
+ * A dedicated client, wearing a `PgLikePoolClient`'s `release`.
+ *
+ * `PgConnectionImpl` is written against a pool client, and the *only* member a dedicated one lacks
+ * is `release`. Giving it one that ends the socket is four lines and keeps a single connection
+ * implementation, which matters because everything subtle in this file — the error listener that
+ * stops an unhandled `'error'` from exiting the process, the ReadyForQuery hold, the notice
+ * attribution — would otherwise have to exist twice.
+ */
+function asPoolClient(client: PgLikeDedicatedClient): PgLikePoolClient {
+  const wrapped = client as PgLikeDedicatedClient & { release?: (err?: Error | boolean) => void }
+  if (typeof wrapped.release !== 'function') {
+    wrapped.release = () => {
+      void client.end().catch(() => {})
+    }
+  }
+  return wrapped as PgLikePoolClient
 }
 
 function numOrUndefined(v: unknown): number | undefined {
