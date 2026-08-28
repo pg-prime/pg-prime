@@ -478,3 +478,191 @@ describe('plan-ability — PostgreSQL parses, analyses and plans every golden', 
     }
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `$all`, right / full / cross and the two laterals, against the server (12 B)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('§2.1 — `$all` (12 B)', () => {
+  it('R3: the spread returns every column, decoded, with the promised types', async () => {
+    const rows = await live.db
+      .from(h().tags)
+      .select(({ tags: t }) => ({ ...t.$all }))
+      .orderBy(({ tags: t }) => q.asc(t.id))
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ id: bigint; name: string }[]>()
+    // The oracle is a hand-written statement, not the same builder read back (R1).
+    const oracle = await live.raw(`select id, name from ${live.fx.ns}.tags order by id`)
+    expect(rows).toStrictEqual(oracle.map(([id, name]) => ({ id: BigInt(id as string), name })))
+  })
+
+  it('omit() removes exactly one column from the emitted list, and nothing else', async () => {
+    const rows = await live.db
+      .from(h().tags)
+      .select(({ tags: t }) => ({ ...q.omit(t.$all, 'name') }))
+      .orderBy(({ tags: t }) => q.asc(t.id))
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ id: bigint }[]>()
+    expect(rows).toStrictEqual(
+      (await live.raw(`select id from ${live.fx.ns}.tags order by id`)).map(([id]) => ({
+        id: BigInt(id as string),
+      })),
+    )
+  })
+
+  it('under a LEFT JOIN every column nulls on its own — not the object', async () => {
+    const rows = await live.db
+      .from(h().users, 'u')
+      .leftJoin(h().posts, 'p', ({ u, p }) => q.and(q.eq(p.authorId, u.id), q.eq(p.title, 'nope')))
+      .select(({ u, p }) => ({ email: u.email, id: p.id, title: p.title }))
+      .where(({ u }) => q.eq(u.email, 'cyd@example.com'))
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ email: string; id: bigint | null; title: string | null }[]>()
+    expect(rows).toStrictEqual([{ email: 'cyd@example.com', id: null, title: null }])
+  })
+})
+
+describe('§2.2 — right / full / cross joins (12 B)', () => {
+  /** Cyd has no posts, so a RIGHT join from posts keeps her row and nulls the post side. */
+  it('right join: the driving side nulls, and the server agrees', async () => {
+    const rows = await live.db
+      .from(h().posts, 'p')
+      .rightJoin(h().users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
+      .select(({ p, u }) => ({ email: u.email, title: p.title }))
+      .where(({ u }) => q.eq(u.email, 'cyd@example.com'))
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ email: string; title: string | null }[]>()
+    const oracle = await live.raw(
+      `select u.email, p.title from ${live.fx.ns}.posts p
+         right join ${live.fx.ns}.users u on p.author_id = u.id
+        where u.email = 'cyd@example.com'`,
+    )
+    expect(rows).toStrictEqual(oracle.map(([email, title]) => ({ email, title })))
+    expect(rows).toStrictEqual([{ email: 'cyd@example.com', title: null }])
+  })
+
+  it('full join: both sides null, and both null rows appear', async () => {
+    const rows = await live.db
+      .from(h().posts, 'p')
+      .fullJoin(h().users, 'u', ({ p, u }) => q.and(q.eq(p.authorId, u.id), q.eq(p.title, 'first')))
+      .select(({ p, u }) => ({ email: u.email, title: p.title }))
+      .orderBy(() => [q.asc(q.sql`1`.as(textCodec)), q.asc(q.sql`2`.as(textCodec))])
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ email: string | null; title: string | null }[]>()
+    const oracle = await live.raw(
+      `select u.email, p.title from ${live.fx.ns}.posts p
+         full join ${live.fx.ns}.users u on p.author_id = u.id and p.title = 'first'
+        order by 1, 2`,
+    )
+    expect(rows).toStrictEqual(oracle.map(([email, title]) => ({ email, title })))
+    // The point of a FULL join: rows with a null on each side, in the same result.
+    expect(rows.some((r) => r.email === null)).toBe(true)
+    expect(rows.some((r) => r.title === null)).toBe(true)
+  })
+
+  it('cross join is the Cartesian product, to the row', async () => {
+    const rows = await live.db
+      .from(h().tags, 't')
+      .crossJoin(h().kv, 'k')
+      .select(({ t, k }) => ({ name: t.name, v: k.v }))
+      .orderBy(({ t, k }) => [q.asc(t.id), q.asc(k.k1)])
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ name: string; v: string }[]>()
+    const oracle = await live.raw(
+      `select t.name, k.v from ${live.fx.ns}.tags t cross join ${live.fx.ns}.kv k
+        order by t.id, k.k1`,
+    )
+    expect(rows).toStrictEqual(oracle.map(([name, v]) => ({ name, v })))
+    const tagCount = (await live.raw(`select count(*) from ${live.fx.ns}.tags`))[0]?.[0]
+    const kvCount = (await live.raw(`select count(*) from ${live.fx.ns}.kv`))[0]?.[0]
+    expect(rows).toHaveLength(Number(tagCount) * Number(kvCount))
+  })
+})
+
+describe('§2.2 — lateral joins (12 B)', () => {
+  it('inner join lateral, per-parent: the correlation is inside the sub-query', async () => {
+    const rows = await live.db
+      .from(h().users, 'u')
+      .innerJoinLateral(
+        (t) =>
+          live.db
+            .from(h().posts, 'p')
+            .where(({ p }) => q.eq(p.authorId, t.u.id))
+            .select(({ p }) => ({ id: p.id, title: p.title }))
+            .orderBy(({ p }) => [q.desc(p.createdAt), q.asc(p.id)])
+            .limit(2),
+        'recent',
+      )
+      .select(({ u, recent }) => ({ email: u.email, id: recent.id, title: recent.title }))
+      .orderBy(({ u, recent }) => [q.asc(u.email), q.asc(recent.id)])
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ email: string; id: bigint; title: string }[]>()
+
+    // The oracle is the window-function spelling of the same question — a different statement and
+    // a different plan for the same answer (R1).
+    const oracle = await live.raw(
+      `select email, id, title from (
+         select u.email, p.id, p.title,
+                row_number() over (partition by u.id order by p.created_at desc, p.id asc) rn
+           from ${live.fx.ns}.users u join ${live.fx.ns}.posts p on p.author_id = u.id
+       ) s where rn <= 2 order by email, id`,
+    )
+    expect(rows).toStrictEqual(
+      oracle.map(([email, id, title]) => ({ email, id: BigInt(id as string), title })),
+    )
+    expect(rows.length).toBeGreaterThan(0)
+  })
+
+  it('left join lateral keeps the parents whose lateral found nothing', async () => {
+    const rows = await live.db
+      .from(h().users, 'u')
+      .leftJoinLateral(
+        (t) =>
+          live.db
+            .from(h().posts, 'p')
+            .where(({ p }) => q.eq(p.authorId, t.u.id))
+            .select(({ p }) => ({ title: p.title }))
+            .limit(1),
+        'recent',
+      )
+      .select(({ u, recent }) => ({ email: u.email, title: recent.title }))
+      .where(({ u }) => q.eq(u.email, 'cyd@example.com'))
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ email: string; title: string | null }[]>()
+    expect(rows).toStrictEqual([{ email: 'cyd@example.com', title: null }])
+  })
+
+  it('the same query with an INNER lateral drops her — the negative control (R4)', async () => {
+    const rows = await live.db
+      .from(h().users, 'u')
+      .innerJoinLateral(
+        (t) =>
+          live.db
+            .from(h().posts, 'p')
+            .where(({ p }) => q.eq(p.authorId, t.u.id))
+            .select(({ p }) => ({ title: p.title }))
+            .limit(1),
+        'recent',
+      )
+      .select(({ u, recent }) => ({ email: u.email, title: recent.title }))
+      .where(({ u }) => q.eq(u.email, 'cyd@example.com'))
+      .execute()
+    expect(rows).toStrictEqual([])
+  })
+
+  it('every new join shape plans on this server', async () => {
+    for (const built of [
+      live.db
+        .from(h().posts, 'p')
+        .rightJoin(h().users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
+        .select(({ u }) => ({ id: u.id })),
+      live.db
+        .from(h().posts, 'p')
+        .fullJoin(h().users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
+        .select(({ u }) => ({ id: u.id })),
+      live.db.from(h().posts, 'p').crossJoin(h().users, 'u').select(({ u }) => ({ id: u.id })),
+    ]) {
+      await assertPlans(live, built.compile().sql, [], pgMajor())
+    }
+  })
+})

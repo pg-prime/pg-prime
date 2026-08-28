@@ -16,6 +16,7 @@
 import {
   defineRelations,
   defineSchema,
+  foreignKey,
   pgEnum,
   pgTable,
   primaryKey,
@@ -70,7 +71,10 @@ export function makeFixture(ns: string) {
     'posts',
     (t) => ({
       id: t.bigint().primaryKey().generatedAlways(),
-      authorId: t.bigint(),
+      // The DDL below declares every one of these keys; declaring them here too is what R5's
+      // "the two halves must never disagree" means for a constraint rather than a column, and it
+      // is what `inferredRelations` reads.
+      authorId: t.bigint().references(() => users[REFS].id),
       title: t.text(),
       body: t.text(),
       amount: t.numeric(),
@@ -82,7 +86,7 @@ export function makeFixture(ns: string) {
       k1: t.text().nullable(),
       k2: t.integer().nullable(),
     }),
-    undefined,
+    (t) => [foreignKey({ columns: [t.k1, t.k2], references: () => [kv[REFS].k1, kv[REFS].k2] })],
     opts,
   )
 
@@ -92,7 +96,7 @@ export function makeFixture(ns: string) {
       // `id` and `created_at` deliberately collide with users/posts: a positional decoder that
       // keys on column *name* instead of position clobbers one with the other in a join.
       id: t.bigint().primaryKey().generatedAlways(),
-      postId: t.bigint(),
+      postId: t.bigint().references(() => posts[REFS].id),
       body: t.text(),
       createdAt: t.timestamptz(),
     }),
@@ -113,8 +117,8 @@ export function makeFixture(ns: string) {
   const postTags = pgTable(
     'post_tags',
     (t) => ({
-      postId: t.bigint(),
-      tagId: t.bigint(),
+      postId: t.bigint().references(() => posts[REFS].id),
+      tagId: t.bigint().references(() => tags[REFS].id),
     }),
     (t) => [primaryKey(t.postId, t.tagId)],
     opts,
@@ -122,7 +126,7 @@ export function makeFixture(ns: string) {
 
   const tables = { users, posts, comments, tags, postTags, kv }
 
-  // Explicit `from`/`to` while FK inference is `unknown`-typed in the runtime (design/09 §5).
+  // Explicit `from`/`to`. `inferredRelations` below is the same graph with none of them.
   const relations = defineRelations(tables, (r) => ({
     users: {
       posts: r.many.posts({ from: users[REFS].id, to: posts[REFS].authorId }),
@@ -146,6 +150,27 @@ export function makeFixture(ns: string) {
   }))
 
   const schema = defineSchema(tables, relations)
+
+  /**
+   * The **same** relation graph, declared with no `from`/`to` at all (`12` decision 18).
+   *
+   * It exists so the live suite can run the differential that matters: every accessor of every
+   * relation must compile to byte-identical SQL and return identical rows whichever way the
+   * correlation was reached. An inference that picked the wrong column would otherwise be a
+   * plausible-looking query returning plausible-looking rows.
+   */
+  const inferredRelations = defineRelations(tables, (r) => ({
+    users: { posts: r.many.posts() },
+    posts: {
+      author: r.one.users(),
+      comments: r.many.comments(),
+      tags: r.many.tags({ through: postTags }),
+      kv: r.maybeOne.kv(),
+    },
+    comments: { post: r.one.posts() },
+  }))
+
+  const inferredSchema = defineSchema(tables, inferredRelations)
 
   const ddl = `
 create schema ${ns};
@@ -272,7 +297,23 @@ join ${ns}.posts p on p.title = v.title;
 
   const drop = `drop schema if exists ${ns} cascade`
 
-  return { ns, tables, users, posts, comments, tags, postTags, kv, relations, schema, ddl, seed, drop }
+  return {
+    ns,
+    tables,
+    users,
+    posts,
+    comments,
+    tags,
+    postTags,
+    kv,
+    relations,
+    schema,
+    inferredRelations,
+    inferredSchema,
+    ddl,
+    seed,
+    drop,
+  }
 }
 
 export type Fixture = ReturnType<typeof makeFixture>

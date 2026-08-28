@@ -819,3 +819,167 @@ describe('select distinct over a relation column', () => {
   })
 })
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// avg / min / max over a relation, and FK inference (12 B)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('avg / min / max over a relation (12 B)', () => {
+  it('R3: each aggregate returns what its declared codec promises, per user', async () => {
+    const rows = await live.db
+      .from(h().users, 'u')
+      .select(({ u }) => ({
+        email: u.email,
+        avgAmount: u.posts.avg((p) => p.amount),
+        maxAmount: u.posts.max((p) => p.amount),
+        minTitle: u.posts.min((p) => p.title),
+        newest: u.posts.max((p) => p.createdAt),
+      }))
+      .orderBy(({ u }) => q.asc(u.email))
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<
+      {
+        email: string
+        avgAmount: string | null
+        maxAmount: string | null
+        minTitle: string | null
+        newest: Date | null
+      }[]
+    >()
+
+    // A completely separate statement for the same answer: one GROUP BY, no laterals (R1).
+    const oracle = await live.raw(
+      `select u.email,
+              avg(p.amount)::text, max(p.amount)::text, min(p.title), max(p.created_at)::text
+         from ${ns()}.users u left join ${ns()}.posts p on p.author_id = u.id
+        group by u.email order by u.email`,
+    )
+    expect(rows).toStrictEqual(
+      oracle.map(([email, avgAmount, maxAmount, minTitle, newest]) => ({
+        email,
+        avgAmount,
+        maxAmount,
+        minTitle,
+        newest: newest === null || newest === undefined ? null : pgTs(newest),
+      })),
+    )
+    // Cyd has no posts: every one of them is NULL there, and `sum` would have been 0.
+    const cyd = rows.find((r) => r.email === 'cyd@example.com')
+    expect(cyd).toStrictEqual({
+      email: 'cyd@example.com',
+      avgAmount: null,
+      maxAmount: null,
+      minTitle: null,
+      newest: null,
+    })
+  })
+
+  it('R4 — sum on the same empty relation is 0, which is why avg is not coalesced', async () => {
+    const rows = await live.db
+      .from(h().users, 'u')
+      .select(({ u }) => ({ total: u.posts.sum((p) => p.amount), avg: u.posts.avg((p) => p.amount) }))
+      .where(({ u }) => q.eq(u.email, 'cyd@example.com'))
+      .execute()
+    expect(rows).toStrictEqual([{ total: '0', avg: null }])
+  })
+
+  it('the OID differential: the server confirms every relation aggregate\'s declared codec', async () => {
+    const built = live.db.from(h().users, 'u').select(({ u }) => ({
+      c: u.posts.count(),
+      s: u.posts.sum((p) => p.amount),
+      a: u.posts.avg((p) => p.amount),
+      mn: u.posts.min((p) => p.amount),
+      mx: u.posts.max((p) => p.createdAt),
+      mi: u.posts.min((p) => p.id),
+    }))
+    const compiled = built.compile()
+    const declared = (compiled.shape as { fields: readonly { key: string; codec: { name: string; oid?: number } }[] })
+      .fields
+    const r = await live.conn.execute({
+      text: `${compiled.sql}\nlimit 0`,
+      params: compiled.binds.map((b) => (b.k === 'value' ? b.encoded : null)),
+      paramTypes: compiled.binds.map((b) => (b.k === 'value' ? (b.oid ?? 0) : 0)),
+    })
+    expect(r.fields).toHaveLength(declared.length)
+    for (let i = 0; i < declared.length; i++) {
+      const d = declared[i]!
+      expect(d.codec.oid, `${d.key}: codec '${d.codec.name}' has no OID`).toBeDefined()
+      expect(r.fields[i]!.dataTypeID, `${d.key} declared ${d.codec.name}`).toBe(d.codec.oid)
+    }
+    // …and the widening the aggregate table claims is the one that shows up here.
+    expect(declared.map((d) => `${d.key}:${d.codec.name}`)).toStrictEqual([
+      'c:int8',
+      's:numeric',
+      'a:numeric',
+      'mn:numeric',
+      'mx:timestamptz',
+      'mi:int8',
+    ])
+  })
+
+  it('two identical avgs share one lateral, and the shared value is still right', async () => {
+    const built = live.db.from(h().users, 'u').select(({ u }) => ({
+      a: u.posts.avg((p) => p.amount),
+      b: u.posts.avg((p) => p.amount),
+    }))
+    expect(built.compile().sql.match(/left join lateral/g)).toHaveLength(1)
+    const rows = await built.execute()
+    for (const row of rows) expect(row.a).toBe(row.b)
+    expect(rows.some((r) => r.a !== null)).toBe(true)
+  })
+})
+
+describe('FK inference against the server (12 decision 18)', () => {
+  /**
+   * The differential that matters: the *same* relation graph, declared once with explicit
+   * `from`/`to` and once with none at all, must compile to byte-identical SQL and return
+   * identical rows. An inference that picked the wrong column would otherwise produce a
+   * plausible-looking query with plausible-looking rows.
+   */
+  const inferredDb = () => live.dbFor(live.fx.inferredSchema)
+
+  it('every accessor compiles to the same SQL either way', () => {
+    const explicit = live.db
+    const inferred = inferredDb()
+    const shapes = [
+      (d: typeof explicit) =>
+        d.from(h().users, 'u').select(({ u }) => ({ n: u.posts.count(), all: u.posts.all() })),
+      (d: typeof explicit) =>
+        d.from(h().posts, 'p').select(({ p }) => ({ a: p.author.all(), c: p.comments.count() })),
+      (d: typeof explicit) => d.from(h().posts, 'p').select(({ p }) => ({ t: p.tags.all() })),
+      (d: typeof explicit) => d.from(h().posts, 'p').select(({ p }) => ({ kv: p.kv.all() })),
+      (d: typeof explicit) => d.from(h().comments, 'c').select(({ c }) => ({ p: c.post.all() })),
+    ]
+    for (const shape of shapes) {
+      expect(shape(inferred as typeof explicit).compile().sql).toBe(shape(explicit).compile().sql)
+    }
+  })
+
+  it('…and returns the same rows, including the composite key and the m2m hop', async () => {
+    const explicitRows = await live.db
+      .from(h().posts, 'p')
+      .select(({ p }) => ({
+        title: p.title,
+        author: p.author.one((s) => s.select((a) => ({ email: a.email }))),
+        tags: p.tags.many((s) => s.select((t) => ({ name: t.name })).orderBy((t) => q.asc(t.id))),
+        kv: p.kv.one((s) => s.select((k) => ({ v: k.v }))),
+      }))
+      .orderBy(({ p }) => q.asc(p.id))
+      .execute()
+    const inferredRows = await inferredDb()
+      .from(live.fx.inferredSchema.h.posts, 'p')
+      .select(({ p }) => ({
+        title: p.title,
+        author: p.author.one((s) => s.select((a) => ({ email: a.email }))),
+        tags: p.tags.many((s) => s.select((t) => ({ name: t.name })).orderBy((t) => q.asc(t.id))),
+        kv: p.kv.one((s) => s.select((k) => ({ v: k.v }))),
+      }))
+      .orderBy(({ p }) => q.asc(p.id))
+      .execute()
+    expect(inferredRows).toStrictEqual(explicitRows)
+    expect(explicitRows.length).toBeGreaterThan(0)
+    // R4 — the rows are not all-empty: the m2m and the composite key really resolved.
+    expect(explicitRows.some((r) => r.tags.length > 0)).toBe(true)
+    expect(explicitRows.some((r) => r.kv !== null)).toBe(true)
+  })
+})

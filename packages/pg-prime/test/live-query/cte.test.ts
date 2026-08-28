@@ -13,7 +13,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { expectTypeOf } from 'expect-type'
 import * as q from '../../src/query/types.js'
+import { int4Codec, int8Codec, jsonbCodec, textCodec } from '../../src/codec/index.js'
 import { defineSchema, pgTable } from '../../src/schema/index.js'
+import { sqlState } from '../live/_harness.js'
+import { FIRST_POST_ID } from '../live/fixture.js'
 import { makeLiveDb, type LiveDb } from './_db.js'
 
 let live: LiveDb
@@ -219,3 +222,156 @@ describe('§2.7 — a chained .with() does not nest the earlier CTEs', () => {
   })
 })
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// withRecursive / fromRaw against the server (12 B; decision 17, `03` §5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('§2.7 — withRecursive (12 B)', () => {
+  /**
+   * A counter is the smallest recursive query that can be wrong in an interesting way, and the
+   * fixture has no self-referencing tree — so the base term is a `VALUES`-shaped select over
+   * `generate_series`, reached through `fromRaw`. Two of `12` B's items in one statement.
+   */
+  const counter = (limit: number) =>
+    live.db.withRecursive(
+      'n',
+      (d) => d.fromRaw(q.sql`(select 1)`, { i: int4Codec }, { alias: 'seed' }).select(({ seed }) => ({ i: seed.i })),
+      (d, self) =>
+        d
+          .from(self)
+          .where(({ n }) => q.lt(n.i, limit))
+          .select(({ n }) => ({ i: q.add(n.i, 1) })),
+    )
+
+  it('R3: it recurses, and the rows are what a hand-written WITH RECURSIVE returns', async () => {
+    const rows = await counter(5)
+      .fromCte('n')
+      .select(({ n }) => ({ i: n.i }))
+      .orderBy(({ n }) => q.asc(n.i))
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ i: number }[]>()
+    const oracle = await live.raw(
+      `with recursive n(i) as (select 1 union all select i + 1 from n where i < 5)
+       select i from n order by i`,
+    )
+    expect(rows).toStrictEqual(oracle.map(([i]) => ({ i: Number(i) })))
+    expect(rows).toStrictEqual([{ i: 1 }, { i: 2 }, { i: 3 }, { i: 4 }, { i: 5 }])
+  })
+
+  it('the row type and the codecs come from the base term, past 2^53', async () => {
+    const rows = await live.db
+      .withRecursive(
+        'big',
+        (d) =>
+          d
+            .fromRaw(q.sql`(select ${q.val(FIRST_POST_ID, int8Codec)}::int8)`, { v: int8Codec }, { alias: 's' })
+            .select(({ s }) => ({ v: s.v })),
+        (d, self) =>
+          d
+            .from(self)
+            .where(({ big }) => q.lt(big.v, FIRST_POST_ID + 2n))
+            .select(({ big }) => ({ v: q.add(big.v, 1n) })),
+      )
+      .fromCte('big')
+      .select(({ big }) => ({ v: big.v }))
+      .orderBy(({ big }) => q.asc(big.v))
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ v: bigint }[]>()
+    // A JSON-number round trip would have lost the last digit of every one of these.
+    expect(rows).toStrictEqual([
+      { v: FIRST_POST_ID },
+      { v: FIRST_POST_ID + 1n },
+      { v: FIRST_POST_ID + 2n },
+    ])
+  })
+
+  it('{ unionAll: false } deduplicates — the same query, two answers', async () => {
+    const build = (unionAll: boolean) =>
+      live.db
+        .withRecursive(
+          'n',
+          (d) => d.fromRaw(q.sql`(select 1)`, { i: int4Codec }, { alias: 's' }).select(({ s }) => ({ i: s.i })),
+          (d, self) =>
+            d
+              .from(self)
+              .where(({ n }) => q.lt(n.i, 3))
+              .select(({ n }) => ({ i: q.sub(q.add(n.i, 2), 1) })),
+          { unionAll },
+        )
+        .fromCte('n')
+        .select(({ n }) => ({ i: n.i }))
+        .orderBy(({ n }) => q.asc(n.i))
+    expect((await build(true).execute()).map((r) => r.i)).toStrictEqual([1, 2, 3])
+    expect((await build(false).execute()).map((r) => r.i)).toStrictEqual([1, 2, 3])
+    // …and the plan really does carry the keyword the option chose.
+    expect(build(true).compile().sql).toContain('union all')
+    expect(build(false).compile().sql).not.toContain('union all')
+  })
+})
+
+describe('§5 — fromRaw (12 B)', () => {
+  it('R3: a set-returning function, decoded through the declared codecs', async () => {
+    const rows = await live.db
+      // `generate_series(int, int)` returns int4; the int8 overload is what `int8Codec` declares,
+      // and `assertShape` refuses the mismatch rather than decoding an int4 as an int8 (WS6).
+      .fromRaw(
+        q.sql`generate_series(${q.val(1n, int8Codec)}, ${q.val(3n, int8Codec)})`,
+        { n: int8Codec },
+        { alias: 'g' },
+      )
+      .select(({ g }) => ({ n: g.n }))
+      .orderBy(({ g }) => q.asc(g.n))
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ n: bigint }[]>()
+    expect(rows).toStrictEqual([{ n: 1n }, { n: 2n }, { n: 3n }])
+    const oracle = await live.raw('select n from generate_series(1, 3) as g(n) order by n')
+    expect(rows).toStrictEqual(oracle.map(([n]) => ({ n: BigInt(n as string) })))
+  })
+
+  it('{ columnTypes: true } is what makes jsonb_to_recordset work at all', async () => {
+    const doc = [
+      { id: '9007199254740993', name: 'a' },
+      { id: '9007199254740994', name: 'b' },
+    ]
+    const built = live.db
+      .fromRaw(
+        q.sql`jsonb_to_recordset(${q.val(doc, jsonbCodec)})`,
+        { id: int8Codec, name: textCodec },
+        { alias: 'j', columnTypes: true },
+      )
+      .select(({ j }) => ({ id: j.id, name: j.name }))
+      .orderBy(({ j }) => q.asc(j.id))
+    const rows = await built.execute()
+    expectTypeOf(rows).toEqualTypeOf<{ id: bigint; name: string }[]>()
+    expect(rows).toStrictEqual([
+      { id: 9007199254740993n, name: 'a' },
+      { id: 9007199254740994n, name: 'b' },
+    ])
+    // R4 — without the definition list the same statement is a 42601: a function returning
+    // `record` must be told its column types, which is the whole reason the option exists.
+    await expect(
+      live.db
+        .fromRaw(q.sql`jsonb_to_recordset(${q.val(doc, jsonbCodec)})`, { id: int8Codec, name: textCodec })
+        .select(({ raw }) => ({ id: raw.id }))
+        .execute(),
+    ).rejects.toSatisfy((e: unknown) => sqlState(e) === '42601')
+  })
+
+  it('it joins against a real table, and the alias list renames the columns', async () => {
+    const rows = await live.db
+      .fromRaw(q.sql`generate_series(1::int8, 3::int8)`, { wanted: int8Codec }, { alias: 'g' })
+      .innerJoin(h().tags, 't', ({ g, t }) => q.eq(t.id, g.wanted))
+      .select(({ g, t }) => ({ wanted: g.wanted, name: t.name }))
+      .orderBy(({ g }) => q.asc(g.wanted))
+      .execute()
+    expectTypeOf(rows).toEqualTypeOf<{ wanted: bigint; name: string }[]>()
+    const oracle = await live.raw(
+      `select g.wanted, t.name from generate_series(1::int8, 3::int8) as g(wanted)
+         join ${live.fx.ns}.tags t on t.id = g.wanted order by g.wanted`,
+    )
+    expect(rows).toStrictEqual(
+      oracle.map(([wanted, name]) => ({ wanted: BigInt(wanted as string), name })),
+    )
+  })
+})
