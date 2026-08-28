@@ -1,17 +1,51 @@
 {
   "name": "pg-prime",
   "version": "0.0.0",
-  "description": "PostgreSQL-only, type-safe TypeScript ORM. Zero dependencies. Pre-alpha — not yet usable.",
+  "description": "PostgreSQL-only, type-safe TypeScript ORM. Zero dependencies, ESM-only. Pre-alpha — the API will change.",
   "license": "MPL-2.0",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "sideEffects": false,
   "files": [
     "dist"
   ],
+  "exports": {
+    ".": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./schema": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/schema/index.d.ts",
+      "default": "./dist/schema/index.js"
+    },
+    "./sql": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/sql/index.d.ts",
+      "default": "./dist/sql/index.js"
+    },
+    "./codecs": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/codec/index.d.ts",
+      "default": "./dist/codec/index.js"
+    },
+    "./driver": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/entry/driver.d.ts",
+      "default": "./dist/entry/driver.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
+    "build": "node ../../tools/build-package.mjs",
+    "clean": "node ../../tools/build-package.mjs --clean",
     "test": "vitest run --project unit",
     "test:live": "vitest run --project unit --project live",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/schema/tsconfig.json && tsc --noEmit -p test/query/tsconfig.json && tsc --noEmit -p test/live/tsconfig.json && tsc --noEmit -p test/sql-compile.tsconfig.json",

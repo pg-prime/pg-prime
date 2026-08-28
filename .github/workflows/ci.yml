@@ -86,6 +86,42 @@ jobs:
           path: bench/runtime/report.json
           if-no-files-found: warn
 
+  package:
+    # design/08 §4.6's `package` row, and §2.4 step 5. The question this job answers is the one no
+    # other job can: "is what we would publish installable, and is it still the shape we said?"
+    # Nothing else in CI goes through the export map — every test imports `../../src/…`.
+    #
+    #   size-budget    §1.2's artifact budgets, measured from `npm pack --dry-run --json`, plus the
+    #                  zero-dependency / zero-peer-dependency assertion.
+    #   api-snapshot   §2.3's committed public-surface golden, and the assertion that the
+    #                  `types@<5.9` stubs still mirror it.
+    #   emit-parity    §3.1 — build twice, with tsgo 7.0.2 and with the consumer floor 5.9.3, and
+    #                  diff the trees.
+    #   check:dts      §3.2 — lib-check the EMITTED `dist/**/*.d.ts` with `skipLibCheck: false` on
+    #                  both compilers. §4.6's `types` row asks for this and WS7 did not wire it.
+    #   treeshake      §2.4 — esbuild + rollup, gzip budgets and the committed module-set goldens.
+    #   pack-smoke     `pnpm pack` → install the tarballs into a throwaway project → compile and RUN
+    #                  a consumer on TypeScript 5.9.3 → then prove the `types@<5.9` gate by watching
+    #                  the same file fail on 5.8.3. Plus `publint --strict` and `attw --pack
+    #                  --profile esm-only`.
+    #
+    # Node is pinned rather than matrixed: the artifact is compiler output, not runtime behaviour,
+    # and the gzip baselines in tools/budgets.json are measured against one zlib. `pack-smoke`
+    # reaches the npm registry twice (typescript 5.9.3, then 5.8.3). Measured 14.4 s on the design
+    # machine against §4.6's 2-minute budget.
+    name: package (design/08 §4.6)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm package:check
+
   live:
     name: live (tier 1, PGlite) · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

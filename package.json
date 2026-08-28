@@ -7,6 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
+    "build": "pnpm -r --if-present build",
+    "clean": "pnpm -r --if-present clean",
     "test": "pnpm --filter pg-prime test",
     "test:live": "pnpm --filter pg-prime test:live",
     "test:pg": "pnpm -r --if-present test:pg",
@@ -17,14 +19,28 @@
     "bench:compile": "pnpm --filter @pg-prime/bench-runtime bench:compile",
     "bench:profile": "pnpm --filter @pg-prime/bench-runtime profile",
     "type-errors": "node tools/type-errors/record.mjs",
-    "type-errors:check": "node tools/type-errors/record.mjs --check"
+    "type-errors:check": "node tools/type-errors/record.mjs --check",
+    "size-budget": "node tools/size-budget.mjs",
+    "api-snapshot": "node tools/api-snapshot.mjs",
+    "api-snapshot:check": "node tools/api-snapshot.mjs --check",
+    "treeshake": "node tools/treeshake-check.mjs",
+    "treeshake:update": "node tools/treeshake-check.mjs --update",
+    "emit-parity": "node tools/emit-parity.mjs",
+    "check:dts": "node tools/check-dts.mjs",
+    "pack-smoke": "node tools/pack-smoke.mjs",
+    "package:check": "pnpm size-budget && pnpm api-snapshot:check && pnpm emit-parity && pnpm check:dts && pnpm treeshake && pnpm pack-smoke"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@electric-sql/pglite": "^0.5.7",
+    "@rollup/plugin-node-resolve": "^16.0.3",
     "@types/node": "^26.2.0",
     "@types/pg": "^8.21.0",
+    "esbuild": "^0.28.2",
     "expect-type": "^1.4.0",
     "pg": "^8.23.0",
+    "publint": "^0.3.24",
+    "rollup": "^4.63.0",
     "typescript": "^7.0.2",
     "typescript59": "npm:typescript@5.9.3",
     "vitest": "^4.1.10"

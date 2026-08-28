@@ -86,6 +86,17 @@ The min+gz numbers are **provisional and get baselined on the first release**, t
 downward only. Budgets live in `tools/budgets.json` and every change to that file requires a
 reviewer-visible justification in the PR body.
 
+**AS BUILT · 2026-08-28.** `tools/size-budget.mjs` and `tools/budgets.json` exist and are gated by
+the `package` CI job. The artifact lines are measured from `npm pack --dry-run --json` — the file
+list npm would actually ship, `files: ["dist"]` and the implicit `README`/`LICENSE` applied — not
+from `du dist/`. Measured for `pg-prime`: **1 547 KB unpacked / 231 files** (budget 2 560 KB / 400),
+**378 KB of `.d.ts` across 58 files** (budget 900 KB / 200), **604 KB of JS** (budget 700 KB),
+**0 dependencies / 0 peerDependencies** — asserted, not assumed. `@pg-prime/kit`: **390 KB unpacked
+/ 87 files** against 8 MB. Two lines do not pass as written and both are recorded in
+`budgets.json._overDesign` rather than quietly widened: the **40 KB per-file `.d.ts` canary**
+(§3.2 AS BUILT) and **`connect-one-select`** (§2.4 AS BUILT). Both gates are set *at* the
+measurement, so they ratchet.
+
 **The `@pg-prime/kit` headline:** ≤ 8 MB against drizzle-kit's 95 MB is a **~12× smaller** dev
 dependency. That number goes in the README, because "one number that explains why this exists" is
 worth more than a paragraph.
@@ -182,6 +193,35 @@ boundary.
 at least gets a working dynamic path. PG floor is **15** (round-1 decision). TS floor is **5.9**
 (below).
 
+**AS BUILT · 2026-08-28 (the packaging pass).** The export map above was written before the code
+existed. What ships is six entries, not ten, and the difference is that five of the planned subpaths
+have nothing behind them yet while one planned *omission* was reversed.
+
+| Planned | Built | Why |
+|---|---|---|
+| `.` | **yes** → `dist/index.js` | The curated root barrel (221 value + 211 type exports). |
+| `./schema` | **yes** → `dist/schema/index.js` | The existing barrel, verbatim: its 38 values and 57 types are exactly the root's schema slice. |
+| `./sql` | **yes** → `dist/sql/index.js` | Ditto, 23 values / 17 types. |
+| `./codecs` | **yes** → `dist/codec/index.js` | The directory is `src/codec/`, the subpath is `./codecs` — the subpath name is what §2.1 promised and the directory name is not API. |
+| `./adapter-pg`, `./adapter-pglite` | **no** — replaced by **`./driver`** | There is one *structural* adapter, `pgDriver(pool)` over any `PgLikePool` (`02` §1, `08` §8 resolution 5). It duck-types `pg`, PGlite-over-a-socket and Neon identically, so there is nothing for a second subpath to contain. `./driver` → `dist/entry/driver.js`, a thin re-export file rather than `src/driver/index.ts` itself: that barrel deliberately exports `typeSource` and `assertSessionGucs`, which are `@internal` and which `test/query/index.test.ts` asserts are *absent* from the public surface. |
+| `./migrate` | **no** | The migration applier is `@pg-prime/kit`'s `runner/apply.ts` today, not `pg-prime`'s. §1.1's boundary argument (production apps run migrations at boot and must not install a CLI) still stands and is still unimplemented; the subpath is reserved by not being used for anything else. |
+| `./pgvector`, `./postgis` | **no** | The extension codecs do not exist. |
+| `./package.json` | **yes** | |
+
+Every entry has `"types@<5.9"` **first**, then `"types"`, then `"default"`, on every subpath — F4's
+requirement, and `tools/pack-smoke.mjs` proves it fires by compiling a real consumer on TypeScript
+5.8.3 on every run.
+
+**§2.1's "why `./schema` is not in the root barrel" is recorded as NOT ADOPTED.** `design/09` decided
+the opposite — "one import for an application file" — and `src/index.ts` has re-exported the whole
+schema DSL since WS1; `test/query/index.test.ts` pins it. The three reasons §2.1 gave are answered
+rather than ignored: (a) `@pg-prime/kit` does not import `pg-prime` at all, so it never loads the
+executor by any route; (b) `./schema` exists as a subpath, so an application that wants only the DDL
+builders can still import only them; (c) the tree-shake goldens are not trivially green — but the
+reason is worse than §2.1 feared and has nothing to do with the schema DSL: see the AS BUILT note
+under §2.4. Reversing this later is a breaking change to the root barrel, and the argument for
+reversing it would have to come from a measurement, not from this paragraph.
+
 ### 2.2 TypeScript floor: 5.9, not 5.4
 
 Round-1 recorded "TS ≥ 5.4" because that is Kysely's floor. With F1 in hand that is the wrong number
@@ -218,6 +258,24 @@ by `tools/api-snapshot.mjs`, which writes every entry's exported-name list to a 
 — so any addition or removal to the public surface shows up as a reviewable diff. That golden file is
 also the mechanical basis for 1.0 criterion #1.
 
+**AS BUILT · 2026-08-28.** `tools/api-snapshot.mjs` is built; the goldens are
+`tools/api-snapshot/pg-prime.json` (`.` 221 values / 211 types, `./schema` 38/57, `./sql` 23/17,
+`./codecs` 58/17, `./driver` 5/25) and `tools/api-snapshot/pg-prime-kit.json` (76/64). Values are
+read by **importing the built entry and taking `Object.keys()`** — what Node actually hands a
+consumer — and types by reading the entry `.d.ts` through the **TypeScript 5.9.3 compiler API**
+(`checker.getExportsOfModule`, aliases resolved), not by regex: every entry here is a re-export
+barrel, which is exactly the shape a regex over the entry file gets wrong. The two readings are
+cross-checked against each other and the tool names any symbol they disagree on. Three things it
+asserts beyond "nothing changed": **no `default` export** anywhere (§2.3's `no-default-export`, which
+has no oxlint to live in yet); **every subpath's names are a subset of the root's**, so
+`pg-prime/driver` can never say something `pg-prime` does not; and **the `types@<5.9` stubs mirror
+the root entry exactly** — they are *generated* from these lists, so a name added to the barrel
+without regenerating is a `--check` failure rather than a stub that has silently rotted into
+"module has no exported member". One wrinkle worth recording: the kit's `export type * from
+"./catalog/payloads.js"` puts `GENERATED_NAME` (a `const`) into the entry's type space with no
+marker on the resulting symbol, so it is exported neither as a usable value nor as a usable type;
+the tool reads the export *declarations* to classify it correctly rather than trusting symbol flags.
+
 ### 2.4 Tree-shaking verification method
 
 Not "we set `sideEffects: false` and hope". Concretely, `tools/treeshake-check.mjs`:
@@ -234,6 +292,44 @@ Not "we set `sideEffects: false` and hope". Concretely, `tools/treeshake-check.m
    **< 200 bytes**.
 5. `publint --strict` + `attw --pack --profile esm-only` on every PR. The prescribed shape is already
    known-clean `[verified, F5]`; the gate exists to keep it that way.
+
+**AS BUILT · 2026-08-28.** All five steps exist. `tools/treeshake-check.mjs` stages the built
+package into a throwaway `node_modules/pg-prime` in `os.tmpdir()` — `package.json` + `dist/`, i.e.
+exactly what `files: ["dist"]` publishes — so every fixture resolves **through the export map**;
+bundling `src/` would test something we do not ship. esbuild is the gate, rollup +
+`@rollup/plugin-node-resolve` runs beside it as the independent DCE opinion (its output is minified
+with esbuild's `transform` so the two numbers are comparable, rather than adding terser for one
+number). The goldens are built from `metafile.outputs[…].inputs` filtered to `bytesInOutput > 0`,
+not from `metafile.inputs`: the latter is every module *scanned*, which is all 48 of them for every
+fixture including the empty one, and a golden made from it would be identical everywhere and
+therefore worthless. `publint --strict` and `attw --pack --profile esm-only` are in
+`tools/pack-smoke.mjs`; both are clean on both packages, and attw's grid is exactly F5's
+(`node16 (from ESM)` 🟢, `bundler` 🟢, `node10` 💀 ignored by the profile).
+
+Measured, min+gz, 2026-08-28 (design → measured → budget, bytes):
+
+| Fixture | design/08 §1.2 | measured | budget | modules |
+|---|---|---|---|---|
+| `connect-one-select` | 35 840 | **46 291** | 47 104 | 39 package modules |
+| `full-crud-tx` | 56 320 | **46 660** | 47 104 | the same 39 |
+| `root-import-all` | 122 880 | **50 004** | 50 176 | 46 |
+| `side-effects-only` | 200 | **20** | 200 | **0** |
+
+Three of the four ratchet **below** design on their first measurement. `connect-one-select` does
+not, and the reason is the finding of this pass: **`connect-one-select` and `full-crud-tx` include
+the identical 39 modules.** The query builder is one object graph — `compileOnly(schema)` and
+`pgPrime({driver, schema})` both return an executor whose `from` / `insertInto` / `update` /
+`deleteFrom` / `with` are methods, so every write builder is reachable from the first line of any
+program that opens a handle. Adding insert, update, delete and `db.transaction()` to a program that
+already runs one select adds no module and 369 bytes. So the honest reading of these four numbers is
+not "connect + one select is 29% over budget" but "**the whole library is 50 KB min+gz against a
+120 KB ceiling, and tree-shaking granularity inside the query builder is coarse — 93% of the package
+is reachable from `connect + one select`**". Getting the first line to 35 KB is a code change
+(making unused builders unreachable from the handle), not a budget change; `tools/budgets.json.
+_overDesign` carries the whole argument and the per-module byte counts.
+
+`side-effects-only` at **0 retained modules / 20 bytes** is the `sideEffects: false` claim verified
+rather than asserted: nothing in the package does anything observable at import time.
 
 ---
 
@@ -264,6 +360,35 @@ and inlining deps means `npm i -D @pg-prime/kit` never surprises anyone with a t
 where the ecosystem is heading, but it is pre-1.0 and we would be taking it for a job esbuild does in
 20 lines of stable config. **Revisit `tsdown` when it hits 1.0.**
 
+**AS BUILT · 2026-08-28.**
+
+- **The compiler half is built as designed.** Both packages emit unbundled ESM with
+  `tsc -p tsconfig.build.json` (`tools/build-package.mjs`, which also removes `dist/` first and
+  copies the hand-written `src/unsupported-typescript.d.ts` that tsc treats as an input and never
+  emits). `pnpm build` = 148 ms for `pg-prime` (229 files) + 128 ms for the kit (85 files).
+- **`tools/emit-parity.mjs` compares 5.9.3 against 7.0.2, not 6.0.3 against 7.0.2.** `typescript@6.0.3`
+  has never been installed in this repo; `typescript59` = `npm:typescript@5.9.3` has, because it is
+  the **consumer floor** (§2.2, §8 resolution 2) and is already what `bench/types` and
+  `tools/type-errors` gate on. 5.9.3 is also the *stronger* comparison — it is further from 7.0 than
+  6.0 is, and it is the version whose behaviour we promise. **Result: every one of the 57 emitted
+  `.js` files in `pg-prime` and 21 in the kit is byte-identical between the two compilers.** Two
+  categories of difference exist, both printed by name on every run rather than filtered by
+  extension: (1) one `.d.ts`, `compile/nodes.d.ts`, where an inferred parameter type prints as
+  `nulls?: 'first' | 'last'` under tsgo and `nulls?: "first" | "last"` under 5.9.3 — same type,
+  different quote character; (2) 29 of 114 maps in `pg-prime` and 20 of 56 in the kit differ in
+  `mappings` alone (the two compilers choose slightly different source positions), with `version`,
+  `file`, `sources`, `sourceRoot` and `names` identical everywhere. A difference in any other map
+  key, or any other kind of `.d.ts` difference, fails.
+- **The kit is NOT bundled, and there is no `bin`.** §3.1 bundles the kit because CLI cold-start
+  matters; there is no CLI — no `src/cli.ts`, no `bin` field, no commands. Bundling a programmatic
+  API into one file would cost the deep-import paths in its own `.d.ts` and buy nothing. So the kit
+  ships `tsc` output with `pg` as a real runtime dependency and `@types/pg` beside it — the latter
+  is in `dependencies`, not `devDependencies`, because the emitted `dist/db/pg.d.ts` really does say
+  `import pg from "pg"` and name `pg.Client` in the signature of the exported `withClient`. That was
+  checked against the emitted output, not guessed. §1.2's "single bundle file ≤ 2 MB" line is
+  therefore *not applicable* rather than passing, and `tools/budgets.json` says so. The esbuild
+  bundle arrives with the CLI.
+
 ### 3.2 Declaration strategy & budget
 
 - `declaration: true`, `declarationMap: true`, `sourceMap: true`. Ship `dist/**/*.d.ts` +
@@ -278,6 +403,33 @@ where the ecosystem is heading, but it is pre-1.0 and we would be taking it for 
 - **`skipLibCheck: true` for the normal build** (speed), plus a dedicated CI job `check:dts` that
   type-checks the *emitted* `dist/**/*.d.ts` with `skipLibCheck: false` under **each** supported TS
   version. That is the guarantee that matters and it costs seconds.
+
+**AS BUILT · 2026-08-28.**
+
+- `declaration` + `declarationMap` + `sourceMap` are on in both packages' `tsconfig.build.json`, and
+  `files: ["dist"]` ships the maps but not the sources. `isolatedDeclarations` is `false` in
+  `pg-prime` and **`true` in `@pg-prime/kit`**, as prescribed. Turning it on in the kit cost exactly
+  **one** annotation (`export const MIGRATION_NAME: RegExp` in `src/plan/plan.ts`), which is the
+  clearest possible evidence for §3.2's claim that it is free on that side of the split.
+- **`check:dts` is built** — `tools/check-dts.mjs`, wired into `pnpm package:check` and the `package`
+  CI job. It writes a throwaway tsconfig into `os.tmpdir()` that `include`s `<pkg>/dist/**/*.d.ts`
+  with `noEmit`, `strict`, `nodenext` and **`skipLibCheck: false`**, and runs it on **5.9.3 and
+  7.0.2**. Result: clean on both, for both packages (58 `.d.ts` in `pg-prime` at 553 ms / 199 ms;
+  22 in the kit at 1 024 ms / 283 ms). It also parses every emitted `.d.ts` with the TypeScript API
+  and asserts that `pg-prime`'s declarations name **no** non-relative module — the zero-dependency
+  promise checked at the declaration level rather than only at `package.json`. (Parsed, not
+  grepped: `src/driver/pg-like.ts` and `src/driver/types.ts` both explain in prose why they do *not*
+  `import type { Pool } from 'pg'`, and a regex reports the seam as a violation of itself.)
+- **The 40 KB per-file canary is BREACHED and is recorded, not loosened.** `dist/query/types.d.ts`
+  measures **54 843 B (53.6 KB)**, 34% over. That file is design/03's type layer — `Db`, `Query`, the
+  operand and projection families, the join/group/set-op state machine — and every name in it is
+  re-exported from the root barrel and pinned by `tools/api-snapshot/pg-prime.json`, so splitting it
+  is a public-API refactor and out of the packaging pass's scope. `bench/types` has been measuring
+  the same file at 54 808 B under 5.9.3 since WS7, so it is a known, stable number and not a new
+  regression. `tools/budgets.json._overDesign` carries design's 40 960 beside the measurement, the
+  budget is set **at** the measurement so any growth at all fails CI, and `size-budget.mjs` prints
+  design / measured / budget on every run. The rest of §1.2's declaration budget is comfortable:
+  **378 KB total across 58 files** against 900 KB / 200 files.
 
 ### 3.3 Strictness (`tsconfig.base.json`)
 
@@ -484,11 +636,11 @@ parse and the topology is the PR `pg` job's, which is green (`09` §3.6 follow-u
 |---|---|---|
 | `lint` | **no** | Follow-up. Nobody owns oxlint + `tsgo --noEmit -b` in `09`; `pnpm typecheck` covers the second half on TS 7.0.2 only. |
 | `unit` (tier 0) | yes | `ci.yml` job `unit`, Node 22.12 / 24 / 26 × ubuntu. 715 tests, 4.9 s. |
-| `types` | partly | `ci.yml` job `types` — TS **5.9.3 and 7.0.2** (not 6.0.3, and no `7-next` arm: `04` §3.6 records that `@ark/attest` cannot run on TS 7 at all, and the two-compiler matrix is what `bench/types` measures). Lib-checking the emitted `dist/**/*.d.ts` is not wired; the `.d.ts` **size** budget is. |
+| `types` | partly | `ci.yml` job `types` — TS **5.9.3 and 7.0.2** (not 6.0.3, and no `7-next` arm: `04` §3.6 records that `@ark/attest` cannot run on TS 7 at all, and the two-compiler matrix is what `bench/types` measures). The `.d.ts` **size** budget is here; **lib-checking the emitted `dist/**/*.d.ts` landed on 2026-08-28 in the `package` job instead** (`tools/check-dts.mjs`, both compilers, `skipLibCheck: false`), because it needs a build and this job does not do one. |
 | `pglite` (tier 1) | yes, as **`live`** | `ci.yml` job `live`, Node 24 × ubuntu / macos / windows. |
 | `pg` (tier 2) | yes | `ci.yml` job `pg`, PostgreSQL 17 **+ PgBouncer 1.25** (`09` §3.6 added the pooler, which this table did not ask for). |
 | `pg-matrix` (tier 2) | **new** | `ci-nightly.yml` job `pg-matrix`, PG **15 / 16 / 17 / 18**, each with its own `edoburu/pgbouncer` in transaction mode. Nightly + `workflow_dispatch`; not on `main` pushes, because a four-server matrix on every merge buys a signal that changes only when a PG major does. |
-| `package` | **no** | Follow-up. `publint`, `attw`, size budgets, tree-shake goldens and `emit-parity` are release engineering and have no workstream in `09`. |
+| `package` | **yes** (2026-08-28) | `ci.yml` job `package`, ubuntu × Node 24, every PR: `pnpm build` then `pnpm package:check` = `size-budget` → `api-snapshot --check` → `emit-parity` → `check:dts` → `treeshake` → `pack-smoke` (which is `pnpm pack` both packages, install the tarballs into a throwaway project, compile and RUN a consumer on TypeScript 5.9.3, then watch the same file be refused by 5.8.3 with the `types@<5.9` message, plus `publint --strict` and `attw --pack --profile esm-only`). **Measured 14.4 s** end to end on the design machine against this table's 2-minute budget — of which ~9 s is `pack-smoke`'s two `npm install`s from the registry, so the runner's number will be larger and still nowhere near the budget. Node is pinned rather than matrixed: the artifact is compiler output, and the gzip baselines are measured against one zlib. |
 | `bench:compile` + `bench:types` | yes | Both inside `ci.yml` job `types`, gating, **46 s combined** against this table's 3-minute budget. `bench:compile` is `@pg-prime/bench-runtime --compile-only`: compile time, allocations per compile, §1.1's two structural claims, and the decoder against its hand-written oracle. |
 | `bench:runtime` | **new** | `ci-nightly.yml` job `bench` (report uploaded as an artifact) and `ci.yml` job `perf`, which exists only when a PR carries the `perf` label and is `continue-on-error` — §5's "informational, never blocking". |
 | `corpus` + `fuzz` | partly | `ci-nightly.yml` job `fuzz` at `PG_PRIME_FUZZ_CASES=1000000` for all three fuzzers (measured: 144 s against PG 17), with the *server* oracles sampled and the sample printed. The 50 000 schema pairs are `@pg-prime/kit`'s corpus and are not wired. |

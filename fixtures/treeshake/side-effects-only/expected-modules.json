@@ -1,0 +1,5 @@
+{
+  "_why": "design/08 §2.4 step 3 — the exact set of input modules esbuild pulled into this fixture, bundled through the published export map. A diff here on a PR is the signal; `node tools/treeshake-check.mjs --update` re-records it and the diff goes in the review.",
+  "_bundler": "esbuild --bundle --format=esm --minify --platform=node --metafile",
+  "modules": []
+}

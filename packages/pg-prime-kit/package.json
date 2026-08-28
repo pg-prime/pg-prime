@@ -1,19 +1,30 @@
 {
   "name": "@pg-prime/kit",
   "version": "0.0.0",
-  "description": "Migration engine and CLI for pg-prime: catalog diffing, plan generation, lint, verify. Pre-alpha \u2014 not yet usable.",
+  "description": "Migration engine for pg-prime: catalog diffing, plan generation, prove-on-shadow-clone, apply. Pre-alpha — programmatic API only, no CLI yet.",
   "license": "MPL-2.0",
-  "publishConfig": {
-    "access": "public"
-  },
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "files": [
     "dist"
   ],
+  "exports": {
+    ".": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
+    "build": "node ../../tools/build-package.mjs",
+    "clean": "node ../../tools/build-package.mjs --clean",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
     "test:pg": "vitest run"

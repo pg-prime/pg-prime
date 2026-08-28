@@ -10,6 +10,10 @@ bench/types/.gen/
 
 # stray declaration emit inside src (never checked in; `dist/` is the real output)
 packages/*/src/**/*.d.ts
+# ...except the one hand-written (generated, but by tools/api-snapshot.mjs, not by tsc) declaration
+# file: the `types@<5.9` gate of design/08 §2.2. tsc never emits it and never copies it;
+# tools/build-package.mjs copies it into dist/, and the export map points every subpath at it.
+!packages/*/src/unsupported-typescript.d.ts
 
 # IDE state
 .idea/
@@ -21,3 +25,8 @@ bench/runtime/.gen/
 .claude/worktrees/
 # ad-hoc CPU profiles from `pnpm bench:profile --cpu`
 *.cpuprofile
+
+# `pnpm pack` output. tools/pack-smoke.mjs and tools/size-budget.mjs pack into os.tmpdir() and
+# `attw --pack` deletes its own tarball, so nothing should land here — this is the safety net for
+# the run that was interrupted, and for a hand-run `pnpm pack`.
+*.tgz

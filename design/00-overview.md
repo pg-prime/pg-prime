@@ -31,7 +31,7 @@ different `Codec` types coexist (`sql/codec.ts` carries a self-described spike-l
 | Driver | `execute` · `stream` (real cursors) · `describe` · `cancel` · error taxonomy. No transactions, no COPY |
 | SQL + compiler | `sql` tag with `ident`/`lit`/`join`/`unsafeRaw`; SELECT and INSERT compile. **UPDATE and DELETE do not** — the AST nodes exist, the compiler throws |
 | Migration engine | The most complete subsystem. Extract → IR → diff → ordered DDL → prove → apply → re-extract, end to end on 8 object kinds, 21 phases, 21 hazard codes |
-| Packaging | Nothing is consumable: no entry point, no `exports`, no build. `@pg-prime/testing` and `@pg-prime/create` are README-only |
+| Packaging | **Done (2026-08-28).** Both packages build (`tsc` → unbundled ESM + `.d.ts` + maps), ship an `exports` map with the `types@<5.9` gate first on every subpath, and install from a `pnpm pack` tarball into a throwaway project — proved on every PR by the `package` CI job. `@pg-prime/testing` and `@pg-prime/create` are still README-only |
 
 **428 tests green** (168 runtime offline, 203 runtime live, 57 kit); workspace typecheck clean.
 **Type budget, measured on the real implementation:** 137,778 instantiations, 1.11 s on TS 5.9 /
@@ -98,6 +98,13 @@ non-relative imports at all. `@pg-prime/kit` depends on `pg` + `@types/pg`. 7 de
    then the `Query<S,O>` type engine, the `Ref` operator surface, the runtime builders including
    UPDATE and DELETE, and relation accessors. That plan also carries the three unresolved 03-vs-04
    API forks, to be settled by measurement rather than fiat.
-4. Package entry points and a build, so any of this is installable.
+4. ~~Package entry points and a build, so any of this is installable.~~ **Done 2026-08-28.**
+   `pg-prime` exports `.` / `./schema` / `./sql` / `./codecs` / `./driver` / `./package.json` and
+   `@pg-prime/kit` exports `.` / `./package.json`, all ESM-only with `"types@<5.9"` first in every
+   condition object; `pnpm build` emits unbundled `tsc` output; `pnpm package:check` gates size
+   budgets, the public-API golden, emit parity (5.9.3 vs 7.0.2, every `.js` byte-identical),
+   `check:dts`, the tree-shake goldens, `publint --strict`, `attw --profile esm-only`, and a real
+   tarball install that compiles and runs a consumer. Still `0.0.0` and not on npm. See
+   [08 §2.1, §2.4, §3.1, §3.2, §4.6 AS BUILT](./08-architecture.md).
 5. CI. There is none: every gate in these documents is currently run by hand.
 6. Claim `@pg-prime/kit`, `@pg-prime/testing`, `@pg-prime/create` on npm.

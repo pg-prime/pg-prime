@@ -1,0 +1,12 @@
+{
+  "//": "The publish emit (design/08 §3.1, §3.2). Separate from tsconfig.json — which is the `--noEmit` typecheck project and is also what bench/types drives with an `--outDir` override — so that turning on the maps here cannot move a number over there. `isolatedDeclarations` stays FALSE for this package (design §3.2): the builder API is inference-heavy and hand-written return types there would be both unwritable and worse for users.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "isolatedDeclarations": false,
+    "noEmit": false
+  },
+  "include": ["src"]
+}

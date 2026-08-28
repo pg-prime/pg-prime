@@ -136,7 +136,7 @@ export interface BuildPlanInput {
  * deliberately narrower than "safe": migration ids are also matched by the runner's
  * reconciler and sorted lexicographically, so case and punctuation are liabilities.
  */
-export const MIGRATION_NAME = /^[a-z0-9_]+$/;
+export const MIGRATION_NAME: RegExp = /^[a-z0-9_]+$/;
 
 export class InvalidMigrationIdError extends Error {
   readonly code = "PG_PRIME_INVALID_MIGRATION_ID";
