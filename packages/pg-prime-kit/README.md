@@ -4,23 +4,93 @@ Migration engine for [pg-prime](https://github.com/pg-prime/pg-prime) — catalo
 generation, prove-on-shadow-clone, apply.
 
 > **Status: pre-alpha.** The package builds and installs — ESM-only, TypeScript ≥ 5.9, `pg` as its
-> one runtime dependency — but it is still `0.0.0` and the API will change. Four commands ship:
-> `migrate apply`, `migrate status`, `migrate baseline`, `migrate unlock`. `generate`, `check`,
-> `verify`, `lint`, `push` and `doctor` do not exist yet and `pg-prime --help` says so.
+> one runtime dependency — but it is still `0.0.0` and the API will change. Ten commands ship;
+> `migrate checkpoint` and `db seed` do not exist yet and `pg-prime --help` says so.
 > Follow progress at <https://github.com/pg-prime/pg-prime>.
 
 ```
 npm i -D @pg-prime/kit
-npx pg-prime migrate status
+npx pg-prime migrate generate --name init
+npx pg-prime migrate apply
 ```
 
-## The four commands
+## Quickstart
+
+Three files. `pg-prime.config.ts` in your project root:
+
+```ts
+import { defineConfig } from '@pg-prime/kit'
+
+export default defineConfig({
+  url: process.env.DATABASE_URL,
+  schema: './db/schema.ts',      // your pgTable declarations
+  migrations: './db/migrations',  // NNNN_name.sql + .plan.json land here
+  repeatables: './db/sql',        // views, functions, triggers — re-applied on change
+  schemas: ['public'],
+})
+```
+
+`db/schema.ts` — ordinary `pg-prime`:
+
+```ts
+import { defineSchema, index, pgTable } from 'pg-prime'
+
+export const widgets = pgTable(
+  'widgets',
+  (t) => ({
+    id: t.bigint().generatedAlways().primaryKey(),
+    name: t.text().unique(),
+    createdAt: t.timestamptz().defaultSql('now()'),
+  }),
+  (t) => [index('widgets_created_at_idx').on(t.createdAt)],
+)
+
+export default defineSchema({ widgets })
+```
+
+Then the loop:
+
+```console
+$ pg-prime migrate generate --name init
+migrate generate — app (shadow tier 2: the admin role has CREATEDB)
+
+  0000_init.sql  main  4 statements  txmode transactional
+
+  proof    passed
+  witness  passed
+
+$ pg-prime migrate apply
+applied 1 migration in 41 ms:
+  0000_init  transactional  4 statements  38 ms
+
+$ pg-prime migrate status
+  history       present (v1)
+  fingerprint   sha256:5f0e… (history)
+  migrations    1 file, 0 pending
+  lock          free
+
+$ pg-prime migrate verify        # replay the whole repo from empty, into a throwaway database
+migrate verify — replayed 1 migration into pgprime_shadow_9c1a4f22
+  verdict   verified
+```
+
+`generate` writes nothing until the plan has been **proved** on a shadow clone and witnessed by
+`pg_dump` — that is not a flag, it is the design (`design/06` D6/D10). It also needs no `CREATEDB`:
+with a restricted role the shadow is a temp schema inside your own database, and so is the proof.
+
+## The commands
 
 | Command | What it does | Exit codes |
 |---|---|---|
+| `pg-prime migrate generate` | Builds IR(desired) from your TypeScript + `sql/`, normalises it through the shadow ladder, diffs it against the live catalog, resolves renames from `.renamedFrom(…)`, applies the lock-safe rewrites, **proves the plan on a clone**, and only then writes `NNNN_name.sql` + `.plan.json`. May write a `_concurrently` companion file at the same number. | `0` written or nothing to do · `1` error · `2` a rename or data-loss decision is missing · `3` lint · `7` proof failed |
 | `pg-prime migrate apply` (alias `deploy`) | Applies pending migrations from `migrations/`. Never generates, never introspects the desired state, never reads your TypeScript — a production image does not need to ship schema code. | `0` applied or nothing to do · `1` error · `4` drift · `6` lock unavailable |
-| `pg-prime migrate status` | Applied vs pending, the current fingerprint, stale locks, partially-applied rows. Read-only, and read-only in the strong sense: it will not create the history schema. | `0` up to date · `4` drift · `5` pending |
+| `pg-prime migrate status` | Applied vs pending, the current fingerprint, stale locks, partially-applied rows, repeatable drift. Read-only, and read-only in the strong sense: it will not create the history schema. | `0` up to date · `4` drift · `5` pending |
+| `pg-prime migrate check` | The CI gate. Is the repository consistent with the schema, with its own checksums, and with the database? No history writes. | `0` · `2` · `3` · `4` · `5` |
+| `pg-prime migrate verify` | Provisions an ephemeral database, **replays every migration from empty through the real runner**, and asserts the result matches your schema. Catches "the committed file does not do what the schema says", which drift detection cannot. | `0` verified · `1` error, or no ephemeral database available · `4` non-empty diff |
+| `pg-prime migrate lint [<file>…]` | The `design/06` §3.4 rules over generated or hand-written SQL. Defaults to the unapplied migrations; needs no database when you name files. | `0` clean · `1` usage · `3` a finding at or above `--fail-on` |
 | `pg-prime migrate baseline` | Adopts an existing database: writes `0000_baseline.sql` + `.plan.json` holding the whole current schema and records it **without executing it**. `--at <id>` instead marks an already-migrated directory adopted up to `<id>`. | `0` · `1` |
+| `pg-prime migrate push --dev` | Dev loop only: applies the diff straight to the database, writing no files and no history rows. Refuses without the literal `--dev`, under `PG_PRIME_ENV=production`, on a `--prod-pattern` match, and against any database under versioned management. | `0` · `1` · `2` |
+| `pg-prime migrate doctor` | Read-only health report: INVALID indexes, `_ccnew%` leftovers, NOT VALID constraints, catalog-vs-history drift, stale leases, orphaned repeatables, the Tier-O and Tier-U census. | `0` healthy · `4` findings |
 | `pg-prime migrate unlock` | Inspects the migration lease; `--force` breaks a stale one. | `0` free, stale or released · `6` a live deploy holds it |
 
 Every command takes `--output json` and then always prints one envelope with `status` and
@@ -33,6 +103,48 @@ Every command takes `--output json` and then always prints one envelope with `st
 ```
 
 Run `pg-prime migrate <command> --help` for the flags.
+
+## Renames are annotations, never guesses
+
+Deleting `first_name` and adding `name` is a `DROP COLUMN` unless you say otherwise, and saying
+otherwise lives in your repository:
+
+```ts
+name: t.text().renamedFrom('first_name'),
+```
+
+It fires only when `first_name` exists and `name` does not, so it is safe to leave in the file for
+ever and safe to delete once the migration has shipped. Without it, `generate` **stops** — exit 2,
+with the pair it suspected and the exact line to add:
+
+```console
+$ pg-prime migrate generate --name rename
+1 decision needs a human (design/06 §3.3). Nothing was written.
+
+  rename?  column:public.users.first_name -> column:public.users.name  [unambiguous]
+           first_name and name have identical content hashes — every attribute except the name agrees
+           fix: add .renamedFrom("first_name") to name in your schema, or pass --hints-file with …
+```
+
+`--interactive` shows the same candidates on a TTY and prints the edit as a `patch -p0` diff.
+
+## Lock-safe DDL, and the second file
+
+`design/06` §3.5's rewrites are on by default. Adding an index to a populated table does **not**
+produce `CREATE INDEX`; it produces a `txmode none` companion migration at the same number:
+
+```
+db/migrations/
+  0001_evolve.sql               -- transactional: ALTER TABLE … ADD COLUMN, RENAME COLUMN
+  0001_evolve.plan.json
+  0001_evolve_concurrently.sql  -- txmode none: DROP INDEX CONCURRENTLY IF EXISTS + CREATE … CONCURRENTLY
+  0001_evolve_concurrently.plan.json
+```
+
+Duplicate numbers are legal and files apply in `(seq, name)` order, so the two run in the order
+they were written. The second file's `from` fingerprint is *measured* on the clone during the
+proof, which is why `--no-prove` is refused for a plan that spans two files. `--no-safe-rewrite`
+turns the whole layer off and gives you the literal diff in one file.
 
 ## Configuration
 
@@ -85,8 +197,8 @@ the `set_config` calls, and touches nothing.
 
 ## Programmatic API
 
-The CLI is a thin shell over exported functions; `applyPending`, `migrationStatus`, `ensureHistory`,
-`readMigrationsDir` and the `EXIT` table are all on the root barrel.
+The CLI is a thin shell over exported functions; `generate`, `applyPending`, `migrationStatus`,
+`ensureHistory`, `readMigrationsDir` and the `EXIT` table are all on the root barrel.
 
 ```ts
 import { applyPending, EXIT } from '@pg-prime/kit'

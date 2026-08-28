@@ -1,0 +1,31 @@
+{
+  "command": "migrate generate",
+  "status": "missing_hints",
+  "exitCode": 2,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "unresolved": [
+    {
+      "type": "confirm_data_loss",
+      "kind": "DS106",
+      "entity": "constraint:public.widgets.widgets_name_key",
+      "reason": "DS106 on: ALTER TABLE \"public\".\"widgets\" DROP CONSTRAINT IF EXISTS \"widgets_name_key\"",
+      "fix": "re-run with --allow-data-loss, or record the acknowledgement in a --hints-file"
+    },
+    {
+      "type": "confirm_data_loss",
+      "kind": "DS103",
+      "entity": "column:public.widgets.name",
+      "reason": "DS103 on: ALTER TABLE \"public\".\"widgets\" DROP COLUMN IF EXISTS \"name\"",
+      "fix": "re-run with --allow-data-loss, or record the acknowledgement in a --hints-file"
+    }
+  ],
+  "candidates": [],
+  "patch": null,
+  "error": null
+}

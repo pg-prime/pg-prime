@@ -5,7 +5,14 @@
 #                   `git clone && pnpm i && pnpm test:live` works on a first-time contributor's
 #                   laptop, including Windows, where Postgres tooling usually gives up.
 #   pg     tier 2 — a real server. PG 17 on every PR; 15/16/17/18 nightly (see ci-nightly.yml
-#                   when WS7 lands). Everything guarded by requiresConcurrency() runs only here.
+#                   when WS7 lands). Everything guarded by requiresConcurrency() runs only here,
+#                   and so do the kit's three end-to-end gates (design/11 K2b):
+#                   `test/e2e/loop.test.ts` (edit schema → generate → apply → status → verify →
+#                   check, as a role without CREATEDB, plus the PgBouncer refusal — which is why
+#                   this job has a pooler), `test/corpus-thirdparty.test.ts` (01 §11.6 #5's four
+#                   real schemas) and the CLI envelope goldens. None of them needs a new env var:
+#                   PG_PRIME_TEST_URL, PG_PRIME_TEST_PGBOUNCER_URL and PG_PRIME_PG_DUMP below are
+#                   exactly what they read.
 #   types  the compile-time AND runtime-compile budgets (design/04 §3.5, design/03 Appendix B).
 #          Its own job because it compiles ~40 generated programs on two TypeScript versions and
 #          takes ~25 s, and because a budget that only exists in a JSON file is not a gate.

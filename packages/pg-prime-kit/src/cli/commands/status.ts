@@ -1,6 +1,7 @@
 /** `pg-prime migrate status` — design/06 §6.2. Exit 0 up to date · 5 pending · 4 drift. */
 
 import type { ResolvedConfig } from "../../config/load.js";
+import { createRepeatablesPass } from "../../repeatables/index.js";
 import { migrationStatus, type StatusReport } from "../../runner/status.js";
 import { bool, ms, type OptionSpec, type ParseResult } from "../args.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
@@ -13,6 +14,9 @@ export const STATUS_OPTIONS: readonly OptionSpec[] = [
 export async function runStatus(config: ResolvedConfig, argv: ParseResult): Promise<CommandOutput> {
   const report = await migrationStatus(config.connection, config.migrationsDir, {
     schemas: config.schemas,
+    // The same one-line binding as `apply` (design/11 §3 K3.4): with it, `repeatables.drift`
+    // is the real answer rather than the stub's empty one, and `passImplemented` says true.
+    repeatables: createRepeatablesPass(),
     repeatablesDir: config.repeatablesDir,
     ...(bool(argv.values, "verify-fingerprint") ? { verifyFingerprint: true } : {}),
     ...(ms(argv.values, "stale-lock-after") ?? config.config.staleLockAfterMs
@@ -39,6 +43,8 @@ function envelope(config: ResolvedConfig, r: StatusReport): Readonly<Record<stri
     history: { present: r.historyPresent, version: r.historyVersion },
     fingerprint: r.fingerprint,
     fingerprintSource: r.fingerprintSource,
+    fingerprintDrift: r.fingerprintDrift,
+    recordedFingerprint: r.recordedFingerprint,
     migrations: r.migrations.map((m) => ({
       id: m.id,
       state: m.state,
@@ -72,7 +78,12 @@ function text(config: ResolvedConfig, r: StatusReport): string {
     "",
     pairs([
       ["history", r.historyPresent ? `present (v${r.historyVersion ?? "?"})` : "absent — this database has never been migrated by pg-prime"],
-      ["fingerprint", r.fingerprint === null ? "unknown" : `${r.fingerprint} (${r.fingerprintSource ?? "?"})`],
+      [
+        "fingerprint",
+        r.fingerprint === null
+          ? "unknown"
+          : `${r.fingerprint} (${r.fingerprintSource ?? "?"})${r.fingerprintDrift ? ` — DRIFT, history records ${r.recordedFingerprint ?? "?"}` : ""}`,
+      ],
       ["migrations", `${plural(r.migrations.length, "file")}, ${plural(r.pending.length, "pending")}`],
       ["lock", r.lock.lease === null ? "free" : `${r.lock.stale ? "STALE " : ""}held by ${r.lock.lease.holder} (run ${r.lock.lease.runId}, beat ${String(r.lock.lease.heartbeatAgeMs)} ms ago)`],
     ]),

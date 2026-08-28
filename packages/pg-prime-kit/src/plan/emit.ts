@@ -62,6 +62,16 @@ export function planSql(plan: Plan): string {
 }
 
 /**
+ * A migration's ordering key. design/06 §4.1: duplicate `NNNN` is legal and files are
+ * ordered by `(seq, name)`, which is what lets one `generate` run emit `0007_x.sql`,
+ * `0007_x_concurrently.sql` and `0007_x_data.sql` and have the runner apply them in that
+ * order without a journal.
+ */
+export function planOrderKey(plan: Plan): readonly [number, string] {
+  return [Number(plan.migration.id), plan.migration.name];
+}
+
+/**
  * D6 — no plan reaches disk until it has been proven on a shadow clone.
  * This is the whole mitigation: an ordering bug becomes a `generate` failure
  * on a throwaway database instead of a production incident.

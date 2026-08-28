@@ -22,7 +22,7 @@ import { extractCatalog } from "../src/catalog/extract.js";
 import { withClient } from "../src/db/pg.js";
 import { diffIR } from "../src/diff/diff.js";
 import { PHASE, type Statement } from "../src/diff/statement.js";
-import { generate } from "../src/generate.js";
+import { generateFromDatabases as generate } from "../src/generate.js";
 import { applySegments } from "../src/runner/apply.js";
 import { ADMIN, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
 

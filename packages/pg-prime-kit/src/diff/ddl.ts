@@ -55,6 +55,21 @@ export interface BuildOptions {
    * *succeed*, not *free*.
    */
   readonly emptyTables?: ReadonlySet<string>;
+  /**
+   * The caller can emit **more than one file** for this plan (design/06 §3.5 rows 1, 6, 7).
+   *
+   * Three of §3.5's seven rewrites were blocked on nothing in the differ: they need a
+   * `CREATE INDEX CONCURRENTLY`, which PostgreSQL refuses inside a transaction, so a plan
+   * that contains one cannot also be an atomic DDL file. `migrate generate` can now split
+   * a plan into `NNNN_name.sql` + `NNNN_name_concurrently.sql` and says so here; a caller
+   * that cannot — `generateFromDatabases`, and every round-1 test that pins the
+   * single-file shape — leaves it off and gets the literal form plus its hazard.
+   *
+   * Statements the rewrite produces carry `stage: "concurrent"`; the volatile-default
+   * split (row 7) additionally reports a `volatile_default_split` diagnostic, from which
+   * the caller renders the `-- pg-prime:data` backfill stub.
+   */
+  readonly multiFile?: boolean;
 }
 
 const id = encodeId;
@@ -196,6 +211,25 @@ export function buildStatements(
   const indexTableId = (ir: SchemaIR, x: StableId): string | null => {
     const f = ir.get(x);
     return f?.parent ? id(f.parent) : null;
+  };
+
+  /**
+   * May design/06 §3.5's `CONCURRENTLY` rewrites fire for an object on this table?
+   *
+   * Three refusals, each for a reason PostgreSQL enforces or the design states:
+   *
+   *  - the caller cannot carry a second file (`multiFile` off) — §3.5's own AS BUILT note
+   *    records that as the blocker, not the differ;
+   *  - `--no-safe-rewrite` asked for the literal diff;
+   *  - the table is created by THIS plan, or is a partitioned parent. A brand-new table
+   *    has no readers to block, so a concurrent build buys nothing and costs a second
+   *    file; and `CREATE INDEX CONCURRENTLY` is rejected outright on a partitioned table.
+   */
+  const concurrentOk = (tableKey: string | null): boolean => {
+    if (options.multiFile !== true || options.noSafeRewrite === true) return false;
+    if (tableKey === null || createdTables.has(tableKey)) return false;
+    const table = desired.get(parseId(tableKey));
+    return table === undefined || table.payload["partitionStrategy"] === null;
   };
 
   /**
@@ -418,6 +452,11 @@ export function buildStatements(
                 { verb: "alter", kind: "table", consumes: [id(t)], phase: PHASE.alterTable },
               ));
             }
+            // Truthiness, not `!== null`: a payload can arrive from a serialized
+            // checkpoint written before this field existed, or from a caller that
+            // hand-built one, and `undefined !== null` is true — the same trap
+            // `isPartitioned` exists for two fields up.
+            if (p.clusterOn) statements.push(clusterOn(t, p.clusterOn));
             if (isPartitioned(p.partitionOf)) statements.push(attachPartition(t, p));
             break;
           }
@@ -485,9 +524,92 @@ export function buildStatements(
             // LK109: only a VOLATILE default rewrites the table. A constant one has used
             // `attmissingval` since PG 11 — pg-delta flags both and we do not inherit
             // that. Volatility is read off the expression's function calls, not guessed.
-            const volatileDefault =
-              def !== null && isVolatile(id({ kind: "default", schema: c.schema, table: c.table, name: c.name }), def);
+            const defaultId = id({ kind: "default", schema: c.schema, table: c.table, name: c.name });
+            const volatileDefault = def !== null && isVolatile(defaultId, def);
+
+            /* §3.5 row 7 — ADD COLUMN with a VOLATILE default, split.
+             *
+             *   ALTER TABLE t ADD COLUMN c <type>       -- nullable, no default: no rewrite
+             *   ALTER TABLE t ALTER COLUMN c SET DEFAULT …   -- catalog only
+             *   (a `-- pg-prime:data` file with a TODO backfills the existing rows)
+             *
+             * The split is refused when the desired column is NOT NULL, and that is not a
+             * gap: a NOT NULL column with a per-row distinct value cannot exist without
+             * writing every row, so no reordering of statements avoids the rewrite. §3.5's
+             * own row puts `SET NOT NULL` in a *separate migration* for exactly that
+             * reason — which this plan cannot contain and still converge on IR(desired),
+             * so the literal form plus LK109 stays the honest answer and the diagnostic
+             * below names the three-migration shape.
+             */
+            const splitVolatile =
+              volatileDefault &&
+              options.multiFile === true &&
+              options.noSafeRewrite !== true &&
+              !p.notNull &&
+              !p.identity &&
+              p.generated !== "s" &&
+              !emptyTables.has(tableId);
+
+            if (splitVolatile && def !== null) {
+              const evaluates = desired
+                .outgoingEdges(f.id)
+                .filter((e) => e.kind === "depends" || e.kind === "evaluates")
+                .map((e) => id(e.to));
+              statements.push(
+                {
+                  sql: `ALTER TABLE ${quoteQualified(c.schema, c.table)} ADD COLUMN IF NOT EXISTS ${columnClause(c, p, null)}`,
+                  verb: "alter",
+                  kind: "column",
+                  produces: [id(f.id)],
+                  consumes: [tableId, ...evaluates],
+                  destroys: [],
+                  releases: [],
+                  transactionality: "transactional",
+                  lockClass: "accessExclusive",
+                  idempotent: true,
+                  dataLoss: "none",
+                  rewrite: false,
+                  hazards: [],
+                  phase: PHASE.addColumn,
+                },
+                simple(
+                  `ALTER TABLE ${quoteQualified(c.schema, c.table)} ALTER COLUMN ${quoteIdent(c.name)} SET DEFAULT ${def}`,
+                  {
+                    verb: "alter",
+                    kind: "default",
+                    produces: [defaultId],
+                    consumes: [id(f.id), tableId, ...evaluates],
+                    idempotent: true,
+                    phase: PHASE.setDefault,
+                  },
+                ),
+              );
+              diagnostics.push({
+                code: "volatile_default_split",
+                severity: "info",
+                subject: id(f.id),
+                message:
+                  `${c.schema}.${c.table}.${c.name} is added NULLABLE with its DEFAULT set afterwards ` +
+                  `(design/06 §3.5 row 7), so the table is not rewritten under ACCESS EXCLUSIVE. ` +
+                  `Existing rows are NOT backfilled: a -- pg-prime:data stub is written beside this ` +
+                  `migration and must be completed before it is applied.`,
+              });
+              break;
+            }
             if (volatileDefault) hazards.push("LK109");
+            if (volatileDefault && p.notNull) {
+              diagnostics.push({
+                code: "volatile_default_not_null",
+                severity: "warning",
+                subject: id(f.id),
+                message:
+                  `${c.schema}.${c.table}.${c.name} is NOT NULL with a volatile DEFAULT, so PostgreSQL ` +
+                  `rewrites the whole table under ACCESS EXCLUSIVE and no statement ordering avoids it. ` +
+                  `The lock-safe shape is three migrations (design/06 §3.5 row 7, §7 lane 2): add the ` +
+                  `column nullable with its DEFAULT, backfill it in a -- pg-prime:data migration, then ` +
+                  `SET NOT NULL.`,
+              });
+            }
             statements.push({
               // The DEFAULT stays INLINE even though it is now a fact of its own: on a
               // populated table `ADD COLUMN … NOT NULL` followed by a separate
@@ -522,12 +644,13 @@ export function buildStatements(
                 onFreshTable: createdTables.has(parentTableId(f.id)!),
                 provenEmpty: emptyTables.has(parentTableId(f.id)!),
                 noSafeRewrite: options.noSafeRewrite ?? false,
+                concurrent: concurrentOk(parentTableId(f.id)),
               }),
             );
             break;
           }
           case "index": {
-            statements.push(createIndex(f, desired));
+            statements.push(...createIndex(f, desired, [], concurrentOk(indexTableId(desired, f.id))));
             break;
           }
           default:
@@ -552,7 +675,12 @@ export function buildStatements(
               // the table already holds. Distinct from MF101 (a NEW uniqueness guarantee)
               // because the near-miss — rebuilding an index that was already unique — is
               // not a hazard at all, and a rule that cannot tell them apart is noise.
-              createIndex(after, desired, !wasUnique && isUnique ? ["MF102"] : []),
+              ...createIndex(
+                after,
+                desired,
+                !wasUnique && isUnique ? ["MF102"] : [],
+                concurrentOk(indexTableId(desired, after.id)),
+              ),
             );
             break;
           }
@@ -568,6 +696,7 @@ export function buildStatements(
                   onFreshTable: false,
                   provenEmpty: emptyTables.has(parentTableId(after.id) ?? ""),
                   noSafeRewrite: options.noSafeRewrite ?? false,
+                  concurrent: concurrentOk(parentTableId(after.id)),
                 }),
               );
             }
@@ -650,6 +779,19 @@ export function buildStatements(
                 `ALTER TABLE ${quoteQualified(t.schema, t.name)} ${a.rowSecurity ? "ENABLE" : "DISABLE"} ROW LEVEL SECURITY`,
                 { verb: "alter", kind: "table", consumes: [id(t)], phase: PHASE.alterTable },
               ));
+            }
+            if ((b.clusterOn ?? null) !== (a.clusterOn ?? null)) {
+              statements.push(
+                !a.clusterOn
+                  ? simple(`ALTER TABLE ${quoteQualified(t.schema, t.name)} SET WITHOUT CLUSTER`, {
+                      verb: "alter",
+                      kind: "table",
+                      consumes: [id(t)],
+                      phase: PHASE.comment,
+                      lockClass: "accessExclusive",
+                    })
+                  : clusterOn(t, a.clusterOn),
+              );
             }
             if (b.relkind !== a.relkind) {
               diagnostics.push({
@@ -841,6 +983,29 @@ export function buildStatements(
 
 function deltaId(d: Delta): StableId {
   return d.op === "rename" ? d.to : d.id;
+}
+
+/**
+ * `ALTER TABLE … CLUSTER ON …` — `pg_index.indisclustered`, which `pg_dump` emits and the
+ * IR did not model until AdventureWorks' 68 clustered primary keys showed up as D10 drift.
+ *
+ * It consumes BOTH spellings of the index's id — `index:…` and `constraint:…` — because
+ * the clustered index is usually a constraint's backing index, which is not a fact of its
+ * own; consuming a key nothing produces is inert, and consuming the right one is what
+ * orders this statement after the object it names.
+ */
+function clusterOn(t: StableId & { kind: "table" }, index: string): Statement {
+  return simple(`ALTER TABLE ${quoteQualified(t.schema, t.name)} CLUSTER ON ${quoteIdent(index)}`, {
+    verb: "alter",
+    kind: "table",
+    consumes: [
+      id(t),
+      id({ kind: "index", schema: t.schema, name: index }),
+      id({ kind: "constraint", schema: t.schema, table: t.name, name: index }),
+    ],
+    lockClass: "accessExclusive",
+    phase: PHASE.comment,
+  });
 }
 
 function simple(
@@ -1160,6 +1325,40 @@ interface AddConstraintContext {
   /** `probeEmptiness` said the existing table has no rows — suppresses MF, never LK */
   readonly provenEmpty: boolean;
   readonly noSafeRewrite: boolean;
+  /** the caller can carry a `txmode none` companion file (design/06 §3.5 row 6) */
+  readonly concurrent: boolean;
+}
+
+/**
+ * A `pg_get_constraintdef` we are willing to rebuild as a `CREATE UNIQUE INDEX`.
+ *
+ * Deliberately narrow. `PRIMARY KEY (a, b)`, `UNIQUE (a)`, `UNIQUE NULLS NOT DISTINCT (a)`
+ * and an `INCLUDE` list, and nothing else: a `DEFERRABLE`, a `WITH (fillfactor = …)`, a
+ * `USING INDEX TABLESPACE` or an expression containing parentheses all fall through to
+ * the literal `ADD CONSTRAINT`. The rewrite has to land on *byte-identical* catalog state
+ * or D6 refuses the plan, and guessing at a definition grammar is how that stops being
+ * true on a version we did not test.
+ */
+const PK_UNIQUE_DEF =
+  /^(PRIMARY KEY|UNIQUE(?: NULLS NOT DISTINCT)?)\s*\(([^()]*)\)(?:\s+INCLUDE\s*\(([^()]*)\))?$/;
+
+interface RebuildableUnique {
+  readonly primary: boolean;
+  readonly nullsNotDistinct: boolean;
+  readonly columns: string;
+  readonly include: string | null;
+}
+
+function rebuildableUnique(definition: string): RebuildableUnique | null {
+  const m = PK_UNIQUE_DEF.exec(definition.trim());
+  if (m === null) return null;
+  const head = m[1]!;
+  return {
+    primary: head.startsWith("PRIMARY"),
+    nullsNotDistinct: head.includes("NULLS NOT DISTINCT"),
+    columns: m[2]!.trim(),
+    include: m[3] === undefined ? null : m[3].trim(),
+  };
 }
 
 function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): Statement[] {
@@ -1216,14 +1415,92 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
       },
     ];
   }
+  /* §3.5 row 6: ADD PRIMARY KEY / UNIQUE →
+   *   ALTER TABLE … DROP CONSTRAINT IF EXISTS c      (robust prefix, §5.4 replay)
+   *   DROP INDEX CONCURRENTLY IF EXISTS c            (robust prefix)
+   *   CREATE UNIQUE INDEX CONCURRENTLY c ON …        (SHARE UPDATE EXCLUSIVE, not AE)
+   *   ALTER TABLE … ADD CONSTRAINT c … USING INDEX c (instant catalog write)
+   *
+   * PostgreSQL names a constraint's backing index after the constraint, so the index and
+   * the constraint share one name and the resulting catalog state is the same one the
+   * literal `ADD CONSTRAINT` would have produced — which is what D6 and D10 check.
+   *
+   * The two `IF EXISTS` prefixes are why all four are marked idempotent: a `txmode none`
+   * file resumes at statement 0 (§5.4), and from the top the group is replayable — the
+   * DROP CONSTRAINT takes its own index with it, so the DROP INDEX after it can never hit
+   * "cannot drop index … because constraint … requires it".
+   */
+  if ((p.contype === "p" || p.contype === "u") && !onFreshTable && !noSafeRewrite && ctx.concurrent) {
+    const spec = rebuildableUnique(p.definition);
+    if (spec !== null) {
+      const idx = quoteQualified(c.schema, c.name);
+      const bare = quoteIdent(c.name);
+      const concurrentBase = { ...base, idempotent: true, stage: "concurrent" as const };
+      return [
+        {
+          ...concurrentBase,
+          sql: `ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${bare}`,
+          verb: "drop",
+          produces: [],
+          consumes: [id({ kind: "table", schema: c.schema, name: c.table })],
+          lockClass: "accessExclusive",
+          hazards: [],
+          phase: PHASE.dropConstraint,
+        },
+        {
+          ...concurrentBase,
+          sql: `DROP INDEX CONCURRENTLY IF EXISTS ${idx}`,
+          verb: "drop",
+          produces: [],
+          consumes: [],
+          transactionality: "nonTransactional",
+          lockClass: "shareUpdateExclusive",
+          hazards: [],
+          // After the DROP CONSTRAINT above, never before it — see the phase's own note.
+          phase: PHASE.dropIndexConcurrently,
+        },
+        {
+          ...concurrentBase,
+          sql:
+            `CREATE UNIQUE INDEX CONCURRENTLY ${bare} ON ${table} ` +
+            `USING btree (${spec.columns})` +
+            (spec.include === null ? "" : ` INCLUDE (${spec.include})`) +
+            (spec.nullsNotDistinct ? " NULLS NOT DISTINCT" : ""),
+          verb: "create",
+          kind: "index",
+          // The index is not a fact of its own (the extractor filters constraint-backed
+          // indexes out), so it produces the CONSTRAINT's key: that is what makes the
+          // `USING INDEX` statement below depend on this one.
+          produces: [`${id(f.id)}#index`],
+          consumes: [id({ kind: "table", schema: c.schema, name: c.table })],
+          transactionality: "nonTransactional",
+          lockClass: "shareUpdateExclusive",
+          hazards: mayFail ? ["MF101"] : [],
+          phase: PHASE.createIndex,
+        },
+        {
+          ...concurrentBase,
+          sql:
+            `ALTER TABLE ${table} ADD CONSTRAINT ${bare} ` +
+            `${spec.primary ? "PRIMARY KEY" : "UNIQUE"} USING INDEX ${bare}`,
+          consumes: [...base.consumes, `${id(f.id)}#index`],
+          lockClass: "accessExclusive",
+          hazards: [],
+          phase: PHASE.addConstraint,
+        },
+      ];
+    }
+  }
+
   const suffix = p.validated ? "" : " NOT VALID";
   const hazards: string[] = [];
   if (!onFreshTable) {
     // A PK/UNIQUE builds its index under ACCESS EXCLUSIVE (LK104) even on an empty table,
-    // and fails outright if the column is not already unique (MF101) unless it is. §3.5
-    // has a safe form for the lock — CREATE UNIQUE INDEX CONCURRENTLY + ADD CONSTRAINT …
-    // USING INDEX — which needs `txmode none`; until the emitter can split a file, the
-    // hazard is the honest answer.
+    // and fails outright if the column is not already unique (MF101) unless it is. §3.5's
+    // safe form — CREATE UNIQUE INDEX CONCURRENTLY + ADD CONSTRAINT … USING INDEX — is
+    // taken above when the caller can carry a second file; reaching here means it could
+    // not, or `--no-safe-rewrite` asked for the literal diff, or the definition is one
+    // `rebuildableUnique` refuses to reconstruct. Then the hazard is the honest answer.
     if (p.contype === "p" || p.contype === "u") hazards.push("LK104");
     if (p.contype === "x") hazards.push("LK104");
     if (mayFail && (p.contype === "p" || p.contype === "u")) hazards.push("MF101");
@@ -1313,7 +1590,38 @@ function dropConstraint(f: Fact, current: SchemaIR): Statement {
   };
 }
 
-function createIndex(f: Fact, desired: SchemaIR, extraHazards: readonly string[] = []): Statement {
+/** `CREATE [UNIQUE] INDEX <rest>` → the same with `CONCURRENTLY`, or null if unrecognised. */
+const INDEX_HEAD = /^CREATE\s+(UNIQUE\s+)?INDEX\s+/i;
+
+function concurrentIndexSql(sql: string): string | null {
+  const m = INDEX_HEAD.exec(sql);
+  if (m === null) return null;
+  return `CREATE ${m[1] ? "UNIQUE " : ""}INDEX CONCURRENTLY ${sql.slice(m[0].length)}`;
+}
+
+/**
+ * design/06 §3.5 row 1 — `CREATE INDEX` becomes
+ * `DROP INDEX CONCURRENTLY IF EXISTS x` + `CREATE INDEX CONCURRENTLY x`, in a
+ * `txmode none` file.
+ *
+ * The `DROP … IF EXISTS` prefix is Squawk's `prefer-robust-stmts`, and it is what makes
+ * the pair replayable: design/06 §5.4's resume restarts a `txmode none` file at statement
+ * 0, so the prefix both cleans up the INVALID index a killed build leaves behind and
+ * makes the CIC's second execution legal. That is the whole justification for marking the
+ * CIC `idempotent` — the claim is about the file from its top, which is the only place a
+ * resume can start.
+ *
+ * Ordering between the two comes from `phase` (dropIndex 15 < createIndex 60), not from a
+ * synthetic produces/destroys pair: giving the prefix `destroys: [index:…]` would turn
+ * every consumer of that index (a `COMMENT ON INDEX`, say) into an edge back INTO the
+ * prefix and close a cycle.
+ */
+function createIndex(
+  f: Fact,
+  desired: SchemaIR,
+  extraHazards: readonly string[] = [],
+  concurrent = false,
+): Statement[] {
   const p = f.payload as unknown as IndexPayload;
   const i = f.id as StableId & { kind: "index" };
   // A replacement STRING makes `$&`, `$\u0060`, `$'` and `$$` expansion patterns, and `$`
@@ -1321,24 +1629,57 @@ function createIndex(f: Fact, desired: SchemaIR, extraHazards: readonly string[]
   // and one named `%ID%x` created an index literally called "idx%ID%x". A
   // replacement FUNCTION has no such syntax.
   const sql = p.definition.replace("%ID%", () => quoteIdent(i.name));
-  return {
-    sql,
-    verb: "create",
+  const base = {
+    verb: "create" as const,
     kind: "index",
     produces: [id(f.id)],
     consumes: desired.outgoingEdges(f.id).map((e) => id(e.to)),
-    destroys: [],
-    releases: [],
-    transactionality: "transactional",
-    lockClass: "share",
-    idempotent: false,
-    dataLoss: "none",
+    destroys: [] as string[],
+    releases: [] as string[],
+    dataLoss: "none" as const,
     rewrite: false,
-    // LK101: a lock-safe rewrite to CREATE INDEX CONCURRENTLY (+ txmode none)
-    // is the v1 behaviour; the spike reports the hazard and emits the literal form.
-    hazards: ["LK101", ...extraHazards],
     phase: PHASE.createIndex,
   };
+  const cic = concurrent ? concurrentIndexSql(sql) : null;
+  if (cic === null) {
+    return [
+      {
+        ...base,
+        sql,
+        transactionality: "transactional",
+        lockClass: "share",
+        idempotent: false,
+        // LK101 is what the rewrite PREVENTS, so it rides on the literal form only —
+        // reachable under `--no-safe-rewrite`, on a single-file caller, and wherever the
+        // rewrite is refused (a partitioned parent, a definition we will not rewrite).
+        hazards: ["LK101", ...extraHazards],
+      },
+    ];
+  }
+  return [
+    {
+      ...base,
+      sql: `DROP INDEX CONCURRENTLY IF EXISTS ${quoteQualified(i.schema, i.name)}`,
+      verb: "drop",
+      produces: [],
+      consumes: [],
+      transactionality: "nonTransactional",
+      lockClass: "shareUpdateExclusive",
+      idempotent: true,
+      hazards: [],
+      phase: PHASE.dropIndex,
+      stage: "concurrent",
+    },
+    {
+      ...base,
+      sql: cic,
+      transactionality: "nonTransactional",
+      lockClass: "shareUpdateExclusive",
+      idempotent: true,
+      hazards: [...extraHazards],
+      stage: "concurrent",
+    },
+  ];
 }
 
 function dropIndex(f: Fact): Statement {

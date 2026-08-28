@@ -37,6 +37,17 @@ export interface TablePayload extends Payload {
   readonly partitionOf: string | null;
   /** `pg_get_expr(relpartbound, oid)` — `FOR VALUES FROM (…) TO (…)`, verbatim. */
   readonly partitionBound: string | null;
+  /**
+   * The bare name of the index this table is CLUSTERed on (`pg_index.indisclustered`), or
+   * null.
+   *
+   * It lives on the TABLE rather than on the index because the clustered index is very
+   * often a constraint's backing index, and those are not facts of their own (`Q_INDEXES`
+   * filters them out) — so an `IndexPayload.clustered` would be invisible for exactly the
+   * common case. `pg_dump` emits it as `ALTER TABLE … CLUSTER ON …`, which is how the D10
+   * witness found it missing on all 68 of AdventureWorks' tables.
+   */
+  readonly clusterOn: string | null;
 }
 
 /**

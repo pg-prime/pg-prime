@@ -17,8 +17,14 @@ import { ENGINE } from "../plan/plan.js";
 import { bool, list, parseArgs, renderOptions, str, type OptionSpec, type ParseResult } from "./args.js";
 import { APPLY_OPTIONS, runApply } from "./commands/apply.js";
 import { BASELINE_OPTIONS, runBaseline } from "./commands/baseline.js";
+import { CHECK_OPTIONS, runCheck } from "./commands/check.js";
+import { DOCTOR_OPTIONS, runDoctor } from "./commands/doctor.js";
+import { GENERATE_OPTIONS, runGenerate } from "./commands/generate.js";
+import { LINT_OPTIONS, runLint } from "./commands/lint.js";
+import { PUSH_OPTIONS, runPush } from "./commands/push.js";
 import { STATUS_OPTIONS, runStatus } from "./commands/status.js";
 import { UNLOCK_OPTIONS, runUnlock } from "./commands/unlock.js";
+import { VERIFY_OPTIONS, runVerify } from "./commands/verify.js";
 import { EXIT, type ExitCode } from "./exit.js";
 import { nowIso, render, type CommandOutput, type OutputFormat } from "./output.js";
 
@@ -47,10 +53,24 @@ interface Command {
   readonly summary: string;
   readonly options: readonly OptionSpec[];
   readonly exits: string;
+  /**
+   * `false` for the one command that is a pure function of files. `resolveConfig` then
+   * returns a placeholder connection and `ResolvedConfig.hasConnection` is false, so
+   * `migrate lint db/migrations/0001_x.sql` works in a repository with no `DATABASE_URL`.
+   */
+  readonly needsConnection?: boolean;
   readonly run: (config: ResolvedConfig, argv: ParseResult) => Promise<CommandOutput>;
 }
 
 const COMMANDS: readonly Command[] = [
+  {
+    name: "generate",
+    aliases: [],
+    summary: "build a migration from the TypeScript schema: diff, order, lock-safe rewrite, prove, write.",
+    options: GENERATE_OPTIONS,
+    exits: "0 written or nothing to do · 1 error · 2 a rename or data-loss decision is missing · 3 lint · 7 proof failed",
+    run: runGenerate,
+  },
   {
     name: "apply",
     aliases: ["deploy"],
@@ -76,6 +96,47 @@ const COMMANDS: readonly Command[] = [
     run: runBaseline,
   },
   {
+    name: "check",
+    aliases: [],
+    summary: "the default CI gate: is the repository consistent with the schema, the checksums and the database? No history writes.",
+    options: CHECK_OPTIONS,
+    exits: "0 ok · 1 error · 2 missing hints · 3 lint · 4 the schema changed and no migration was generated · 5 pending",
+    run: runCheck,
+  },
+  {
+    name: "verify",
+    aliases: [],
+    summary: "replay every migration from empty into an ephemeral database and assert the result matches the schema.",
+    options: VERIFY_OPTIONS,
+    exits: "0 verified · 1 error or no ephemeral database available · 4 non-empty diff",
+    run: runVerify,
+  },
+  {
+    name: "lint",
+    aliases: [],
+    summary: "run the design/06 §3.4 rules over generated or hand-written SQL. Defaults to the unapplied migrations.",
+    options: LINT_OPTIONS,
+    exits: "0 clean · 1 usage · 3 a finding at or above --fail-on",
+    needsConnection: false,
+    run: runLint,
+  },
+  {
+    name: "push",
+    aliases: [],
+    summary: "DEV ONLY: apply the diff directly, writing no files and no history rows. Requires the literal --dev.",
+    options: PUSH_OPTIONS,
+    exits: "0 pushed or nothing to do · 1 refused or failed · 2 a decision is missing",
+    run: runPush,
+  },
+  {
+    name: "doctor",
+    aliases: [],
+    summary: "read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables.",
+    options: DOCTOR_OPTIONS,
+    exits: "0 healthy · 4 findings",
+    run: runDoctor,
+  },
+  {
     name: "unlock",
     aliases: [],
     summary: "inspect or break a stale migration lease.",
@@ -85,15 +146,10 @@ const COMMANDS: readonly Command[] = [
   },
 ];
 
-/** Round 2 of design/11. Named here so `--help` does not pretend they do not exist. */
+/** Still to come. Named here so `--help` does not pretend they do not exist. */
 const LATER: readonly (readonly [string, string])[] = [
-  ["generate", "K2b — build a migration from the TypeScript schema"],
-  ["check", "K2b — the default CI gate"],
-  ["verify", "K2b — replay from empty and assert an empty diff"],
-  ["lint", "K2b — run the design/06 §3.4 rules"],
-  ["push --dev", "K2b — apply the diff directly, dev loop only"],
-  ["doctor", "K2b — read-only health report"],
   ["checkpoint", "K4 — write a full-schema checkpoint"],
+  ["db seed", "K4 — run seeds/*.sql, never recorded in the migration history"],
 ];
 
 function version(): string {
@@ -244,6 +300,7 @@ export async function main(argv: readonly string[], io: Partial<CliIo> = {}): Pr
     const config = resolveConfig({
       config: loaded.config,
       configFile: loaded.file,
+      requireConnection: command.needsConnection !== false,
       url: str(parsed.values, "url"),
       migrations: str(parsed.values, "migrations"),
       schemas: list(parsed.values, "schema"),

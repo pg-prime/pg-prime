@@ -14,7 +14,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { extractCatalog } from "../src/catalog/extract.js";
 import { isShadowDatabase, terminateConnections, UnsafeDatabaseNameError, withClient } from "../src/db/pg.js";
-import { generate } from "../src/generate.js";
+import { generateFromDatabases as generate } from "../src/generate.js";
 import { proveOnShadowClone, UnsafeCloneNameError } from "../src/prove/prove.js";
 import { ADMIN, destroyDatabase, makeDatabase, serverAvailable, withAdmin } from "./support/db.js";
 

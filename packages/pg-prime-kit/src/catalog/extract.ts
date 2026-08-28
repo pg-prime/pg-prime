@@ -102,7 +102,9 @@ SELECT n.nspname AS schema, c.relname AS name, c.relkind, c.relpersistence, c.re
        pt.partstrat,
        CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) END AS partition_key,
        pn.nspname AS parent_schema, pc.relname AS parent_name,
-       CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) END AS partition_bound
+       CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) END AS partition_bound,
+       (SELECT ic.relname FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid
+         WHERE i.indrelid = c.oid AND i.indisclustered LIMIT 1) AS cluster_on
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN pg_partitioned_table pt ON pt.partrelid = c.oid
@@ -188,6 +190,13 @@ WHERE n.nspname = ANY($1) AND con.contype IN ('p','f','u','c','x')
  * emitting them as facts would plan a `CREATE INDEX` PostgreSQL creates for us — and
  * name differently. The parent index (`relkind = 'I'`) is the fact; the children ride
  * along, exactly as they do for a human writing the same DDL.
+ *
+ * Nor is an index on a **materialized view**. `Q_TABLES` is `relkind IN ('r','p')` — a
+ * matview is Tier R (design/06 §2.2, §8: views stay in Tier R for v1) — so without the
+ * same filter here the index arrives as a fact whose parent table does not exist. It is
+ * reported as an `orphan_fact` and then planned as `CREATE INDEX … ON <matview>` against a
+ * database where the matview was never created, which is an apply-time failure of the
+ * baseline. Found by Pagila, whose `rental_by_category` matview carries a unique index.
  */
 const Q_INDEXES = `
 SELECT n.nspname AS schema, ic.relname AS name, c.relname AS "table",
@@ -198,6 +207,7 @@ JOIN pg_class ic ON ic.oid = i.indexrelid
 JOIN pg_class c ON c.oid = i.indrelid
 JOIN pg_namespace n ON n.oid = ic.relnamespace
 WHERE n.nspname = ANY($1)
+  AND c.relkind IN ('r','p')
   AND c.oid NOT IN (${EXCLUDED_RELS})
   AND ic.oid NOT IN (${EXCLUDED_RELS})
   AND NOT EXISTS (SELECT 1 FROM pg_inherits pi WHERE pi.inhrelid = i.indexrelid)
@@ -240,9 +250,20 @@ FROM pg_constraint con
 JOIN pg_type t ON t.oid = con.contypid
 JOIN pg_namespace n ON n.oid = t.typnamespace
 WHERE con.contype = 'c' AND n.nspname = ANY($1)
+  AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                  WHERE d.classid = 'pg_type'::regclass AND d.objid = t.oid AND d.deptype = 'e')
 ORDER BY n.nspname, t.typname, con.conname`;
 
-/** Attributes of a standalone composite type — `pg_attribute` over `typrelid`. */
+/**
+ * Attributes of a standalone composite type — `pg_attribute` over `typrelid`.
+ *
+ * The `pg_depend deptype = 'e'` exclusion is the same one `Q_TYPES` applies, and it has to
+ * be here for the reason this file's header gives about relations: a family-level filter
+ * that is not applied uniformly leaves orphans, and an orphan `typeAttribute` diffs into
+ * `ALTER TYPE … ADD ATTRIBUTE` on a composite the plan never creates. Found by
+ * AdventureWorks, which installs `tablefunc` and therefore gets `tablefunc_crosstab_2..4`
+ * — three extension-owned composites whose attributes the baseline tried to add again.
+ */
 const Q_TYPE_ATTRIBUTES = `
 SELECT n.nspname AS schema, t.typname AS type, a.attname AS name, a.attnum,
        format_type(a.atttypid, a.atttypmod) AS type_name,
@@ -255,6 +276,8 @@ JOIN pg_attribute a ON a.attrelid = rc.oid AND a.attnum > 0 AND NOT a.attisdropp
 JOIN pg_type at ON at.oid = a.atttypid
 LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
 WHERE t.typtype = 'c' AND n.nspname = ANY($1)
+  AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                  WHERE d.classid = 'pg_type'::regclass AND d.objid = t.oid AND d.deptype = 'e')
 ORDER BY n.nspname, t.typname, a.attnum`;
 
 /**
@@ -289,6 +312,11 @@ UNION ALL
   WHERE d.classoid = 'pg_class'::regclass AND d.objsubid = 0 AND n.nspname = ANY($1)
     AND c.relkind IN ('r','p','S','i','I')
     AND c.oid NOT IN (${EXCLUDED_RELS})
+    -- Same filter as Q_INDEXES: a comment on an index of a MATVIEW would be a comment on a
+    -- fact that is not in the IR, and an orphan comment cannot be emitted.
+    AND (c.relkind NOT IN ('i','I')
+         OR EXISTS (SELECT 1 FROM pg_index i2 JOIN pg_class bc ON bc.oid = i2.indrelid
+                     WHERE i2.indexrelid = c.oid AND bc.relkind IN ('r','p')))
 UNION ALL
   SELECT 'column', n.nspname, c.relname, a.attname, d.description
   FROM pg_description d JOIN pg_class c ON c.oid = d.objoid
@@ -772,6 +800,7 @@ export async function extractCatalog(
           partitionKey: nstr(r["partition_key"]),
           partitionOf,
           partitionBound: nstr(r["partition_bound"]),
+          clusterOn: nstr(r["cluster_on"]),
         } satisfies TablePayload,
         provenance: prov,
       });

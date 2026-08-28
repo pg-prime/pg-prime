@@ -1,0 +1,32 @@
+{
+  "command": "migrate lint",
+  "status": "failed",
+  "exitCode": 3,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "linted": [
+    "0000_by_hand"
+  ],
+  "failOn": "error",
+  "rules": [],
+  "findings": [
+    {
+      "code": "TX201",
+      "severity": "error",
+      "statement": 0,
+      "subject": "",
+      "message": "<masked>",
+      "acknowledged": false,
+      "suppressedBy": null,
+      "migration": "0000_by_hand"
+    }
+  ],
+  "directiveErrors": [],
+  "unusedDirectives": [],
+  "error": null
+}

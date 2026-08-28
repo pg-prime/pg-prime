@@ -1,0 +1,51 @@
+{
+  "command": "migrate doctor",
+  "status": "findings",
+  "exitCode": 4,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "history": {
+    "present": true,
+    "recordedFingerprint": "<masked>",
+    "liveFingerprint": "<masked>",
+    "drift": true
+  },
+  "invalidIndexes": [
+    "public.dups_v_idx"
+  ],
+  "ccnewLeftovers": [],
+  "notValidConstraints": [],
+  "missingFiles": [],
+  "partiallyApplied": [],
+  "lock": {
+    "held": false,
+    "stale": false,
+    "holder": "<masked>"
+  },
+  "repeatables": {
+    "tracked": 0,
+    "drift": [],
+    "orphaned": []
+  },
+  "observed": [
+    {
+      "kind": "acl",
+      "count": 1
+    },
+    {
+      "kind": "role",
+      "count": 1
+    }
+  ],
+  "unmodeled": [],
+  "findings": [
+    "INVALID index public.dups_v_idx — a CREATE INDEX CONCURRENTLY did not finish; DROP INDEX CONCURRENTLY it and rebuild",
+    "the catalog does not match the fingerprint pgprime.migrations records — something changed outside the migration history (see `history` for both values)"
+  ],
+  "error": null
+}

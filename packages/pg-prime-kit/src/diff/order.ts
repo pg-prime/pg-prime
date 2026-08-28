@@ -1,5 +1,5 @@
 import type { Diagnostic } from "../catalog/extract.js";
-import type { Statement } from "./statement.js";
+import type { Stage, Statement } from "./statement.js";
 
 export interface Segment {
   readonly index: number;
@@ -134,4 +134,89 @@ export function orderStatements(input: readonly Statement[]): OrderResult {
   });
 
   return { statements, segments, diagnostics };
+}
+
+/* ------------------------- one plan, several files ------------------------- */
+
+export interface StagedFile {
+  readonly stage: Stage;
+  readonly statements: readonly Statement[];
+  readonly segments: readonly Segment[];
+}
+
+export interface StagedResult {
+  /** In apply order. One entry when nothing was staged — the ordinary single file. */
+  readonly files: readonly StagedFile[];
+  readonly diagnostics: readonly Diagnostic[];
+  /** Non-null when a `concurrent` stage was DECLINED, with the reason. */
+  readonly declined: string | null;
+}
+
+const STAGE_RANK: Readonly<Record<Stage, number>> = { main: 0, concurrent: 1, data: 2 };
+const stageOf = (s: Statement): Stage => s.stage ?? "main";
+
+/**
+ * Order once, then cut the ordered stream into the files `generate` will write
+ * (design/06 §3.5 rows 1/6/7, §4.1).
+ *
+ * The cut has to respect dependencies, and the only authority on those is the same
+ * topological sort the single-file path uses — so the sort runs once over the whole plan
+ * with `phase` offset by 1000 per stage. The offset is a *tie-break*, not a constraint: a
+ * real edge that forces a `main` statement to follow a `concurrent` one still wins, and it
+ * shows up as a stage rank that goes down. That is the one thing the two-file layout
+ * cannot express (`NNNN_name.sql` always applies before `NNNN_name_concurrently.sql`), so
+ * it is detected and the whole concurrent rewrite is DECLINED — the caller re-builds with
+ * `multiFile` off and gets the literal, single-file plan plus its LK hazards. Emitting a
+ * plan whose files apply in an order that cannot work would be the worse answer by a
+ * distance.
+ *
+ * Each file is then re-ordered on its own so its `segments` describe that file. Re-running
+ * the sort on a sub-list is safe: a topological order of a subgraph of an ordered graph is
+ * still an order, and the tie-break is the same.
+ */
+export function splitStages(input: readonly Statement[]): StagedResult {
+  const staged = input.some((s) => stageOf(s) !== "main");
+  if (!staged) {
+    const one = orderStatements(input);
+    return {
+      files: [{ stage: "main", statements: one.statements, segments: one.segments }],
+      diagnostics: one.diagnostics,
+      declined: null,
+    };
+  }
+
+  const offset = input.map((s) => ({ ...s, phase: s.phase + STAGE_RANK[stageOf(s)] * 1000 }));
+  const global = orderStatements(offset);
+
+  let rank = -1;
+  for (const s of global.statements) {
+    const r = STAGE_RANK[stageOf(s)];
+    if (r < rank) {
+      return {
+        files: [],
+        diagnostics: global.diagnostics,
+        declined:
+          `${s.sql.split("\n")[0]} has to run after a CONCURRENTLY statement, but it belongs in ` +
+          `the transactional file, which applies first`,
+      };
+    }
+    rank = Math.max(rank, r);
+  }
+
+  const files: StagedFile[] = [];
+  const diagnostics: Diagnostic[] = [...global.diagnostics];
+  const seen = new Set(diagnostics.map((d) => `${d.code}|${d.message}`));
+  for (const stage of ["main", "concurrent", "data"] as const) {
+    const group = global.statements.filter((s) => stageOf(s) === stage);
+    if (group.length === 0) continue;
+    const ordered = orderStatements(group);
+    for (const d of ordered.diagnostics) {
+      const key = `${d.code}|${d.message}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      diagnostics.push(d);
+    }
+    files.push({ stage, statements: ordered.statements, segments: ordered.segments });
+  }
+  return { files, diagnostics, declined: null };
 }

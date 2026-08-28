@@ -1,0 +1,17 @@
+{
+  "command": "migrate push",
+  "status": "refused",
+  "exitCode": 1,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "applied": 0,
+  "statements": "<masked>",
+  "error": {
+    "code": "push_refused",
+    "message": "<masked>"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "command": "migrate lint",
+  "status": "clean",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "linted": [
+    "0000_init"
+  ],
+  "failOn": "error",
+  "rules": [],
+  "findings": [],
+  "directiveErrors": [],
+  "unusedDirectives": [],
+  "error": null
+}

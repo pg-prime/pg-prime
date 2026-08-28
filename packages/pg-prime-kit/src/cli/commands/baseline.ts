@@ -126,6 +126,7 @@ export async function runBaseline(config: ResolvedConfig, argv: ParseResult): Pr
       pgVersionNum: extracted.pgVersionNum,
       renames: [],
       diagnostics,
+      schemas: config.schemas,
       ...(str(argv.values, "by") === undefined ? {} : { by: str(argv.values, "by")! }),
       // Nothing to prove: the DDL below describes a database that already exists, and it
       // is never executed by this command. design/11 §1.9.

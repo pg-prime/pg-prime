@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { generate } from "../src/generate.js";
+import { generateFromDatabases as generate } from "../src/generate.js";
 import { ADMIN, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
 
 const T = 180_000;
@@ -123,6 +123,10 @@ const CORPUS: readonly Case[] = [
     // `fresh` is appended by ADD COLUMN, which is the only place it can go.
     reordered: [],
   },
+  // `pg_index.indisclustered` — found by the third-party corpus, and pinned here in both
+  // directions so `CLUSTER ON` and `SET WITHOUT CLUSTER` are each a fixture.
+  { name: "cluster/on", slug: "clu", current: "cluster/current.sql", desired: "cluster/desired.sql" },
+  { name: "cluster/off", slug: "cluf", current: "cluster/desired.sql", desired: "cluster/current.sql" },
   {
     name: "multi-schema/down",
     slug: "msd",

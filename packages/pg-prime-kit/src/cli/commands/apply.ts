@@ -9,7 +9,8 @@
  */
 
 import type { ResolvedConfig } from "../../config/load.js";
-import { applyPending, NO_REPEATABLES, type ApplyPendingOptions, type ApplyPendingResult } from "../../runner/run.js";
+import { createRepeatablesPass } from "../../repeatables/index.js";
+import { applyPending, type ApplyPendingOptions, type ApplyPendingResult } from "../../runner/run.js";
 import { bool, ms, str, type OptionSpec, type ParseResult } from "../args.js";
 import { EXIT } from "../exit.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
@@ -37,9 +38,10 @@ export const APPLY_OPTIONS: readonly OptionSpec[] = [
 export async function runApply(config: ResolvedConfig, argv: ParseResult): Promise<CommandOutput> {
   const options: ApplyPendingOptions = {
     schemas: config.schemas,
-    // Tier R's seam, wired but empty: K3 ships the pass that reads `sql/**`, and when it
-    // does, only this one binding changes (design/11 §3 K3.4).
-    repeatables: NO_REPEATABLES,
+    // Tier R (design/06 §3.8, §5.1 step 8). K1 left `NO_REPEATABLES` here as the seam and
+    // K3 shipped the pass; this is the binding. A missing `sql/` directory is an empty
+    // pass, not a failure — `scanRepeatables` answers `[]` for ENOENT and nothing else.
+    repeatables: createRepeatablesPass(),
     repeatablesDir: config.repeatablesDir,
     ...(str(argv.values, "to") === undefined ? {} : { to: str(argv.values, "to")! }),
     ...(str(argv.values, "applied-from") === undefined ? {} : { appliedFrom: str(argv.values, "applied-from")! }),

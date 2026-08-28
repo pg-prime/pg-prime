@@ -188,6 +188,7 @@ export {
   defineConfig,
   findConfigFile,
   loadConfig,
+  loadSchema,
   parseDatabaseUrl,
   resolveConfig,
   ConfigError,
@@ -195,13 +196,38 @@ export {
   ENV_VAR,
   STRIP_TYPES_MARKER,
   type LoadedConfig,
+  type LoadedSchema,
   type ParsedUrl,
   type PgPrimeConfig,
   type ResolveInput,
   type ResolvedConfig,
 } from "./config/index.js";
 
-export { generate, type GenerateInput, type GenerateResult } from "./generate.js";
+export {
+  annotationHints,
+  acceptHints,
+  dataMigrationSql,
+  emptyMigrationSql,
+  generate,
+  generateFromDatabases,
+  readHintsFile,
+  slug,
+  GenerateRefusedError,
+  type DatabaseGenerateInput,
+  type DatabaseGenerateResult,
+  type DataStubInput,
+  type GeneratedFile,
+  type GenerateInput,
+  type GenerateResult,
+  type GenerateStatus,
+  type Unresolved,
+} from "./generate.js";
+export { renameCandidates, type RenameCandidate, type RenameConfidence } from "./diff/candidates.js";
+export { splitStages, type StagedFile, type StagedResult } from "./diff/order.js";
+export { planOrderKey } from "./plan/emit.js";
+export { proveInTempSchemas, type TempSchemaProveInput } from "./prove/temp-schema.js";
+export type { Stage } from "./diff/statement.js";
+export type { ProveStage } from "./prove/prove.js";
 
 /**
  * The DSL → desired-state leg (design/11 §3 K2a). `pg-prime` is a PEER dependency and is imported

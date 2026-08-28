@@ -1,0 +1,46 @@
+{
+  "command": "migrate doctor",
+  "status": "healthy",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "history": {
+    "present": true,
+    "recordedFingerprint": "<masked>",
+    "liveFingerprint": "<masked>",
+    "drift": false
+  },
+  "invalidIndexes": [],
+  "ccnewLeftovers": [],
+  "notValidConstraints": [],
+  "missingFiles": [],
+  "partiallyApplied": [],
+  "lock": {
+    "held": false,
+    "stale": false,
+    "holder": "<masked>"
+  },
+  "repeatables": {
+    "tracked": 0,
+    "drift": [],
+    "orphaned": []
+  },
+  "observed": [
+    {
+      "kind": "acl",
+      "count": 1
+    },
+    {
+      "kind": "role",
+      "count": 1
+    }
+  ],
+  "unmodeled": [],
+  "findings": [],
+  "error": null
+}

@@ -15,6 +15,11 @@ packages/*/src/**/*.d.ts
 # tools/build-package.mjs copies it into dist/, and the export map points every subpath at it.
 !packages/*/src/unsupported-typescript.d.ts
 
+# The end-to-end loop test's scratch project. It lives inside the package rather than in
+# os.tmpdir() so that `import { pgTable } from 'pg-prime'` in the generated schema module
+# resolves through the workspace's node_modules, exactly as a user's project does.
+packages/pg-prime-kit/.e2e/
+
 # IDE state
 .idea/
 

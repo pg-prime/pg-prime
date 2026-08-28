@@ -36,7 +36,7 @@ apply here unchanged).
 | K1 | **Runner + history + CLI core**: `pgprime` history schema, reconcile, fingerprint gate, `txmode none` resume, lease heartbeat, pooler refusal; `migrate apply / status / baseline / unlock`; config loader; JSON envelope + exit codes | A real server: every runner claim is a catalog assertion after the fact; crash-resume is exercised by killing the runner mid-file | `apply` from an empty database through the fixture corpus's plans, twice (second run is a no-op, exit 0); resume proven by a killed `txmode none` run; PgBouncer transaction mode refused with exit 1 and the right sentence | 1 |
 | K2a | **DSL → desired state**: `pg-prime` gains `.references()`, `.check()`, `.renamedFrom()`, `.comment()` on columns, `renamedFrom`/`foreignKey`/`check`/`unique` extras, `pgSchema`; the kit gains `schema/emit.ts` (schema → DDL text) and the **shadow ladder tiers 1–3** (`--shadow url`, `CREATE DATABASE`, **temp schema in the target database**) | PostgreSQL: the emitted DDL loads, and the extracted IR round-trips — `emit(schema)` → load → extract → emit… converges in one step; the D10 witness on the temp-schema tier | A `pgTable` schema goes to a proven plan with **no `desired` database supplied**; tier 3 works with a role that has no `CREATEDB` | 1 |
 | K3 | **Object-kind coverage + the two gaps + Tier R/O/U + lint**: `convalidated` on `'n'` rows, `ChooseConstraintName` collision suffix, `EXCLUDE`, `domain`, `composite`/`typeAttribute`, `comment`, `extension` (declare-only), partitions (attach/detach, adopt-never-drop), `default` as its own fact; **Tier R repeatables** (`sql/`, hash, `pgprime.repeatables`); Tier O observation; Tier U census; the remaining 13 hazard codes; `nolint` directive; TX201 | `pg_dump` (D10) in **strict** mode on every new fixture — the witness is what catches a kind the IR is blind to | Every new kind has a corpus fixture that passes `strict`; `fixtures/diff/unmodeled` still fails as the negative control; hazard table in `06` §3.4 has no "not built" row | 1 |
-| K2b | **The author-side commands**: `migrate generate` from config (K1 + K2a + K3), `check`, `verify` (replay from empty on an ephemeral database → extract → diff vs IR(desired) → empty), `lint`, `push --dev`, `doctor`, `--interactive` rename prompts that *write annotations* | `verify` itself, run on three real third-party schemas (Pagila, AdventureWorks-PG, Northwind-PG — all plain-SQL, permissive licences) committed under `fixtures/corpus/` | `01` §11.6 #5: `verify` green on the three schemas; the full loop `edit schema → generate → apply → status` runs in CI against PG 17 and through PgBouncer | 2 |
+| K2b | **The author-side commands**: `migrate generate` from config (K1 + K2a + K3), `check`, `verify` (replay from empty on an ephemeral database → extract → diff vs IR(desired) → empty), `lint`, `push --dev`, `doctor`, `--interactive` rename prompts that *write annotations* | `verify` itself, run on three real third-party schemas (Pagila, AdventureWorks-PG, Northwind-PG — all plain-SQL, permissive licences) committed under `fixtures/corpus/` | `01` §11.6 #5: `verify` green on the three schemas; the full loop `edit schema → generate → apply → status` runs in CI against PG 17 and through PgBouncer — **DONE 2026-08-28, see §4** | 2 |
 | K4 | Data migrations (`--data`, `-- pg-prime:batch` runner), seeding, checkpoints, `pull` (introspect → TS schema file, deterministic) | Replay: `pull` → `generate` against the same database → **empty diff** | `pull` on the three corpus schemas produces a schema whose `generate` is empty | 2 |
 
 Critical path: **K1 ∥ K2a ∥ K3 → K2b → K4.** Round 1 is three agents on disjoint files (see §3); round 2
@@ -596,21 +596,172 @@ makes `verify` green on it; adds the end-to-end loop test to `ci.yml`'s `pg` job
 checkpoints, `pull`. Both get their own brief when round 1 lands; their file ownership is everything
 round 1 did not claim.
 
+### K2b — RESULT (2026-08-28)
+
+**Done.** Kit suite **334 → 375 tests**, 44 → 50 files: **37.2 s** on PG 17 (`:54333`, with a
+transaction-mode PgBouncer on `:56433`) and **38.4 s** on PG 18 (`:54332`, 369 passed + 6
+skipped — the PgBouncer-gated ones). `pnpm test` (tier 0) 46 files / 778 tests / 5.9 s ·
+root `pnpm typecheck` clean · `pnpm build` clean · `pnpm api-snapshot` `@pg-prime/kit`
+**102 → 162 values / 157 types** · `pnpm package:check` green (8/8 size gates, api snapshot
+no drift, emit parity 0 FAIL, `check:dts` clean, tree-shake ok, publint/attw clean, pack
+smoke runs `pg-prime --help` out of the tarball).
+
+| # | deliverable | files |
+|---|---|---|
+| D1 | `generate` from the config: shadow → repeatables → `loadDesired` → extract → annotations → diff → emptiness → `buildStatements` → stages → hazards → **prove** → witness → write. `generateFromDatabases` keeps the three-connection path. `Plan.schemas` + `Plan.repeatables`; `apply` refuses a set mismatch | `src/generate.ts` (113 → 860), `src/plan/plan.ts`, `src/runner/run.ts`, `src/schema/load.ts` (`afterLoad`), `src/config/load.ts` (`loadSchema`, `requireConnection`) |
+| D2 | `06` §3.5 rows 1, 6, 7 — multi-file emission | `src/diff/statement.ts` (`Stage`, `PHASE.dropIndexConcurrently`), `src/diff/ddl.ts` (`BuildOptions.multiFile`), `src/diff/order.ts` (`splitStages`), `src/prove/prove.ts` (`ProveStage`, `Proof.stageFingerprints`) |
+| D3 | six commands + `--interactive` + the Tier-R binding | `src/cli/commands/{generate,check,verify,lint,push,doctor}.ts`, `src/cli/interactive.ts`, `src/diff/candidates.ts`, `src/cli/main.ts`, `src/cli/commands/{apply,status,baseline}.ts` |
+| D4 | the third-party corpus and its gate | `tools/corpus-fetch.mjs`, `fixtures/corpus/{pagila,northwind,adventureworks,chinook}/`, `test/corpus-thirdparty.test.ts` |
+| D5 | the loop, through the binary, as a role without `CREATEDB` | `test/e2e/loop.test.ts` |
+| D6 | AS BUILT notes | `06` §2.2 §3.3 §3.5 §6.4, here, `00-overview`, both READMEs |
+
+9 new source files (2 169 lines) plus `generate.ts`'s rewrite; 8 new test files (1 708
+lines) and 16 new envelope goldens; 4 corpus schemas (2 506 lines of trimmed DDL, 240 KB).
+
+**The tier-3 proof, which is the piece the plan did not specify.** D6 is not optional and
+`proveOnShadowClone` needs `CREATE DATABASE`, which is exactly what shadow tier 3 does not
+have — so `generate` on a managed PostgreSQL would have had to choose between "no proof" and
+"no tier 3", and §5's first DoD box asks for both. `src/prove/temp-schema.ts` provisions a
+**second** temp-schema set in the target, materialises IR(current) into it, **re-derives**
+the plan against the remapped IRs, applies it stage by stage, extracts, remaps back and
+diffs against IR(desired) in the user's own names. Re-deriving rather than rewriting the
+SQL text is §1.6's rule applied to the proof: a whole-identifier substitution over generated
+SQL cannot tell `public` the schema from `'public'` inside a CHECK's string literal, while
+`remapIr` is the function K2a's tier-2/tier-3 fingerprint-equality test already pins. The
+two plans' per-stage statement counts are compared, so they cannot silently diverge. D10
+runs too, with both dumps rewritten back to the user's schema names before comparison.
+Extensions are excluded from both sides — `CREATE EXTENSION … SCHEMA <shadow>` is a no-op
+when the extension already exists in `public`, which is §3.2's stated tier-3 constraint.
+
+**Divergences from the brief, with reasons.**
+
+| # | Brief / design says | Built | Why |
+|---|---|---|---|
+| 1 | "structural candidates from the differ's existing `unambiguous \| ambiguous \| nearMiss` verdicts" | `src/diff/candidates.ts`, written from scratch | The differ had no candidate search at all — `rename.ts`'s three `confidence: "unambiguous"` sites are the *cascade*, which is computed from identity and only ever fires on a table an annotation already touched. §3.3's three verdicts are new code |
+| 2 | `--interactive` "writes the annotation into the source file" | prints a `patch -p0` unified diff to stdout and exits 2 | The DSL records no source location (`ColumnDdl` has no `sourceRef`), so an in-place edit would mean grepping for an identifier and rewriting somebody's file on that guess — the hidden decision §3.3 exists to abolish. Recorded in `06` §3.3 |
+| 3 | §3.5 row 7 splits `ADD COLUMN` with a volatile default | splits only when the desired column is **nullable** | A NOT NULL column with a per-row distinct value cannot exist without writing every row, so no ordering avoids the rewrite; §3.5's own row puts `SET NOT NULL` in a separate migration, which this plan cannot contain and still converge. A `volatile_default_not_null` warning names the three-migration shape |
+| 4 | §6.2 `verify` exits 4 on a non-empty diff | `--to <id>` exits 0 and reports `status: "replayed"` | A `--to` replay stops early on purpose ("for bisecting"); exiting 4 on its diff would make the flag useless. The deltas are printed either way |
+| 5 | §6.2 `verify` compares against IR(desired) | `--against schema\|target`, defaulting to `target` when the config names no `schema` | A repository that has only `baseline`d a database has no TypeScript schema, and §1.9's "a baselined database is reproducible from the repo" IS the comparison against the live target. It is what the corpus gate runs |
+| 6 | §6.2 `check` exit 4 = "schema changed but no migration was generated" | the diff is drift only when **no pending file accounts for it** | Immediately after `generate` the diff against the database is non-empty by construction; exit 4 there would fail `check` in the exact commit that added a migration |
+| 7 | §6.2 `generate --shadow docker` | refused with a sentence | testcontainers is a dependency `08` §1.1's budget does not have. `--shadow <url>` / `createdb` / `temp-schema` all need no Docker |
+| 8 | §6.2 `lint --format sarif` | refused with a sentence | `06` §8 puts SARIF in v1.1. Emitting JSON under the `sarif` name breaks the code-scanning upload it exists for |
+| 9 | — | `--no-prove` is **refused** for a plan that spans two files | The second file's `from.fingerprint` is measured on the clone (`Proof.stageFingerprints`); without a proof there is nothing to measure and the file would have no gate to apply behind |
+| 10 | — | `generate`'s `from.fingerprint` is the LIVE fingerprint, not `diff.current`'s | `diffIR` returns the current IR with accepted renames folded in — the state the plan *pretends* the database is in. Using it made every plan that renamed anything fail its own gate. The same bug was latent in `generateFromDatabases` and is fixed there too |
+
+**Three Tier-M bugs the third-party corpus found**, all fixed rather than recorded (see
+`06` §2.2 AS BUILT): `pg_index.indisclustered` was not modelled at all (68 statements missing
+from an AdventureWorks replay); an index on a materialized view entered the IR as an orphan
+and was planned against a database with no matview (Pagila); and an extension-owned
+composite type's attributes entered the IR without their type (AdventureWorks + `tablefunc`).
+
+**The corpus, per schema** (PG 17, `test/corpus-thirdparty.test.ts`):
+
+| schema | schemas | facts | baseline statements | replay | D10 witness |
+|---|---|---|---|---|---|
+| pagila (v3.1.0) | 1 | 22 table, 129 column, 51 constraint, 33 index, 13 sequence, 3 type, 41 default, 1 comment | 165 | 491 ms | 34 statements missing, **all Tier R** (9 function, 15 trigger, 7 view, 1 matview + its index, 1 aggregate); 0 extra |
+| northwind | 1 | 14 table, 92 column, 27 constraint, 1 comment | 54 | 445 ms | **byte-equal** |
+| adventureworks | 11 | 68 table, 456 column, 247 constraint, 36 sequence, 6 type, 2 extension, 189 default, 433 comment | 1 081 | 1 142 ms | 93 statements missing, **all Tier R** (87 view, 2 matview + 2 indexes + 2 `CLUSTER ON`); 0 extra |
+| chinook | 1 | 11 table, 64 column, 22 constraint, 11 index, 1 comment | 55 | 353 ms | **byte-equal** |
+
+Every one is `baseline` (through the binary) → `verify --against target` (through the
+binary) → **empty IR diff** → `pg_dump` both databases and compare as a multiset. The Tier-R
+residue is asserted as a *property*, not skipped: every missing statement must classify as
+Tier R and `extra` must be empty, so a Tier-M blind spot fails the test. The whole file runs
+in **6.2 s**.
+
+**The loop test's envelope sequence** (`test/e2e/loop.test.ts`, as a role created
+`NOCREATEDB NOSUPERUSER`, so every `generate` is shadow tier 3 with the temp-schema proof):
+
+```
+generate --name init      generated   0   1 file  (shadow tier 3, proof passed)
+apply                     applied     0
+status                    up_to_date  0
+  → pg_attribute: id, email, full_name
+<edit: rename a column with .renamedFrom, add a column, add an index>
+generate --name evolve    generated   0   2 files: 0001_evolve (transactional)
+                                              0001_evolve_concurrently (none)
+                                          files[1].from === files[0].to
+apply                     applied     0   both, in (seq, name) order
+  → pg_attribute: id, email, display_name, created_at; users_email_idx indisvalid
+status                    up_to_date  0
+verify                    verified    0   replayed 0000_init, 0001_evolve, 0001_evolve_concurrently
+check                     ok          0
+<tamper: ALTER TABLE posts DROP COLUMN title>
+status --verify-fingerprint  drift    4   fingerprintDrift: true
+check                     drift       4   schemaDrift names ADD COLUMN
+apply --url <pgbouncer>   refused     1   error.code transaction_pooler, names the direct port
+```
+
+**R10 — sixteen mutations, sixteen caught.** PG 17 unless stated; the suite named is the one
+run. Two first attempts (M6, M13) did not compile once mutated and were re-written as
+faithful ones before being counted.
+
+| # | Mutation | Caught by |
+|---|---|---|
+| M1 | `generate`: `from.fingerprint` becomes `diff.current`'s (the renamed IR) instead of the live one | `e2e/loop` ×2 + `cli/authoring` ×2 — the second `apply` refuses with `fingerprint_mismatch`. This was a **real bug**, found by writing the loop test |
+| M2 | `splitStages` never splits: one file, every statement | `generate/{rewrites,stages}` + `e2e/loop`, 8 tests — the CIC lands in a transactional segment and PostgreSQL rejects it (25001) |
+| M3 | row 6 loses its `ALTER TABLE … DROP CONSTRAINT IF EXISTS` prefix | `generate/rewrites` — "row 6: ADD UNIQUE becomes …", on the statement list |
+| M4 | `concurrentIndexSql` returns the literal `CREATE INDEX` | `generate/rewrites` — "row 1: CREATE INDEX becomes …" |
+| M5 | `annotationHints` keys the hint on the TS key (`fullName`) instead of the DB name (`full_name`) | `e2e/loop` ×3 — the annotation stops firing and the rename becomes an unresolved candidate (exit 2) |
+| M6 | `renameCandidates` considers no kind at all | `cli/authoring` — "generate proposes a rename when one is unannotated" |
+| M7 | `unresolvedDecisions` drops the `confirm_data_loss` half | `cli/authoring` — "generate refuses a drop nobody acknowledged" (exit 0 and a written file instead of exit 2) |
+| M8 | `check`: the diff is always "accounted for" by a pending file | `cli/authoring` + `e2e/loop` — the tampered database reports `ok` |
+| M9 | `verify` reports no deltas, ever | `cli/authoring` — "verify exits 4 when a committed migration does not do what the schema says" |
+| M10 | `push` no longer requires the literal `--dev` | `cli/authoring` — "push refuses without --dev" |
+| M11 | `Q_INDEXES` loses `relkind IN ('r','p')` | `corpus-thirdparty` ×2 — pagila (`orphan_fact`, then `CREATE INDEX … ON <matview>` at apply) and adventureworks |
+| M12 | `Q_TYPE_ATTRIBUTES` loses the `pg_depend deptype = 'e'` exclusion | `corpus-thirdparty` — adventureworks: `column "category_1" … already exists` |
+| M13 | `clusterOn` emits a no-op instead of `ALTER TABLE … CLUSTER ON` | `corpus` (`cluster/on`, `cluster/off`) and `corpus-thirdparty` (adventureworks' 68 statements) |
+| M14 | the runner stops reading `Plan.schemas` | `generate/stages` — "apply refuses a set the migration was not generated for" |
+| M15 | the volatile-default split writes no `-- pg-prime:data` stub | `generate/rewrites` — "row 7: … writes a -- pg-prime:data stub with a TODO" |
+| M16 | `verify` always compares against the target, never the schema | `cli/authoring` + `e2e/loop` — the drift case reports `verified` |
+
+**Not done / uncertain.**
+
+- **`pgEnum` and `pgSchema` renames have no annotation path.** `05` §5.1 lists
+  `pgEnum(..., { renamedFrom })` and `pgSchema(..., { renamedFrom })`; K2a did not build the
+  first and `SchemaLike` cannot see the second. Both are reachable through `--hints-file`,
+  and the candidate search proposes them, but the annotation spelling is missing.
+- **`--interactive` cannot be driven by a test** — it is TTY-only and vitest gives the child
+  no TTY. What is pinned is the artifact (`test/cli/interactive.test.ts` on `renameDiff`) and
+  the rule that a non-TTY run never prompts.
+- **`verify` refuses to replay into a temp schema.** A role with neither `CREATEDB` nor a
+  `--shadow` URL cannot run `verify` at all — correct per §10.2 (fail, never skip), but it
+  means the tier-3 story is `generate`/`apply`/`status`/`check`/`doctor`, not `verify`.
+- **The volatile-default stub is not batched.** It carries `-- pg-prime:batch` and the
+  §7 lane-2 shape, but the runner that interprets that directive is K4; today the stub's one
+  live statement is a `RAISE EXCEPTION` that stops an unedited apply.
+- **`--shadow docker`, `--format sarif`, `checkpoint` and `db seed`** are refusals and
+  "not in this release" lines respectively.
+- The corpus is pinned to tags/commits, not to `master`: Pagila `master` moved to PostgreSQL
+  18 syntax (`GENERATED … VIRTUAL`, `uuidv7()`), which the PG 15 floor cannot parse, so it is
+  pinned to `pagila-v3.1.0`.
+
 ---
 
 ## 5. Definition of done — kit v1 loop
 
-- [ ] `pg-prime migrate generate → apply → status` runs from a `pg-prime.config.ts` against PG 15–18, with
+- [x] `pg-prime migrate generate → apply → status` runs from a `pg-prime.config.ts` against PG 15–18, with
       no `desired` database and no `CREATEDB` (tier 3), and `apply` refuses PgBouncer transaction mode.
-- [ ] `baseline` adopts an existing database; `verify` replays the repo from empty and reports an empty
-      diff; both are `06` §6.2-exact in flags and exit codes.
-- [ ] `06` §2.2 Tier M has no unimplemented kind; Tier R applies repeatables; Tier O is observed; Tier U is
+      — `test/e2e/loop.test.ts`, as a `NOCREATEDB NOSUPERUSER` role: shadow tier 3, the temp-schema
+      proof, two files on the second `generate`, and the pooler refusal (exit 1, `transaction_pooler`)
+      through `PG_PRIME_TEST_PGBOUNCER_URL`. Run on 17 and 18 here; 15/16 are `ci-nightly.yml`'s matrix.
+- [x] `baseline` adopts an existing database; `verify` replays the repo from empty and reports an empty
+      diff; both are `06` §6.2-exact in flags and exit codes. — `06` §6.4's two tables list every flag
+      and every status; four flags are refused with a sentence rather than silently ignored.
+- [x] `06` §2.2 Tier M has no unimplemented kind; Tier R applies repeatables; Tier O is observed; Tier U is
       counted; `06` §3.4 has all 35 codes; `06` §3.5's rewrite table has no "not built" row.
-- [ ] `verify` green on Pagila, AdventureWorks-PG and Northwind-PG (`01` §11.6 #5).
-- [ ] The crash-resume test (R15) and the concurrent-deploy test exist and pass on every PR.
-- [ ] `pnpm package:check` green with the kit's `bin`, `peerDependencies` on `pg-prime`, and the api
+      — rows 1, 6 and 7 landed with multi-file emission; `TablePayload.clusterOn` closed the one Tier-M
+      gap the corpus found; `createRepeatablesPass()` is bound into `apply` and `status`.
+- [x] `verify` green on Pagila, AdventureWorks-PG and Northwind-PG (`01` §11.6 #5). — plus Chinook.
+      Empty IR diff on all four; the D10 witness is byte-equal on two and Tier-R-only on the other two,
+      asserted as a property rather than skipped.
+- [x] The crash-resume test (R15) and the concurrent-deploy test exist and pass on every PR.
+      — K1's `test/runner/{resume,lock}.test.ts`, unchanged and green on 17 and 18.
+- [x] `pnpm package:check` green with the kit's `bin`, `peerDependencies` on `pg-prime`, and the api
       snapshot regenerated; `06`, `05` §2.3/§6.1 and `00-overview` carry AS BUILT notes with numbers.
-- [ ] Each workstream's result section in this document has its R10 mutation record.
+      — snapshot `@pg-prime/kit . 162v/157t`; AS BUILT notes at `06` §2.2, §3.3, §3.5, §6.4.
+- [x] Each workstream's result section in this document has its R10 mutation record.
+      — K1 ten, K2a ten, K3 eleven, K2b sixteen.
 
 ## 6. Risks and fallbacks
 

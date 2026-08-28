@@ -15,6 +15,8 @@
   },
   "fingerprint": "<masked>",
   "fingerprintSource": null,
+  "fingerprintDrift": false,
+  "recordedFingerprint": "<masked>",
   "migrations": [],
   "pending": [],
   "partial": [],
@@ -29,7 +31,7 @@
   "repeatables": {
     "tracked": 0,
     "drift": [],
-    "passImplemented": false
+    "passImplemented": true
   },
   "diagnostics": [],
   "error": null

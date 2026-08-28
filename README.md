@@ -2,11 +2,14 @@
 
 A PostgreSQL-only, type-safe TypeScript ORM with first-class migrations and zero runtime dependencies.
 
-> **Status: pre-alpha.** `pg-prime` and `@pg-prime/kit` build (unbundled ESM + `.d.ts`), pass
-> `publint --strict` and `attw --profile esm-only`, and install from a `pnpm pack` tarball into a
-> fresh project — a consumer can import them, type-check on TypeScript 5.9, and run. Both are still
-> at `0.0.0` and **not published to npm**, and the API will change. Current state, decisions and
-> next steps: [`design/00-overview.md`](./design/00-overview.md).
+> **Status: pre-alpha.** The **migration loop is closed**: `pg-prime migrate generate → apply →
+> status → check → verify` runs from a `pg-prime.config.ts` against PostgreSQL 15–18, needs no
+> `CREATEDB`, refuses a transaction-mode pooler, writes nothing until the plan has been proved on a
+> shadow clone, and is green on Pagila, Northwind, AdventureWorks and Chinook. The query builder is
+> still a spike. Both packages build (unbundled ESM + `.d.ts`), pass `publint --strict` and
+> `attw --profile esm-only`, and install from a `pnpm pack` tarball into a fresh project. Both are
+> still at `0.0.0` and **not published to npm**, and the API will change. Current state, decisions
+> and next steps: [`design/00-overview.md`](./design/00-overview.md).
 
 ## Why
 
@@ -20,7 +23,7 @@ Multi-database ORMs pay a dialect tax on every feature: the schema DSL stops at 
 | Package | Purpose |
 |---|---|
 | `pg-prime` | Runtime: schema DSL, codecs, query builder, executor, migration applier. Zero deps, zero peer deps. |
-| `@pg-prime/kit` | Migration engine: catalog diffing, plan generation, prove-on-shadow-clone, apply. Programmatic API today; the CLI is not written yet. |
+| `@pg-prime/kit` | Migration engine and the `pg-prime` CLI: `migrate generate / apply / status / check / verify / lint / baseline / push --dev / doctor / unlock`. Catalog diffing, plan generation, prove-on-shadow-clone, `pg_dump` witness, apply. |
 | `@pg-prime/testing` | Test helpers (PGlite tier, container matrix). |
 | `@pg-prime/create` | Project scaffolder (`npm create @pg-prime`). |
 

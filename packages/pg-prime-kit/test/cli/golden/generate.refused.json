@@ -1,0 +1,17 @@
+{
+  "command": "migrate generate",
+  "status": "refused",
+  "exitCode": 1,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "files": [],
+  "error": {
+    "code": "refused",
+    "message": "<masked>"
+  }
+}

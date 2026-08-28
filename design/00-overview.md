@@ -30,14 +30,17 @@ different `Codec` types coexist (`sql/codec.ts` carries a self-described spike-l
 | Codecs | 29 built-ins, `decodeJson` required and golden-tested at depth 0 and 3 |
 | Driver | `execute` · `stream` (real cursors) · `describe` · `cancel` · error taxonomy. No transactions, no COPY |
 | SQL + compiler | `sql` tag with `ident`/`lit`/`join`/`unsafeRaw`; SELECT and INSERT compile. **UPDATE and DELETE do not** — the AST nodes exist, the compiler throws |
-| Migration engine | The most complete subsystem. Extract → IR → diff → ordered DDL → prove → apply → re-extract, end to end on 8 object kinds, 21 phases, 21 hazard codes |
+| Migration engine | **The v1 loop is closed (2026-08-28).** `pg-prime migrate generate → apply → status → check → verify` runs from a `pg-prime.config.ts` with no `desired` database and no `CREATEDB`, and `apply` refuses a transaction-mode pooler. Ten of [06 §6.2](./06-migrations.md)'s twelve commands ship (`checkpoint` and `db seed` are K4); Tier M is complete, Tier R applies repeatables, Tier O is observed, Tier U is counted; all 35 hazard codes and all 7 lock-safe rewrites are built, three of them by emitting a `txmode none` companion file at the same `seq`. Nothing reaches disk unproven (D6) and `pg_dump` witnesses every plan (D10). **375 kit tests** on PG 17 and 18 |
+| Migration engine — the 1.0 gate | [01 §11.6 #5](./01-features.md) is **met**: `baseline` → `verify` is green on Pagila, Northwind, AdventureWorks and Chinook, committed under `fixtures/corpus/` from pinned upstreams. Empty IR diff on all four; `pg_dump` byte-equal on two and differing only by Tier-R objects on the other two, asserted rather than skipped. The corpus found three Tier-M bugs, all fixed ([06 §2.2](./06-migrations.md)) |
 | Packaging | **Done (2026-08-28).** Both packages build (`tsc` → unbundled ESM + `.d.ts` + maps), ship an `exports` map with the `types@<5.9` gate first on every subpath, and install from a `pnpm pack` tarball into a throwaway project — proved on every PR by the `package` CI job. `@pg-prime/testing` and `@pg-prime/create` are still README-only |
 
-**428 tests green** (168 runtime offline, 203 runtime live, 57 kit); workspace typecheck clean.
+**2 660 tests green** (778 runtime offline, 1 507 runtime live, 375 kit on PostgreSQL 17 and 18);
+workspace typecheck clean.
 **Type budget, measured on the real implementation:** 137,778 instantiations, 1.11 s on TS 5.9 /
 0.231 s on TS 7, schema-size-independence ratio **1.00** against a 1.15 gate.
 **Dependencies:** `pg-prime` has zero runtime deps and zero peer deps — verified, `src/` contains no
-non-relative imports at all. `@pg-prime/kit` depends on `pg` + `@types/pg`. 7 devDeps at the root.
+non-relative imports at all. `@pg-prime/kit` depends on `pg` + `@types/pg`, and on `pg-prime` as a
+**types-only peer**. 7 devDeps at the root.
 
 ## Decisions of record
 
@@ -108,3 +111,8 @@ non-relative imports at all. `@pg-prime/kit` depends on `pg` + `@types/pg`. 7 de
    [08 §2.1, §2.4, §3.1, §3.2, §4.6 AS BUILT](./08-architecture.md).
 5. CI. There is none: every gate in these documents is currently run by hand.
 6. Claim `@pg-prime/kit`, `@pg-prime/testing`, `@pg-prime/create` on npm.
+7. **K4, the migration engine's last workstream** ([11 §4](./11-kit-v1-loop-plan.md)): data
+   migrations (the `-- pg-prime:batch` runner behind the backfill stub `generate` now writes),
+   seeding, `migrate checkpoint`, and `pull` (introspect → a TypeScript schema file whose
+   `generate` is empty against the same database). Everything else in [06](./06-migrations.md)'s
+   v1 cut line ships.

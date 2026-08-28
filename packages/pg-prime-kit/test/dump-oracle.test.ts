@@ -15,7 +15,7 @@ import {
   type PgDumpLauncher,
 } from "../src/prove/pg-dump.js";
 import { splitStatements } from "../src/sql/statements.js";
-import { generate } from "../src/generate.js";
+import { generateFromDatabases as generate } from "../src/generate.js";
 import { ADMIN, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
 import { pgDumpLauncher } from "./support/pgdump.js";
 

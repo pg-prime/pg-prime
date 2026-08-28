@@ -11,7 +11,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildStatements } from "../src/diff/ddl.js";
 import { diffIR } from "../src/diff/diff.js";
-import { generate } from "../src/generate.js";
+import { generateFromDatabases as generate } from "../src/generate.js";
 import { CATALOG_PROVENANCE, SchemaIR, type Fact } from "../src/ir/fact.js";
 import { ADMIN, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
 

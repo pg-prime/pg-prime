@@ -1,0 +1,18 @@
+{
+  "command": "migrate lint",
+  "status": "refused",
+  "exitCode": 1,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "linted": [],
+  "findings": [],
+  "error": {
+    "code": "usage",
+    "message": "<masked>"
+  }
+}

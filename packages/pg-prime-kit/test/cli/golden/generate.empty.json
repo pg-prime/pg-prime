@@ -1,0 +1,21 @@
+{
+  "command": "migrate generate",
+  "status": "generated",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "files": [
+    {
+      "id": "0000_by_hand",
+      "stage": "main",
+      "written": "<masked>",
+      "sql": "<masked>"
+    }
+  ],
+  "error": null
+}

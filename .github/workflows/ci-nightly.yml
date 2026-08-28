@@ -7,6 +7,9 @@
 #               is four times the PR's `pg` job for a signal that changes only when a PG major
 #               does — but the four majors are exactly where design/09 §3.5 found bugs (a
 #               16-only `EXPLAIN (GENERIC_PLAN)` that was red on 15), so they have to run somewhere.
+#               design/11 §5's first DoD box is "PG 15–18", and this job is the half of it the PR
+#               cannot afford: the kit's end-to-end loop, the third-party corpus and the CLI
+#               goldens all run here on every major, off the same `pnpm test:pg`.
 #   bench       design/08 §5's nine raw-vs-orm pairs. A ratio benchmark on a shared runner competing
 #               with a test suite measures the suite; here it has the runner to itself.
 #   fuzz        1 000 000 cases per fuzzer (design/03 Appendix B). ~2.5 minutes of offline work per

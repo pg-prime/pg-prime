@@ -37,6 +37,7 @@ export declare const ENGINE: Unsupported
 export declare const ENV_VAR: Unsupported
 export declare const EXIT: Unsupported
 export declare const EmitError: Unsupported
+export declare const GenerateRefusedError: Unsupported
 export declare const HISTORY_DDL: Unsupported
 export declare const HISTORY_SCHEMA: Unsupported
 export declare const HISTORY_VERSION: Unsupported
@@ -64,8 +65,10 @@ export declare const UnsafeCloneNameError: Unsupported
 export declare const UnsafeDatabaseNameError: Unsupported
 export declare const UnsafePlanPathError: Unsupported
 export declare const WriteRefusedError: Unsupported
+export declare const acceptHints: Unsupported
 export declare const acquireSessionLock: Unsupported
 export declare const advisoryLockKey: Unsupported
+export declare const annotationHints: Unsupported
 export declare const applyPending: Unsupported
 export declare const applyPendingOn: Unsupported
 export declare const applyRenameHints: Unsupported
@@ -86,6 +89,7 @@ export declare const contentHash: Unsupported
 export declare const createDatabase: Unsupported
 export declare const createRepeatablesPass: Unsupported
 export declare const currentFingerprint: Unsupported
+export declare const dataMigrationSql: Unsupported
 export declare const defaultId: Unsupported
 export declare const defaultNotNullName: Unsupported
 export declare const defineConfig: Unsupported
@@ -97,6 +101,7 @@ export declare const dollarTagAt: Unsupported
 export declare const dropDatabase: Unsupported
 export declare const dumpSchema: Unsupported
 export declare const emitSchema: Unsupported
+export declare const emptyMigrationSql: Unsupported
 export declare const encodeId: Unsupported
 export declare const ensureHistory: Unsupported
 export declare const evaluatedEnumLabels: Unsupported
@@ -107,6 +112,7 @@ export declare const findDirectives: Unsupported
 export declare const forceUnlock: Unsupported
 export declare const formatFindings: Unsupported
 export declare const generate: Unsupported
+export declare const generateFromDatabases: Unsupported
 export declare const hasLoneSurrogate: Unsupported
 export declare const hasNul: Unsupported
 export declare const hazardSeverity: Unsupported
@@ -126,6 +132,7 @@ export declare const lintPlan: Unsupported
 export declare const loadConfig: Unsupported
 export declare const loadDesired: Unsupported
 export declare const loadRepeatables: Unsupported
+export declare const loadSchema: Unsupported
 export declare const makeObjectName: Unsupported
 export declare const makeRemapper: Unsupported
 export declare const mentionsVolatileFunction: Unsupported
@@ -144,15 +151,18 @@ export declare const parseLauncherEnv: Unsupported
 export declare const parseMigrationSql: Unsupported
 export declare const parseNolint: Unsupported
 export declare const parseShadowUrl: Unsupported
+export declare const planOrderKey: Unsupported
 export declare const planRepeatables: Unsupported
 export declare const planRules: Unsupported
 export declare const planSql: Unsupported
 export declare const probeEmptiness: Unsupported
+export declare const proveInTempSchemas: Unsupported
 export declare const proveOnShadowClone: Unsupported
 export declare const provisionShadow: Unsupported
 export declare const quoteIdent: Unsupported
 export declare const quoteLiteral: Unsupported
 export declare const quoteQualified: Unsupported
+export declare const readHintsFile: Unsupported
 export declare const readMigrationRows: Unsupported
 export declare const readMigrationsDir: Unsupported
 export declare const readRepeatableRows: Unsupported
@@ -160,6 +170,7 @@ export declare const releaseSessionLock: Unsupported
 export declare const remapDiagnostics: Unsupported
 export declare const remapIr: Unsupported
 export declare const remapObserved: Unsupported
+export declare const renameCandidates: Unsupported
 export declare const renderSql: Unsupported
 export declare const resolveConfig: Unsupported
 export declare const resolvePgDump: Unsupported
@@ -168,6 +179,8 @@ export declare const sameId: Unsupported
 export declare const scanRepeatables: Unsupported
 export declare const schemaPattern: Unsupported
 export declare const sha256: Unsupported
+export declare const slug: Unsupported
+export declare const splitStages: Unsupported
 export declare const splitStatements: Unsupported
 export declare const terminateConnections: Unsupported
 export declare const tokenizeDefinition: Unsupported
@@ -196,6 +209,9 @@ export type CommentPayload = Unsupported
 export type ConfigError = Unsupported
 export type ConnInfo = Unsupported
 export type ConstraintPayload = Unsupported
+export type DataStubInput = Unsupported
+export type DatabaseGenerateInput = Unsupported
+export type DatabaseGenerateResult = Unsupported
 export type DefaultPayload = Unsupported
 export type Delta = Unsupported
 export type DependencyEdge = Unsupported
@@ -226,7 +242,10 @@ export type FileDirective = Unsupported
 export type FileDirectives = Unsupported
 export type FileStatement = Unsupported
 export type GenerateInput = Unsupported
+export type GenerateRefusedError = Unsupported
 export type GenerateResult = Unsupported
+export type GenerateStatus = Unsupported
+export type GeneratedFile = Unsupported
 export type Hash = Unsupported
 export type IdempotenceResult = Unsupported
 export type IdempotenceViolation = Unsupported
@@ -242,6 +261,7 @@ export type LintOptions = Unsupported
 export type LintResult = Unsupported
 export type LoadDesiredOptions = Unsupported
 export type LoadedConfig = Unsupported
+export type LoadedSchema = Unsupported
 export type LockClass = Unsupported
 export type LockReport = Unsupported
 export type LockRow = Unsupported
@@ -268,11 +288,14 @@ export type Proof = Unsupported
 export type ProofRequiredError = Unsupported
 export type ProofResult = Unsupported
 export type ProveInput = Unsupported
+export type ProveStage = Unsupported
 export type Provenance = Unsupported
 export type ProvisionShadowOptions = Unsupported
 export type ReadMigrationsResult = Unsupported
 export type RefRuntime = Unsupported
 export type Remapper = Unsupported
+export type RenameCandidate = Unsupported
+export type RenameConfidence = Unsupported
 export type RenameHint = Unsupported
 export type RenameRecord = Unsupported
 export type RepeatableApplyError = Unsupported
@@ -302,6 +325,9 @@ export type ShadowStrategy = Unsupported
 export type SpawnFailure = Unsupported
 export type SqlSegment = Unsupported
 export type StableId = Unsupported
+export type Stage = Unsupported
+export type StagedFile = Unsupported
+export type StagedResult = Unsupported
 export type Statement = Unsupported
 export type StatusEntry = Unsupported
 export type StatusOptions = Unsupported
@@ -310,11 +336,13 @@ export type TableExtra = Unsupported
 export type TableLike = Unsupported
 export type TablePayload = Unsupported
 export type TableRuntime = Unsupported
+export type TempSchemaProveInput = Unsupported
 export type Transactionality = Unsupported
 export type TxMode = Unsupported
 export type TypeAttributePayload = Unsupported
 export type TypePayload = Unsupported
 export type UnacknowledgedHazardError = Unsupported
+export type Unresolved = Unsupported
 export type UnsafeCloneNameError = Unsupported
 export type UnsafeDatabaseNameError = Unsupported
 export type UnsafePlanPathError = Unsupported

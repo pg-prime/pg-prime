@@ -218,6 +218,42 @@ prints the unmodeled census; `--strict-unmodeled` makes a non-empty census a fai
 > message so a caller can tell them apart). `diffIR`'s `strictUnmodeled` escalates the Tier-U half
 > — and only that half — to `error`; escalating an authored view would make the flag unusable.
 
+> **AS BUILT 2026-08-28 (K2b) — three Tier-M corrections the third-party corpus found.**
+>
+> `01` §11.6 #5's gate is worth its cost the first time it runs: replaying a `baseline` of
+> Pagila and AdventureWorks into an empty database, and comparing both with `pg_dump`,
+> turned up three things no fixture had.
+>
+> 1. **`pg_index.indisclustered` was not modelled at all.** AdventureWorks clusters all 68
+>    of its tables on their primary keys; `pg_dump` writes that as
+>    `ALTER TABLE … CLUSTER ON …`, and a baseline reproduced none of it while our own proof
+>    reported convergence — the exact blind spot D10 exists to catch. It is now
+>    `TablePayload.clusterOn`, on the **table** rather than on the index, because the
+>    clustered index is usually a constraint's backing index and those are not facts of
+>    their own; an `IndexPayload.clustered` would have been blind to the common case.
+>    Emitted after the table's indexes and constraints, and `SET WITHOUT CLUSTER` for the
+>    reverse. Fixture `fixtures/diff/cluster`, run in both directions.
+> 2. **An index on a materialized view entered the IR as an orphan.** `Q_TABLES` is
+>    `relkind IN ('r','p')` — a matview is Tier R — but `Q_INDEXES` had no such filter, so
+>    Pagila's `rental_by_category` matview contributed a unique index whose parent table did
+>    not exist. It was reported as an `orphan_fact` warning and then planned as
+>    `CREATE INDEX … ON <matview>` against a database with no matview: an apply-time failure
+>    of the baseline. Same filter now, in `Q_INDEXES` and in `Q_COMMENTS`.
+> 3. **An extension-owned composite type's attributes entered the IR without their type.**
+>    `Q_TYPES` excludes `pg_depend deptype = 'e'`; `Q_TYPE_ATTRIBUTES` and `Q_DOMAIN_CHECKS`
+>    did not. AdventureWorks installs `tablefunc`, so `tablefunc_crosstab_2..4` produced
+>    twelve orphan `typeAttribute` facts and a plan that ran `ALTER TYPE … ADD ATTRIBUTE` on
+>    a composite the extension had already created. This is the failure mode this file's own
+>    header warns about for relations ("a family-level filter that is not applied uniformly")
+>    reaching the type family.
+>
+> All three are Tier M, so all three were fixed rather than recorded. What the corpus does
+> **not** reproduce is Tier R — views, matviews, functions, triggers, aggregates — and that
+> is by design (§8: views stay in Tier R for v1). `test/corpus-thirdparty.test.ts` asserts
+> it as a property rather than skipping it: every statement `pg_dump` finds in the source and
+> not in the replay must be classifiable as Tier R, and the `extra` set must be **empty**. A
+> missing statement that is not Tier R fails the test.
+
 ### 2.3 Serialization
 
 The IR serializes to a **checkpoint file** (`migrations/checkpoints/0000.ir.json`) — never
@@ -498,6 +534,51 @@ paths are scriptable; neither hangs.
 > `t_a_not_null`, and the squatting CHECK in the same plan would then fail to be added. We never
 > invent a name we cannot also spell out.
 
+> **AS BUILT 2026-08-28 (K2b) — resolution, end to end, and the one divergence.**
+>
+> All three inputs are wired, in this order, inside `generate` (`src/generate.ts`):
+>
+> 1. **Annotation.** `annotationHints(schema)` reads `ColumnDdl.renamedFrom` and the
+>    `renamedFrom(old)` table extra off the DSL's runtime metadata and turns each into a
+>    `RenameHint`. `acceptHints(hints, current, desired)` then applies design/05 §5.1's
+>    firing rule — **old exists in the current IR and new does not** — so an annotation left
+>    in the source after its migration shipped is inert rather than an error, and a chain
+>    `a → b → c` works across two migrations. Table hints are resolved before column hints,
+>    because a `renamedFrom` on a column of a renamed table describes the state before both.
+>    `--hints-file` entries join the same list, which is design/11 §1.8's "one mechanism,
+>    two spellings". The two spellings §5.1 lists that the DSL does not carry —
+>    `pgEnum(..., { renamedFrom })` and `pgSchema(..., { renamedFrom })` — are still not
+>    reachable from `SchemaLike`, so those two objects can only be renamed with a hints file.
+> 2. **Structural candidates.** `src/diff/candidates.ts`. §3.3's three verdicts, and no
+>    fourth: `unambiguous` when a dropped and a created fact in the same container have the
+>    same *shape hash* and each is the other's only such partner; `ambiguous` when several
+>    are; `nearMiss` when nothing matches by content but the names are within 0.6 similarity
+>    or one contains the other. The shape hash is `contentHashOf` for a column (identity-free
+>    by I1, so equal payloads mean "identical except the name") and content-plus-children for
+>    a table, a type and a schema — deliberately **not** `rollupOf`, which folds in the
+>    table's constraint and index names, and those are derived from the table's name, so a
+>    real rename never matches under it. Nothing here applies itself.
+> 3. **Non-TTY.** `missing_hints`, exit **2**, with the §3.3 envelope: one
+>    `rename_or_recreate` entry per unresolved candidate and one `confirm_data_loss` entry
+>    per unacknowledged DS-class hazard, each with a `fix` naming the exact annotation or
+>    the `--hints-file` line. Nothing is written.
+>
+> **Divergence — `--interactive` prints a patch instead of editing your file.** §3.3 says
+> the prompt "writes the annotation into the source file". The DSL records **no source
+> location**: `ColumnDdl` carries `renamedFrom`, `dbName`, a type and its modifiers, and
+> there is no `sourceRef` anywhere in `TableRuntime`. Editing in place would therefore mean
+> *finding* the declaration by grepping the schema module for an identifier and rewriting
+> somebody's source on the strength of that guess — which is the class of hidden decision
+> this whole section exists to abolish. So on confirmation the CLI writes a **unified diff
+> to stdout** (`src/cli/interactive.ts`, `patch -p0`-applyable, one hunk per accepted
+> rename, and an explicit `# could not locate …` line when the search fails) and exits 2.
+> The annotation still has to reach the repository before `generate` writes anything, which
+> keeps CI and the human on exactly the same rule. When the DSL grows a source location this
+> becomes an in-place edit and the exit code becomes 0.
+>
+> `--interactive` is TTY-only: with `process.stdin.isTTY` false it never prompts and behaves
+> exactly like the non-interactive path.
+
 ### 3.4 Hazard taxonomy — the concrete v1 rule list
 
 Codes are ours; the DS/MF/BC families and severities follow Atlas, and rule *semantics* follow
@@ -664,25 +745,77 @@ The `DROP INDEX CONCURRENTLY IF EXISTS` prefix is Squawk's `prefer-robust-stmts`
 a failed CIC retryable instead of permanently wedged. Disable the whole layer with
 `--no-safe-rewrite` for a literal diff.
 
-> **AS BUILT 2026-08-28 (K3) — the rewrite table, row by row.**
+> **AS BUILT 2026-08-28 (K3 · rows 2–5, K2b · rows 1, 6, 7) — the rewrite table, row by row.**
 >
 > | Desired | Built | Where |
 > |---|---|---|
-> | `CREATE INDEX` → `DROP INDEX CONCURRENTLY IF EXISTS` + CIC in a `txmode none` file | ⛔ **not built** | `ddl.ts` `createIndex` emits the literal form and reports LK101. The rewrite needs the emitter to split one plan across two `txmode` files, which is a *file-format* change the runner (K1) owns, not a differ change. Recorded for K2b |
+> | `CREATE INDEX` → `DROP INDEX CONCURRENTLY IF EXISTS` + CIC in a `txmode none` file | ✅ | `ddl.ts` `createIndex(…, concurrent)`, `BuildOptions.multiFile`. Both statements carry `stage: "concurrent"` and `generate` writes them to `NNNN_name_concurrently.sql` |
 > | `ADD FOREIGN KEY` → `ADD … NOT VALID` + `VALIDATE CONSTRAINT` | ✅ | `ddl.ts` `addConstraint`, `contype = 'f'` |
 > | `ADD CHECK` → same split | ✅ | `ddl.ts` `addConstraint`, `contype = 'c'` |
 > | `SET NOT NULL` (PG ≥ 18) → `ADD CONSTRAINT … NOT NULL … NOT VALID` + `VALIDATE` | ✅ | `ddl.ts` `notNullTransition`, taken when the DESIRED column's `notNullConstraint` is non-null — a catalog gate, not a version gate |
 > | `SET NOT NULL` (PG 15–17) → `ADD CHECK (c IS NOT NULL) NOT VALID` → `VALIDATE` → `SET NOT NULL` → `DROP CONSTRAINT` | ✅ | same function, the other branch. The temporary constraint is named through `chooseConstraintName`, so a schema that already holds `<table>_<column>_not_null` gets `…_not_null1` instead of a duplicate-name error |
-> | `ADD PRIMARY KEY` / `UNIQUE` → `CREATE UNIQUE INDEX CONCURRENTLY` + `ADD CONSTRAINT … USING INDEX` | ⛔ **not built** | Same reason as row 1: CIC needs `txmode none`. `ddl.ts` reports LK104 (+ MF101 when the table is not proven empty) and emits the literal form |
-> | `ADD COLUMN` w/ volatile default → split + backfill stub | ⛔ **not built** | `ddl.ts` reports LK109 and marks the statement `rewrite: true`. The backfill stub is a *data* migration (§7), which is K4 |
+> | `ADD PRIMARY KEY` / `UNIQUE` → `CREATE UNIQUE INDEX CONCURRENTLY` + `ADD CONSTRAINT … USING INDEX` | ✅ | `ddl.ts` `addConstraint`, `contype ∈ {p,u}`, four statements (see below) |
+> | `ADD COLUMN` w/ volatile default → split + backfill stub | ✅ (nullable) / ⛔ (NOT NULL — see below) | `ddl.ts` `addColumn`'s `splitVolatile` branch + `generate.ts`'s `dataMigrationSql` |
 >
-> So four of seven rows are built, and the three that are not are all blocked on the same
-> thing — emitting a second file with a different `txmode` — rather than on the differ. That
-> dependency is named here so K2b does not rediscover it.
+> **What unblocked rows 1, 6 and 7 is `generate` emitting more than one file.** `Statement`
+> gains a `stage` (`main` | `concurrent` | `data`), `diff/order.ts` gains `splitStages`, and
+> one `generate` run writes `NNNN_name.sql` (transactional) plus
+> `NNNN_name_concurrently.sql` (`txmode none`) at the **same `seq`**, which §4.1's
+> `(seq, name)` ordering applies in that order because `name` sorts before
+> `name_concurrently`. Each file gets its own `.plan.json`; the second file's
+> `from.fingerprint` is the *measured* state between them, `Proof.stageFingerprints[0]`,
+> which is why `--no-prove` is refused for a two-file plan.
 >
-> `--no-safe-rewrite` is `BuildOptions.noSafeRewrite`. Under it the FK/CHECK split collapses back to
-> the literal `ADD CONSTRAINT`, and LK105 / LK106 — which exist to describe exactly that form —
-> become reachable for the first time.
+> **Row 6 is four statements, in this order:**
+>
+> ```sql
+> ALTER TABLE t DROP CONSTRAINT IF EXISTS c;        -- robust prefix (§5.4 replays from 0)
+> DROP INDEX CONCURRENTLY IF EXISTS c;              -- robust prefix
+> CREATE UNIQUE INDEX CONCURRENTLY c ON t (…);      -- SHARE UPDATE EXCLUSIVE, not AE
+> ALTER TABLE t ADD CONSTRAINT c UNIQUE USING INDEX c;
+> ```
+>
+> PostgreSQL names a constraint's backing index after the constraint, so index and
+> constraint share one name and the catalog state is identical to the literal form — which
+> is what the D10 witness checks in `test/generate/rewrites.test.ts`. The two `IF EXISTS`
+> prefixes are why all four are marked `idempotent`: §5.4 restarts a `txmode none` file at
+> statement 0, and from the top the group is replayable. Their order matters and is pinned
+> by a phase of its own (`PHASE.dropIndexConcurrently = 21`): dropping the constraint first
+> takes its index with it, so the `DROP INDEX` after it can never hit "cannot drop index …
+> because constraint … requires it". The rewrite is refused — falling back to the literal
+> form and LK104 — for a definition `rebuildableUnique` will not reconstruct (`DEFERRABLE`,
+> `WITH (…)`, a tablespace, an expression with parentheses).
+>
+> **Row 7 splits only when the split can converge.** A nullable column with a volatile
+> default becomes `ADD COLUMN c <type>` (no default, no rewrite) + `ALTER COLUMN c SET
+> DEFAULT …` (catalog only), and a `-- pg-prime:data` stub is written beside the migration
+> for the existing rows. When the desired column is **NOT NULL** the split is refused and
+> the literal `ADD COLUMN … NOT NULL DEFAULT …` plus LK109 stays: a NOT NULL column with a
+> per-row distinct value cannot exist without writing every row, so no ordering of
+> statements avoids the rewrite, and §3.5's own row puts `SET NOT NULL` in a *separate
+> migration* — which this plan cannot contain and still converge on IR(desired). A
+> `volatile_default_not_null` warning diagnostic names the three-migration shape.
+>
+> **The stub fails loudly if applied unedited.** Its one live statement is a
+> `DO $$ … RAISE EXCEPTION … $$` naming the file, and the `UPDATE … SET c = DEFAULT` is
+> commented out below it. A stub that applied silently would be recorded `applied` in
+> `pgprime.migrations` while the rows it exists to fix stayed NULL, and the next `generate`
+> would see a converged schema and never mention it again. It has **no `.plan.json`**: there
+> is no diff behind a file a human still has to write, so there is no fingerprint to gate on.
+>
+> **When the two-file layout cannot express the plan's order** — a transactional statement
+> that must follow a concurrent one — `splitStages` reports `declined`, `generate` rebuilds
+> with `multiFile: false` and emits the single-file literal plan with its LK hazards, plus a
+> `concurrent_rewrite_declined` warning. A plan whose files apply in an impossible order
+> would be the worse answer by a distance.
+>
+> Callers that cannot carry a second file leave `BuildOptions.multiFile` off and get the
+> literal form: `generateFromDatabases` (the three-connection entry point the fixture corpus
+> uses), `migrate check` and `migrate push --dev`.
+>
+> `--no-safe-rewrite` is `BuildOptions.noSafeRewrite`. Under it every row above collapses
+> back to the literal single-file form, and LK101 / LK104 / LK105 / LK106 / LK109 — which
+> exist to describe exactly those forms — become reachable.
 
 ### 3.6 Destructive-change gating
 
@@ -1381,6 +1514,97 @@ on the very first file. The "from" IR is therefore the current IR restricted to 
 than hard-coded. `test/runner/baseline.test.ts` proves the property design/11 §1.9 actually wants:
 baseline an adopted database, apply the written file to a *different, empty* one, and the two
 fingerprints are equal.
+
+### 6.4 AS BUILT · 2026-08-28 (design/11 K2b) — the author-side commands
+
+Ten of §6.2's twelve commands ship. `pg-prime migrate --help` lists all ten; `checkpoint`
+and `db seed` are still under "Not in this release" with K4 named beside them.
+
+**Flags, per command. `built` means the flag does what §6.2 says it does.**
+
+| Command | §6.2 flags built | Not built, and why |
+|---|---|---|
+| `generate` | `--name` `--interactive` `--hints-file` `--allow-data-loss` `--shadow <url\|createdb\|temp-schema\|none>` `--offline` `--no-safe-rewrite` `--no-prove` `--empty` `--data` `--output json` | `--shadow docker` — a typed refusal naming the alternatives; testcontainers is a dependency design/08 §1.1's budget does not have. `--offline` / `--shadow none` reach the ladder and get `OfflineShadowError`'s sentence (exit 1), which is tier 4's documented state |
+| `apply` | all of §6.2's, plus K1's `--applied-from` and `--heartbeat` | — |
+| `status` | `--verify-fingerprint` `--stale-lock-after` | — |
+| `check` | `--shadow` `--strict-unmodeled` `--no-schema` | — |
+| `verify` | `--to` `--shadow <url>` `--keep` `--against schema\|target` | `--from-checkpoint` — **refused with a sentence**, not ignored: `migrate checkpoint` does not exist, so there is no checkpoint to replay from and a flag that silently dropped its argument would report a partial replay as a full one |
+| `lint` | `[<file>…]` `--fail-on error\|warn\|off` `--rules` `--format text\|json` `--style` `--all` | `--format sarif` — refused with a sentence. §8 puts SARIF in v1.1; emitting JSON under the `sarif` name would break the GitHub code-scanning upload it exists for, at the point where nobody is looking |
+| `baseline` | `--at` `--force` `--by` | — |
+| `push` | `--dev` `--allow-data-loss` `--prod-pattern` `--dry-run` `--shadow` | — |
+| `doctor` | `--stale-lock-after` | — |
+| `unlock` | `--force` `--stale-lock-after` | — |
+
+**Statuses and exit codes, as the envelope reports them.**
+
+| Command | `status` values | Exit |
+|---|---|---|
+| `generate` | `generated` · `up_to_date` · `dry_run` · `missing_hints` · `hazards` · `proof_failed` · `refused` | 0 · 0 · 0 · **2** · **3** · **7** · 1 |
+| `check` | `ok` · `missing_hints` · `lint` · `drift` · `pending` · `error` | 0 · 2 · 3 · 4 · 5 · 1 |
+| `verify` | `verified` · `replayed` · `drift` · `replay_failed` · `unavailable` · `refused` | 0 · 0 · 4 · 1 · 1 · 1 |
+| `lint` | `clean` · `failed` · `refused` | 0 · 3 · 1 |
+| `push` | `pushed` · `up_to_date` · `dry_run` · `refused` · `failed` | 0 · 0 · 0 · 1 (2 when a decision is missing) · 1 |
+| `doctor` | `healthy` · `findings` | 0 · 4 |
+
+**`generate`'s split of 2 versus 3** is worth stating, because §6.2 lists both without
+saying which is which. An unresolved **rename** or an unacknowledged **data loss** is
+exit 2: a human has to record a decision in the repository. Any other error-severity
+hazard (MF, TX, EN, a strict Tier-U census) is exit 3, the lint gate. Both write nothing.
+
+**Four decisions §6.2 left open, taken here.**
+
+- **`check`'s "would `generate` produce a non-empty diff?" is asked of the *pending files*,
+  not of the database.** Immediately after `generate` and before `apply` the diff against
+  the database is non-empty by construction, and reporting that as exit 4 ("you forgot to
+  run generate") would make `check` fail in exactly the commit that added a migration. So
+  the diff is only drift when it is **not** accounted for: when nothing is pending, or when
+  the last pending file's `to.fingerprint` is not IR(desired)'s. With everything applied a
+  non-empty diff means the database moved or the schema moved, and both are exit 4.
+- **`check` is "no DB writes" in the history sense.** It never calls `ensureHistory`, never
+  takes the lock and never records a row. It does provision a shadow, and on tier 3 that is
+  a temp schema created and dropped inside the target — unavoidable, because normalising the
+  desired state *is* the question. `--shadow <url>` keeps even that out of the target.
+- **`verify --to <id>` exits 0, not 4, on a non-empty diff.** A `--to` replay stops early on
+  purpose (§6.2: "for bisecting"), so its diff is expected to be non-empty and exiting 4 on
+  it would make the flag useless. The deltas are printed either way; the envelope's `status`
+  is `replayed` rather than `verified`, so the two questions are distinguishable.
+- **`verify --against target`.** §6.2 compares the replay to IR(desired), which needs a
+  TypeScript schema. A repository that has only `baseline`d an existing database has none,
+  and design/11 §1.9's claim — "a baselined database is reproducible from the repo" — is
+  precisely the comparison against the live target. `--against` selects; it defaults to
+  `schema`, or to `target` when the config names no `schema`. This is what the third-party
+  corpus gate (`01` §11.6 #5) runs.
+
+**`verify` needs a real ephemeral database and says so.** §10.2: it fails rather than
+skipping. Tier 2 (`CREATE DATABASE`) by default, `--shadow <url>` otherwise; a temp schema
+is explicitly refused, because the replayed migrations name their own schemas and would
+collide with the live ones. IR(desired) is then normalised in temp schemas *inside* that
+ephemeral database, so the command needs exactly one database however restricted the role.
+
+**`push --dev`'s four refusals** are all evaluated before a statement is issued: no `--dev`;
+`PG_PRIME_ENV=production` or `production: true`; `--prod-pattern` (default
+`prod|production|live`, matched case-insensitively against `host:port/database`); and any
+row in `pgprime.migrations` that is not `baselined`. The banner is ANSI red on a TTY and
+`!!! … !!!` otherwise — a CI log full of escape codes helps nobody. `--allow-data-loss` is
+a flag and only a flag: nothing about the acknowledgement is written down, so nothing can
+remember it.
+
+**Tier R is wired into `apply` and `status`** (design/11 K1's open item b):
+`createRepeatablesPass()` replaces `NO_REPEATABLES`, so `status.repeatables.drift` is the
+real answer and `passImplemented` is true. `generate` loads every `sql/` file into the
+shadow beside the desired schema (§3.8), which is how a view over a to-be-dropped column
+becomes an author-time refusal (`repeatable_failed`) instead of an apply-time failure.
+
+**`Plan` gained two fields** (design/11 K1's open item a, and §4.3's `repeatables`):
+`schemas` — the managed set — and `repeatables`. `apply` refuses a set it was not generated
+for and names both sides, instead of failing the fingerprint gate with a message about
+hashes for what is really a `--schema` flag.
+
+**`status` reports catalog drift only under `--verify-fingerprint`.** The fast path reads
+`fingerprint_to` off the last applied row, which is a statement about what the runner did
+rather than about what the database now contains; drift is only visible when `status`
+actually re-extracts. It then exits 4, with `fingerprintDrift: true` and both values in the
+envelope.
 
 ---
 

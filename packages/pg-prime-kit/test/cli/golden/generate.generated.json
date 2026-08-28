@@ -1,0 +1,53 @@
+{
+  "command": "migrate generate",
+  "status": "generated",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "files": [
+    {
+      "id": "0000_init",
+      "stage": "main",
+      "written": "<masked>",
+      "plan": "<masked>",
+      "statements": 3,
+      "txmode": "transactional",
+      "from": "<masked>",
+      "to": "<masked>",
+      "planId": "<masked>"
+    }
+  ],
+  "shadow": {
+    "tier": 2,
+    "reason": "<masked>"
+  },
+  "proof": {
+    "status": "passed",
+    "at": "<masked>",
+    "shadow": "createdb",
+    "driftDeltas": 0,
+    "stageFingerprints": "<masked>",
+    "dumpOracle": {
+      "status": "passed",
+      "mode": "warn",
+      "pgDumpVersion": "<masked>",
+      "statementCount": "<masked>"
+    },
+    "provisioning": "template",
+    "cloneName": "<masked>",
+    "durationMs": "<masked>"
+  },
+  "renames": [],
+  "candidates": [],
+  "unresolved": [],
+  "repeatables": [],
+  "hazards": [],
+  "diagnostics": "<masked>",
+  "writeRefusal": null,
+  "error": null
+}

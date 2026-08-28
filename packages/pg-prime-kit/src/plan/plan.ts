@@ -50,6 +50,15 @@ export interface Proof {
   readonly provisioning?: "template" | "materialized";
   readonly driftDeltas?: number;
   readonly deltas?: readonly string[];
+  /**
+   * The catalog fingerprint after each emitted FILE was applied to the clone, measured.
+   *
+   * A `generate` run that splits a plan across `NNNN_name.sql` and
+   * `NNNN_name_concurrently.sql` (design/06 §3.5 rows 1/6/7) needs the state *between*
+   * them for the second file's `from.fingerprint`, and it cannot be predicted from the
+   * IR — only observed. One entry per stage, in apply order.
+   */
+  readonly stageFingerprints?: readonly string[];
   readonly error?: string;
   readonly durationMs?: number;
   /** independent witness: PostgreSQL's own serializer (see prove/pg-dump.ts) */
@@ -65,6 +74,15 @@ export interface Plan {
   readonly from: { readonly fingerprint: string };
   readonly to: { readonly fingerprint: string };
   readonly pg: { readonly minVersion: number; readonly generatedAgainst: number };
+  /**
+   * The managed schema set this plan was generated against (design/11 K1's open item 1).
+   *
+   * It scopes the diff, the fingerprint AND the advisory-lock key, so a runner pointed at
+   * a different set computes a different fingerprint and refuses — with a message about
+   * fingerprints, which is the wrong sentence for the actual mistake. Recording the set in
+   * the artifact lets `apply` name both sides instead.
+   */
+  readonly schemas: readonly string[];
   readonly normalized: boolean;
   readonly shadowTier: 1 | 2 | 3 | 4;
   readonly txmode: "transactional" | "none" | "segmented";
@@ -73,6 +91,8 @@ export interface Plan {
   readonly renames: readonly RenameRecord[];
   readonly hazards: readonly PlanHazard[];
   readonly unmodeled: readonly { readonly kind: string; readonly count: number }[];
+  /** design/06 §4.3 — the Tier-R files that were loaded into the shadow for this proof. */
+  readonly repeatables: readonly { readonly path: string; readonly sha256: string }[];
   /**
    * design/06 §3.6 — a destructive change cannot be generated silently. This lands
    * in `.plan.json`, so it shows up as a diff line in the pull request; that IS the
@@ -135,6 +155,12 @@ export interface BuildPlanInput {
   readonly shadowTier?: 1 | 2 | 3 | 4;
   readonly proof?: Proof;
   readonly acknowledge?: AcknowledgeInput;
+  /** the managed schema set; defaults to `["public"]` */
+  readonly schemas?: readonly string[];
+  /** design/06 §7 lane 2 — write `-- pg-prime:data` into the header */
+  readonly data?: boolean;
+  /** design/06 §4.3's `repeatables`: the `sql/` files loaded into the shadow */
+  readonly repeatables?: readonly { readonly path: string; readonly sha256: string }[];
 }
 
 /**
@@ -245,7 +271,17 @@ export function buildPlan(input: BuildPlanInput): Plan {
 
   const id = migrationId(input.seq, input.name);
   const file = `${id}.sql`;
-  const sqlText = renderSql({ id, name: input.name, statements, segments: input.segments, txmode, from: input.fromFingerprint, to: input.toFingerprint, pgMin: 150000 });
+  const sqlText = renderSql({
+    id,
+    name: input.name,
+    statements,
+    segments: input.segments,
+    txmode,
+    from: input.fromFingerprint,
+    to: input.toFingerprint,
+    pgMin: 150000,
+    ...(input.data === true ? { data: true } : {}),
+  });
 
   const core = {
     formatVersion: 1 as const,
@@ -254,6 +290,7 @@ export function buildPlan(input: BuildPlanInput): Plan {
     from: { fingerprint: input.fromFingerprint },
     to: { fingerprint: input.toFingerprint },
     pg: { minVersion: 150000, generatedAgainst: input.pgVersionNum },
+    schemas: [...(input.schemas ?? ["public"])].sort(),
     normalized: true,
     shadowTier: input.shadowTier ?? 2,
     txmode,
@@ -266,6 +303,7 @@ export function buildPlan(input: BuildPlanInput): Plan {
     unmodeled: input.diagnostics
       .filter((d) => d.code === "unmodeled_kind")
       .map((d) => ({ kind: d.subject ?? "?", count: d.count ?? 0 })),
+    repeatables: input.repeatables ?? [],
   };
 
   // planId deliberately excludes `generated` and `proof`, so the same logical
@@ -290,6 +328,8 @@ export interface RenderInput {
   readonly from: string;
   readonly to: string;
   readonly pgMin: number;
+  /** design/06 §7 lane 2 — emit `-- pg-prime:data` in the header. */
+  readonly data?: boolean;
 }
 
 /** The `.sql` is the executable artifact and must be runnable by psql. */
@@ -311,6 +351,7 @@ export function renderSql(r: RenderInput): string {
     `-- pg-prime:txmode    ${r.txmode}`,
     `-- pg-prime:timeout   lock=${lock} statement=${statement}`,
     `-- pg-prime:requires-pg ${r.pgMin}`,
+    ...(r.data === true ? ["-- pg-prime:data"] : []),
     "",
     // Every identifier the emitter writes is schema-qualified, and extraction ran
     // under the same search_path, so pinning it makes the file mean the same thing

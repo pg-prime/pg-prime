@@ -601,6 +601,36 @@ export async function applyPendingOn(
         }
       }
 
+      /* 7a-bis. The managed schema set (design/11 K1 open item 1).
+       *
+       * The set scopes the diff, the fingerprint AND the lock key, so a runner pointed at
+       * a different one used to fail the fingerprint gate — with a message about hashes,
+       * for a mistake that is a `--schema` flag. Now the plan records the set and the
+       * refusal names both sides. Plans written before `Plan.schemas` existed carry
+       * `undefined` and are not gated: an absent claim is not a disagreement. */
+      const planSchemas = file.plan?.schemas;
+      if (planSchemas !== undefined) {
+        const want = [...planSchemas].sort().join(", ");
+        const have = [...schemas].sort().join(", ");
+        if (want !== have) {
+          return await finish(
+            done("drift", {
+              lock, applied, preflight,
+              pending: pending.map((f) => f.id),
+              error: {
+                code: "fingerprint_mismatch",
+                message:
+                  `${file.id} was generated for the managed schema set [${want}] and this run manages ` +
+                  `[${have}]. The set scopes the diff, the fingerprint and the advisory lock key, so the ` +
+                  `two are not comparable. Point \`apply\` at the same --schema set the migration was ` +
+                  `generated with (or fix \`schemas\` in pg-prime.config.ts).`,
+                migration: file.id,
+              },
+            }),
+          );
+        }
+      }
+
       /* 7b. The fingerprint gate. */
       const expected = file.plan?.from.fingerprint ?? null;
       if (expected !== null) {

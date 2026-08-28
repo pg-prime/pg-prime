@@ -1,0 +1,14 @@
+{
+  "command": "migrate push",
+  "status": "pushed",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "applied": 3,
+  "statements": "<masked>",
+  "error": null
+}

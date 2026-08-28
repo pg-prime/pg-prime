@@ -8,7 +8,7 @@
  * shadow — not at apply time on the user's database.
  */
 
-import { extractCatalog, type ExtractResult } from "../catalog/extract.js";
+import { extractCatalog, type CatalogClient, type ExtractResult } from "../catalog/extract.js";
 import type { Diagnostic } from "../catalog/extract.js";
 import { withClient } from "../db/pg.js";
 import { emitSchema, type EmitOptions } from "./emit.js";
@@ -21,6 +21,17 @@ export interface LoadDesiredOptions {
   readonly defaultSchema?: string;
   /** Forwarded to `extractCatalog`; the shadow is ours, so a short one is safe. */
   readonly statementTimeout?: string;
+  /**
+   * Run after the emitted DDL and before the extraction, on the shadow's own connection.
+   *
+   * This is where Tier R goes (design/06 §3.8: "Repeatables *are* loaded into the shadow
+   * during `generate` — so a view that references a to-be-dropped column makes the plan
+   * fail proof, at author time"). It has to be after the tables exist and before the
+   * extract, and it has to share the connection so a `CREATE OR REPLACE FUNCTION` sees the
+   * same `search_path` the load ran under. A hook rather than a `repeatablesDir` option
+   * because this module has no business reading a directory.
+   */
+  readonly afterLoad?: (client: CatalogClient) => Promise<void>;
 }
 
 export class DesiredLoadError extends Error {
@@ -94,6 +105,7 @@ export async function loadDesired(
         );
       }
     }
+    if (options.afterLoad) await options.afterLoad(client);
     for (const [user, shadowName] of shadow.schemaMap) {
       const comment = targetComments.get(user);
       await client.query(

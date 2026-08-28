@@ -142,6 +142,84 @@ function validate(raw: Record<string, unknown>, file: string): PgPrimeConfig {
   return raw as PgPrimeConfig;
 }
 
+/* ----------------------------- the schema module --------------------------- */
+
+/**
+ * Import the module(s) `config.schema` points at and hand back one registry.
+ *
+ * Three shapes are accepted, in this order, because all three are things people write:
+ *
+ *  1. `export default defineSchema({ users, orgs })` — the documented one;
+ *  2. any named export carrying a `tables` property — `export const schema = …`;
+ *  3. failing both, every export that *is* a table (`{ $: TableRuntime }`) is collected
+ *     into one registry, so `export * from './tables.js'` works with no ceremony.
+ *
+ * Several paths are merged into one registry; a table exported twice under two keys is
+ * kept once, keyed by `schema.name`, because that is its identity in the catalog and two
+ * TypeScript names for one table must not emit two `CREATE TABLE`s.
+ */
+export interface LoadedSchema {
+  readonly schema: { readonly tables: Readonly<Record<string, { readonly $: unknown }>> };
+  readonly files: readonly string[];
+}
+
+const isTableLike = (v: unknown): v is { $: { name: string; schema?: string; columns: unknown; extras: unknown } } => {
+  const runtime = (v as { $?: unknown } | null)?.$;
+  if (typeof runtime !== "object" || runtime === null) return false;
+  const r = runtime as { name?: unknown; columns?: unknown; extras?: unknown };
+  return typeof r.name === "string" && Array.isArray(r.columns) && Array.isArray(r.extras);
+};
+
+const hasTables = (v: unknown): v is { tables: Record<string, unknown> } => {
+  const t = (v as { tables?: unknown } | null)?.tables;
+  return typeof t === "object" && t !== null && !Array.isArray(t);
+};
+
+export async function loadSchema(
+  paths: string | readonly string[],
+  base: string,
+): Promise<LoadedSchema> {
+  const list = (typeof paths === "string" ? [paths] : [...paths]).map((p) => (isAbsolute(p) ? p : resolve(base, p)));
+  if (list.length === 0) throw new ConfigError("`schema` names no file");
+
+  const tables: Record<string, { $: unknown }> = {};
+  for (const file of list) {
+    if (!(await exists(file))) throw new ConfigError(`no schema module at ${file}`);
+    let mod: Record<string, unknown>;
+    try {
+      mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+    } catch (err) {
+      const code = errCode(err);
+      if (
+        code === "ERR_UNKNOWN_FILE_EXTENSION" ||
+        code === "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX" ||
+        code === "ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING" ||
+        code === "ERR_INVALID_TYPESCRIPT_SYNTAX"
+      ) {
+        throw stripTypesAdvice(file, err);
+      }
+      throw err;
+    }
+    const registry =
+      hasTables(mod["default"]) ? mod["default"] : Object.values(mod).find((v) => hasTables(v));
+    const candidates: unknown[] = registry ? Object.values(registry.tables) : Object.values(mod);
+    let found = 0;
+    for (const value of candidates) {
+      if (!isTableLike(value)) continue;
+      const runtime = value.$;
+      tables[`${runtime.schema ?? "public"}.${runtime.name}`] = value;
+      found += 1;
+    }
+    if (found === 0) {
+      throw new ConfigError(
+        `${file} exports no tables: expected \`export default defineSchema({ … })\`, an export with a ` +
+          `\`tables\` property, or one or more \`pgTable(...)\` exports.`,
+      );
+    }
+  }
+  return { schema: { tables }, files: list };
+}
+
 /* ------------------------------ URL → ConnInfo ---------------------------- */
 
 export interface ParsedUrl {
@@ -193,6 +271,12 @@ export function parseDatabaseUrl(url: string): ParsedUrl {
 export interface ResolveInput {
   readonly config: PgPrimeConfig;
   readonly configFile: string | null;
+  /**
+   * Throw when no connection can be resolved. `false` for the one command that is a pure
+   * function of files — `migrate lint <file>` — because requiring a database URL to lint
+   * SQL text is the kind of friction that gets a linter dropped from CI.
+   */
+  readonly requireConnection?: boolean;
   /** `--url` */
   readonly url?: string | undefined;
   /** `--migrations` */
@@ -207,6 +291,10 @@ export interface ResolvedConfig {
   readonly file: string | null;
   readonly config: PgPrimeConfig;
   readonly connection: ConnInfo;
+  /** false ⟹ `connection` is a placeholder and nothing may connect with it */
+  readonly hasConnection: boolean;
+  /** absolute paths from `config.schema`, or `[]` when the config names none */
+  readonly schemaPaths: readonly string[];
   readonly migrationsDir: string;
   readonly repeatablesDir: string;
   readonly schemas: readonly string[];
@@ -228,6 +316,7 @@ export function resolveConfig(input: ResolveInput): ResolvedConfig {
   const base = input.configFile ? dirname(input.configFile) : cwd;
 
   let connection: ConnInfo;
+  let hasConnection = true;
   const explicit = input.url ?? config.url ?? env["PG_PRIME_DATABASE_URL"] ?? env["DATABASE_URL"];
   if (input.url === undefined && config.connection) {
     connection = config.connection;
@@ -235,6 +324,9 @@ export function resolveConfig(input: ResolveInput): ResolvedConfig {
     const parsed = parseDatabaseUrl(explicit);
     connection = parsed.conn;
     warnings.push(...parsed.warnings);
+  } else if (input.requireConnection === false) {
+    connection = { host: "", port: 0, user: "", password: "", database: "" };
+    hasConnection = false;
   } else {
     throw new ConfigError(
       "no database connection: pass --url, set `url` in pg-prime.config.ts, or export PG_PRIME_DATABASE_URL",
@@ -243,10 +335,14 @@ export function resolveConfig(input: ResolveInput): ResolvedConfig {
 
   const abs = (p: string): string => (isAbsolute(p) ? p : resolve(base, p));
   const envTag = env[ENV_VAR] ?? null;
+  const schemaPaths =
+    config.schema === undefined ? [] : (typeof config.schema === "string" ? [config.schema] : [...config.schema]).map(abs);
   return {
     file: input.configFile,
     config,
     connection,
+    hasConnection,
+    schemaPaths,
     migrationsDir: abs(input.migrations ?? config.migrations ?? "migrations"),
     repeatablesDir: abs(config.repeatables ?? "sql"),
     schemas: input.schemas ?? config.schemas ?? ["public"],

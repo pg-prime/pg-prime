@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extractCatalog } from "../../src/catalog/extract.js";
 import { withClient, type ConnInfo } from "../../src/db/pg.js";
-import { generate } from "../../src/generate.js";
+import { generateFromDatabases as generate } from "../../src/generate.js";
 import type { Plan } from "../../src/plan/plan.js";
 import { applySegments } from "../../src/runner/apply.js";
 import { ADMIN, dbConn, destroyDatabase, makeDatabase } from "./db.js";

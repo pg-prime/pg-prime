@@ -1,0 +1,26 @@
+{
+  "command": "migrate generate",
+  "status": "up_to_date",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "files": [],
+  "shadow": {
+    "tier": 2,
+    "reason": "<masked>"
+  },
+  "proof": null,
+  "renames": [],
+  "candidates": [],
+  "unresolved": [],
+  "repeatables": [],
+  "hazards": [],
+  "diagnostics": "<masked>",
+  "writeRefusal": null,
+  "error": null
+}

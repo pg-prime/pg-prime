@@ -51,10 +51,12 @@ describe("the binary's usage surface", () => {
     }
   });
 
-  it("prints a help page for `migrate` and for each of the four commands", async () => {
+  it("prints a help page for `migrate` and for each of the ten commands", async () => {
     const migrate = await runCli(["migrate", "--help"]);
     expect(migrate.code).toBe(EXIT.ok);
-    for (const name of ["apply", "status", "baseline", "unlock"]) {
+    for (const name of [
+      "generate", "apply", "status", "baseline", "check", "verify", "lint", "push", "doctor", "unlock",
+    ]) {
       expect(migrate.stdout).toContain(name);
       const r = await runCli(["migrate", name, "--help"]);
       expect(r.code, r.stderr).toBe(EXIT.ok);
@@ -73,9 +75,11 @@ describe("the binary's usage surface", () => {
   it("names the commands it does not have yet rather than pretending", async () => {
     const r = await runCli(["--help"]);
     expect(r.stdout).toContain("Not in this release:");
-    for (const later of ["generate", "check", "verify", "lint", "doctor", "checkpoint"]) {
+    for (const later of ["checkpoint", "db seed"]) {
       expect(r.stdout).toContain(later);
     }
+    // …and the one that graduated out of that list is now above it, with an exit-code line.
+    expect(r.stdout).toContain("migrate generate  build a migration from the TypeScript schema");
   });
 
   it("a missing or unknown command exits 1", async () => {

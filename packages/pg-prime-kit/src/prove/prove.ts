@@ -30,6 +30,12 @@ import {
   type PgDumpLauncher,
 } from "./pg-dump.js";
 
+/** One emitted file's worth of a plan. */
+export interface ProveStage {
+  readonly statements: readonly PlanStatement[];
+  readonly segments: readonly Segment[];
+}
+
 export interface ProveInput {
   /** a maintenance connection (any database other than the one being cloned) */
   readonly admin: ConnInfo;
@@ -39,6 +45,16 @@ export interface ProveInput {
   readonly schemas: readonly string[];
   readonly statements: readonly PlanStatement[];
   readonly segments: readonly Segment[];
+  /**
+   * The plan as the FILES it will be written to (design/06 §3.5 rows 1/6/7, §4.1).
+   *
+   * `generate` can emit `NNNN_name.sql` + `NNNN_name_concurrently.sql`; those apply in
+   * that order and each has its own `from`/`to`, so the proof has to apply them in that
+   * order too and report the fingerprint *between* them — that intermediate value is the
+   * second file's `from`, and there is nowhere else to get it. Absent, the proof runs the
+   * single stage `{ statements, segments }` and `stageFingerprints` has one entry.
+   */
+  readonly stages?: readonly ProveStage[];
   /**
    * The CURRENT-state IR, reused to materialise the shadow when a `TEMPLATE`
    * clone is not available. Re-extracted from `source` when absent.
@@ -167,21 +183,38 @@ export async function proveOnShadowClone(input: ProveInput): Promise<ProofResult
 
   try {
     if (provisioning === "materialized") await materializeCurrent(input, cloneConn);
-    const applyReport = await withClient(cloneConn, (client) =>
-      applySegments(client, input.statements, input.segments),
-    );
-    if (applyReport.status === "failed") {
+    const stages: readonly ProveStage[] =
+      input.stages ?? [{ statements: input.statements, segments: input.segments }];
+    const stageFingerprints: string[] = [];
+    let after: Awaited<ReturnType<typeof extractCatalog>> | undefined;
+    for (const [index, stage] of stages.entries()) {
+      const applyReport = await withClient(cloneConn, (client) =>
+        applySegments(client, stage.statements, stage.segments),
+      );
+      if (applyReport.status === "failed") {
+        return await fail({
+          status: "failed",
+          at: new Date().toISOString(),
+          shadow: "createdb",
+          stageFingerprints,
+          error:
+            `${stages.length > 1 ? `file ${index + 1}/${stages.length}, ` : ""}` +
+            `statement ${applyReport.error?.statementIndex}: ${applyReport.error?.message} — ${applyReport.error?.sql}`,
+        });
+      }
+      // Extracted after EVERY stage, not only the last: the value after stage i is
+      // stage i+1's `from.fingerprint`, and the runner refuses the file without it.
+      after = await withClient(cloneConn, (client) => extractCatalog(client, { schemas: input.schemas }));
+      stageFingerprints.push(after.ir.fingerprint);
+    }
+    if (after === undefined) {
       return await fail({
         status: "failed",
         at: new Date().toISOString(),
         shadow: "createdb",
-        error: `statement ${applyReport.error?.statementIndex}: ${applyReport.error?.message} — ${applyReport.error?.sql}`,
+        error: "proveOnShadowClone was given no statements to prove",
       });
     }
-
-    const after = await withClient(cloneConn, (client) =>
-      extractCatalog(client, { schemas: input.schemas }),
-    );
     const residual = diffIR(after.ir, input.desired);
     if (residual.deltas.length > 0) {
       return await fail({
@@ -190,6 +223,7 @@ export async function proveOnShadowClone(input: ProveInput): Promise<ProofResult
         shadow: "createdb",
         driftDeltas: residual.deltas.length,
         deltas: residual.deltas.map((d) => `${d.op} ${encodeId(d.op === "rename" ? d.to : d.id)}`),
+        stageFingerprints,
         error: "plan does not converge: non-empty diff after apply",
       });
     }
@@ -209,6 +243,7 @@ export async function proveOnShadowClone(input: ProveInput): Promise<ProofResult
         at: new Date().toISOString(),
         shadow: "createdb",
         driftDeltas: 0,
+        stageFingerprints,
         error: `fingerprint mismatch after apply: ${after.ir.fingerprint} != ${input.desired.fingerprint}`,
       });
     }
@@ -227,6 +262,7 @@ export async function proveOnShadowClone(input: ProveInput): Promise<ProofResult
       at: new Date().toISOString(),
       shadow: "createdb",
       driftDeltas: 0,
+      stageFingerprints,
       dumpOracle,
       ...(blockedByFailure
         ? {

@@ -1,0 +1,18 @@
+{
+  "command": "migrate verify",
+  "status": "refused",
+  "exitCode": 1,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "replay": null,
+  "deltas": [],
+  "error": {
+    "code": "refused",
+    "message": "<masked>"
+  }
+}

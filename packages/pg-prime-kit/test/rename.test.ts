@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { extractCatalog } from "../src/catalog/extract.js";
 import { runSqlScript, withClient } from "../src/db/pg.js";
 import { definitionsAgreeUnderRename, tokenizeDefinition } from "../src/diff/rename.js";
-import { generate } from "../src/generate.js";
+import { generateFromDatabases as generate } from "../src/generate.js";
 import { applySegments } from "../src/runner/apply.js";
 import {
   ADMIN,

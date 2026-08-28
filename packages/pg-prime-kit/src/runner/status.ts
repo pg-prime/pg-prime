@@ -38,6 +38,10 @@ export interface StatusReport {
   readonly historyVersion: string | null;
   readonly fingerprint: string | null;
   readonly fingerprintSource: "history" | "catalog" | null;
+  /** the live catalog disagrees with `pgprime.migrations` — only ever set under `--verify-fingerprint` */
+  readonly fingerprintDrift: boolean;
+  /** `fingerprint_to` of the last applied row, whatever `fingerprint` above was read from */
+  readonly recordedFingerprint: string | null;
   readonly migrations: readonly StatusEntry[];
   readonly pending: readonly string[];
   readonly partial: readonly StatusEntry[];
@@ -120,11 +124,18 @@ export async function migrationStatusOn(
   const pending = migrations.filter((m) => m.state === "pending" || m.state === "running" || m.state === "failed").map((m) => m.id);
   const partial = migrations.filter((m) => m.state === "running" || (m.state === "failed" && m.statementsApplied > 0));
 
-  let fingerprint = currentFingerprint(rows);
+  const recorded = currentFingerprint(rows);
+  let fingerprint = recorded;
   let fingerprintSource: StatusReport["fingerprintSource"] = fingerprint === null ? null : "history";
+  // Catalog drift is only VISIBLE on the slow path. The fast path reads `fingerprint_to`
+  // off the last applied row, which is a statement about what the runner did, not about
+  // what the database now contains — so `status` can only report "somebody changed this
+  // schema outside the history" when it has actually looked (design/06 §6.2's exit 4).
+  let fingerprintDrift = false;
   if (options.verifyFingerprint === true) {
     fingerprint = (await extractCatalog(client, { schemas })).ir.fingerprint;
     fingerprintSource = "catalog";
+    fingerprintDrift = recorded !== null && recorded !== fingerprint;
   }
 
   const lock = await inspectLease(client, options.staleLockAfterMs);
@@ -139,7 +150,11 @@ export async function migrationStatusOn(
       : (await pass.plan(options.repeatablesDir, hashes)).toApply.map((f) => f.path);
 
   const status: StatusReport["status"] =
-    missingFiles.length > 0 || checksumDrift.length > 0 ? "drift" : pending.length > 0 ? "pending" : "up_to_date";
+    missingFiles.length > 0 || checksumDrift.length > 0 || fingerprintDrift
+      ? "drift"
+      : pending.length > 0
+        ? "pending"
+        : "up_to_date";
 
   return {
     status,
@@ -148,6 +163,8 @@ export async function migrationStatusOn(
     historyVersion: version,
     fingerprint,
     fingerprintSource,
+    fingerprintDrift,
+    recordedFingerprint: recorded,
     migrations,
     pending,
     partial,

@@ -1,0 +1,23 @@
+{
+  "command": "migrate check",
+  "status": "pending",
+  "exitCode": 5,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "schemaChecked": true,
+  "schemaDrift": "<masked>",
+  "checksumDrift": [],
+  "missingFiles": [],
+  "pending": [
+    "0000_init"
+  ],
+  "repeatableDrift": [],
+  "unresolved": [],
+  "hazards": [],
+  "error": null
+}

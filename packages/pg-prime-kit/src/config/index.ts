@@ -2,6 +2,7 @@ export { defineConfig, type PgPrimeConfig } from "./define.js";
 export {
   findConfigFile,
   loadConfig,
+  loadSchema,
   parseDatabaseUrl,
   resolveConfig,
   ConfigError,
@@ -9,6 +10,7 @@ export {
   ENV_VAR,
   STRIP_TYPES_MARKER,
   type LoadedConfig,
+  type LoadedSchema,
   type ParsedUrl,
   type ResolveInput,
   type ResolvedConfig,

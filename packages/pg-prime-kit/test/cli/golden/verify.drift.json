@@ -1,0 +1,30 @@
+{
+  "command": "migrate verify",
+  "status": "drift",
+  "exitCode": 4,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "ephemeral": {
+    "tier": 2,
+    "database": "<masked>",
+    "kept": false
+  },
+  "against": "schema",
+  "replay": {
+    "status": "applied",
+    "applied": [
+      "0000_init"
+    ],
+    "repeatables": []
+  },
+  "fingerprint": "<masked>",
+  "deltas": [
+    "create column:public.widgets.colour"
+  ],
+  "error": null
+}
