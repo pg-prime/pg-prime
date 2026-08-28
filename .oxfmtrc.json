@@ -27,7 +27,8 @@
     "packages/*/test/**/*.json",
     "**/__snapshots__/**",
     "**/*.snap",
-    "bench/**/report.json"
+    "bench/**/report.json",
+    "packages/*/src/unsupported-typescript.d.ts"
   ],
   "overrides": [
     {
