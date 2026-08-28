@@ -43,6 +43,22 @@ export interface PgDriver {
    */
   release(connection: PgConnection, options?: { dispose?: boolean }): Promise<void>
 
+  /**
+   * OPTIONAL. Open a connection the pool does **not** own, for the one feature that needs to pin a
+   * backend for its whole lifetime: `LISTEN` (design/07 §6.5).
+   *
+   * Taking that connection from the pool silently shrinks `max` and eventually starves the app —
+   * with the serverless preset's `max: 1` the first subscription deadlocks the process — so the
+   * runtime asks for one outside it. The returned connection is released the same way as any
+   * other, with `release(conn, { dispose: true })`, which for a dedicated connection means "close
+   * the socket".
+   *
+   * An adapter that cannot do this omits the method; `db.listen()` then says so, naming what to
+   * configure instead. Optional so every adapter written before `07` existed still satisfies
+   * `PgDriver`.
+   */
+  connect?(options?: PgAcquireOptions): Promise<PgConnection>
+
   /** Drain and close everything. Idempotent. Safe to call while queries are in flight (they reject). */
   destroy(): Promise<void>
 

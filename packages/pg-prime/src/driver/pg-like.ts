@@ -146,13 +146,37 @@ export interface PgLikeConnection {
   close(m: { type: 'S' | 'P'; name?: string }, more?: boolean): void
   sync(): void
   flush(): void
-  sendCopyData(chunk: Uint8Array): void
-  sendCopyDone(): void
+  /**
+   * COPY IN, in pg's own spelling — **not** `sendCopyData`/`sendCopyDone`, which is what the
+   * protocol messages are called and what an earlier draft of this declaration guessed. Measured
+   * against `pg@8.23.0`'s `lib/connection.js`: the methods are `sendCopyFromChunk(chunk)` and
+   * `endCopyFrom()`, and they are the pair `pg-copy-streams` drives.
+   */
+  sendCopyFromChunk(chunk: Uint8Array): void
+  endCopyFrom(): void
   sendCopyFail(msg: string): void
+  /** Simple query. The path COPY takes — it carries no bind parameters, so there is nothing else. */
+  query?(text: string): void
   on(event: string, listener: (msg: never) => void): unknown
   removeListener(event: string, listener: (msg: never) => void): unknown
   readonly parsedStatements: Record<string, string>
-  readonly stream: { cork?(): void; uncork?(): void; destroy(): void }
+  readonly stream: {
+    cork?(): void
+    uncork?(): void
+    destroy(): void
+    /** Node's socket backpressure signal, read by the COPY IN pump. */
+    readonly writableNeedDrain?: boolean
+    once?(event: string, listener: () => void): unknown
+  }
+}
+
+/**
+ * An UNCONNECTED client we may connect ourselves and own for its whole life — what
+ * `PgDriver.connect()` hands out for `LISTEN` (design/07 §6.5). `pg.Client` satisfies it.
+ */
+export interface PgLikeDedicatedClient extends PgLikeClient {
+  connect(): Promise<void>
+  end(): Promise<void>
 }
 
 /** Public constructor surface — design/02 §3. */
@@ -168,4 +192,10 @@ export interface PgDriverConfig {
    * over a pooled connection.
    */
   createCancelClient?: () => PgLikeCancelClient
+  /**
+   * Opens a connection the pool does not own, for `PgDriver.connect()` (design/07 §6.5). Supplied
+   * automatically when `pgPrime({ connection })` builds the pool; supply it yourself with `pool:`
+   * if you want `db.listen()` on a connection that is not one of your pool's.
+   */
+  createDedicatedClient?: () => PgLikeDedicatedClient
 }

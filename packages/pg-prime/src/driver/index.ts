@@ -25,6 +25,7 @@ export type {
   PgDriverConfig,
   PgLikeClient,
   PgLikeConnection,
+  PgLikeDedicatedClient,
   PgLikeField,
   PgLikePool,
   PgLikePoolClient,

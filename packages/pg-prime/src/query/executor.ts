@@ -676,6 +676,22 @@ export interface RunOptions {
   readonly params?: PlaceholderValues | undefined
   readonly statement?: StatementMode | undefined
   readonly signal?: AbortSignal | undefined
+  /**
+   * An out-parameter the session layer fills so `07` §7.1's `serverMs` / `decodeMs` split is
+   * measured rather than estimated.
+   *
+   * A mutable slot rather than a return value because `runOn` returns rows and every caller in the
+   * builder wants exactly rows; threading a second value through five terminals to serve one
+   * observer would cost more than this does. Absent ⇒ nothing is timed, which is the default and
+   * the hot path.
+   */
+  readonly timing?: RunTiming | undefined
+}
+
+/** Filled by {@link runOn} when {@link RunOptions.timing} is supplied. Milliseconds. */
+export interface RunTiming {
+  serverMs: number
+  decodeMs: number
 }
 
 function queryFor(
@@ -716,14 +732,26 @@ export async function runOn<Row>(
       ? { ...base, mode: 'named', statementName: await nameFor(conn, env, key) }
       : base
     try {
+      const timing = opts?.timing
+      const sentAt = timing === undefined ? 0 : performance.now()
       const result = await conn.execute(query)
+      const gotAt = timing === undefined ? 0 : performance.now()
       if (named) env.named.selfHeals = 0
       if (env.assertShape) {
         assertShape(compiled as Compiled<unknown>, result.fields, env.registry)
       }
-      return decoderFor(compiled, env.registry, conn.serverParameters, result.fields, env.decoder)(
-        result.rows as never,
-      )
+      const rows = decoderFor(
+        compiled,
+        env.registry,
+        conn.serverParameters,
+        result.fields,
+        env.decoder,
+      )(result.rows as never)
+      if (timing !== undefined) {
+        timing.serverMs = gotAt - sentAt
+        timing.decodeMs = performance.now() - gotAt
+      }
+      return rows
     } catch (e) {
       const action = healAction(e, conn, named, attempt)
       if (action === undefined) throw e
@@ -824,6 +852,42 @@ export async function* streamOn<Row>(
       decode = decoderFor(compiled, env.registry, conn.serverParameters, chunk.fields, env.decoder)
     }
     for (const row of decode(chunk.rows as never)) yield row
+  }
+}
+
+/**
+ * The same cursor, one array per `FETCH` (`07` §6.3, and decision 10 of design/12 §1).
+ *
+ * **A batch IS a FETCH.** That is the decision `09` §3.6 said needed making, and it is made this
+ * way because the alternative — a re-batching layer that buffers rows until it has exactly
+ * `batchSize` of them — would add a copy per batch to serve a promise the cursor already keeps:
+ * every chunk but the last has exactly `batchSize` rows, because that is what `FETCH FORWARD n`
+ * returns. Re-batching would cost memory and gain nothing except the guarantee that the *last*
+ * batch is full, which it cannot be anyway.
+ *
+ * The empty terminal chunk a cursor yields when the row count is an exact multiple of the batch
+ * size is swallowed: `for await (const batch of …)` handing back `[]` is a footgun, and the
+ * iteration is over either way.
+ */
+export async function* streamBatchesOn<Row>(
+  conn: PgConnection,
+  compiled: Compiled<Row>,
+  env: ExecEnv,
+  opts?: StreamOptions & RunOptions,
+): AsyncIterable<Row[]> {
+  const paramTypes = paramTypesOf(compiled.binds)
+  const query = queryFor(compiled as Compiled<unknown>, opts, paramTypes)
+  let decode: ((rows: readonly (readonly (string | null)[])[]) => Row[]) | undefined
+  const chunks: AsyncIterable<PgResultChunk> = conn.stream(query, opts?.batchSize ?? 1000)
+  for await (const chunk of chunks) {
+    if (decode === undefined) {
+      if (env.assertShape) {
+        assertShape(compiled as Compiled<unknown>, chunk.fields, env.registry)
+      }
+      decode = decoderFor(compiled, env.registry, conn.serverParameters, chunk.fields, env.decoder)
+    }
+    if (chunk.rows.length === 0) continue
+    yield decode(chunk.rows as never)
   }
 }
 

@@ -317,6 +317,46 @@ Rationale:
 - The overhead argument cuts both ways and I will not overstate it: `AsyncLocalStorage` in modern Node is much cheaper than it was, but it is not free, and it is *unbounded* in pathological cases (deep promise chains). Keeping it off the production hot path by default means we never have to defend a number.
 - We leave a documented, unsupported-for-building-on hook — `experimental_asyncContext()` — so framework integrators (Next.js middleware, NestJS request scoping) can build ambient wrappers *in userland* if they want them. We will not build APIs on top of it and will not treat its behaviour as semver-stable.
 
+> **AS BUILT (design/12 §3 S).** `createDb` ships as **`pgPrime(config)`** — the rename record
+> fixes the per-layer spelling and design/12 §1 decision 1 keeps the constructor's name — with §1.1's
+> `DbConfig` grown onto it: `connection | pool | driver` (exactly one, `ConfigError` naming all three
+> otherwise), `directConnection`, `poolerMode`, `poolOptions`, `session`, `transaction`, `hooks`,
+> `log`, `errors`, `devGuard`, `signal`, plus the `ExecOptions` the executor already had. It is
+> synchronous and lazy as promised: `connection:` resolves `pg` through a lazy `import('pg')` on the
+> **first connect**, behind a `LazyDriver` that memoises it, so module evaluation still opens no
+> socket and `export const db = pgPrime(...)` is still legal at the top level.
+>
+> `presets` ship as the plain functions §1.1 sketches. `poolOptions` applies §1.2's table verbatim
+> when — and only when — we build the pool: a user-supplied `pool:` keeps whatever it was
+> constructed with, because reaching into it would be the surprise `02` §3 exists to avoid.
+> §1.2's dev-mode startup check fires on `max > 20`; the `max × 4 > max_connections` half needs a
+> connection and is therefore reported by `diagnose()` instead of guessed at startup.
+>
+> **The handles are §1.3, with two deviations worth naming.** (1) The query entry points are the
+> builder's own — `from` / `insertInto` / `update` / `deleteFrom` / `with` / `sql` — not §1.3's
+> `select` / `insert` / `update` / `delete`, because `03` §2's spelling is what every golden in the
+> repo uses. (2) `SchemaExecutor<Sc>` **is** `Queryable<Sc>`, renamed, with the old name kept as a
+> deprecated alias for one release (decision 3). Everything else is verbatim: the `kind`
+> discriminant, mutual non-assignability (`test/query/types/session.probe.ts` proves `debit(db)` is a
+> compile error), the shallow `NoHandleEscape<T>`, `session()`, `end()` and `[Symbol.asyncDispose]`.
+>
+> `Symbol.asyncDispose` is declared through an **inferred** key
+> (`typeof Symbol extends { asyncDispose: infer S extends symbol } ? S : never`) rather than written
+> literally. Measured by `tools/check-dts.mjs`: the literal spelling makes every shipped `.d.ts` fail
+> with TS2550 on a consumer whose `lib` predates `esnext.disposable`, and that consumer — TypeScript
+> 5.9.3, no `@types/node` — is exactly the floor we promise. Where the lib has the symbol, `await
+> using db = pgPrime(...)` works; where it does not, the member is absent and `end()` is still there.
+>
+> §1.5's four layers: layer 1 (the callback parameter is named `db`) is in every signature and
+> example; layer 2 is the type probe above; layer 3 is built, with `node:async_hooks` imported
+> **dynamically** inside `transaction()` so it never enters a bundle that does not open one —
+> asserted twice, by `test/session/session.test.ts`'s module-graph case over `src/**` and by the
+> tree-shake goldens. The per-call opt-out is `db.outsideTransaction()` / `run(q, { outsideTransaction:
+> true })` rather than §1.5's `.outsideTransaction()` on a builder, for the reason §2.3's note gives.
+> Layer 4 (the ESLint plugin) is out of scope and unbuilt. §1.6's `experimental_asyncContext()` is
+> **not** exported: nothing in v1 needs it, and an unsupported hook nobody has asked for is a
+> maintenance liability rather than a courtesy.
+
 ---
 
 ## 2. Query execution modes
@@ -385,6 +425,20 @@ await db.run(compiled, { execMode: 'prepared' })
 ```
 
 Precedence: **per-query > per-db > pooler-profile floor**. The pooler profile can only *restrict*, never expand: under `poolerMode: 'transaction'` (Supavisor), `withExecMode('prepared')` throws `ConfigError` at call time, and `execMode: 'prepared'` in `createDb` throws at construction time with a message naming the profile and pointing at the compatibility doc. Restriction is loud and immediate — we never silently downgrade a mode the user explicitly asked for, because a silent downgrade is how Prisma #21799 happened.
+
+> **AS BUILT (design/12 §3 S).** The pooler-profile floor this section promises now exists:
+> `statement: 'named'` under `poolerMode: 'transaction'` throws `ConfigError` **at construction**,
+> naming the profile and what to use instead, and `pgbouncer-transaction` allows it. That is the
+> "restriction is loud and immediate" half; there is still no silent downgrade anywhere.
+>
+> **`.signal(s)` and `.timeout(ms)` are NOT builder methods.** §6.1 and §6.2 spell them that way, and
+> that spelling needs `Query` in `src/query/types.ts` and `src/query/select.ts` — both owned by
+> another workstream in this round. The capability ships one level up instead, where the session
+> layer owns every file: `run(q, { signal, timeoutMs, timeoutStrategy, label })` on any handle, and
+> `db.withOptions({ … })`, which returns the same handle type with those defaults folded in, so
+> `db.withOptions({ signal }).from(users)…execute()` is the same statement with the same signal.
+> Nothing about the behaviour differs; only the call site. Moving them onto the builder is a
+> one-file change once `Query` is free.
 
 ### 2.4 Prepared-statement cache design (`execMode: 'prepared'`)
 
@@ -708,6 +762,55 @@ const result = await db.transaction(async (db) => {
 
 We reject Drizzle's design (`tx.rollback()` throws, and the promise silently resolves) because it makes the rollback path and the success path indistinguishable at the type level — the caller cannot tell whether their work happened.
 
+> **AS BUILT (design/12 §3 S).** §3.1's `BEGIN` is one statement and every variant is pinned by
+> `test/session/session.test.ts`; `deferrable` is gated by the `TxOptions` union at the type level
+> **and** refused at runtime for the JavaScript caller. The `finally` destroys a connection whose
+> `transactionStatus` is `'T'` or `'E'` and says so at `warn`.
+>
+> §3.3's savepoints are `"pgprime_sp_<depth>"`, always quoted, and `SavepointOptions` is missing
+> `isolation` / `accessMode` / `deferrable` / `retry` **by type** (four `@ts-expect-error` probes).
+> One correction: the error that poisons a transaction is held in a **shared box** on the
+> transaction's runtime rather than a field, because a savepoint's runtime is a copy of its parent's
+> — with a field, a failure inside the savepoint was invisible to the enclosing transaction and
+> `ROLLBACK TO SAVEPOINT` cleared nothing. Found by R10 mutation M4, which nothing caught until the
+> test grew its first half.
+>
+> §3.4 is verbatim, including full jitter, `tx.attempt`, the `warn` on the first retry and `onRetry`
+> into `QueryHooks`. One strengthening: the hard exclusions sit **above** `shouldRetry`, not beside
+> it, so a predicate that returns `true` for everything still cannot re-run a transaction that may
+> have committed, that the caller aborted, or that failed with a `UsageError`. R10 mutation M7 found
+> that too — deleting the `IndeterminateCommitError` guard changed nothing, because the SQLSTATE
+> check below happened to refuse it for an unrelated reason.
+>
+> §3.5 is `set_config($1,$2,true)`, batched into one statement, with `localSettings` and both
+> timeouts folded into the **same** round trip immediately after `BEGIN`. The GUC-name regex is the
+> typo catcher it is described as; a value that looks like SQL round-trips as a value
+> (`test/live/session.test.ts`).
+>
+> §3.6's defaults ship as written — `application_name` `'pg-prime'`, `statement_timeout` `'30s'`,
+> `idle_in_transaction_session_timeout` `'60s'`, `TimeZone` `'UTC'`, `lock_timeout` unset — but **the
+> mechanism is the fallback, not the startup packet**, and that is measured. `options=-c
+> statement_timeout=30s …` makes PgBouncer reject the whole connection with FATAL `08P01 unsupported
+> startup parameter in options`, so pointing `connection:` at a pooler while leaving `poolerMode` at
+> its default would not merely lose the GUCs, it would fail to connect. §3.6 anticipated this
+> exactly — *"if the startup-parameter path proves unreliable for any setting at implementation
+> time, the fallback is a single `SET` in pg-pool's onConnect hook … also once per connection"* — so
+> the fallback is the mechanism, uniformly, as one `set_config` batch per **physical** connection
+> keyed on `conn.serverParameters` (the same identity the named-statement cache uses, and for the
+> same measured reason). `application_name` is the exception and still rides the startup packet: it
+> is pg's own top-level field, PgBouncer forwards it per client, and it changes no semantics.
+>
+> Two scoping decisions on top of §3.6. Session GUCs are applied for `connection:` always, and for
+> `pool:` / `driver:` **only when the caller passed `session:` explicitly** — reaching into a Pool we
+> did not build to `SET` things nobody asked for is the surprise `02` §4.7 forbids, and it would put
+> a statement on the wire before every existing user's first query. And a per-statement timeout
+> inside a transaction restores the transaction's **baseline** rather than `0` when it ends:
+> `set_config('statement_timeout', NULL, true)` puts back what the session would otherwise have
+> (measured on PG 15 and 17), where `'0'` would silently disable the bound for the rest of the block.
+>
+> §3.7's two exits are built, including `rollbackWith`'s exact type and `TransactionAbandonedError`
+> on a doomed handle.
+
 ### 3.8 Explicitly rejected
 
 - **Flush modes** (`AUTO`/`COMMIT`/`ALWAYS`) — no Unit of Work, nothing to flush. There is no write buffer; statements execute when awaited.
@@ -939,6 +1042,42 @@ export const SQLSTATE_CLASS_FALLBACK: Readonly<Record<string, PgPrimeErrorCtor>>
 
 Lookup order: exact SQLSTATE → class prefix → `UnknownQueryError`. That is what makes rule #3 in §4.1 true.
 
+> **AS BUILT (design/12 §3 S).** The whole §4.2 tree exists under `src/errors/`, mapped once at the
+> executor boundary from `PgDriverErrorData`. `PgPrimeError` stays the single root — it moved to
+> `src/errors/base.ts`, a module with no imports, so that the runtime classes can extend `UsageError`
+> without closing a cycle back through `sql/ident.ts`, and `src/sql/errors.ts` re-exports it so every
+> existing import path still resolves. `PgPrimeError.code` widened from the builder's own union to
+> `string`, which is what §4.3 always said it was: the SQLSTATE, when the server gave one.
+>
+> **Two leaves are renamed, both because the name was already taken.** §4.2's `SchemaError` (SQLSTATE
+> class 42) is **`SchemaObjectError`**, because `SchemaError` is already the public error
+> `defineSchema(...)` throws for a bad declaration. §4.2's `SyntaxError` (42601) is
+> **`SqlSyntaxError`**, because exporting a `SyntaxError` from a barrel shadows the ECMAScript global
+> and makes `e instanceof SyntaxError` mean two different things depending on the import list.
+>
+> §4.5's tables are exported as data (`SQLSTATE_MAP`, `SQLSTATE_CLASS_FALLBACK`, `classForSqlState`)
+> and a tier-0 case walks every entry. `'08'` is deliberately absent from the class fallback: a
+> connection exception is a `ConnectionError`, routed by `PgDriverErrorData.kind` before the table is
+> consulted, and having it in both places would make the answer depend on which ran first.
+>
+> §4.3's redaction ships with one amendment: a **`40P01` keeps its `DETAIL` verbatim**. PostgreSQL's
+> deadlock detail names both processes and both relations and contains no user value at all, and it
+> is the only thing that makes a deadlock diagnosable — dropping it would obey the letter of the rule
+> and destroy its purpose. Everything else in class 23 is parsed, keeps `columns` and drops `values`.
+>
+> §4.4's constraint index is built lazily on the first constraint error, from the schema's runtime
+> metadata, and registers **both** the declared name and PostgreSQL's default name for an unnamed
+> constraint — which one the server reports depends on whether the migration named it. `23502` has no
+> constraint name at all, so it resolves by (table, column) instead. `isUniqueViolation`,
+> `isForeignKeyViolation`, `isCheckViolation` and `isNotNullViolation` ship; graceful degradation is
+> asserted, not assumed. `declaredAt` on `ConstraintRef` is **not** built: the schema builder does not
+> record declaration sites.
+>
+> `IndeterminateCommitError` is a sibling of `ConnectionError`, never a subclass, and a tier-0 case
+> asserts both halves of that (`instanceof IndeterminateCommitError` **and** `not.toBeInstanceOf(
+> ConnectionError)`). `TooManyParametersError` was already thrown by the compiler and is re-parented
+> under `UsageError` while keeping its published `code`.
+
 ---
 
 ## 5. Pooler compatibility
@@ -1048,6 +1187,43 @@ Where it is used:
 - `db.diagnose()` bundles it with pool stats, effective GUC values, `max_connections` arithmetic (§1.2), server version, and any exec-mode downgrade that has occurred.
 
 We explicitly do **not** use PgBouncer's `SHOW POOLS` admin console: it needs admin credentials and only speaks the simple query protocol, making it a CLI diagnostic at best and not a runtime signal.
+
+> **AS BUILT (design/12 §3 S).** `POOLER_PROFILES` is exported data, one entry per mode, and a
+> tier-0 case asserts what §5.2's matrix claims: `resetQuery` is `'never'` in every profile, `listen`
+> is `'unsupported'` in both transaction profiles while `notify` is gated nowhere, and the two
+> transaction profiles differ in **exactly one** capability (`namedPreparedStatements`). What each
+> mode toggles is §5.3: the exec-mode floor at construction, `Session` → `UnsupportedInPoolerModeError`
+> naming `db.transaction()` as the answer, `listen` routed to `directConnection` or refused naming
+> that key, and session GUCs skipped with one `info` line carrying the `ALTER ROLE` fix. All four are
+> asserted through a real transaction-mode PgBouncer (R19), with `SHOW` as the oracle for the GUCs.
+>
+> **§5.4's probe 1 as written is a false negative, and this is the workstream's most useful
+> measurement.** Two consecutive autocommit statements through an *idle* PgBouncer land on the SAME
+> server connection — the pooler has no reason to reassign one — so "different pids ⇒ transaction
+> pooling" never fires for the single-client case a diagnostic is usually run in. Measured against
+> PgBouncer 1.25 in transaction mode: 343, 343. The probe therefore **creates the contention it
+> needs**: it takes three more pooled connections (in parallel, on a 250 ms budget each, so an
+> exhausted pool costs nothing), holds them busy, and reads the pid again *while* they are still
+> holding server connections. Under a pooler it moves; on a direct connection it cannot, because a
+> real backend belongs to the connection. Reading it *after* the contenders finish reports the same
+> pid and is the shape that does not work.
+>
+> `application-name-sticky` stays opt-in, and it is worth recording that it is also a false negative
+> against PgBouncer ≥ 1.21: the pooler tracks `application_name` per client and re-applies it, so the
+> value survives a reassignment. `named-statement-survives` remains the decisive probe, and through a
+> PgBouncer with `max_prepared_statements=200` it says yes, so the recommendation is
+> `pgbouncer-transaction` rather than the conservative floor. `confidence` is `'medium'` once that
+> probe has answered and `'low'` before; it is never `'high'`, which is a property of the type.
+>
+> `diagnose()` reports pool stats, the effective GUCs read back with `SHOW`, §1.2's `max_connections`
+> arithmetic, the server version, the exec-mode downgrade state (the old `statementStats` folded in)
+> and a `notes` array that names the `ALTER ROLE` fix when a profile skipped the session GUCs. The
+> dev-mode startup `warn` fires on §1.2's pool arithmetic, and the `agrees === false` half is wired
+> as §5.4 describes: **once, asynchronously, after the first connection has already succeeded**, so
+> it costs no startup latency and blocks no query (§8 rejection 25). It is skipped entirely for the
+> `driver:` form — that is the full seam override, we do not know the host, and putting six probe
+> statements on somebody else's driver uninvited is help nobody asked for; `db.diagnosePooler()`
+> remains available by hand.
 
 ### 5.5 The migration ⇄ running-app interaction
 
@@ -1211,6 +1387,60 @@ for await (const chunk of db.copyTo(sql`copy (select …) to stdout with (format
 
 `COPY` is transaction-scoped and therefore works under transaction pooling. `statementTimeout` defaults to `null` for the duration.
 
+> **AS BUILT (design/12 §3 S).** `signal` composes downward from `pgPrime({ signal })` (which
+> drains the pool) through `transaction`, `run`, `stream`, `copy*` and `listen`; per-statement it is
+> `run(q, { signal })` or `db.withOptions({ signal })` rather than §6.1's builder `.signal(s)`, for
+> the reason §2.3's note gives. The four abort timings are the adapter's and were already built by
+> `02`; a cancelled statement's connection is destroyed rather than pooled.
+>
+> §6.2 ships all three rows of its table: the session-level default (§3.6), the client-side timer
+> plus `CancelRequest` for an autocommit statement, and `{ timeoutStrategy: 'transaction' }` as the
+> +2 RTT opt-in. Inside a transaction it is always `SET LOCAL`. The two classes really are distinct
+> and tier 2 proves it on a real `pg_sleep`: a server-side `statement_timeout` is
+> `QueryCanceledError` with `context.reason: 'statement_timeout'`, our own timer is
+> `QueryTimeoutError` saying the server may still be working.
+>
+> **`streamBatches` is one `FETCH` per batch** (design/12 §1 decision 10). A batch *is* a chunk: every
+> one but the last has exactly `batchSize` rows, because that is what `FETCH FORWARD n` returns, so a
+> re-batching layer would add a copy per batch to guarantee only that the last batch is full — which
+> it cannot be anyway. The empty terminal chunk a cursor yields when the row count is an exact
+> multiple is swallowed. `statementTimeoutMs` is honoured on `stream`/`streamBatches` and defaults to
+> **not emitting anything**: emitting `SET LOCAL statement_timeout = 0` unconditionally would put an
+> extra round trip on every stream to change nothing in the common case where no session default is
+> in force. Pass it explicitly (including `null`) and it is emitted.
+>
+> §6.5 is built on a **new optional driver seam, `PgDriver.connect?(options)`** (decision 8), which
+> returns a connection the pool does not own; the pg adapter implements it from
+> `createDedicatedClient`, which `pgPrime({ connection })` supplies automatically from the same
+> config the pool was built from. One multiplexed connection per `Db`, reference-counted across
+> channels — `pg_stat_activity` shows exactly one extra backend for two channels and none after the
+> last unsubscribes — with full-jitter reconnect, re-`LISTEN` before `'gap'`, and the `'error'` event.
+> An adapter with no `connect` falls back to a pool checkout held for the subscription's lifetime,
+> which costs one pool slot and says so; §6.5's objection to a pool client is that it *silently*
+> shrinks `max`. **The 8000-byte payload limit is off by one**: PostgreSQL's own check is
+> `strlen(payload) >= NOTIFY_PAYLOAD_MAX_LENGTH` with that constant equal to 8000, so 8000 bytes is
+> already `payload string too long` and 7999 is the largest that works (measured, PG 17.11).
+>
+> §6.6's optional peer is **not needed**. `pg-copy-streams` is a Submittable over pg's own
+> connection-level COPY messages, and so is `src/driver/copy.ts`: the statement goes out through the
+> simple query protocol (COPY carries no binds), the payload rides `sendCopyFromChunk` / `endCopyFrom`
+> — pg's real method names, not the protocol's `copyData`/`copyDone`, which an earlier draft of the
+> structural declaration guessed — and `CopyData` is collected on the way out. `capabilities.copyIn`
+> and `copyOut` are now `true`. Rows are encoded in COPY **text** format through the very codecs the
+> insert path uses, batched into ~64 KiB frames with socket backpressure; `copyFrom.raw(sql, bytes)`
+> and `copyTo(sql)` (plus `copyTo.lines`) are the untyped halves. A failing source sends `CopyFail`
+> rather than leaving the connection stuck in copy-in mode, and the tier-1 test asserts nothing was
+> written.
+>
+> **The measured crossover: there is none.** `copyFrom` is faster than `insertMany` at every size
+> from ten rows up — about 1.5–1.8× at 10–100 rows, ~2× at 1 000–10 000 and 2.3–3.8× at 100 000, on
+> PG 17.11 over a local TCP socket (`test/pg/session-copy.test.ts` prints the table on every run). So
+> §6.6's "expected around 5–10 k rows" is wrong in an interesting way, and the honest guidance is
+> that the reason to reach for `insertMany` below a few thousand rows is **ergonomics** —
+> `RETURNING`, `ON CONFLICT`, typed rows, one statement inside your transaction — and not speed.
+> PGlite cannot host any of this: its socket bridge exits the WASM backend on a COPY message, taking
+> the instance with it, so the COPY suites are tier 2 and tier 1 skips them loudly.
+
 ---
 
 ## 7. Observability
@@ -1351,6 +1581,34 @@ errors: { captureCallSite: process.env.NODE_ENV !== 'production' }   // the defa
 
 On in production if you want it; off by default. This is the single highest-value debugging feature in the whole runtime layer and it is one config line.
 
+> **AS BUILT (design/12 §3 S).** §7.1's hooks ship as written: synchronous, every invocation
+> wrapped, a throwing member disabled after **one** failure and reported through every *other*
+> registration's `onInternal` plus a `console.error` — the failing registration's own `onInternal` is
+> skipped, because calling it to report itself is how a crash loop starts. Static `hooks` and dynamic
+> `observe()` compose, and the hot path is one boolean when nothing is registered.
+>
+> `serverMs` / `decodeMs` / `waitedForConnectionMs` are **measured, not estimated**: `runOn` takes an
+> optional timing out-parameter and fills it, so `serverMs` is the awaited `conn.execute` and
+> `decodeMs` is the decoder's own time, and the tier-1 test asserts the parts do not exceed the
+> whole. `operation` and `tables` come from the compiled query's `meta`, never a regex over SQL.
+> `execMode` carries the two-member `statement` axis the executor actually reaches rather than §2.1's
+> four-member type; the span attribute is still `pg_prime.exec_mode`.
+>
+> One thing this workstream had to build to keep the promise: `` db.sql`…` `` now goes through the
+> **statement path** rather than straight to the connection, so a raw statement gets the same events,
+> the same slow-query record, the same error mapping and the same per-statement timeout as a builder
+> query. It got none of those before, for the incidental reason that it has no `Compiled` decode plan.
+>
+> §7.2's `SEMCONV`, `spanAttributes()` and `spanName()` are pure and import nothing; a tier-0 case
+> asserts every emitted key is either a semconv name or `pg_prime.*`-prefixed, so a future semconv
+> addition cannot collide. §7.3's `LogOptions` ships with the slow-query record, the pretty/json
+> formatter and `logAllQueries` refusing to enable itself in production without `force: true`.
+> §7.4's call-site capture is on outside production, elides our own frames, and lands on both the
+> error and the slow-query record.
+>
+> `onPool` fires on acquire/release/timeout but not on create/destroy — the pool is `pg-pool`'s and
+> those two events are not on the seam. `@pg-prime/otel` is out of scope and unbuilt, as designed.
+
 ### 7.5 `.explain()` on any query
 
 ```ts
@@ -1474,10 +1732,27 @@ export interface ExplainResult {
    from 06: the migration lock is a **session** advisory lock plus a heartbeat lease, not
    `pg_advisory_xact_lock`, because a `txmode none` file has no enclosing transaction to scope it
    (00-overview R6). `pg_advisory_xact_lock` remains right for the *runtime* side described here.
-6. **`statementTimeout: '30s'` as a default** — **open**, and still the most opinionated call in
-   this document. Unchanged mitigations: `null` disables, `.timeout()` overrides per statement,
-   streaming and COPY exempt themselves, and it is stated in the startup log line. No executor
-   exists yet, so this has never been exercised.
-7. **Should `cachedDescribe` be the v1 default?** — **open.** Deferred until there is an executor
-   to measure it with. The wire shape is identical to `unnamedExtended`, so there is no pooler
-   risk; the only question is cache-invalidation correctness.
+6. ~~**`statementTimeout: '30s'` as a default**~~ — **RESOLVED: it stays** (design/12 §3 S).
+   Exercised now, and the two things that were unknown when it was written are measured.
+   (a) **Cost.** It is not per query: the GUC is applied once per *physical* connection, one
+   `set_config` batch, so a pool of 10 pays for it ten times per `maxLifetimeSeconds` and never
+   again. The startup-packet variant that would have cost literally nothing is unusable behind a
+   pooler (§3.6 AS BUILT), which is the only part of the original plan that changed.
+   (b) **Reach.** It applies where the design says and nowhere else: streams and COPY are exempt,
+   a transaction's own `timeoutMs` overrides it and restores the baseline afterwards rather than
+   clearing it, and under a transaction-pooler profile it is not applied at all — with one `info`
+   line naming the settings and the `ALTER ROLE` fix, and `diagnose()` reporting the *observed*
+   values so nobody has to guess. `null` still disables it, per setting.
+   The opinion is unchanged and now defensible: 30 s is generous enough that no normal OLTP query
+   trips it and tight enough to bound the blast radius, and it is explicitly not Prisma's 5 s.
+7. ~~**Should `cachedDescribe` be the v1 default?**~~ — **RESOLVED: it is not a mode at all, and the
+   thing it was for already happens** (design/12 §3 S, confirming `09` §3.6's AS BUILT under §2.4).
+   §2.2 identifies the real payoff as **decode-plan construction**, not a round trip — `pg` corks
+   `Describe('P')` into the same write either way. That payoff is unconditional as built: the
+   decode plan is memoised per `(Compiled, registry, generation, serverParameters, OID signature)`
+   for builder queries and per SQL text for `sql`-tag statements, on the default path, with no mode
+   to opt into. §2.2's *other* justification was binary result formats, and `09` §9 #3 already
+   closed that: `pg-protocol` UTF-8-decodes every DataRow field, so binary is out of v1 regardless.
+   A `cachedDescribe` mode would therefore be a name for something that is already on and a
+   precondition for something that cannot ship. `ExecMode` stays the two members the builder
+   reaches, plus the migrator's `simple`.

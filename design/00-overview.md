@@ -14,7 +14,7 @@ Research basis: [`../research/SUMMARY.md`](../research/SUMMARY.md).
 | [04-type-system.md](./04-type-system.md) | Types | Runtime builders + flat `ColMeta` flattened once per table; no whole-schema type parameter, so query cost is schema-size-independent |
 | [05-schema-api.md](./05-schema-api.md) | Schema surface | `pgTable(name, cols, extras[])`; `defineRelations` with FK inference; functions/triggers as body-hash repeatables |
 | [06-migrations.md](./06-migrations.md) | Migration engine | In-house differ over a fact-base IR; nothing reaches disk unproven (D6); witnessed by `pg_dump` (D10) |
-| [07-runtime.md](./07-runtime.md) | Execution | `unnamedExtended` default; 40001 retry at RR/serializable only; declared (not detected) `poolerMode` |
+| [07-runtime.md](./07-runtime.md) | Execution | `unnamedExtended` default; 40001 retry at RR/serializable only; declared (not detected) `poolerMode`; three non-assignable handles |
 | [08-architecture.md](./08-architecture.md) | Packaging | 4 packages; tsgo + oxlint; unbundled ESM; PGlite default test tier with a multi-session ban |
 | [09-query-builder-implementation-plan.md](./09-query-builder-implementation-plan.md) | Build plan | Sequenced workstreams to get from the four spikes to a working builder; per-workstream test contracts and exit gates |
 
@@ -28,19 +28,23 @@ different `Codec` types coexist (`sql/codec.ts` carries a self-described spike-l
 |---|---|
 | Schema DSL | 11 column types, 8 modifiers, table extras, relations. Type budget gated |
 | Codecs | 29 built-ins, `decodeJson` required and golden-tested at depth 0 and 3 |
-| Driver | `execute` · `stream` (real cursors) · `describe` · `cancel` · error taxonomy. No transactions, no COPY |
+| Driver | `execute` · `stream` (real cursors) · `describe` · `cancel` · `copyIn`/`copyOut` (pg's own connection-level COPY messages, no optional peer) · `connect` (a connection the pool does not own, for LISTEN) · error taxonomy |
 | SQL + compiler | `sql` tag with `ident`/`lit`/`join`/`unsafeRaw`; SELECT and INSERT compile. **UPDATE and DELETE do not** — the AST nodes exist, the compiler throws |
 | Migration engine | **The v1 loop is closed (2026-08-28).** `pg-prime migrate generate → apply → status → check → verify` runs from a `pg-prime.config.ts` with no `desired` database and no `CREATEDB`, and `apply` refuses a transaction-mode pooler. Ten of [06 §6.2](./06-migrations.md)'s twelve commands ship (`checkpoint` and `db seed` are K4); Tier M is complete, Tier R applies repeatables, Tier O is observed, Tier U is counted; all 35 hazard codes and all 7 lock-safe rewrites are built, three of them by emitting a `txmode none` companion file at the same `seq`. Nothing reaches disk unproven (D6) and `pg_dump` witnesses every plan (D10). **375 kit tests** on PG 17 and 18 |
 | Migration engine — the 1.0 gate | [01 §11.6 #5](./01-features.md) is **met**: `baseline` → `verify` is green on Pagila, Northwind, AdventureWorks and Chinook, committed under `fixtures/corpus/` from pinned upstreams. Empty IR diff on all four; `pg_dump` byte-equal on two and differing only by Tier-R objects on the other two, asserted rather than skipped. The corpus found three Tier-M bugs, all fixed ([06 §2.2](./06-migrations.md)) |
+| Runtime — the session layer | **Done (2026-08-29).** [07](./07-runtime.md) end to end: `pgPrime(config)` with `connection` / `pool` / `driver`, the `Db`/`Tx`/`Session` handles, `TxOptions` + savepoints + `40001` retry + `setLocal` + advisory locks + `rollbackWith`, the §4.2 error tree with constraint→schema-object resolution, `POOLER_PROFILES` + `diagnosePooler()`/`diagnose()`, `AbortSignal` and per-statement timeouts, `streamBatches`, `listen`/`notify` on a dedicated connection, `copyFrom`/`copyTo`, hooks + `spanAttributes()` + the slow-query log + call-site capture, and the `AsyncLocalStorage` dev guard. `07` §0's snippet runs unchanged on a direct connection **and** through PgBouncer transaction mode. `07` §9's last two open questions are closed by measurement. **914 offline / 1 658 live / 1 718 on PG 17 + PgBouncer**, green on PG 15/16/17/18 |
 | Packaging | **Done (2026-08-28).** Both packages build (`tsc` → unbundled ESM + `.d.ts` + maps), ship an `exports` map with the `types@<5.9` gate first on every subpath, and install from a `pnpm pack` tarball into a throwaway project — proved on every PR by the `package` CI job. `@pg-prime/testing` and `@pg-prime/create` are still README-only |
 
-**2 660 tests green** (778 runtime offline, 1 507 runtime live, 375 kit on PostgreSQL 17 and 18);
-workspace typecheck clean.
+**2 949 tests green** (914 runtime offline, 1 658 runtime live, 1 718 runtime on PostgreSQL 17 +
+PgBouncer — green on 15/16/17/18 — and 375 kit on 17 and 18); workspace typecheck clean.
 **Type budget, measured on the real implementation:** 137,778 instantiations, 1.11 s on TS 5.9 /
 0.231 s on TS 7, schema-size-independence ratio **1.00** against a 1.15 gate.
-**Dependencies:** `pg-prime` has zero runtime deps and zero peer deps — verified, `src/` contains no
-non-relative imports at all. `@pg-prime/kit` depends on `pg` + `@types/pg`, and on `pg-prime` as a
-**types-only peer**. 7 devDeps at the root.
+**Dependencies:** `pg-prime` has zero runtime deps and **one optional peer**, `pg`, which only the
+`connection:` form resolves — through a lazy `import('pg')` on the first connect, with a
+`ConfigError` naming the package if it is absent (`12` §1 decision 2). `pool:` and `driver:` remain
+the zero-dependency paths, `src/` still contains no static non-relative import, and the hello-world
+tree-shake golden contains no `pg` and no `node:async_hooks`. `@pg-prime/kit` depends on `pg` +
+`@types/pg`, and on `pg-prime` as a **types-only peer**. 7 devDeps at the root.
 
 ## Decisions of record
 

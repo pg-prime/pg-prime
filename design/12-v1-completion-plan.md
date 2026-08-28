@@ -557,6 +557,152 @@ transaction mode; tier 0 ≤ 5 s; tier 1 and 2 green on PG 15–18; `bench:types
 (session types are not on the query hot path); hello-world tree-shake golden excludes `pg`, `AsyncLocalStorage`
 is imported lazily; `package:check` green.
 
+### S — RESULT (2026-08-29)
+
+**Branch:** `worktree-agent-a11d47013517a2506`, eight commits on top of `f053409`. `design/07` is
+built end to end; every item of §3 S's build list 1–8 ships, with the divergences named below.
+
+#### Numbers
+
+| Tier | Command | Before | After |
+|---|---|---|---|
+| 0 | `pnpm --filter pg-prime test` | 778 / 46 files / 5.01–5.46 s | **914 / 47 files / 4.99–5.79 s** (six runs: 4.99, 5.01, 5.18, 5.25, 5.45, 5.79) |
+| 1 | `pnpm --filter pg-prime test:live` (PGlite) | 1 507 + 2 skipped | **1 658 + 6 skipped / 81 files / 28–36 s** |
+| 2 | `test:pg`, PG 17.11 + PgBouncer 1.25 transaction mode | green | **1 718 + 0 skipped / 89 files / 12 s** |
+| 2 | `test:pg`, PG 15.19 / 16.15 / 18.6 (no pooler) | green | **1 707 + 11 / 1 708 + 10 / 1 708 + 10**, all green |
+
+The skips are the loud ones: 11 on PG 15 and 10 on 16/18 are the PgBouncer-gated pooler cases plus
+one version guard, and the 6 at tier 1 are the COPY suite plus `diagnosePooler` (PGlite is one
+backend, and its socket bridge exits on a COPY message).
+
+Tier 0 is **at** the ceiling and did not move: +134 tests cost nothing measurable, because the cost
+of a tier-0 run is dominated by transform and import (47 files) rather than by cases. That is why
+the session suite is one file of 134 cases rather than eight files of seventeen (decision 11).
+
+`pnpm typecheck` clean on both packages. `pnpm build && pnpm api-snapshot && pnpm package:check`
+green — 8/8 size gates, 4/4 tree-shake gates, emit parity, `check:dts` on 5.9.3 and 7.0.2, pack
+smoke. `pnpm bench:types` green: **the headline instantiation counts did not move** (TS 5.9 80 485
+unchanged; TS 7 131 388 → 131 354, i.e. noise), which is §3 S's own prediction — session types are
+not on the query hot path. Only the `.d.ts` *size* gate moved, and it is re-baselined with a reason.
+
+#### Deliverable → files
+
+| §3 S item | Where |
+|---|---|
+| 1 · config + handles, presets, `NoHandleEscape`, dev guard | `src/session/{config,types,handles,guard,pg-lazy}.ts`, `src/query/run.ts`, the four interfaces in `src/query/types.ts` |
+| 2 · transactions, savepoints, `setLocal`, advisory locks, retry, `rollbackWith` | `src/session/{transaction,handles}.ts` |
+| 3 · the §4.2 tree, mapping, redaction, call site, constraint→object | `src/errors/{base,classes,sqlstate,map,refs,redact,predicates,index}.ts` |
+| 4 · `POOLER_PROFILES`, `diagnosePooler()`, `diagnose()` | `src/pooler/{profiles,diagnose,index}.ts`, `src/session/gucs.ts` |
+| 5 · signals, timeouts, `streamBatches` | `src/session/runner.ts`, `src/query/executor.ts` (`streamBatchesOn`, `RunTiming`) |
+| 6 · LISTEN/NOTIFY/COPY + the `connect` seam | `src/session/{listen,copy}.ts`, `src/driver/{copy,pg-adapter,pg-like,types}.ts` |
+| 7 · hooks, `SEMCONV`, slow-query log | `src/observe/{events,bus,semconv,log,index}.ts` |
+| 8 · notes, exports, budgets, peer metadata | `design/07` (7 AS BUILT blocks + §9 #6/#7), `design/00`, `src/index.ts`, `tools/{budgets.json,size-budget.mjs,api-snapshot/*}`, `bench/types/budget.json`, `fixtures/treeshake/*`, `packages/pg-prime/package.json` |
+| tests | `test/session/{session.test.ts,mutations.mjs}` (136 tier-0 cases + the R10 runner), `test/query/types/session.probe.ts`, `test/live/session.test.ts` (19), `test/pg/session{,-listen,-pooler,-copy}.test.ts` (12 + 7 + 11 + 3) |
+
+#### Divergences
+
+| Brief / design says | Built | Why |
+|---|---|---|
+| §3.6: session GUCs ride the startup packet's `options=` | One `set_config` batch per **physical** connection; only `application_name` rides the startup packet | **Measured**: PgBouncer rejects `options=-c statement_timeout=…` with FATAL `08P01 unsupported startup parameter in options`, so `connection:` at a pooler would fail to *connect*. §3.6's own named fallback, promoted to the mechanism. |
+| §5.4 probe 1: two `pg_backend_pid()` calls detect a transaction pooler | The probe **creates contention** first — three parallel pooled connections held busy, pid read while they are — and only then compares | **Measured**: through an idle PgBouncer the naive pair reads 343, 343. Under contention it reads 343, 364; a direct connection reads 359, 359 either way. The naive probe is a false negative in exactly the single-client case a diagnostic is run in. |
+| §6.5: "payload limit is 8000 bytes" | Refused at **8000**; 7999 is the largest accepted | **Measured**: PostgreSQL's check is `>= NOTIFY_PAYLOAD_MAX_LENGTH` and that constant is 8000. Off by one. |
+| §6.6: crossover "expected around 5–10 k rows" | **There is no crossover.** `copyFrom` is 1.5–1.8× faster at 10–100 rows, ~2× at 1 000–10 000, 2.3–3.8× at 100 000 | Measured on PG 17.11 over a local TCP socket, five sizes, printed on every tier-2 run. The reason to prefer `insertMany` under a few thousand rows is ergonomics, not speed. |
+| §6.6: `pg-copy-streams` as an optional peer | No peer. `src/driver/copy.ts` is a Submittable over pg's own COPY messages | Decision 9. Also a seam correction: the methods are `sendCopyFromChunk` / `endCopyFrom`, not the `sendCopyData` / `sendCopyDone` the structural declaration had guessed. |
+| §4.2: `SchemaError` (class 42), `SyntaxError` (42601) | `SchemaObjectError`, `SqlSyntaxError` | Both names were taken — `SchemaError` by `defineSchema`'s public error, `SyntaxError` by the ECMAScript global. |
+| §4.3: `DETAIL` is redacted by default | …except `40P01`, kept verbatim | A deadlock's detail names two processes and two relations and contains no user value; dropping it obeys the letter and destroys the purpose. |
+| §6.1/§6.2: `.signal(s)` / `.timeout(ms)` on the builder | `run(q, { signal, timeoutMs })` and `handle.withOptions({ … })` | `Query` and `src/query/select.ts` belong to workstream B this round. Same behaviour, different call site; a one-file change once `Query` is free. |
+| §1.3: `[Symbol.asyncDispose]()` written literally | Declared through an inferred key | `tools/check-dts.mjs` measured TS2550 on the 5.9.3 consumer floor without `lib: esnext.disposable`. `await using` still works where the lib has it. |
+| §1.5: `.outsideTransaction()` per call on a builder | `db.outsideTransaction()` / `run(q, { outsideTransaction: true })` | Same reason as `.signal()`. |
+| §3.6: a per-statement timeout is `SET LOCAL` | …and it restores the transaction's **baseline** with `set_config(…, NULL, true)`, not `0` | `'0'` DISABLES the timeout for the rest of the block; `NULL` restores the value the session would otherwise have (measured, PG 15 and 17). |
+| §4.4: `ConstraintRef.declaredAt` | Not built | The schema builder records no declaration sites. |
+| §1.6: `experimental_asyncContext()` | Not exported | Nothing in v1 needs it; an unsupported hook nobody asked for is a liability. |
+| §7.1: `onPool` on create/destroy | acquire / release / timeout only | The pool is `pg-pool`'s; those two events are not on the seam. |
+| §9 #6 `statementTimeout: '30s'` | **Resolved: it stays** | Cost is once per physical connection, not per query; reach is exactly as designed. |
+| §9 #7 `cachedDescribe` as the v1 default | **Resolved: not a mode at all** | Its real payoff (decode-plan memoisation) is unconditional already; its other justification (binary results) is out of v1 per `09` §9 #3. |
+
+#### Measured numbers
+
+- **COPY vs `insertMany`** (PG 17.11, local TCP, `test/pg/session-copy.test.ts`): 10 rows 6 ms vs
+  4 ms (1.45×) · 100 rows 3 ms vs 2 ms (1.72×) · 1 000 rows 15 ms vs 7 ms (2.31×) · 10 000 rows
+  37–142 ms vs 16–18 ms (2.05–8.85×) · 100 000 rows 351–494 ms vs 126–130 ms (2.79–3.80×).
+- **Pooler pid probe**: idle PgBouncer 343, 343 → under contention 343, 364; direct 359, 359.
+- **Tier 0 duration**: 4.99 / 5.01 / 5.18 / 5.25 / 5.45 / 5.79 s across six runs, against a
+  778-test baseline of 5.01 / 5.01 / 5.46 s on the same machine.
+- **Size**: shipped `.js` 700 KB budget → 852 713 B measured (the four new directories are ~88 KB of
+  source that design/08 §1.2 predates); `dist/query/types.d.ts` 54 843 → 62 502 B (the four handle
+  interfaces); tree-shake `connect-one-select` 47 212 → 69 791 B min+gz, +19 modules, **no `pg` and
+  no `node:async_hooks`**. All re-baselined with reasons in `tools/budgets.json._overDesign` and
+  `bench/types/budget.json`.
+
+#### R10 — the mutation record
+
+`node packages/pg-prime/test/session/mutations.mjs` re-runs all twenty. **20/20 caught.** Three were
+green on the first run and are the reason the record is worth keeping.
+
+| # | Mutated line | Caught by |
+|---|---|---|
+| M1 | `transaction.ts` — drop `accessMode` from `beginSql` | tier 0 · `BEGIN … > { accessMode: 'read only' }` (5 failed) |
+| M2 | `transaction.ts` — accept `deferrable` anywhere | tier 0 · `refuses deferrable outside serializable + read only` |
+| M3 | `transaction.ts` — unquote the savepoint name | tier 0 · `the three statements a savepoint emits` (3 failed) |
+| M4 | `handles.ts` — stop clearing the poison on `ROLLBACK TO SAVEPOINT` | tier 0 · `a savepoint failure poisons the enclosing transaction…` — **green until the fix**: the child's `TxRuntime` was a copy, so the parent was never poisoned and the clear was a no-op. Fixed by making the poison a shared box. |
+| M5 | `transaction.ts` — add `40P01` to the default retry set | tier 0 · `40001 is on by default…` (4 failed) |
+| M6 | `transaction.ts` — full jitter → plain exponential | tier 0 · `full jitter is sleep(random(0, …))` |
+| M7 | `handles.ts` — delete the `IndeterminateCommitError` retry guard | tier 0 · `shouldRetry: () => true CANNOT override…` — **green until the fix**: the SQLSTATE check below refused it for an unrelated reason, so the documented hard exclusion was not load-bearing. Fixed by moving all three exclusions above `shouldRetry`. |
+| M8 | `handles.ts` — stop detecting the COMMIT window | tier 0 · `a connection lost AFTER COMMIT was written…` |
+| M9 | `transaction.ts` — `set_config(…, false)` instead of `true` | tier 0 · `builds one statement for N settings` (3 failed) |
+| M10 | `runner.ts` — restore a statement timeout with `'0'` instead of `NULL` | tier 0 · `inside a transaction a timeout is SET LOCAL…` |
+| M11 | `runner.ts` — apply the dev guard to no handle | tier 0 · `the outer db inside a transaction throws HandleMisuseError` |
+| M12 | `sqlstate.ts` — drop the class-prefix fallback | tier 0 · `an unmodelled SQLSTATE lands on its class ancestor` |
+| M13 | `redact.ts` — redact a deadlock's DETAIL | tier 2 · `40P01 surfaces as DeadlockDetectedError, carries PG detail` |
+| M14 | `redact.ts` — pass the unique-violation DETAIL through | tier 0 · `keeps the COLUMNS and drops the VALUES — the duplicate-signup leak` |
+| M15 | `listen.ts` — `<=` instead of `<` on the payload bound | tier 2 · `the 8000-byte payload limit … at the REAL boundary` |
+| M16 | `listen.ts` — stop emitting `gap` after a reconnect | tier 2 · `a killed backend produces reconnect AND gap` |
+| M17 | `gucs.ts` — apply session GUCs under a transaction profile | tier 2 · `session GUCs are NOT applied — SHOW is the oracle` |
+| M18 | `handles.ts` — allow `db.session()` under a transaction profile | tier 0 · `db.session() is refused under a transaction profile` |
+| M19 | `copy.ts` — stop escaping tabs in COPY text | tier 1 · `copyFrom encodes through the codecs and copyTo reads it back` — **green until the run spec was fixed**: it had been pointed at a tier-2 file whose fixture data contains no tabs. |
+| M20 | `copy.ts` — `String(value)` instead of `codec.encode` | tier 2 · `both paths load the same rows` (2 failed) |
+
+#### Not done, and uncertain
+
+- **`IndeterminateCommitError` on a real server is pinned at tier 0, not tier 2** — design/12 §6's
+  named fallback. The window between "COMMIT is on the wire" and "its response is read" is
+  sub-millisecond on a local socket and `pg_terminate_backend` cannot be aimed inside it
+  deterministically; the attempt lands either side and is correctly *not* indeterminate. So the
+  state machine is pinned on the mock (`commitWritten` + a connection-kind failure) and tier 2 owns
+  the **classification** of the real `57P01`, exactly as the risk row prescribes.
+- **`.signal(ms)` / `.timeout(ms)` / `.outsideTransaction()` as builder methods**, and
+  `.withExecMode()`. All four want `Query` in `src/query/types.ts`, which is B's this round.
+- **Tree-shake granularity.** `connect-one-select` is now 70 KB min+gz against design/08 §1.2's
+  35 KB. The cause is structural and named in `budgets.json`: `07` §1.3 puts `listen`, `copy*`,
+  `diagnose*` and `observe` **on** `Db`, so they are reachable from any handle. A dynamic `import()`
+  does not help, because the measurement bundles without code splitting and esbuild inlines it. The
+  only real lever is a separate `pg-prime/session` entry point, which contradicts §1.3 — recorded
+  rather than done.
+- **`@pg-prime/otel`**, the ESLint plugin (`07` §1.5 layer 4) and `pg-prime doctor` are separate
+  packages/commands and out of scope, as designed.
+- **`test/query/named.test.ts` and `test/query/{insert,stream,explain,executor,prepared,assert-shape}.test.ts`
+  were not edited**, but their behaviour is now reached through the session runner. They all pass
+  unchanged, which is the strongest available statement that the executor's contract is intact.
+- **A `pg_locks` count must be scoped to the key.** The first version of the advisory-lock oracle
+  asserted that the *server-wide* advisory-lock count returned to zero, which is not an oracle for
+  our lock at all: it went red on the shared PG 18 matrix container because somebody else held nine.
+  It now filters on `classid`/`objid`/`objsubid`, which is the pair a one-argument
+  `pg_advisory_*` call stores — and the assertions got stronger as a result (exactly 1, then 0).
+- **The §5.4 startup probe perturbs the pool, once.** It opens up to three extra pooled connections
+  to create the contention it needs, so `test/pg/session-listen.test.ts` — which counts backends in
+  `pg_stat_activity` — runs with `devGuard: false`. A diagnostic that opens connections and a test
+  that counts them cannot both be right, and turning the diagnostic off in that one file is the
+  smaller lie. It is also skipped entirely for the `driver:` form, where the caller owns the
+  connection policy and we do not even know the host.
+- **Conflict-prone files for the integrator**: `src/query/types.ts` (my hunks are the four handle
+  interfaces plus one import block and one re-export block — B owns the rest), `src/index.ts`,
+  `src/query/executor.ts` (`RunTiming`, `streamBatchesOn`), `src/query/raw.ts`,
+  `packages/pg-prime/package.json`, `tools/budgets.json`, `tools/api-snapshot/pg-prime.json`,
+  `bench/types/budget.json`, `tools/size-budget.mjs` (one measure field + the optional-peer gate),
+  `packages/pg-prime/vitest.config.ts` (one glob), `test/live/{_harness.ts,tsconfig.json}`
+  (`TestDecl` gained a timeout argument; the tsconfig gained `test/session`), and
+  `test/driver/_fake-pg.ts` (two renamed COPY stubs).
+
 ### B — Builder gaps (`03` / `09`)
 
 **Owns:** `packages/pg-prime/src/query/{select,relations,cte,scope,projection,ref,fn,window,ops*,

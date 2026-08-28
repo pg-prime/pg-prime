@@ -11,11 +11,16 @@
     "../driver/**/*.ts",
     "../codec/**/*.ts",
     "../pg/**/*.ts",
+    "../session/**/*.ts",
     "../live-query/**/*.ts",
     "../../src/codec/**/*.ts",
     "../../src/compile/**/*.ts",
     "../../src/driver/**/*.ts",
     "../../src/query/**/*.ts",
-    "../../src/schema/**/*.ts"
+    "../../src/schema/**/*.ts",
+    "../../src/session/**/*.ts",
+    "../../src/errors/**/*.ts",
+    "../../src/observe/**/*.ts",
+    "../../src/pooler/**/*.ts"
   ]
 }

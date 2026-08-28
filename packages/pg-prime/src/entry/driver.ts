@@ -31,6 +31,7 @@ export type {
   PgExecMode,
   PgField,
   PgLikeClient,
+  PgLikeDedicatedClient,
   PgLikePool,
   PgLikeQueryConfig,
   PgLikeResult,
