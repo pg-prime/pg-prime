@@ -62,15 +62,27 @@ async function importPg(): Promise<PgModule> {
 }
 
 /**
- * `07` §3.6's primary mechanism: session GUCs in the **startup packet**, via libpq's `options`
- * parameter, at zero per-query cost.
+ * ⚠️ **`07` §3.6's primary mechanism does not survive contact with a pooler, and that is measured.**
  *
- * Only reachable when we build the pool, which is the only time we control the startup packet. The
- * `pool:` / `driver:` paths get the fallback — one `set_config` batch per physical connection,
- * `src/session/runner.ts`'s `applyConnectSettings`.
+ * §3.6 says session GUCs ride the startup packet as libpq's `options=-c statement_timeout=30s …`,
+ * at zero per-query cost, with "a single `SET` in pg-pool's onConnect hook" as the fallback *"if
+ * the startup-parameter path proves unreliable for any setting at implementation time"*. It does:
+ * **PgBouncer 1.25 rejects the whole connection with FATAL `08P01 unsupported startup parameter in
+ * options: statement_timeout`** — so pointing `connection:` at a pooler while leaving `poolerMode`
+ * at its default would not merely lose the GUCs, it would fail to connect at all. Measured against
+ * `pgprime-s-bouncer`, `pool_mode=transaction`; the tier-2 test that found it is
+ * `test/pg/session-pooler.test.ts`.
  *
- * Values are `-c name=value` and PostgreSQL's own parser handles them, so anything with a space is
- * backslash-escaped rather than quoted (`options` is space-separated).
+ * So the fallback is the mechanism, uniformly: one `set_config` batch per **physical** connection
+ * (`applyConnectSettings` in `src/session/runner.ts`), which costs one statement per connection
+ * lifetime rather than one per query and works identically for `connection:`, `pool:` and
+ * `driver:`. This function is kept because it is exactly the right shape if a future pooler
+ * forwards `options` — and because deleting the measurement would invite someone to try it again.
+ *
+ * `application_name` is the exception and stays in the startup packet: it is pg's own top-level
+ * connection field, not part of `options`, PgBouncer forwards it per client, and it changes no
+ * query semantics — so it is free, safe in every profile, and it is the difference between a
+ * readable and an unreadable `pg_stat_activity`.
  */
 export function startupOptions(settings: readonly (readonly [string, string])[]): string | undefined {
   if (settings.length === 0) return undefined
@@ -106,8 +118,8 @@ export async function buildPool(
   if (appName !== undefined && base['application_name'] === undefined) {
     base['application_name'] = appName
   }
-  const options = startupOptions(connectSettings)
-  if (options !== undefined) base['options'] = options
+  // Deliberately NOT `base['options'] = startupOptions(connectSettings)` — see the docblock above.
+  void connectSettings
 
   const config: Record<string, unknown> = {
     ...base,

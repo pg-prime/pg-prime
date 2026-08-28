@@ -28,15 +28,23 @@ import { ConfigError, UnsupportedInPoolerModeError, UsageError, mapError } from 
 import type { ResolvedErrorOptions } from '../errors/index.js'
 import type { Subscription } from './types.js'
 
-/** PostgreSQL's own limit. We check client-side rather than let the server produce `22023`. */
+/**
+ * PostgreSQL's own limit, checked client-side rather than left to produce a confusing `22023`.
+ *
+ * **Measured on PG 17.11**, and it corrects `07` §6.5's "payload limit is 8000 bytes": the backend
+ * test is `strlen(payload) >= NOTIFY_PAYLOAD_MAX_LENGTH` where that constant is
+ * `BLCKSZ - NAMEDATALEN - 128` = 8000, so 8000 bytes is already `payload string too long` and 7999
+ * is the largest that works. The constant below is the exclusive bound it really is.
+ */
 export const MAX_NOTIFY_PAYLOAD_BYTES = 8000
 
 export function assertPayloadSize(payload: string): void {
   const bytes = new TextEncoder().encode(payload).length
-  if (bytes <= MAX_NOTIFY_PAYLOAD_BYTES) return
+  if (bytes < MAX_NOTIFY_PAYLOAD_BYTES) return
   throw new UsageError(
-    `pg-prime: a NOTIFY payload may be at most ${MAX_NOTIFY_PAYLOAD_BYTES} bytes and this one is ` +
-      `${bytes}. Send an id, not a document — the listener can read the row (07 §6.5).`,
+    `pg-prime: a NOTIFY payload must be UNDER ${MAX_NOTIFY_PAYLOAD_BYTES} bytes and this one is ` +
+      `${bytes}. (PostgreSQL's own check is \`>= 8000\`, measured on 17.11, so 7999 is the largest ` +
+      `that works.) Send an id, not a document — the listener can read the row (07 §6.5).`,
   )
 }
 

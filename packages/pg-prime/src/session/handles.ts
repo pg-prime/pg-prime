@@ -90,7 +90,13 @@ type AnyRunner = PoolRunner | ConnRunner
 function compiledOf<O>(q: Runnable<O>): Compiled<O> {
   const c = q as { compile?: () => Compiled<O> }
   if (typeof c.compile === 'function') return c.compile()
-  return q as Compiled<O>
+  const maybe = q as Partial<Compiled<O>>
+  if (typeof maybe.sql === 'string' && Array.isArray(maybe.binds)) return q as Compiled<O>
+  throw new UsageError(
+    'pg-prime: run(q) takes a query builder, a prepared query or a Compiled. It cannot take a ' +
+      '`db.sql`…`` statement, which has no static decode plan by design (03 §1.4c) — call ' +
+      '.execute() on it, or db.withOptions({ … }).sql`…`.execute() if you wanted the options.',
+  )
 }
 
 function runOptions(o: RunCallOptions | undefined): RunOptions {

@@ -239,26 +239,10 @@ export class PoolRunner extends BaseRunner {
   }
 
   async run<Row>(compiled: Compiled<Row>, opts?: RunOptions): Promise<Row[]> {
-    this.assertOpen()
-    const o = this.merged(opts)
-    this.guard(o)
-    // `07` §6.2's opt-in: a hard server-side guarantee for an autocommit statement, at +2 RTT.
-    if (o.timeoutMs !== undefined && o.timeoutStrategy === 'transaction') {
-      return this.#timedInTransaction(compiled, o)
-    }
-    const lease = await acquire(this.state, this.signalFor(o))
-    let dispose = false
-    try {
-      return await execute(this.state, lease, compiledStatement(compiled), o, this.handle, 0, undefined)
-    } catch (e) {
-      dispose = poisons(e)
-      throw e
-    } finally {
-      await release(this.state, lease, dispose)
-    }
+    return this.runRaw(compiledStatement(compiled), opts)
   }
 
-  async #timedInTransaction<Row>(compiled: Compiled<Row>, o: StatementOptions): Promise<Row[]> {
+  async #timedInTransaction<Row>(desc: StatementDescriptor<Row>, o: StatementOptions): Promise<Row[]> {
     const lease = await acquire(this.state, this.signalFor(o))
     let dispose = false
     let opened = false
@@ -272,7 +256,7 @@ export class PoolRunner extends BaseRunner {
       const rows = await execute(
         this.state,
         lease,
-        compiledStatement(compiled),
+        desc,
         { ...o, timeoutMs: undefined },
         this.handle,
         0,
@@ -335,6 +319,10 @@ export class PoolRunner extends BaseRunner {
     this.assertOpen()
     const o = this.merged(opts)
     this.guard(o)
+    // `07` §6.2's opt-in: a hard server-side guarantee for an autocommit statement, at +2 RTT.
+    if (o.timeoutMs !== undefined && o.timeoutStrategy === 'transaction') {
+      return this.#timedInTransaction(desc, o)
+    }
     const lease = await acquire(this.state, this.signalFor(o))
     let dispose = false
     try {

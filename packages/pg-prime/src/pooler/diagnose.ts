@@ -129,18 +129,32 @@ export async function diagnosePooler(
       detail: version ?? 'version() returned nothing',
     })
 
-    // 1 — two autocommit statements on the same pool client.
+    // 1 — the same statement twice on the same pool client, then again UNDER CONTENTION.
+    //
+    // ⚠️ **`07` §5.4's probe 1 as written is a false negative, and this is measured.** Two
+    // consecutive autocommit statements through an *idle* PgBouncer land on the SAME server
+    // connection — the pooler has no reason to reassign one — so "different pids ⇒ transaction
+    // pooling" never fires for the one-client case that a diagnostic is most often run in.
+    // Measured against `pgprime-s-bouncer` (`pool_mode=transaction`): 343, 343. Occupy the other
+    // server connections first and the same probe reads 343, 364, while a direct connection reads
+    // 359, 359 either way — because a real backend is *ours* and cannot be reassigned. So the
+    // probe creates the contention it needs, and only reports `supports-direct` when the pid held
+    // still under it.
     const a = cell(await exec(conn, 'select pg_catalog.pg_backend_pid()'))
     const b = cell(await exec(conn, 'select pg_catalog.pg_backend_pid()'))
-    pidsDiffer = a !== b
+    let c2 = b
+    if (a === b) c2 = await pidUnderContention(driver, conn, a)
+    pidsDiffer = a !== b || a !== c2
     signals.push({
       name: 'backend-pid-across-statements',
       result: pidsDiffer ? 'supports-transaction-pooling' : 'supports-direct',
       detail: pidsDiffer
-        ? `two consecutive statements ran on backends ${String(a)} and ${String(b)}. That is what a ` +
-          `transaction pooler does — though a reconnect between them looks identical, which is why ` +
-          `confidence is never better than medium.`
-        : `two consecutive statements ran on the same backend (${String(a)}).`,
+        ? `this client's statements ran on backends ${String(a)} and ${String(a === b ? c2 : b)}. ` +
+          `A real backend belongs to the connection and cannot be reassigned, so something is ` +
+          `pooling — though a reconnect between them would look identical, which is why confidence ` +
+          `is never better than medium.`
+        : `the same backend (${String(a)}) answered every statement, including under contention ` +
+          `from other pooled connections.`,
     })
 
     // 2 — the same pair inside one transaction. They MUST be equal.
@@ -228,6 +242,44 @@ function agrees(recommended: PoolerMode, configured: PoolerMode): boolean {
   if (recommended === 'none') return true
   if (recommended === 'pgbouncer-transaction') return configured === 'transaction'
   return false
+}
+
+/**
+ * Read the pid again while the other pooled connections are busy.
+ *
+ * A transaction pooler assigns a server connection per transaction, so it only *has* to move us
+ * when the one we had is taken. Three concurrent sleeps are enough to make that happen and cost
+ * about 60 ms. A pool of one cannot produce contention, so the answer is simply the original pid
+ * and the probe stays silent rather than guessing.
+ */
+async function pidUnderContention(
+  driver: PgDriver,
+  conn: PgConnection,
+  original: string | undefined,
+): Promise<string | undefined> {
+  // In parallel and on a 250 ms budget each: a pool that has nothing spare must not turn a
+  // diagnostic into a `connectionTimeoutMillis` wait, and a pool of one cannot produce contention
+  // at all — in which case the probe stays silent rather than guessing.
+  const attempts = await Promise.all(
+    [0, 1, 2].map(async () => {
+      const signal = AbortSignal.timeout(250)
+      return driver.acquire({ signal }).catch(() => undefined)
+    }),
+  )
+  const others = attempts.filter((c): c is PgConnection => c !== undefined)
+  if (others.length === 0) return original
+  try {
+    // The read happens **while** the others are still holding their server connections, not after
+    // — a pooler only has to move us when the one we had is taken, and by the time three sleeps
+    // have resolved it is free again. Measured: reading afterwards reports the same pid.
+    const busy = others.map((c) => exec(c, 'select pg_catalog.pg_sleep(0.25)').catch(() => []))
+    await new Promise((r) => setTimeout(r, 40))
+    const pid = cell(await exec(conn, 'select pg_catalog.pg_backend_pid()'))
+    await Promise.all(busy)
+    return pid
+  } finally {
+    for (const c of others) await driver.release(c).catch(() => {})
+  }
 }
 
 async function namedStatementSurvives(conn: PgConnection): Promise<boolean> {

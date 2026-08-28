@@ -288,19 +288,23 @@ export function pgPrime<Sc extends AnySchema>(config: PgPrimeOptions<Sc>): Db<Sc
     session: config.session,
     // `07` §3.6's mechanism, resolved per connection source:
     //
-    //  - `connection:` — we built the pool, so the GUCs ride the **startup packet**
-    //    (`options=-c statement_timeout=30s …`). Zero round trips, zero statements, and the
-    //    defaults apply. `connectSettings` is therefore empty: there is nothing left to emit.
+    //  - `connection:` — we built the pool, so `07` §3.6's own fallback applies: one `set_config`
+    //    batch per **physical** connection. Not the startup packet's `options=`, which PgBouncer
+    //    rejects with a FATAL — measured; see `src/session/pg-lazy.ts`. `application_name` is
+    //    dropped from the batch because it rides the startup packet as pg's own field.
     //  - `pool:` / `driver:` — we did not build it, so we do not touch the session **unless the
     //    caller passed `session:` explicitly**. Reaching into somebody's Pool to `SET` things they
     //    did not ask for is exactly the surprise `02` §4.7 forbids ("pg-prime never SETs session
     //    GUCs; configure it on your own Pool"), and it would put a statement on the wire before
-    //    every user's first query. When they DO pass `session:`, one `set_config` batch runs once
-    //    per physical connection — `applyConnectSettings` in `src/session/runner.ts`.
+    //    every user's first query.
     //  - any transaction profile — always empty; `resolveSessionSettings` already refused, and the
     //    `info` line above named the settings and the `ALTER ROLE` fix.
     connectSettings:
-      source === 'connection' || config.session === undefined ? EMPTY_SETTINGS : settings,
+      source === 'connection'
+        ? settings.filter(([n]) => n !== 'application_name')
+        : config.session === undefined
+          ? EMPTY_SETTINGS
+          : settings,
     transaction: config.transaction,
     signal: config.signal,
     spanContext,

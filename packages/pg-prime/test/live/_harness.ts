@@ -172,7 +172,7 @@ export function typeSourceRaw(oids: readonly number[]): unknown {
  * Just enough of vitest's `it` to declare a test. `it` and `it.skip` are both assignable to it,
  * which `typeof it` is not — vitest's chained `it.skip` drops `.extend`/`.skipIf`.
  */
-export type TestDecl = (name: string, fn: () => void | Promise<void>) => void
+export type TestDecl = (name: string, fn: () => void | Promise<void>, timeout?: number) => void
 
 let skips = 0
 
