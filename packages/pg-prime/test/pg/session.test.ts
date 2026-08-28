@@ -288,27 +288,37 @@ describe('IndeterminateCommitError (07 §3.4, §4.2)', () => {
 // §3.7 / §5.2 — advisory locks, seen by pg_locks
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * `pg_locks` is server-wide, so a count of *all* advisory locks is not an oracle for OUR lock — the
+ * matrix containers are shared and another suite's session lock would fail this. A one-argument
+ * `pg_advisory_*` call stores the 64-bit key split across `classid` (high 32 bits) and `objid` (low
+ * 32), with `objsubid = 1`; that pair is what identifies the lock we took.
+ */
+async function advisoryCount(watcher: pg.Client, key: bigint): Promise<number> {
+  const classid = Number(BigInt.asUintN(64, key) >> 32n)
+  const objid = Number(BigInt.asUintN(32, key))
+  const r = await watcher.query<{ n: number }>(
+    `select count(*)::int as n from pg_locks
+       where locktype = 'advisory' and objsubid = 1 and classid = $1 and objid = $2 and granted`,
+    [classid, objid],
+  )
+  return Number((r.rows[0] as { n: number }).n)
+}
+
 describe('advisory locks are real, and pg_locks is the oracle (07 §3.7)', () => {
   requiresConcurrency()('pg_advisory_xact_lock is visible while the transaction runs, and gone after', async () => {
     const key = 987654321n
     const watcher = await client()
     try {
+      expect(await advisoryCount(watcher, key)).toBe(0)
       const seen = await db.transaction(async (tx) => {
         expect(await tx.advisoryLock(key)).toBe(true)
-        const r = await watcher.query(
-          `select count(*)::int as n from pg_locks
-             where locktype = 'advisory' and objid = ($1::bigint & 4294967295)::int
-               and ((objid)::bigint | ((classid)::bigint << 32)) is not null`,
-          [key.toString()],
-        )
-        return Number((r.rows[0] as { n: number }).n)
+        return advisoryCount(watcher, key)
       })
-      expect(seen).toBeGreaterThan(0)
-
-      const after = await watcher.query(
-        `select count(*)::int as n from pg_locks where locktype = 'advisory'`,
-      )
-      expect(Number((after.rows[0] as { n: number }).n)).toBe(0)
+      expect(seen).toBe(1)
+      // `pg_advisory_xact_lock` is released at COMMIT with no unlock call anywhere — that is the
+      // whole reason `07` §5.2 says it is the only advisory lock safe behind a pooler.
+      expect(await advisoryCount(watcher, key)).toBe(0)
     } finally {
       await watcher.end()
     }
@@ -332,17 +342,17 @@ describe('advisory locks are real, and pg_locks is the oracle (07 §3.7)', () =>
     const key = 5566778899n
     const watcher = await client()
     try {
+      expect(await advisoryCount(watcher, key)).toBe(0)
       await db.session(async (s) => {
         const lock = await s.advisoryLock(key)
         expect(typeof lock).toBe('object')
-        // It survives a whole transaction on the same session — that is what "session" means.
+        // It survives a whole transaction on the same session — that is what "session" means, and
+        // it is exactly the property a transaction pooler cannot give you (07 §5.2).
         await s.transaction(async () => undefined)
-        const r = await watcher.query(`select count(*)::int as n from pg_locks where locktype='advisory'`)
-        expect(Number((r.rows[0] as { n: number }).n)).toBeGreaterThan(0)
-        await (lock as { unlock(): Promise<boolean> }).unlock()
+        expect(await advisoryCount(watcher, key)).toBe(1)
+        expect(await (lock as { unlock(): Promise<boolean> }).unlock()).toBe(true)
       })
-      const after = await watcher.query(`select count(*)::int as n from pg_locks where locktype='advisory'`)
-      expect(Number((after.rows[0] as { n: number }).n)).toBe(0)
+      expect(await advisoryCount(watcher, key)).toBe(0)
     } finally {
       await watcher.end()
     }

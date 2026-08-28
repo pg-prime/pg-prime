@@ -346,10 +346,14 @@ built end to end; every item of §3 S's build list 1–8 ships, with the diverge
 
 | Tier | Command | Before | After |
 |---|---|---|---|
-| 0 | `pnpm --filter pg-prime test` | 778 / 46 files / 5.01–5.46 s | **912 / 47 files / 4.99–5.62 s** (five runs: 4.99, 5.01, 5.25, 5.45, 5.62) |
-| 1 | `pnpm --filter pg-prime test:live` (PGlite) | 1 507 + 2 skipped | **1 656 + 6 skipped / 81 files / 28 s** |
-| 2 | `test:pg`, PG 17.11 + PgBouncer 1.25 transaction mode | green | **1 714 + 0 skipped / 89 files / 11 s** |
-| 2 | `test:pg`, PG 15.19 / 16.15 / 18.6 (no pooler) | green | **1 704 + 10 / 1 705 + 9 / 1 705 + 9**, all green |
+| 0 | `pnpm --filter pg-prime test` | 778 / 46 files / 5.01–5.46 s | **914 / 47 files / 4.99–5.79 s** (six runs: 4.99, 5.01, 5.18, 5.25, 5.45, 5.79) |
+| 1 | `pnpm --filter pg-prime test:live` (PGlite) | 1 507 + 2 skipped | **1 658 + 6 skipped / 81 files / 28–36 s** |
+| 2 | `test:pg`, PG 17.11 + PgBouncer 1.25 transaction mode | green | **1 716 + 0 skipped / 89 files / 12 s** |
+| 2 | `test:pg`, PG 15.19 / 16.15 / 18.6 (no pooler) | green | **1 706 + 10 / 1 707 + 9 / 1 707 + 9**, all green |
+
+The skips are the loud ones: 10 on PG 15 and 9 on 16/18 are the PgBouncer-gated pooler cases plus
+one version guard, and the 6 at tier 1 are the COPY suite plus `diagnosePooler` (PGlite is one
+backend, and its socket bridge exits on a COPY message).
 
 Tier 0 is **at** the ceiling and did not move: +134 tests cost nothing measurable, because the cost
 of a tier-0 run is dominated by transform and import (47 files) rather than by cases. That is why
@@ -373,7 +377,7 @@ not on the query hot path. Only the `.d.ts` *size* gate moved, and it is re-base
 | 6 · LISTEN/NOTIFY/COPY + the `connect` seam | `src/session/{listen,copy}.ts`, `src/driver/{copy,pg-adapter,pg-like,types}.ts` |
 | 7 · hooks, `SEMCONV`, slow-query log | `src/observe/{events,bus,semconv,log,index}.ts` |
 | 8 · notes, exports, budgets, peer metadata | `design/07` (7 AS BUILT blocks + §9 #6/#7), `design/00`, `src/index.ts`, `tools/{budgets.json,size-budget.mjs,api-snapshot/*}`, `bench/types/budget.json`, `fixtures/treeshake/*`, `packages/pg-prime/package.json` |
-| tests | `test/session/session.test.ts` (134 tier-0 cases + the mutation runner), `test/query/types/session.probe.ts`, `test/live/session.test.ts` (19), `test/pg/session{,-listen,-pooler,-copy}.test.ts` (12 + 7 + 9 + 3) |
+| tests | `test/session/{session.test.ts,mutations.mjs}` (136 tier-0 cases + the R10 runner), `test/query/types/session.probe.ts`, `test/live/session.test.ts` (19), `test/pg/session{,-listen,-pooler,-copy}.test.ts` (12 + 7 + 9 + 3) |
 
 #### Divergences
 
@@ -402,8 +406,8 @@ not on the query hot path. Only the `.d.ts` *size* gate moved, and it is re-base
   4 ms (1.45×) · 100 rows 3 ms vs 2 ms (1.72×) · 1 000 rows 15 ms vs 7 ms (2.31×) · 10 000 rows
   37–142 ms vs 16–18 ms (2.05–8.85×) · 100 000 rows 351–494 ms vs 126–130 ms (2.79–3.80×).
 - **Pooler pid probe**: idle PgBouncer 343, 343 → under contention 343, 364; direct 359, 359.
-- **Tier 0 duration**: 4.99 / 5.01 / 5.25 / 5.45 / 5.62 s across five runs, against a 778-test
-  baseline of 5.01 / 5.01 / 5.46 s on the same machine.
+- **Tier 0 duration**: 4.99 / 5.01 / 5.18 / 5.25 / 5.45 / 5.79 s across six runs, against a
+  778-test baseline of 5.01 / 5.01 / 5.46 s on the same machine.
 - **Size**: shipped `.js` 700 KB budget → 852 713 B measured (the four new directories are ~88 KB of
   source that design/08 §1.2 predates); `dist/query/types.d.ts` 54 843 → 62 502 B (the four handle
   interfaces); tree-shake `connect-one-select` 47 212 → 69 293 B min+gz, +19 modules, **no `pg` and
@@ -459,6 +463,11 @@ green on the first run and are the reason the record is worth keeping.
 - **`test/query/named.test.ts` and `test/query/{insert,stream,explain,executor,prepared,assert-shape}.test.ts`
   were not edited**, but their behaviour is now reached through the session runner. They all pass
   unchanged, which is the strongest available statement that the executor's contract is intact.
+- **A `pg_locks` count must be scoped to the key.** The first version of the advisory-lock oracle
+  asserted that the *server-wide* advisory-lock count returned to zero, which is not an oracle for
+  our lock at all: it went red on the shared PG 18 matrix container because somebody else held nine.
+  It now filters on `classid`/`objid`/`objsubid`, which is the pair a one-argument
+  `pg_advisory_*` call stores — and the assertions got stronger as a result (exactly 1, then 0).
 - **Conflict-prone files for the integrator**: `src/query/types.ts` (my hunks are the four handle
   interfaces plus one import block and one re-export block — B owns the rest), `src/index.ts`,
   `src/query/executor.ts` (`RunTiming`, `streamBatchesOn`), `src/query/raw.ts`,
