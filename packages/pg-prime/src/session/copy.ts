@@ -11,8 +11,8 @@
  * ## No optional peer dependency
  *
  * `07` §6.6 planned on `pg-copy-streams`. It is not needed: the API that package uses is `pg`'s own
- * connection-level COPY messages (`copyInResponse` / `copyData` / `copyDone` on the way in,
- * `sendCopyFromChunk` / `endCopyFrom` on the way out), and the driver seam has had `copyIn` /
+ * connection-level COPY messages (`copyInResponse` / `copyData` on the way
+ * out, `sendCopyFromChunk` / `endCopyFrom` on the way in), and the driver seam has had `copyIn` /
  * `copyOut` slots since `02` §2.2. Implementing them in the pg adapter keeps the promise of zero
  * dependencies *and* zero optional peers, and the public API is identical either way — which is
  * what makes the fallback in design/12 §6 cheap if a `pg` minor ever breaks it.

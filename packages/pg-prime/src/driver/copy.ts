@@ -4,9 +4,9 @@
  *
  * `07` §6.6 planned to reach COPY through `pg-copy-streams` as an optional peer. It is not needed,
  * and the reason is worth stating: what `pg-copy-streams` *is* is exactly this file — a Submittable
- * that issues the `COPY` statement, then answers `CopyInResponse` by writing `CopyData` frames on
- * `connection.sendCopyData` and finishing with `sendCopyDone`, or collects `CopyData` on the way
- * out. That API is pg's own, it has been stable since pg 6, and it is already in this repo's
+ * that issues the `COPY` statement, then answers `CopyInResponse` by writing frames through
+ * `connection.sendCopyFromChunk` and finishing with `endCopyFrom`, or collects `CopyData` on the
+ * way out. That API is pg's own, it has been stable since pg 6, and it is already in this repo's
  * structural declaration of `pg` (`./pg-like.ts`). One fewer dependency, one fewer version to
  * track, and the same bytes on the wire.
  *
@@ -16,7 +16,7 @@
  *     is what `pg-copy-streams` uses. COPY takes no bind parameters — there is nowhere to put one
  *     — so the extended protocol buys nothing and costs an interaction with pg's `activeQuery`
  *     bookkeeping that the simple path does not have.
- *  2. **Backpressure is the socket's.** `sendCopyData` writes straight through, so a 100 000-row
+ *  2. **Backpressure is the socket's.** `sendCopyFromChunk` writes straight through, so a 100 000-row
  *     source with no drain handling buffers the whole load in the process. We wait on `'drain'`
  *     whenever the stream says it needs one.
  */
@@ -32,7 +32,7 @@ const bufferFrom = (globalThis as unknown as {
 }).Buffer
 
 /**
- * pg-protocol's `sendCopyData` writes the value as-is, and a plain `Uint8Array` that is not a
+ * pg-protocol's `sendCopyFromChunk` writes the value as-is, and a plain `Uint8Array` that is not a
  * Node `Buffer` is written through the string path — the same trap `submittable.ts` documents for
  * bind parameters.
  */
@@ -107,10 +107,10 @@ class CopyInSubmittable implements PgLikeSubmittable {
           return
         }
         if (chunk.byteLength === 0) continue
-        connection.sendCopyData(toWire(chunk))
+        connection.sendCopyFromChunk(toWire(chunk))
         await drain(connection)
       }
-      connection.sendCopyDone()
+      connection.endCopyFrom()
     } catch (e) {
       // `CopyFail` is the protocol's own way to abort a COPY: the backend answers with an
       // ErrorResponse (57014-family), which `handleError` turns into the rejection. Throwing here

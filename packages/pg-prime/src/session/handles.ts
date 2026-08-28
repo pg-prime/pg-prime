@@ -146,6 +146,11 @@ function installQueryable(handle: object, state: SessionState, runner: AnyRunner
     })
   })
 
+  // COPY is on every handle: it is transaction-scoped, so it works in every pooler profile, and
+  // the common shape is a load inside the transaction that also writes the audit row.
+  install(handle, 'copyFrom', makeCopyFrom(state, runner))
+  install(handle, 'copyTo', makeCopyTo(state, runner))
+
   install(handle, 'withOptions', (opts: CallOptions) => makeScoped(state, runner, kind, opts))
   install(handle, 'outsideTransaction', () =>
     makeScoped(state, runner, kind, { outsideTransaction: true }),
@@ -583,8 +588,6 @@ export function makeTxHandle(deps: TxDeps, conn: PgConnection, tx: TxRuntime, sh
     throw { [DOOMED]: true, value } as Doomed
   })
 
-  install(handle, 'copyFrom', makeCopyFrom(state, runner))
-  install(handle, 'copyTo', makeCopyTo(state, runner))
   return handle
 }
 
@@ -798,9 +801,6 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
   install(handle, 'advisoryLock', async (key: bigint | string, o?: AdvisoryLockOptions): Promise<AdvisoryLock | boolean> =>
     sessionAdvisoryLock(state, runner, key, o),
   )
-  install(handle, 'copyFrom', makeCopyFrom(state, runner))
-  install(handle, 'copyTo', makeCopyTo(state, runner))
-
   let dispose = false
   try {
     // A session is NOT a transaction, so the guard must not see a frame — but a `db` statement

@@ -146,8 +146,14 @@ export interface PgLikeConnection {
   close(m: { type: 'S' | 'P'; name?: string }, more?: boolean): void
   sync(): void
   flush(): void
-  sendCopyData(chunk: Uint8Array): void
-  sendCopyDone(): void
+  /**
+   * COPY IN, in pg's own spelling — **not** `sendCopyData`/`sendCopyDone`, which is what the
+   * protocol messages are called and what an earlier draft of this declaration guessed. Measured
+   * against `pg@8.23.0`'s `lib/connection.js`: the methods are `sendCopyFromChunk(chunk)` and
+   * `endCopyFrom()`, and they are the pair `pg-copy-streams` drives.
+   */
+  sendCopyFromChunk(chunk: Uint8Array): void
+  endCopyFrom(): void
   sendCopyFail(msg: string): void
   /** Simple query. The path COPY takes — it carries no bind parameters, so there is nothing else. */
   query?(text: string): void

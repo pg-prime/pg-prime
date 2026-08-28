@@ -687,7 +687,7 @@ class PgConnectionImpl implements PgConnection {
    *
    * The statement goes out over the simple query protocol — COPY carries no bind parameters, so
    * there is nothing the extended protocol could add — and the payload rides pg's own
-   * `sendCopyData` / `sendCopyDone`. That is the API `pg-copy-streams` itself uses, which is why
+   * `sendCopyFromChunk` / `endCopyFrom`. That is the API `pg-copy-streams` itself uses, which is why
    * `07` §6.6's optional peer dependency is not needed.
    */
   async copyIn(
