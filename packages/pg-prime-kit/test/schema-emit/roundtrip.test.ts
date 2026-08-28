@@ -129,10 +129,15 @@ describe("emit → load → extract → re-emit → load (R1)", () => {
       "public.orgs_pkey",
       "public.orgs_seats_check",
       "public.orgs_slug_key",
+      // design/12 K4: `primaryKey({ name })` is the one constraint whose name is NOT the
+      // server's default — an adopted database names its primary keys whatever created
+      // them, and `pull` has to be able to say so.
+      "public.PK_Tickets",
+      "public.tickets_org_id_fkey",
       "public.users_email_key",
       "public.users_pkey",
       "public.users_primary_org_id_fkey",
-    ]);
+    ].sort());
   });
 
   it("carries the modifiers PostgreSQL can only have learned from the emitted DDL", async () => {
@@ -243,6 +248,11 @@ describe("the same corpus through the tier-3 schema map", () => {
     });
     try {
       const mapped = await loadDesired(corpus, shadow);
+      // design/12 K4 put a `t.raw('public.money_amount')` column and a
+      // `nextval('public.tickets_no_seq')` default in the fixture, and both are TEXT the
+      // schema map has to reach: without `remapTypeQualifier` / `remapNextval` this
+      // fingerprint diverges — the first by a type that does not exist in the shadow, the
+      // second by a silently missing `column → sequence` dependency edge.
       expect(mapped.ir.fingerprint).toBe(irA.ir.fingerprint);
     } finally {
       await shadow.dispose();

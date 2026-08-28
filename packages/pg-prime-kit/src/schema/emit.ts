@@ -237,7 +237,11 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
 
   /* ---- 2. build every table's body ---- */
 
-  for (const decl of tables) buildTable(decl, { defaultSchema, mapped, diagnostics, byKey });
+  const rename = (schema: string): string | undefined => map?.get(schema);
+  const sequenceNames = new Set((schema.sequences ?? []).map((s) => qualify(s.schema ?? defaultSchema, s.name)));
+  for (const decl of tables) {
+    buildTable(decl, { defaultSchema, mapped, rename, sequences: sequenceNames, diagnostics, byKey });
+  }
 
   /* ---- 3. emit ---- */
 
@@ -264,14 +268,17 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
   for (const x of extensions) {
     const where = x.schema === undefined ? "" : ` SCHEMA ${quoteIdent(x.schema)}`;
     sql.push(`CREATE EXTENSION IF NOT EXISTS ${quoteIdent(x.name)}${where}`);
-    if (map !== undefined && x.schema !== undefined && map.get(x.schema) !== x.schema) {
+    if (map !== undefined && [...map].some(([from, to]) => from !== to)) {
       diagnostics.push({
         code: "shadow_extension_fixed_schema",
         severity: "warning",
         subject: `extension:${x.name}`,
         message:
-          `extension ${JSON.stringify(x.name)} declares SCHEMA ${JSON.stringify(x.schema)}, which a temp-schema ` +
-          `shadow cannot rename (design/06 §3.2). It is emitted into the real schema.`,
+          `extension ${JSON.stringify(x.name)} cannot be normalised in a temp-schema shadow (design/06 §3.2): an ` +
+          `extension belongs to the DATABASE, its member objects live in a schema the map cannot rename, and the ` +
+          `extractor is scoped to the shadow schemas — so the desired IR built here does not contain it. It is ` +
+          `emitted into ${x.schema === undefined ? "the current search_path" : JSON.stringify(x.schema)} and ` +
+          `degrades to a Tier-O observation, which is exactly the constraint §3.2 states for this tier.`,
       });
     }
   }
@@ -476,6 +483,10 @@ function collectEnum(
 interface BuildContext {
   readonly defaultSchema: string;
   readonly mapped: (schema: string, subject: string) => string;
+  /** the shadow map, WITHOUT the unmapped-schema diagnostic — see {@link remapTypeQualifier} */
+  readonly rename: (schema: string) => string | undefined;
+  /** every declared sequence, `schema.name`, for {@link remapNextval} */
+  readonly sequences: ReadonlySet<string>;
   readonly diagnostics: Diagnostic[];
   readonly byKey: ReadonlyMap<string, TableDecl>;
 }
@@ -514,7 +525,7 @@ function buildTable(decl: TableDecl, ctx: BuildContext): void {
       try {
         const text =
           ddl.default.kind === "expr"
-            ? ddl.default.expr
+            ? remapNextval(ddl.default.expr, ctx.rename, ctx.sequences, ctx.defaultSchema)
             : renderLiteral(ddl.default.value, ddl.pgType, subject, typeSql);
         bits.push(`DEFAULT ${text}`);
       } catch (err) {
@@ -666,9 +677,71 @@ function buildTable(decl: TableDecl, ctx: BuildContext): void {
   decl.fks.sort((a, b) => cmp(a.name, b.name));
 }
 
+/**
+ * `public.money_amount` → `pgprime_shadow_ab12_public.money_amount` under the tier-3 map.
+ *
+ * `t.raw('public.money_amount')` and `pgDomain(…, 'public.other_domain')` are the two places
+ * a user type's SCHEMA reaches the emitter as text rather than as a field, and design/11
+ * §1.6's rule — "the emitter is always schema-qualified, so the map is applied at emit
+ * time" — has to hold for them too, or a project with a single domain cannot use shadow
+ * tier 3 at all. This is the one whole-identifier substitution that is safe to do on text:
+ * the string is a **type reference** and nothing else, so there is no literal for a
+ * qualifier to hide in. `numeric(12,2)` and `character varying(40)` have no qualifier and
+ * come back untouched.
+ */
+export function remapTypeQualifier(type: string, rename: (schema: string) => string | undefined): string {
+  const m = /^\s*(?:"((?:[^"]|"")+)"|([A-Za-z_][A-Za-z0-9_$]*))\s*\.\s*(.+)$/s.exec(type);
+  if (m === null) return type;
+  const schema = m[1] === undefined ? m[2]! : m[1].replace(/""/g, '"');
+  // An UNMAPPED schema keeps its own name — a type in a schema outside the managed set
+  // (`extensions.citext`) is not the emitter's to move — but the qualifier is quoted either
+  // way, so the mapped and unmapped emits differ in the schema NAME and nothing else.
+  // `emit.test.ts` unmaps the tier-3 output and compares it to the tier-1 one, and that
+  // comparison is only meaningful if the two spellings are otherwise identical.
+  return `${quoteIdent(rename(schema) ?? schema)}.${m[3]!}`;
+}
+
+/**
+ * `nextval('public.tickets_no_seq'::regclass)` → the shadow's own sequence, under tier 3.
+ *
+ * `defaultSql` is opaque text and the emitter does NOT rewrite it — design/11 K2b's rule,
+ * because a whole-identifier substitution cannot tell `public` the schema from `'public'`
+ * inside a string literal. This is the one exception, and it is narrow enough to be safe:
+ * the rewritten thing is a `regclass` literal, its content is *parsed* as a qualified name
+ * rather than string-matched, and it is only touched when that name is a sequence THIS
+ * REGISTRY declares. Without it a `serial`-shaped column in a temp-schema shadow points at
+ * the real database's sequence and the desired IR silently loses the `column → sequence`
+ * dependency edge — a fingerprint difference with no visible delta, which is the worst kind.
+ */
+export function remapNextval(
+  expr: string,
+  rename: (schema: string) => string | undefined,
+  declared: ReadonlySet<string>,
+  defaultSchema: string,
+): string {
+  return expr.replace(
+    /nextval\(\s*'((?:[^']|'')*)'(\s*::\s*regclass)?\s*\)/gi,
+    (whole: string, literal: string, cast?: string) => {
+      const name = literal.replace(/''/g, "'");
+      const parts =
+        /^(?:"((?:[^"]|"")+)"|([A-Za-z_][A-Za-z0-9_$]*))(?:\s*\.\s*(?:"((?:[^"]|"")+)"|([A-Za-z_][A-Za-z0-9_$]*)))?$/.exec(
+          name,
+        );
+      if (parts === null) return whole;
+      const first = parts[1] === undefined ? parts[2]! : parts[1].replace(/""/g, '"');
+      const second = parts[3] === undefined ? parts[4] : parts[3].replace(/""/g, '"');
+      const schema = second === undefined ? defaultSchema : first;
+      const sequence = second ?? first;
+      if (!declared.has(`${schema}.${sequence}`)) return whole;
+      // Quoted and qualified whether or not the schema moves, for `remapTypeQualifier`'s reason.
+      return `nextval('${quoteQualified(rename(schema) ?? schema, sequence).replace(/'/g, "''")}'${cast ?? "::regclass"})`;
+    },
+  );
+}
+
 /** The declared PostgreSQL type of a column, schema-qualified when it is a user type. */
 function columnType(ddl: ColumnDdl, ctx: BuildContext, decl: TableDecl): string {
-  if (ddl.enumName === undefined) return ddl.pgType;
+  if (ddl.enumName === undefined) return remapTypeQualifier(ddl.pgType, ctx.rename);
   const schema = ctx.mapped(
     ddl.enumSchema ?? ctx.defaultSchema,
     `type ${qualify(ddl.enumSchema ?? ctx.defaultSchema, ddl.enumName)} used by ${decl.key}`,
