@@ -663,6 +663,32 @@ describe('FK inference (12 decision 18)', () => {
     expect(rels?.['children']).toMatchObject({ from: ['id'], to: ['parentId'] })
   })
 
+  it('a foreign key is matched schema-first: two tables of the same name do not collide', () => {
+    // `RefRuntime` carries the schema for exactly this case (`11` §3 K2a's cross-schema FK test).
+    // Matching on the table name alone would resolve `kids.orgId` against whichever `orgs` the
+    // relation happens to name — a correlation between two tables with no foreign key at all.
+    const orgsA = pgTable('orgs', (t) => ({ id: t.bigint().primaryKey() }), undefined, {
+      schema: 'tenant_a',
+    })
+    const orgsB = pgTable('orgs', (t) => ({ id: t.bigint().primaryKey() }), undefined, {
+      schema: 'tenant_b',
+    })
+    const kids = pgTable('kids', (t) => ({
+      id: t.bigint().primaryKey(),
+      orgId: t.bigint().references(() => orgsA[REFS].id),
+    }))
+    const tables = { orgsA, orgsB, kids }
+    const build = (to: 'orgsA' | 'orgsB') =>
+      defineSchema(
+        tables,
+        defineRelations(tables, (r) => ({ kids: { org: r.one[to]() } })),
+      )
+    expect(resolveRelations(build('orgsA').tables, build('orgsA').rels)['kids']?.['org']).toMatchObject(
+      { from: ['orgId'], to: ['id'], target: 'orgsA' },
+    )
+    expect(() => build('orgsB')).toThrowError(/nothing in "kids" references "orgs"/)
+  })
+
   it('the m2m `through` form infers both hops from the junction table alone', () => {
     const left = pgTable('lefts', (t) => ({ id: t.bigint().primaryKey() }))
     const right = pgTable('rights', (t) => ({ id: t.bigint().primaryKey() }))
