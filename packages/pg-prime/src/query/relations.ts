@@ -410,6 +410,24 @@ function predicateOf(corr: Correlated, f: ((t: never) => unknown) | undefined, w
   return toExprNode((f as unknown as (t: RefScope) => unknown)(corr.scope), where)
 }
 
+/**
+ * The value an aggregate accessor aggregates: the caller's lambda, run against the child scope.
+ *
+ * One function for all four (`sum`/`avg`/`min`/`max`) so the error sentence — which names the
+ * accessor and the relation — cannot drift between them.
+ */
+function operandOf(
+  corr: Correlated,
+  f: (t: never) => unknown,
+  what: string,
+  rel: ResolvedRelation,
+): Node {
+  return toExprNode(
+    (f as unknown as (t: RefScope) => unknown)(corr.scope),
+    `${what}() on relation "${rel.parent}.${rel.name}"`,
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The accessor object
 // ─────────────────────────────────────────────────────────────────────────────
@@ -441,10 +459,7 @@ function accessor(
     count: () => scalarOf(corr(), countStar(), undefined),
     sum: (f: (t: never) => unknown) => {
       const c = corr()
-      const operand = toExprNode(
-        (f as unknown as (t: RefScope) => unknown)(c.scope),
-        `sum() on relation "${rel.parent}.${rel.name}"`,
-      )
+      const operand = operandOf(c, f, 'sum', rel)
       // `coalesce(sum(x), 0)`: an empty relation sums to NULL, and `03` §2.3 types `revenue` as a
       // precision-exact string rather than `string | null` — which is only honest if the SQL says
       // so. The zero is a literal of the *result* codec, so `sum(int8)` coalesces against a
@@ -452,6 +467,22 @@ function accessor(
       const agg = fn.sum(operand as never) as unknown as Node
       const codec = codecOf(agg)
       return scalarOf(c, fnNode('coalesce', [agg, lit(0, codec)], codec), undefined)
+    },
+    // `avg`/`min`/`max` are NOT coalesced, and that is the one thing to know about them next to
+    // `sum`. Zero is the sum of no rows; it is not their average, their minimum or their maximum,
+    // and a `coalesce(avg(x), 0)` would report a 0 % conversion rate for a user with no orders.
+    // The scalar subquery is NULL over an empty relation and the type says so.
+    avg: (f: (t: never) => unknown) => {
+      const c = corr()
+      return scalarOf(c, fn.avg(operandOf(c, f, 'avg', rel) as never) as unknown as Node, undefined)
+    },
+    min: (f: (t: never) => unknown) => {
+      const c = corr()
+      return scalarOf(c, fn.min(operandOf(c, f, 'min', rel) as never) as unknown as Node, undefined)
+    },
+    max: (f: (t: never) => unknown) => {
+      const c = corr()
+      return scalarOf(c, fn.max(operandOf(c, f, 'max', rel) as never) as unknown as Node, undefined)
     },
 
     exists: () => existsOf(corr(), undefined, false),

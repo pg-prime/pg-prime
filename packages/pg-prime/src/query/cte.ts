@@ -21,16 +21,18 @@
  * `.insertInto(...)` and `.with(...)` before `.from(...)` need no separate machinery.
  */
 
-import type { CodecRegistry } from '../codec/index.js'
-import type { CteNode, SelectNode, SetOpNode, Statement } from '../compile/ast.js'
+import type { AnyCodec, CodecRegistry } from '../codec/index.js'
+import type { CteNode, RawFromNode, SelectNode, SetOpNode, Statement } from '../compile/ast.js'
 import {
   cte as cteNode,
   del as deleteNode,
   insert as insertNode,
+  rawFrom,
   select as selectNode,
   setop as setopNode,
   update as updateNode,
 } from '../compile/nodes.js'
+import { isFragment, toNode } from '../sql/index.js'
 import { planReturning, planSelect } from '../compile/hoist.js'
 import { jsonCodecJson } from '../codec/index.js'
 import type { FieldPlan } from '../compile/contract.js'
@@ -41,10 +43,10 @@ import { makeDelete } from './delete.js'
 import type { RawQuery } from './raw.js'
 import { makeRaw } from './raw.js'
 import { makeInsert } from './insert.js'
-import { statementAstOf } from './nominal.js'
+import { queryAstOf, statementAstOf } from './nominal.js'
 import type { DerivedField } from './scope.js'
-import { registerCte } from './scope.js'
-import { derivedRuntime, makeSelect } from './select.js'
+import { assertSafeKey, registerCte, registerRawFrom } from './scope.js'
+import { checkAlias, derivedRuntime, makeSelect } from './select.js'
 import { makeUpdate } from './update.js'
 
 export interface WithOpts {
@@ -54,6 +56,16 @@ export interface WithOpts {
    * costs us one token and that no TS builder exposes ergonomically (03 §2.7).
    */
   readonly materialized?: boolean
+}
+
+export interface RecursiveOpts extends WithOpts {
+  /** `UNION ALL` (default) or `UNION` when `false` — `12` decision 17. */
+  readonly unionAll?: boolean
+}
+
+export interface FromRawOpts {
+  readonly alias?: string
+  readonly columnTypes?: boolean
 }
 
 /** The columns a CTE exposes: a select's projection, or a write statement's RETURNING list. */
@@ -160,6 +172,51 @@ export class ExecutorImpl {
     return makeSelect(this.ctx, this.ctes, t, alias)
   }
 
+  /**
+   * `db.fromRaw(sql`…`, { id: int8Codec })` — a hand-written FROM item with an explicit
+   * column→codec map (`03` §5's v1 workaround for set-returning functions).
+   *
+   * The shape does three jobs at once and that is the whole design: it names the emitted column
+   * alias list, it names the row's keys, and each codec decodes its own column. So the result is
+   * as exactly typed and as fully decoded as a table's, and there is no second place for the
+   * column names to be written and drift.
+   */
+  fromRaw(frag: unknown, shape: Record<string, AnyCodec>, opts: FromRawOpts = {}): unknown {
+    const keys = Object.keys(shape)
+    if (keys.length === 0) {
+      throw new BuilderError(
+        'pg-prime: fromRaw(sql`…`, shape) needs at least one column in `shape` — it is what names ' +
+          'the columns and decodes them; an empty shape describes no row.',
+      )
+    }
+    if (!isFragment(frag)) {
+      throw new BuilderError(
+        'pg-prime: fromRaw() takes a `sql` fragment as its first argument — ' +
+          'db.fromRaw(sql`jsonb_to_recordset(${doc})`, { id: int8Codec }, { columnTypes: true }).',
+      )
+    }
+    const alias = checkAlias(opts.alias ?? 'raw')
+    const fields: DerivedField[] = []
+    const columnTypes: string[] = []
+    for (const key of keys) {
+      const codec = shape[key] as AnyCodec
+      assertSafeKey(key, 'fromRaw() shape')
+      fields.push({ key, codec })
+      columnTypes.push(codec.sqlName)
+    }
+    const item = rawFrom(
+      compact({
+        sql: toNode(frag),
+        alias,
+        columns: Object.freeze(keys),
+        columnTypes: opts.columnTypes === true ? Object.freeze(columnTypes) : undefined,
+      }) as Omit<RawFromNode, 'k' | 'qAlias'>,
+    )
+    const handle = { [NAME]: alias, $: derivedRuntime(alias) }
+    registerRawFrom(handle, alias, item, Object.freeze(fields))
+    return makeSelect(this.ctx, this.ctes, handle, alias)
+  }
+
   fromCte(name: string, alias?: string): unknown {
     const handle = this.cte[name]
     if (handle === undefined) {
@@ -192,6 +249,55 @@ export class ExecutorImpl {
     })
     const handle = { [NAME]: name, $: derivedRuntime(name) }
     registerCte(handle, name, fieldsOfStatement(query))
+    return new ExecutorImpl(
+      this.ctx,
+      [...this.ctes, node],
+      Object.freeze({ ...this.cte, [name]: handle }),
+      this.h,
+    )
+  }
+
+  /**
+   * `with recursive "name" as (base union all step)` — `12` decision 17.
+   *
+   * The order below is the whole implementation: run `base`, read its **result shape**, register
+   * the handle from it, and only then run `step` with that handle in hand. The row type is
+   * therefore fixed by the base term, which is what makes this a plain two-callback method rather
+   * than the self-referential row inference `03` §5 punts to v2.
+   */
+  withRecursive(
+    name: string,
+    base: (d: ExecutorImpl) => unknown,
+    step: (d: ExecutorImpl, self: object) => unknown,
+    opts: RecursiveOpts = {},
+  ): ExecutorImpl {
+    if (Object.hasOwn(this.cte, name)) {
+      throw new BuilderError(`pg-prime: a CTE named "${name}" is already declared in this query.`)
+    }
+    const left = withoutDeclared(
+      queryAstOf(
+        base(this),
+        'a .withRecursive() base callback must return a SELECT — `d => d.from(...).select(...)`; it',
+      ),
+      this.ctes,
+    ) as SelectNode | SetOpNode
+    const handle = { [NAME]: name, $: derivedRuntime(name) }
+    registerCte(handle, name, fieldsOfStatement(left))
+    const right = withoutDeclared(
+      queryAstOf(
+        step(this, handle),
+        'a .withRecursive() step callback must return a SELECT — ' +
+          '`(d, self) => d.from(self).innerJoin(...).select(...)`; it',
+      ),
+      this.ctes,
+    ) as SelectNode | SetOpNode
+    const node = cteNode({
+      name,
+      columns: undefined,
+      recursive: true,
+      materialized: opts.materialized,
+      query: setopNode({ op: opts.unionAll === false ? 'union' : 'union all', left, right }),
+    })
     return new ExecutorImpl(
       this.ctx,
       [...this.ctes, node],

@@ -811,6 +811,23 @@ function emitFromItem(em: Emitter, item: FromItem): void {
       }
       return
     }
+    case 'rawFrom': {
+      // The fragment is emitted through the ordinary raw path, so its holes are parameters and
+      // its identifier splices are sanitised exactly as they are anywhere else — `fromRaw` is a
+      // shorter way to write a FROM item, never a way around `03` §3.4.
+      emitExpr(em, item.sql)
+      em.push(` as ${item.qAlias}(`)
+      for (let i = 0; i < item.columns.length; i++) {
+        if (i > 0) em.push(', ')
+        em.push(quoteIdentPart(item.columns[i] as string))
+        // A column DEFINITION list, which is the one thing a function returning `record` cannot
+        // do without and the one thing a function that does not return `record` refuses.
+        const t = item.columnTypes?.[i]
+        if (t !== undefined) em.push(` ${t}`)
+      }
+      em.push(')')
+      return
+    }
     default:
       throw new UnsupportedNodeError((item as { k: string }).k, 'from item')
   }

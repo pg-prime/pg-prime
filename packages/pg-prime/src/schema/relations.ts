@@ -1,5 +1,6 @@
 import { SchemaError } from '../sql/errors.js'
-import { COLS, NAME, RELS, SCHEMA, SEL, TABLES } from './symbols.js'
+import { COLS, NAME, OUT, REFS, RELS, SCHEMA, SEL, TABLES } from './symbols.js'
+import type { RefLike } from './ddl.js'
 import type { AnyRef } from './ref.js'
 import type { AnyTable, TableRuntime } from './table.js'
 import type { Defer, RelMeta, Rels, Simplify } from './types.js'
@@ -13,27 +14,66 @@ export type RelsRecord<T extends Tables> = { [K in keyof T]?: Rels }
 // defineRelations (design/05 D6, typed per design/04 §1.5)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** What a relation-level `where` may return: anything that yields a boolean. */
+type RelBool = { readonly [OUT]: boolean }
+
+/**
+ * What a relation-level `orderBy` may return.
+ *
+ * Structural twins of `Order` and `OrderArg` from `src/query/ops.types.ts`, restated rather than
+ * imported: `src/schema` may not depend on `src/query` (design/08 §2.1), and both shapes are two
+ * properties wide. `test/query/relations.test.ts` pins that `desc(...)` and a bare ref are both
+ * accepted, which is what would catch a drift.
+ */
+type RelOrderArg = { readonly dir: 'asc' | 'desc' } | { readonly [OUT]: unknown }
+type RelOrderBy = RelOrderArg | readonly RelOrderArg[]
+
+/**
+ * The half of a relation declaration that does not depend on the target table.
+ *
+ * Split out so that instantiating {@link RelConfig} for a concrete target instantiates **two**
+ * members rather than six: four of them are `unknown`/`string` and identical for every relation
+ * in the program, so they resolve once on the non-generic base and are then shared.
+ */
+export interface RelConfigBase {
+  /**
+   * Parent-side column reference(s).
+   *
+   * **Optional since `12` B**: with `from`/`to` omitted, the correlation is inferred from the one
+   * `.references()` / `foreignKey(...)` path that joins the two tables in the stated direction —
+   * a `one` follows the child's own foreign key to its parent, a `many` follows the inverse
+   * (`12` decision 18). Zero or several candidates is a `SchemaError` naming them, never a guess.
+   * Declared `from`/`to` always win, and the two are declared together or not at all.
+   */
+  readonly from?: unknown
+  /** Target-side column reference(s), positionally paired with {@link RelConfigBase.from}. */
+  readonly to?: unknown
+  /**
+   * The m2m junction: `{ table, from, to }`, or just the table — in which case **both** hops are
+   * inferred the same way as a single-hop relation (parent then junction, junction then target).
+   */
+  readonly through?: unknown
+  /** The child's alias inside the lateral. Only worth setting to make EXPLAIN output readable. */
+  readonly alias?: string
+}
+
 /**
  * Runtime-only relation configuration. Carries FK columns / `through` table /
  * per-parent predicates. **It must never enter the type parameters**
  * (design/04 §7.3).
+ *
+ * `T` is the *target table*, and it is here for one reason: `where` and `orderBy` are callbacks
+ * over its refs, and without it every declaration site had to annotate the parameter by hand
+ * (`09` §3.5's third deferral). `T[REFS]` and not `T['cols']`, although the two are the same slot:
+ * the symbol-keyed access hits the instantiation cache the table already filled, and the named
+ * property re-instantiates `RefsOfCols<N, C>` — measured at +2.5 instantiations per declared
+ * relation for the named spelling (`12 B`'s RESULT).
  */
-export interface RelConfig {
-  /**
-   * Parent-side column reference(s). **Required**: the column DSL has no `.references()`, so
-   * there is no foreign key in the schema for a resolver to infer from (design/09 §3.5 decision
-   * 4). The runtime has always thrown without it; the type now says so too.
-   */
-  readonly from: unknown
-  /** Target-side column reference(s), positionally paired with {@link RelConfig.from}. */
-  readonly to: unknown
-  readonly through?: unknown
+export interface RelConfig<T extends AnyTable = AnyTable> extends RelConfigBase {
   /** Always-applied per-parent predicate — `where: (t) => isNull(t.deletedAt)` (03 §4.1). */
-  readonly where?: unknown
+  readonly where?: (t: T[typeof REFS]) => RelBool
   /** Default ordering for `.many()` when the caller supplies none. */
-  readonly orderBy?: unknown
-  /** The child's alias inside the lateral. Only worth setting to make EXPLAIN output readable. */
-  readonly alias?: string
+  readonly orderBy?: (t: T[typeof REFS]) => RelOrderBy
 }
 
 /**
@@ -43,9 +83,15 @@ export interface RelConfig {
  * is design/04's `one`/`maybeOne`/`many` trio and matches NOT-NULL-by-default.
  */
 export interface RelBuilders<T extends Tables> {
-  readonly one: { readonly [K in keyof T & string]: (cfg: RelConfig) => { kind: 'one'; opt: false; to: K } }
-  readonly maybeOne: { readonly [K in keyof T & string]: (cfg: RelConfig) => { kind: 'one'; opt: true; to: K } }
-  readonly many: { readonly [K in keyof T & string]: (cfg: RelConfig) => { kind: 'many'; opt: false; to: K } }
+  readonly one: {
+    readonly [K in keyof T & string]: (cfg?: RelConfig<T[K]>) => { kind: 'one'; opt: false; to: K }
+  }
+  readonly maybeOne: {
+    readonly [K in keyof T & string]: (cfg?: RelConfig<T[K]>) => { kind: 'one'; opt: true; to: K }
+  }
+  readonly many: {
+    readonly [K in keyof T & string]: (cfg?: RelConfig<T[K]>) => { kind: 'many'; opt: false; to: K }
+  }
 }
 
 /** Runtime relation node — what the query compiler reads. */
@@ -61,7 +107,7 @@ function namespace(keys: readonly string[], kind: 'one' | 'many', opt: boolean):
   // namespace's prototype instead of becoming a picker, and `r.many.__proto__(...)` would be
   // `Object.prototype`, not a function.
   const ns: Record<string, unknown> = Object.create(null) as Record<string, unknown>
-  for (const to of keys) ns[to] = (config: RelConfig): RelNode => ({ kind, opt, to, config })
+  for (const to of keys) ns[to] = (config?: RelConfig): RelNode => ({ kind, opt, to, config })
   return ns
 }
 
@@ -328,40 +374,115 @@ function one(
     )
   }
   const cfg = node.config
-  if (cfg === undefined || cfg.from === undefined || cfg.to === undefined) {
+  const declared = cfg !== undefined && (cfg.from !== undefined || cfg.to !== undefined)
+  if (declared && (cfg.from === undefined || cfg.to === undefined)) {
     throw new SchemaError(
-      `pg-prime: ${where} needs explicit \`from\` and \`to\` column references — ` +
-        `r.${node.kind === 'many' ? 'many' : 'one'}.${node.to}({ from: ${parent}[REFS].xId, ` +
-        `to: ${node.to}[REFS].id }). Inferring them from a foreign key is not possible yet: the ` +
-        `column DSL has no \`.references()\`, so there is nothing in the schema to read.`,
+      `pg-prime: ${where} declares \`${cfg.from === undefined ? 'to' : 'from'}\` without ` +
+        `\`${cfg.from === undefined ? 'from' : 'to'}\`. They are paired positionally, so declare ` +
+        `both — or neither, and the foreign key between "${parent}" and "${node.to}" is used.`,
     )
   }
 
-  const from = keysOf(cfg.from, parentTable, `${where} \`from\``)
-  const to = keysOf(cfg.to, target, `${where} \`to\``)
-
+  const junction = junctionOf(cfg, where)
+  let from: readonly string[]
+  let to: readonly string[]
   let through: ResolvedThrough | undefined
-  if (cfg.through !== undefined) {
-    const t = cfg.through as { table?: AnyTable; from?: unknown; to?: unknown }
-    if (t.table === undefined || t.from === undefined || t.to === undefined) {
-      throw new SchemaError(
-        `pg-prime: ${where} declares \`through\` but not all of { table, from, to }. The junction ` +
-          `hop is parent → from/through.from, through.to → to.`,
-      )
+
+  if (junction === undefined) {
+    if (declared) {
+      from = keysOf(cfg.from, parentTable, `${where} \`from\``)
+      to = keysOf(cfg.to, target, `${where} \`to\``)
+    } else {
+      // `12` decision 18. A `one` follows the child's own foreign key to its parent — the child
+      // being the table the relation is DECLARED on — and a `many` follows the inverse.
+      const hop =
+        node.kind === 'one'
+          ? inferFk(parentTable, target, where, parent, node.to, node.kind)
+          : inferFk(target, parentTable, where, parent, node.to, node.kind)
+      from = node.kind === 'one' ? hop.child : hop.parent
+      to = node.kind === 'one' ? hop.parent : hop.child
     }
-    through = Object.freeze({
-      table: t.table,
-      from: keysOf(t.from, t.table, `${where} \`through.from\``),
-      to: keysOf(t.to, t.table, `${where} \`through.to\``),
-    })
-    arity(from, through.from, where, 'from', 'through.from')
-    compat(from, parentTable, through.from, t.table, where, 'from', 'through.from')
-    arity(through.to, to, where, 'through.to', 'to')
-    compat(through.to, t.table, to, target, where, 'through.to', 'to')
-  } else {
     arity(from, to, where, 'from', 'to')
     compat(from, parentTable, to, target, where, 'from', 'to')
+    return finish(node, name, parent, from, to, undefined, cfg, where)
   }
+
+  // m2m. Both hops point AT the junction's neighbours, so both are inferred the same way as a
+  // single-hop relation: parent <- junction, junction -> target.
+  const jFrom = junction.from
+  const jTo = junction.to
+  if ((jFrom === undefined) !== (jTo === undefined)) {
+    throw new SchemaError(
+      `pg-prime: ${where} declares \`through.${jFrom === undefined ? 'to' : 'from'}\` without ` +
+        `\`through.${jFrom === undefined ? 'from' : 'to'}\`. Declare both hops or neither.`,
+    )
+  }
+  if (jFrom !== undefined && jTo !== undefined) {
+    if (!declared) {
+      throw new SchemaError(
+        `pg-prime: ${where} declares \`through.from\`/\`through.to\` but no \`from\`/\`to\`. The ` +
+          `junction hop is parent -> from/through.from, through.to -> to, so all four are ` +
+          `declared together — or none of them, and both hops are inferred.`,
+      )
+    }
+    from = keysOf(cfg.from, parentTable, `${where} \`from\``)
+    to = keysOf(cfg.to, target, `${where} \`to\``)
+    through = Object.freeze({
+      table: junction.table,
+      from: keysOf(jFrom, junction.table, `${where} \`through.from\``),
+      to: keysOf(jTo, junction.table, `${where} \`through.to\``),
+    })
+  } else {
+    const h1 = inferFk(junction.table, parentTable, `${where} \`through\` (junction to parent)`, parent, node.to, node.kind)
+    const h2 = inferFk(junction.table, target, `${where} \`through\` (junction to target)`, parent, node.to, node.kind)
+    from = declared ? keysOf(cfg.from, parentTable, `${where} \`from\``) : h1.parent
+    to = declared ? keysOf(cfg.to, target, `${where} \`to\``) : h2.parent
+    through = Object.freeze({ table: junction.table, from: h1.child, to: h2.child })
+  }
+  arity(from, through.from, where, 'from', 'through.from')
+  compat(from, parentTable, through.from, junction.table, where, 'from', 'through.from')
+  arity(through.to, to, where, 'through.to', 'to')
+  compat(through.to, junction.table, to, target, where, 'through.to', 'to')
+  return finish(node, name, parent, from, to, through, cfg, where)
+}
+
+/** `through: junction` and `through: { table, from?, to? }` are the same declaration. */
+function junctionOf(
+  cfg: RelConfig | undefined,
+  where: string,
+): { table: AnyTable; from: unknown; to: unknown } | undefined {
+  const t = cfg?.through
+  if (t === undefined) return undefined
+  if (typeof t !== 'object' || t === null) {
+    throw new SchemaError(
+      `pg-prime: ${where} \`through\` must be the junction table, or ` +
+        `{ table, from, to } naming both hops.`,
+    )
+  }
+  const rec = t as { table?: unknown; from?: unknown; to?: unknown; $?: unknown }
+  // A bare table IS a `{ $: TableRuntime }`, which is how the short spelling is recognised.
+  if (rec.table === undefined) {
+    if (rec.$ === undefined) {
+      throw new SchemaError(
+        `pg-prime: ${where} \`through\` has no \`table\`. Pass the junction table itself — ` +
+          `\`through: postTags\` — or { table, from, to }.`,
+      )
+    }
+    return { table: t as AnyTable, from: undefined, to: undefined }
+  }
+  return { table: rec.table as AnyTable, from: rec.from, to: rec.to }
+}
+
+function finish(
+  node: RelNode,
+  name: string,
+  parent: string,
+  from: readonly string[],
+  to: readonly string[],
+  through: ResolvedThrough | undefined,
+  cfg: RelConfig | undefined,
+  where: string,
+): ResolvedRelation {
 
   return Object.freeze({
     name,
@@ -372,10 +493,123 @@ function one(
     from,
     to,
     through,
-    where: fnOr(cfg.where, `${where} \`where\``),
-    orderBy: fnOr(cfg.orderBy, `${where} \`orderBy\``),
-    alias: cfg.alias,
+    where: fnOr(cfg?.where, `${where} \`where\``),
+    orderBy: fnOr(cfg?.orderBy, `${where} \`orderBy\``),
+    alias: cfg?.alias,
   })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Foreign-key inference (design/03 §4.1's open ask; `12` decision 18)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One foreign key, read as a correlation: `child.<child> = parent.<parent>`. */
+interface FkPath {
+  readonly child: readonly string[]
+  readonly parent: readonly string[]
+  /** `posts.author_id -> users.id`, for the ambiguity sentence. */
+  readonly label: string
+}
+
+/**
+ * The one foreign key that joins `child` to `parent`, or a sentence.
+ *
+ * Zero and "more than one" are both refused, and refused with the candidates spelled out, because
+ * both mistakes are the same mistake from the reader's side: the declaration does not say which
+ * columns correlate and neither does the schema. Guessing "the first one" is how a relation
+ * silently returns the wrong rows — the failure mode `09` §3.5 finding 3 already found once, where
+ * a relation with no correlation at all resolved to a cross join wearing a relation's name.
+ */
+function inferFk(
+  child: AnyTable,
+  parent: AnyTable,
+  where: string,
+  parentKey: string,
+  targetKey: string,
+  kind: 'one' | 'many',
+): FkPath {
+  const paths = fkPaths(child, parent)
+  const spelling =
+    `r.${kind === 'many' ? 'many' : 'one'}.${targetKey}({ from: ${parentKey}[REFS].…, ` +
+    `to: ${targetKey}[REFS].… })`
+  if (paths.length === 0) {
+    throw new SchemaError(
+      `pg-prime: ${where} has no \`from\`/\`to\` and no foreign key to infer them from — nothing ` +
+        `in "${child.$.name}" references "${parent.$.name}". Declare the key on the column ` +
+        `(\`.references(() => ${parent.$.name}.cols.id)\`) or as a ` +
+        `\`foreignKey({ columns, references })\` extra, or write the correlation: ${spelling}.`,
+    )
+  }
+  if (paths.length > 1) {
+    throw new SchemaError(
+      `pg-prime: ${where} could be inferred from ${paths.length} foreign keys and pg-prime will ` +
+        `not guess which: ${paths.map((p) => p.label).join(', ')}. Name the columns you mean: ` +
+        `${spelling}.`,
+    )
+  }
+  return paths[0] as FkPath
+}
+
+/**
+ * Every foreign key of `child` that lands on `parent`, from both spellings the DSL has.
+ *
+ * Deduplicated on the correlation itself, so a column that declares `.references()` *and* appears
+ * in an equivalent `foreignKey(...)` extra — which is one key in the database — is one candidate
+ * here and not an ambiguity the schema does not actually have.
+ */
+function fkPaths(child: AnyTable, parent: AnyTable): readonly FkPath[] {
+  const out: FkPath[] = []
+  const seen = new Set<string>()
+  const push = (childKeys: readonly string[], parentKeys: readonly string[]): void => {
+    const id = `${childKeys.join(',')}\u0000${parentKeys.join(',')}`
+    if (seen.has(id)) return
+    seen.add(id)
+    out.push({
+      child: Object.freeze([...childKeys]),
+      parent: Object.freeze([...parentKeys]),
+      label: `${child.$.name}.${childKeys.join('+')} -> ${parent.$.name}.${parentKeys.join('+')}`,
+    })
+  }
+  for (const c of child.$.columns) {
+    const spec = c.column.ddl.references
+    if (spec === undefined) continue
+    const parentKeys = keysOfTargets(spec.target(), parent)
+    if (parentKeys !== undefined) push([c.key], parentKeys)
+  }
+  for (const x of child.$.extras) {
+    if (x.node !== 'foreignKey') continue
+    const parentKeys = keysOfTargets(x.references(), parent)
+    if (parentKeys === undefined) continue
+    const childKeys = keysOfDbNames(child, x.columns)
+    if (childKeys !== undefined) push(childKeys, parentKeys)
+  }
+  return out
+}
+
+/** The parent's TS keys a FK's targets name, or `undefined` if they are not this parent's. */
+function keysOfTargets(
+  targets: readonly RefLike[],
+  parent: AnyTable,
+): readonly string[] | undefined {
+  if (targets.length === 0) return undefined
+  const names: string[] = []
+  for (const t of targets) {
+    // Schema-qualified, because two schemas may hold a table of the same name — the cross-schema
+    // case `11` §3 K2a's own FK test exists for.
+    if (t.$.table !== parent.$.name || t.$.schema !== parent.$.schema) return undefined
+    names.push(t.$.dbName)
+  }
+  return keysOfDbNames(parent, names)
+}
+
+function keysOfDbNames(table: AnyTable, dbNames: readonly string[]): readonly string[] | undefined {
+  const keys: string[] = []
+  for (const dbName of dbNames) {
+    const hit = table.$.columns.find((c) => c.dbName === dbName)
+    if (hit === undefined) return undefined
+    keys.push(hit.key)
+  }
+  return keys
 }
 
 /**

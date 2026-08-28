@@ -146,7 +146,13 @@ export interface CteNode {
 
 // ─────────────────────────── FROM items ───────────────────────────
 
-export type FromItem = TableRefNode | SubqueryNode | ValuesNode | FuncNode | CteRefNode
+export type FromItem =
+  | TableRefNode
+  | SubqueryNode
+  | ValuesNode
+  | FuncNode
+  | CteRefNode
+  | RawFromNode
 
 /** [spike] */
 export interface TableRefNode {
@@ -192,6 +198,26 @@ export interface CteRefNode {
   name: string
   alias: string
   qAlias: string
+}
+
+/**
+ * A hand-written FROM item — `db.fromRaw(sql`…`, shape)` (03 §5's v1 workaround for the
+ * set-returning functions the builder has no DSL for).
+ *
+ * The fragment is emitted verbatim and then aliased, so the alias and the column names come from
+ * the declared shape rather than from the SQL text and the two cannot disagree. `columnTypes` is
+ * the *definition* list (`("id" bigint, …)`) that a function returning `record` requires and that
+ * PostgreSQL rejects for one that does not — hence a list rather than a flag on the emitter.
+ */
+export interface RawFromNode {
+  k: 'rawFrom'
+  sql: RawNode
+  alias: string
+  qAlias: string
+  /** Column alias list, in shape order. Never empty. */
+  columns: readonly string[]
+  /** DDL type names paired with {@link RawFromNode.columns}, or `undefined` for names only. */
+  columnTypes?: readonly string[] | undefined
 }
 
 /** [spike] — `left` with `on: undefined` (=> ON TRUE) is what nesting hoists. */

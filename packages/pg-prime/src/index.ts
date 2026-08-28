@@ -435,7 +435,7 @@ export {
 } from './query/fn.js'
 export type { Fn } from './query/fn.js'
 
-export { nest, nestNullable } from './query/projection.js'
+export { nest, nestNullable, omit } from './query/projection.js'
 export { over } from './query/window.js'
 export type { Bound, FrameOpts, WindowFn, WindowLiteral, WindowSpec } from './query/window.js'
 
@@ -464,6 +464,7 @@ export type {
 export { SELECT_SOURCE } from './query/types.js'
 
 export type {
+  AllRefs,
   AnyQuery,
   BulkOpts,
   ColsAtH,
@@ -475,6 +476,7 @@ export type {
   Executor,
   Expr,
   ExprOf,
+  FromRawOpts,
   FromValuesOpts,
   GroupedQuery,
   Grouping,
@@ -492,6 +494,8 @@ export type {
   ProjectPreJoin,
   Projection,
   Query,
+  RawShape,
+  RecursiveOpts,
   RefsAt,
   RefsOf,
   RelAccessor,

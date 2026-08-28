@@ -150,6 +150,27 @@ export function registerDerived(
 }
 
 /**
+ * Register a `fromRaw` handle: one already-built FROM item, and refs over the declared shape.
+ *
+ * The item is built once by `fromRaw` rather than per call, because a raw FROM item carries the
+ * caller's parameters — rebuilding it per alias would re-encode them, and `lateral` is meaningless
+ * for it (a `lateral` keyword before hand-written SQL would be the caller's to write).
+ */
+export function registerRawFrom(
+  handle: object,
+  name: string,
+  item: FromItem,
+  fields: readonly DerivedField[],
+): void {
+  SOURCES.set(handle, {
+    kind: 'derived',
+    name,
+    fromItem: () => item,
+    refs: (alias) => derivedRefs(name, alias, fields),
+  })
+}
+
+/**
  * Memo for the table branch of {@link sourceOf}.
  *
  * A table handle's `SourceRuntime` is a constant of the handle — the schema key and two closures
@@ -262,18 +283,44 @@ export function scopeFor(
   // Only a table can have relations. Every alias bound in the enclosing statement is an avoid-list
   // entry: shadowing the parent turns `child.parent_id = parent.id` into a self-comparison, and
   // shadowing a SIBLING does the same to any predicate the sub-query writes against it.
-  const built =
-    source.kind === 'table' ? mergeAccessors(ctx, source.name, alias, refs, avoid) : refs
+  const built = withAll(
+    source.kind === 'table' ? mergeAccessors(ctx, source.name, alias, refs, avoid) : refs,
+    refs,
+    alias,
+  )
   byAlias.set(key, built)
   return built
 }
+
+/**
+ * Hang `$all` — the alias's own ref record — off the scope object (`03` §2.1).
+ *
+ * `refs` and not `scope`: `{ ...u.$all }` means every *column*, so the relation accessors are not
+ * in it, and neither is `$all` itself. It is the cached frozen record, shared by reference, so the
+ * whole feature costs one property on an object that is itself built at most once per
+ * (registry, handle, alias, avoid-list).
+ */
+function withAll(scope: RefScope, refs: RefScope, alias: string): RefScope {
+  if (Object.hasOwn(refs, ALL)) {
+    throw new BuilderError(
+      `pg-prime: "${alias}" has a column named "${ALL}", which is the name of the scope's ` +
+        `every-column record (\`{ ...t.${alias}.${ALL} }\`). One would hide the other. Rename the ` +
+        `column's TS key — \`dbName\` can keep the database's spelling.`,
+    )
+  }
+  return Object.freeze({ ...scope, [ALL]: refs }) as unknown as RefScope
+}
+
+/** The scope member `03` §2.1 spells `u.$all`. One string, so the runtime and the type agree. */
+const ALL = '$all'
 
 /** Every ref of an alias, as a projection record — `selectAll` and `RETURNING *`. */
 export function allOf(scope: RefScope): Record<string, RefNode> {
   const out: Record<string, RefNode> = {}
   for (const key of Object.keys(scope)) {
     const v = scope[key]
-    // A relation accessor is an object of methods, not a ref; `selectAll` means every *column*.
+    // A relation accessor is an object of methods and `$all` is a record of refs; neither is a
+    // ref, and `selectAll` means every *column*. `isAstNode` is the nominal test that says so.
     if (v !== undefined && typeof v !== 'function' && isAstNode(v)) out[key] = v
   }
   return out
@@ -297,6 +344,7 @@ export {
   nest,
   nestNullable,
   NO_LEFT_JOINS,
+  omit,
   outputColumn,
   projectionItem,
   registryOr,

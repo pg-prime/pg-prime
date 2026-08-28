@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { textCodec } from '../../src/codec/index.js'
+import { boolCodec, textCodec } from '../../src/codec/index.js'
 import { buildDecoder } from '../../src/compile/decode.js'
 import { BuilderError } from '../../src/sql/errors.js'
 import { compileOnly } from '../../src/query/run.js'
@@ -341,6 +341,308 @@ describe('§2.2 — joins and nest()', () => {
       .compile()
     expect(compiled.shape).toMatchObject({ fields: [{ key: 'id' }, { sentinel: undefined }] })
     expect(buildDecoder(compiled.shape)([['1', null]])).toStrictEqual([{ id: 1n, other: null }])
+  })
+})
+
+describe('§2.1 — `$all` (12 B)', () => {
+  it('a `$all` spread is byte-identical to selectAll of the same alias', () => {
+    const spread = db.from(schema.h.posts).select(({ posts: p }) => ({ ...p.$all }))
+    expect(sqlOf(spread)).toBe(sqlOf(db.from(schema.h.posts).selectAll('posts')))
+  })
+
+  it('it is a plain record, so it composes with other keys and keeps key order', () => {
+    expect(
+      sqlOf(
+        db.from(schema.h.comments).select(({ comments: c }) => ({
+          ...c.$all,
+          shouted: q.concat(c.body, q.val('!', textCodec)),
+        })),
+      ),
+    ).toBe(
+      [
+        'select "comments"."id" as "id", "comments"."post_id" as "postId", ' +
+          '"comments"."body" as "body", "comments"."body" || $1 as "shouted"',
+        'from "public"."comments" as "comments"',
+      ].join('\n'),
+    )
+  })
+
+  it('omit() drops columns and does NOT mutate the shared scope record', () => {
+    const dropped = db
+      .from(schema.h.comments)
+      .select(({ comments: c }) => ({ ...q.omit(c.$all, 'body') }))
+    expect(sqlOf(dropped)).toBe(
+      [
+        'select "comments"."id" as "id", "comments"."post_id" as "postId"',
+        'from "public"."comments" as "comments"',
+      ].join('\n'),
+    )
+    // The scope object is cached per (registry, handle, alias), so a mutating `omit` would have
+    // deleted `body` from every later query too. The next query is the negative control.
+    expect(sqlOf(db.from(schema.h.comments).select(({ comments: c }) => ({ ...c.$all })))).toContain(
+      '"comments"."body" as "body"',
+    )
+  })
+
+  it('a relation accessor is not a column, so `$all` carries columns only', () => {
+    // `users` declares a `posts` relation. If the spread carried it, the projection would hold an
+    // object of methods and the SQL would grow a lateral.
+    const built = db.from(schema.h.users).select(({ users: u }) => ({ ...u.$all }))
+    expect((built.toAst().projection ?? []).map((i) => i.key)).toStrictEqual([
+      'id',
+      'email',
+      'name',
+      'role',
+      'meta',
+      'createdAt',
+      'deletedAt',
+    ])
+    expect(sqlOf(built)).not.toContain('json_agg')
+  })
+
+  it('under a LEFT JOIN it is a spread, not a group: each column nulls on its own', () => {
+    const compiled = db
+      .from(schema.h.posts, 'p')
+      .leftJoin(schema.h.comments, 'c', ({ p, c }) => q.eq(c.postId, p.id))
+      .select(({ c }) => ({ ...c.$all }))
+      .compile()
+    // No `group` field: `03` §2.2's whole-object rule is nest()/nestNullable()'s, and a spread
+    // has no object to null.
+    expect(compiled.shape).toMatchObject({
+      k: 'row',
+      fields: [{ key: 'id' }, { key: 'postId' }, { key: 'body' }],
+    })
+    expect(buildDecoder(compiled.shape)([[null, null, null]])).toStrictEqual([
+      { id: null, postId: null, body: null },
+    ])
+  })
+})
+
+describe('§2.2 — right / full / cross joins (12 B)', () => {
+  it('right join', () => {
+    expect(
+      sqlOf(
+        db
+          .from(schema.h.posts, 'p')
+          .rightJoin(schema.h.users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
+          .select(({ p, u }) => ({ id: u.id, title: p.title })),
+      ),
+    ).toBe(
+      [
+        'select "u"."id" as "id", "p"."title" as "title"',
+        'from "public"."posts" as "p"',
+        'right join "public"."users" as "u" on "p"."author_id" = "u"."id"',
+      ].join('\n'),
+    )
+  })
+
+  it('full join', () => {
+    expect(
+      sqlOf(
+        db
+          .from(schema.h.posts, 'p')
+          .fullJoin(schema.h.users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
+          .select(({ p, u }) => ({ id: u.id, title: p.title })),
+      ),
+    ).toBe(
+      [
+        'select "u"."id" as "id", "p"."title" as "title"',
+        'from "public"."posts" as "p"',
+        'full join "public"."users" as "u" on "p"."author_id" = "u"."id"',
+      ].join('\n'),
+    )
+  })
+
+  it('cross join takes no ON, in both the aliased and the bare spelling', () => {
+    expect(
+      sqlOf(
+        db.from(schema.h.posts, 'p').crossJoin(schema.h.users, 'u').select(({ u }) => ({ id: u.id })),
+      ),
+    ).toBe(
+      [
+        'select "u"."id" as "id"',
+        'from "public"."posts" as "p"',
+        'cross join "public"."users" as "u"',
+      ].join('\n'),
+    )
+    expect(
+      sqlOf(
+        db.from(schema.h.posts, 'p').crossJoin(schema.h.users).select(({ users: u }) => ({ id: u.id })),
+      ),
+    ).toContain('cross join "public"."users" as "users"')
+  })
+
+  it('a right join nulls the aliases bound BEFORE it, which is what witnesses the group', () => {
+    const compiled = db
+      .from(schema.h.posts, 'p')
+      .rightJoin(schema.h.users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
+      .select(({ p, u }) => ({ email: u.email, post: q.nestNullable({ id: p.id, title: p.title }) }))
+      .compile()
+    // `p.id` is NOT NULL *and* on the nulled side, so it is the sentinel (index 1 of the row:
+    // `u.email` is 0) — the mirror of the left-join case, where it would have been one of `u`'s.
+    expect(compiled.shape).toMatchObject({
+      fields: [{ key: 'email' }, { key: 'post', k: 'group', nullable: true, sentinel: 1 }],
+    })
+    expect(buildDecoder(compiled.shape)([['a@b', '1', 'x'], ['c@d', null, null]])).toStrictEqual([
+      { email: 'a@b', post: { id: 1n, title: 'x' } },
+      { email: 'c@d', post: null },
+    ])
+  })
+
+  it('R4 — the same group under an INNER join is witnessed by nothing', () => {
+    const compiled = db
+      .from(schema.h.posts, 'p')
+      .innerJoin(schema.h.users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
+      .select(({ p, u }) => ({ email: u.email, post: q.nestNullable({ id: p.id, title: p.title }) }))
+      .compile()
+    expect(compiled.shape).toMatchObject({ fields: [{ key: 'email' }, { witnesses: [] }] })
+  })
+
+  it('a full join nulls both sides; a cross join nulls neither', () => {
+    const witnessesOf = (c: { shape: unknown }): readonly number[] | undefined =>
+      (c.shape as unknown as { fields: { witnesses?: readonly number[] }[] }).fields[1]?.witnesses
+    const full = db
+      .from(schema.h.posts, 'p')
+      .fullJoin(schema.h.users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
+      .select(({ p, u }) => ({ e: u.email, g: q.nestNullable({ id: p.id, uid: u.id }) }))
+      .compile()
+    const cross = db
+      .from(schema.h.posts, 'p')
+      .crossJoin(schema.h.users, 'u')
+      .select(({ p, u }) => ({ e: u.email, g: q.nestNullable({ id: p.id, uid: u.id }) }))
+      .compile()
+    // Row indices: `e` is 0, so the group's two members are 1 and 2.
+    expect(witnessesOf(full)).toStrictEqual([1, 2])
+    expect(witnessesOf(cross)).toStrictEqual([])
+  })
+
+  it('a right join after .select() is refused, naming the order to write', () => {
+    const built = db.from(schema.h.posts, 'p').select(({ p }) => ({ id: p.id }))
+    const late = built as unknown as {
+      rightJoin: (h: unknown, a: string, on: () => unknown) => unknown
+      fullJoin: (h: unknown, a: string, on: () => unknown) => unknown
+    }
+    const on = (): unknown => q.val(true, boolCodec)
+    expect(() => late.rightJoin(schema.h.users, 'u', on)).toThrowError(BuilderError)
+    expect(() => late.rightJoin(schema.h.users, 'u', on)).toThrowError(
+      /right join .* cannot be added after \.select\(\)/,
+    )
+    expect(() => late.fullJoin(schema.h.users, 'u', on)).toThrowError(/full join/)
+    // A LEFT join after `.select()` is still fine: it can only null the alias it adds, which the
+    // projection cannot already mention.
+    expect(() =>
+      built.leftJoin(schema.h.users, 'u', ({ p, u }) => q.eq(p.authorId, u.id)).compile(),
+    ).not.toThrow()
+  })
+})
+
+describe('§2.2 — lateral joins (12 B)', () => {
+  it('inner join lateral, correlated on an outer ref, with ON TRUE by default', () => {
+    expect(
+      sqlOf(
+        db
+          .from(schema.h.users)
+          .innerJoinLateral(
+            (t) =>
+              db
+                .from(schema.h.posts)
+                .where(({ posts: p }) => q.eq(p.authorId, t.users.id))
+                .select(({ posts: p }) => ({ id: p.id, title: p.title }))
+                .limit(3),
+            'r',
+          )
+          .select(({ users: u, r }) => ({ id: u.id, title: r.title })),
+      ),
+    ).toBe(
+      [
+        'select "users"."id" as "id", "r"."title" as "title"',
+        'from "public"."users" as "users"',
+        'inner join lateral (',
+        '  select "posts"."id" as "id", "posts"."title" as "title"',
+        '  from "public"."posts" as "posts"',
+        '  where "posts"."author_id" = "users"."id"',
+        '  limit $1',
+        ') as "r" on true',
+      ].join('\n'),
+    )
+  })
+
+  it('left join lateral takes an explicit ON when one is wanted', () => {
+    const sql = sqlOf(
+      db
+        .from(schema.h.users)
+        .leftJoinLateral(
+          (t) =>
+            db
+              .from(schema.h.posts)
+              .where(({ posts: p }) => q.eq(p.authorId, t.users.id))
+              .select(({ posts: p }) => ({ id: p.id, title: p.title }))
+              .limit(3),
+          'r',
+          ({ r }) => q.isNotNull(r.title),
+        )
+        .select(({ users: u, r }) => ({ id: u.id, title: r.title })),
+    )
+    expect(sql).toContain('left join lateral (')
+    expect(sql.endsWith(') as "r" on "r"."title" is not null')).toBe(true)
+  })
+
+  it('the lateral binds before the outer clauses, so $n stays a left-to-right pass', () => {
+    expect(
+      vals(
+        db
+          .from(schema.h.users)
+          .innerJoinLateral(
+            (t) =>
+              db
+                .from(schema.h.posts)
+                .where(({ posts: p }) => q.eq(p.authorId, t.users.id))
+                .select(({ posts: p }) => ({ id: p.id, title: p.title }))
+                .limit(3),
+            'r',
+          )
+          .select(({ users: u }) => ({ id: u.id }))
+          .limit(20),
+      ),
+    ).toStrictEqual(['3', '20'])
+  })
+
+  it('a left lateral marks its own alias nullable, and only its own', () => {
+    const compiled = db
+      .from(schema.h.users)
+      .leftJoinLateral(
+        (t) =>
+          db
+            .from(schema.h.posts)
+            .where(({ posts: p }) => q.eq(p.authorId, t.users.id))
+            .select(({ posts: p }) => ({ id: p.id, title: p.title })),
+        'r',
+      )
+      .select(({ users: u, r }) => ({
+        u: q.nestNullable({ id: u.id }),
+        r: q.nestNullable({ id: r.id }),
+      }))
+      .compile()
+    const fields = (compiled.shape as unknown as { fields: { witnesses?: readonly number[] }[] })
+      .fields
+    expect(fields[0]?.witnesses).toStrictEqual([])
+    // A derived column is never declared NOT NULL, so the group falls to rule 2 — every
+    // left-joined member — which for a one-column group is that column.
+    expect(fields[1]?.witnesses).toStrictEqual([1])
+  })
+
+  it('a lateral sub-query may be a plain builder, with no outer reference at all', () => {
+    expect(
+      sqlOf(
+        db
+          .from(schema.h.users)
+          .innerJoinLateral(
+            db.from(schema.h.comments).select(({ comments: c }) => ({ n: c.id })),
+            'l',
+          )
+          .select(({ l }) => ({ n: l.n })),
+      ),
+    ).toContain('inner join lateral (')
   })
 })
 

@@ -467,18 +467,34 @@ describe('defineSchema validation', () => {
     ).toThrow(/same name as a column/)
   })
 
-  it('rejects a relation with no explicit from/to, naming what to write', () => {
+  it('rejects a relation with no from/to and no foreign key to infer one from', () => {
+    const tables = { users, posts }
+    // `posts.authorId` carries no `.references()`, so there is nothing to infer and nothing
+    // declared. The sentence has to name both fixes, because either one is a legitimate answer.
+    expect(() =>
+      defineSchema(
+        tables,
+        defineRelations(tables, (r) => ({ posts: { author: r.one.users() } })),
+      ),
+    ).toThrow(/no foreign key to infer them from/)
+    expect(() =>
+      defineSchema(
+        tables,
+        defineRelations(tables, (r) => ({ posts: { author: r.one.users() } })),
+      ),
+    ).toThrow(/nothing in "posts" references "users"/)
+  })
+
+  it('rejects `from` without `to`', () => {
     const tables = { users, posts }
     expect(() =>
       defineSchema(
         tables,
-        // The config is required at the type level now, so the untyped route (a schema built
-        // from JSON, or plain JavaScript) is what still reaches the runtime check.
         defineRelations(tables, (r) => ({
-          posts: { author: r.one.users(JSON.parse('{}') as never) },
+          posts: { author: r.one.users({ from: posts[REFS].authorId }) },
         })),
       ),
-    ).toThrow(/needs explicit `from` and `to`/)
+    ).toThrow(/declares `from` without `to`/)
   })
 
   it('rejects a from/to arity mismatch', () => {

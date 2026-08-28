@@ -194,6 +194,24 @@ export function nestNullable<P extends Projection>(p: P): Expr<ProjectPreJoin<P>
   return makeGroup(p as Record<string, unknown>, true) as unknown as Expr<ProjectPreJoin<P> | null>
 }
 
+/**
+ * `omit(u.$all, 'passwordHash')` — `03` §2.1's spelling, and the reason `$all` is a plain record.
+ *
+ * A copy, never a mutation: `$all` is the scope's own frozen ref record, shared by every query
+ * that touches the alias, so deleting from it would delete the column from the *next* query too.
+ * Prisma needs a whole second mechanism (`omit` vs `select`) for this; here it is `Object.keys`.
+ */
+export function omit<R extends object, K extends readonly (keyof R & string)[]>(
+  r: R,
+  ...keys: K
+): Omit<R, K[number]> {
+  const out: Record<string, unknown> = {}
+  for (const k of Object.keys(r)) {
+    if (!(keys as readonly string[]).includes(k)) out[k] = (r as Record<string, unknown>)[k]
+  }
+  return out as Omit<R, K[number]>
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Relation projections (03 §2.3)
 // ─────────────────────────────────────────────────────────────────────────────

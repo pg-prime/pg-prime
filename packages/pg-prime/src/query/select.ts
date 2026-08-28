@@ -148,22 +148,47 @@ export class SelectBuilder {
   // ── projection ────────────────────────────────────────────────────────────
 
   /**
-   * The aliases this statement brought in with a LEFT JOIN — what decides whether a
-   * `nestNullable({...})` in the projection can be null, and which of its members say so.
-   * See `groupWitnesses` in `./projection.ts`.
+   * The aliases whose rows this statement's joins may fail to supply — what decides whether a
+   * `nestNullable({...})` in the projection can be null, and which of its members say so. See
+   * `groupWitnesses` in `./projection.ts`.
+   *
+   * A LEFT join nulls the alias it *adds*; a RIGHT join nulls every alias already bound before it;
+   * a FULL join does both. That is why the loop tracks the binding order rather than reading
+   * `this.s.sources`: `a left join b right join c` nulls `a` and `b` and not `c`, and the set is
+   * only correct if the joins are replayed in the order they were written.
    */
-  get #leftJoined(): ReadonlySet<string> {
+  get #outerJoined(): ReadonlySet<string> {
     let out: Set<string> | undefined
+    // Fast path: the overwhelmingly common statement has only inner and left joins, where the
+    // answer needs no binding order at all.
+    let outer = false
     for (const j of this.s.joins) {
-      if (j.type !== 'left') continue
-      out ??= new Set<string>()
-      out.add(j.item.alias)
+      if (j.type === 'right' || j.type === 'full') outer = true
+    }
+    if (!outer) {
+      for (const j of this.s.joins) {
+        if (j.type !== 'left') continue
+        out ??= new Set<string>()
+        out.add(j.item.alias)
+      }
+      return out ?? NO_LEFT_JOINS
+    }
+    const bound: string[] = this.s.from === undefined ? [] : [this.s.from.alias]
+    for (const j of this.s.joins) {
+      const a = j.item.alias
+      if (j.type === 'left') (out ??= new Set<string>()).add(a)
+      else if (j.type === 'right' || j.type === 'full') {
+        out ??= new Set<string>()
+        for (const b of bound) out.add(b)
+        if (j.type === 'full') out.add(a)
+      }
+      bound.push(a)
     }
     return out ?? NO_LEFT_JOINS
   }
 
   select(f: Lambda<Record<string, unknown>>): SelectBuilder {
-    return this.#next({ projection: compileProjection(call(f, this.s.scope), this.#leftJoined) })
+    return this.#next({ projection: compileProjection(call(f, this.s.scope), this.#outerJoined) })
   }
 
   selectAll(alias: string): SelectBuilder {
@@ -270,6 +295,70 @@ export class SelectBuilder {
     return this.#join('left', h, a, on)
   }
 
+  rightJoin(h: object, a: string | Lambda<unknown>, on?: Lambda<unknown>): SelectBuilder {
+    return this.#join('right', h, a, on)
+  }
+
+  fullJoin(h: object, a: string | Lambda<unknown>, on?: Lambda<unknown>): SelectBuilder {
+    return this.#join('full', h, a, on)
+  }
+
+  /** `cross join` — the one join with no `on`, so it takes no predicate at all (03 §2.2). */
+  crossJoin(h: object, a?: string): SelectBuilder {
+    const source = sourceOf(h)
+    const alias = a ?? source.name
+    const widened = this.#widen(h, alias)
+    return this.#next({
+      joins: [...this.s.joins, joinNode('cross', source.fromItem(alias, false), undefined)],
+      ...widened,
+    })
+  }
+
+  innerJoinLateral(sub: unknown, alias: string, on?: Lambda<unknown>): SelectBuilder {
+    return this.#lateral('inner', sub, alias, on)
+  }
+
+  leftJoinLateral(sub: unknown, alias: string, on?: Lambda<unknown>): SelectBuilder {
+    return this.#lateral('left', sub, alias, on)
+  }
+
+  /**
+   * `<type> join lateral (select …) as "alias" on <on|true>` (03 §2.2).
+   *
+   * The sub-query is built **before** the alias is bound, and is handed this query's current
+   * scope, which is the whole point of a lateral: the correlation is written inside the sub-query
+   * against the outer refs. Binding the alias first would let the sub-query reference itself.
+   *
+   * `on` defaults to `ON TRUE` — the shape a lateral almost always wants, and the one the emitter
+   * already produces for a hoisted relation projection.
+   */
+  #lateral(
+    type: 'inner' | 'left',
+    sub: unknown,
+    alias: string,
+    on: Lambda<unknown> | undefined,
+  ): SelectBuilder {
+    const built = typeof sub === 'function' ? (sub as (t: Scope) => unknown)(this.s.scope) : sub
+    const node = queryAstOf(built, `.${type}JoinLateral()`)
+    const handle = { [NAME]: alias, $: derivedRuntime(alias) }
+    registerDerived(handle, alias, node, fieldsOfQuery(node))
+    const widened = this.#widen(handle, alias)
+    const item = sourceOf(handle).fromItem(alias, true)
+    return this.#next({
+      joins: [
+        ...this.s.joins,
+        joinNode(
+          type,
+          item,
+          on === undefined
+            ? undefined
+            : toExprNode(call(on, widened.scope), `${type} join lateral on "${alias}"`),
+        ),
+      ],
+      ...widened,
+    })
+  }
+
   /**
    * `.innerJoin(users, on)` and `.innerJoin(users, 'u', on)` are the same call: the alias defaults
    * to the source's own key, and naming it is how a self-join gets two scopes (03 §2.1).
@@ -280,6 +369,18 @@ export class SelectBuilder {
     a: string | Lambda<unknown>,
     on: Lambda<unknown> | undefined,
   ): SelectBuilder {
+    // A RIGHT or FULL join makes an alias that was already in scope nullable, and the projection
+    // has already fixed both the *type* of every column it took from that alias and the witness
+    // set of every `nestNullable(...)` in it. Recompiling the projection would leave the type
+    // behind and hand back a `null` the caller was told could not happen, so the order is refused
+    // rather than half-supported. `09` §3.4 left this open by not shipping the two joins at all.
+    if ((type === 'right' || type === 'full') && this.s.projection !== undefined) {
+      throw new BuilderError(
+        `pg-prime: a ${type} join makes the aliases already in scope nullable, so it cannot be ` +
+          `added after .select() — the projection's types are already fixed. Write ` +
+          `.${type}Join(...) before .select(...).`,
+      )
+    }
     const source = sourceOf(h)
     const alias = typeof a === 'string' ? a : source.name
     const onFn = typeof a === 'string' ? on : a

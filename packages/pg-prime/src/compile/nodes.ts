@@ -60,6 +60,7 @@ import type {
   ParamNode,
   PlaceholderNode,
   ProjectionItem,
+  RawFromNode,
   RawNode,
   RawPart,
   RowNode,
@@ -236,6 +237,11 @@ export function subquery(
   lateral = false,
 ): SubqueryNode {
   return mkNode({ k: 'subquery' as const, query, alias, qAlias: quoteIdentPart(alias), lateral })
+}
+
+/** `db.fromRaw(sql`…`, shape)`'s FROM item — the fragment, then an alias built from the shape. */
+export function rawFrom(n: Omit<RawFromNode, 'k' | 'qAlias'>): RawFromNode {
+  return mkNode({ ...n, k: 'rawFrom' as const, qAlias: quoteIdentPart(n.alias) })
 }
 
 export function join(

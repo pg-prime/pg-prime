@@ -56,7 +56,16 @@ import type {
   TableRuntime,
 } from '../schema/index.js'
 import type { OrmTypeError } from '../schema/index.js'
-import type { NumOperand, NumPg, OrderBy, SumOut, SumPg } from './ops.types.js'
+import type {
+  AnyOperand,
+  AvgOut,
+  AvgPg,
+  NumOperand,
+  NumPg,
+  OrderBy,
+  SumOut,
+  SumPg,
+} from './ops.types.js'
 import type {
   CteNameTakenMsg,
   ExecuteNeedsProjectionMsg,
@@ -69,6 +78,7 @@ import type {
   SetOpNeedsProjectionMsg,
   SetOpNeedsSelectMsg,
 } from './errors.js'
+import type { AnyFragment } from '../sql/index.js'
 import type { INV, PRJ, ROW } from './symbols.js'
 import type { ExplainOptions, ExplainResult, StreamOptions } from './executor.js'
 import type { PrepareOptions, PreparedQuery } from './prepared.js'
@@ -243,8 +253,34 @@ export type NullRow<T> = Defer<Simplify<{ [K in keyof T]: T[K] | null }>>
  * hits the same instantiation-cache entry.
  */
 export type ScopeOf<S extends Sources, N = never> = [N] extends [never]
-  ? { [A in keyof S]: RefsAt<S[A]> & RelPickers<S[A]> }
-  : { [A in keyof S]: ([A] extends [N] ? NullRefsAt<S[A]> : RefsAt<S[A]>) & RelPickers<S[A]> }
+  ? { [A in keyof S]: RefsAt<S[A]> & AllRefs<RefsAt<S[A]>> & RelPickers<S[A]> }
+  : {
+      [A in keyof S]: ([A] extends [N]
+        ? NullRefsAt<S[A]> & AllRefs<NullRefsAt<S[A]>>
+        : RefsAt<S[A]> & AllRefs<RefsAt<S[A]>>) &
+        RelPickers<S[A]>
+    }
+
+/**
+ * `$all` — every column of one alias as a plain record of refs (`03` §2.1, §4.2 form (b)).
+ *
+ * `{ ...u.$all }` is `SELECT *` with an exact type, and `{ ...omit(u.$all, 'passwordHash') }` is
+ * Prisma's `omit` for free, because the value is an ordinary frozen object and the type is an
+ * ordinary record. Three properties are load-bearing:
+ *
+ *  - **A spread, not a group.** `03` §2.2's whole-object nullability is `nest`/`nestNullable`'s
+ *    rule; a spread produces one output column per member, so a left-joined alias's `$all` is a
+ *    record of `T | null` columns — `AllRefs<NullRefsAt<H>>` above — and never a `| null` object.
+ *  - **One property, one instantiation.** `R` is always a record the scope already computed
+ *    ({@link RefsAt} or {@link NullRefsAt}, both cached per table per program), so `$all` adds a
+ *    third intersection member pointing at an existing instantiation rather than a new mapped
+ *    type. Measured in `12 B`'s RESULT: 0 instantiations on all five per-query shapes.
+ *  - **It is not a column.** A table whose TS keys include `$all` is rejected when its scope is
+ *    built, because one of the two would silently hide the other.
+ */
+export interface AllRefs<R> {
+  readonly $all: R
+}
 
 /**
  * The design/04 §2.4 spelling — relations as a *separate* callback parameter. Kept because
@@ -299,6 +335,21 @@ export interface RelAggs<Sc extends AnySchema, M extends RelMeta> {
    * `sum(int8)` and `sum(numeric)` are `numeric`.
    */
   sum<T, P extends NumPg>(f: (t: SubScope<Sc, M['to']>) => NumOperand<T, P>): Expr<SumOut<P>, SumPg<P>>
+  /**
+   * `avg(f)` over the related rows — **nullable**, unlike {@link RelAggs.sum}.
+   *
+   * `sum` coalesces to zero because an empty relation sums to zero; the average of no rows is not
+   * zero, it is no answer, so the honest type is `| null`. The PG result type is PostgreSQL's:
+   * `numeric` for every exact operand and `float8` for the two inexact ones (`fn.avg`'s table,
+   * imported rather than restated).
+   */
+  avg<T, P extends NumPg>(
+    f: (t: SubScope<Sc, M['to']>) => NumOperand<T, P>,
+  ): Expr<AvgOut<P> | null, AvgPg<P>>
+  /** `min(f)` over the related rows. The operand's own type, `| null` on an empty relation. */
+  min<A extends AnyOperand>(f: (t: SubScope<Sc, M['to']>) => A): Expr<A[typeof OUT] | null>
+  /** `max(f)` over the related rows. The operand's own type, `| null` on an empty relation. */
+  max<A extends AnyOperand>(f: (t: SubScope<Sc, M['to']>) => A): Expr<A[typeof OUT] | null>
   /** `exists (select 1 from … where <correlation>)`. */
   exists(): Expr<boolean, 'bool'>
   /** MikroORM's `$some`: at least one related row satisfies the predicate. */
@@ -367,6 +418,7 @@ export interface SubQuery<
  * second lambda parameter threaded through every level.
  */
 export type SubScope<Sc extends AnySchema, N extends string> = RefsIn<Sc, N> &
+  AllRefs<RefsIn<Sc, N>> &
   RelPickersIn<Sc, N>
 
 type RelPickersIn<Sc extends AnySchema, N extends string> = {
@@ -470,9 +522,11 @@ type GroupGuard<A extends string, H extends AnyHandle, G extends string> = [PkOf
 
 /** {@link ScopeOf}, with the relation accessors guarded by the grouping list. */
 export type GroupedScope<S extends Sources, N, G extends string> = [N] extends [never]
-  ? { [A in keyof S]: RefsAt<S[A]> & GroupGuard<A & string, S[A], G> }
+  ? { [A in keyof S]: RefsAt<S[A]> & AllRefs<RefsAt<S[A]>> & GroupGuard<A & string, S[A], G> }
   : {
-      [A in keyof S]: ([A] extends [N] ? NullRefsAt<S[A]> : RefsAt<S[A]>) &
+      [A in keyof S]: ([A] extends [N]
+        ? NullRefsAt<S[A]> & AllRefs<NullRefsAt<S[A]>>
+        : RefsAt<S[A]> & AllRefs<RefsAt<S[A]>>) &
         GroupGuard<A & string, S[A], G>
     }
 
@@ -669,6 +723,78 @@ export interface Query<S extends Sources, O, N = never> extends SetOps<O, readon
     on: (t: ScopeOf<S, N> & Record<H2[typeof NAME] & string, RefsAt<H2>>) => Expr<boolean>,
   ): Query<S & Record<H2[typeof NAME] & string, H2>, O, N | (H2[typeof NAME] & string)>
 
+  /**
+   * `right join` — the mirror of {@link Query.leftJoin}, and the mirror is the whole type-level
+   * move: it is **every alias already in scope** that gains `| null`, not the new one, because the
+   * rows that survive are the new table's.
+   *
+   * The witness mechanism `nest`/`nestNullable` uses is mirrored the same way at runtime
+   * (`SelectBuilder`'s outer-join set). One consequence is refused rather than typed: a right or
+   * full join added *after* `.select(...)` would retroactively null a column the projection has
+   * already fixed the type of, so the builder throws a `BuilderError` naming the order to write
+   * instead. See `09` §3.4's note on `compileProjection`, which this closes.
+   */
+  rightJoin<H2 extends AnyHandle, A extends string>(
+    t: H2,
+    alias: A,
+    on: (t: ScopeOf<S, N> & Record<A, RefsAt<H2>>) => Expr<boolean>,
+  ): Query<S & Record<A, H2>, O, N | (keyof S & string)>
+  rightJoin<H2 extends AnyHandle>(
+    t: H2,
+    on: (t: ScopeOf<S, N> & Record<H2[typeof NAME] & string, RefsAt<H2>>) => Expr<boolean>,
+  ): Query<S & Record<H2[typeof NAME] & string, H2>, O, N | (keyof S & string)>
+
+  /** `full join` — both sides may be missing, so both sides' refs are nullable. */
+  fullJoin<H2 extends AnyHandle, A extends string>(
+    t: H2,
+    alias: A,
+    on: (t: ScopeOf<S, N> & Record<A, RefsAt<H2>>) => Expr<boolean>,
+  ): Query<S & Record<A, H2>, O, N | (keyof S & string) | A>
+  fullJoin<H2 extends AnyHandle>(
+    t: H2,
+    on: (t: ScopeOf<S, N> & Record<H2[typeof NAME] & string, RefsAt<H2>>) => Expr<boolean>,
+  ): Query<
+    S & Record<H2[typeof NAME] & string, H2>,
+    O,
+    N | (keyof S & string) | (H2[typeof NAME] & string)
+  >
+
+  /**
+   * `cross join` — the Cartesian product, and therefore the one join with **no** `on`.
+   *
+   * There is no predicate parameter at all rather than an optional one: PostgreSQL rejects
+   * `cross join … on …` (42601) and the emitter refuses to drop a predicate silently, so a
+   * caller who has a predicate wants {@link Query.innerJoin}.
+   */
+  crossJoin<H2 extends AnyHandle, A extends string>(t: H2, alias: A): Query<S & Record<A, H2>, O, N>
+  crossJoin<H2 extends AnyHandle>(
+    t: H2,
+  ): Query<S & Record<H2[typeof NAME] & string, H2>, O, N>
+
+  /**
+   * `inner join lateral (select …) as "alias" on …` (03 §2.2).
+   *
+   * `sub` is a select builder — or a callback that is handed **this query's own scope**, which is
+   * what makes the sub-query correlated: `q.innerJoinLateral(t => db.from(h.posts).where(p =>
+   * eq(p.authorId, t.users.id)).select(…), 'recent', …)`. The alias becomes an ordinary source, so
+   * its columns are reached as `t.recent.x` with the sub-query's own codecs.
+   *
+   * `on` is optional and defaults to `ON TRUE`, which is the usual shape for a lateral: the
+   * correlation lives inside the sub-query, not in the join condition.
+   */
+  innerJoinLateral<O2, A extends string>(
+    sub: SelectSource<O2> | ((t: ScopeOf<S, N>) => SelectSource<O2>),
+    alias: A,
+    on?: (t: ScopeOf<S, N> & Record<A, RefsAt<CteHandle<A, O2>>>) => Expr<boolean>,
+  ): Query<S & Record<A, CteHandle<A, O2>>, O, N>
+
+  /** {@link Query.innerJoinLateral}, with the lateral's own alias nullable. */
+  leftJoinLateral<O2, A extends string>(
+    sub: SelectSource<O2> | ((t: ScopeOf<S, N>) => SelectSource<O2>),
+    alias: A,
+    on?: (t: ScopeOf<S, N> & Record<A, RefsAt<CteHandle<A, O2>>>) => Expr<boolean>,
+  ): Query<S & Record<A, CteHandle<A, O2>>, O, N | A>
+
   /** Type-preserving composition. The primitive Kysely users already reach for. */
   $call<O2>(f: (q: this) => Query<S, O2, N>): Query<S, O2, N>
 
@@ -863,6 +989,37 @@ export interface Executor {
     f: (d: Executor) => RowSource<O2>,
     opts?: WithOpts,
   ): CteExecutor<Record<N, CteHandle<N, O2>>>
+  /**
+   * `with recursive "name" as (base union all step)` — `12` decision 17.
+   *
+   * The row type is fixed by `base`, and `step` is handed the CTE's own handle typed by it. That
+   * is deliberately **not** the self-referential row typing `03` §5 punts: nothing here infers a
+   * fixed point, so the cost is one method on an interface and zero instantiations for a query
+   * that does not call it (measured in `12 B`'s RESULT). A `step` whose projection disagrees with
+   * `base` is a compile error at the callback's return, which is where the reader wrote it.
+   */
+  withRecursive<N extends string, O2>(
+    name: N,
+    base: (d: Executor) => SelectSource<O2>,
+    step: (d: Executor, self: CteHandle<N, O2>) => SelectSource<O2>,
+    opts?: RecursiveOpts,
+  ): CteExecutor<Record<N, CteHandle<N, O2>>>
+  /**
+   * A hand-written FROM item with an explicit column→codec map — `03` §5's named v1 workaround for
+   * set-returning functions the builder has no DSL for (`jsonb_to_recordset`, `xmltable`, a
+   * `VALUES` list nobody wants typed).
+   *
+   * `shape` is the whole contract: the keys become the emitted column-alias list *and* the row's
+   * keys, and each codec decodes its column, so the result is as exactly typed and as fully
+   * decoded as a table's. `columnTypes: true` emits a column **definition** list
+   * (`("id" bigint, …)`, from the same codecs' `sqlName`s) for a function that returns `record`,
+   * which is the one thing `jsonb_to_recordset` cannot do without.
+   */
+  fromRaw<C extends Record<string, AnyCodec>, A extends string = 'raw'>(
+    frag: AnyFragment,
+    shape: C,
+    opts?: FromRawOpts<A>,
+  ): Query<Record<A, CteHandle<A, RawShape<C>>>, unknown>
 
   insertInto<H extends AnyHandle>(t: H): InsertQuery<H, never, {}>
   update<H extends AnyHandle>(t: H): UpdateQuery<H, never, never>
@@ -917,12 +1074,28 @@ export interface CteExecutor<C extends Sources> {
     ? OrmTypeError<CteNameTakenMsg<N>>
     : CteExecutor<C & Record<N, CteHandle<N, O2>>>
 
+  /** {@link Executor.withRecursive}, chained. Same name-taken sentinel as {@link CteExecutor.with}. */
+  withRecursive<N extends string, O2>(
+    name: N,
+    base: (d: CteExecutor<C>) => SelectSource<O2>,
+    step: (d: CteExecutor<C>, self: CteHandle<N, O2>) => SelectSource<O2>,
+    opts?: RecursiveOpts,
+  ): [N] extends [keyof C]
+    ? OrmTypeError<CteNameTakenMsg<N>>
+    : CteExecutor<C & Record<N, CteHandle<N, O2>>>
+
   insertInto<H extends AnyHandle>(t: H): InsertQuery<H, never, C>
   update<H extends AnyHandle>(t: H): UpdateQuery<H, never, never>
   deleteFrom<H extends AnyHandle>(t: H): DeleteQuery<H, never>
 
   from<H extends AnyHandle, A extends string>(t: H, alias: A): Query<Record<A, H>, unknown>
   from<H extends AnyHandle>(t: H): Query<Record<H[typeof NAME] & string, H>, unknown>
+  /** {@link Executor.fromRaw}, with the declared CTEs still in scope for the rest of the chain. */
+  fromRaw<CD extends Record<string, AnyCodec>, A extends string = 'raw'>(
+    frag: AnyFragment,
+    shape: CD,
+    opts?: FromRawOpts<A>,
+  ): Query<Record<A, CteHandle<A, RawShape<CD>>>, unknown>
 
   fromCte<K extends keyof C & string, A extends string>(
     name: K,
@@ -1005,6 +1178,36 @@ export interface WithOpts {
   readonly materialized?: boolean
 }
 
+/** {@link Executor.withRecursive}'s options. */
+export interface RecursiveOpts extends WithOpts {
+  /**
+   * `UNION ALL` (default) or `UNION` when `false`.
+   *
+   * The default is `ALL` because it is what PostgreSQL's own documentation writes and what a
+   * traversal wants; `UNION` deduplicates every intermediate row and is the cycle-avoiding
+   * spelling for a graph, at the cost of an equality comparison per row.
+   */
+  readonly unionAll?: boolean
+}
+
+/** {@link Executor.fromRaw}'s options. */
+export interface FromRawOpts<A extends string = string> {
+  /** The alias the raw item is bound to, and therefore the scope key. Default `'raw'`. */
+  readonly alias?: A
+  /**
+   * Emit a column **definition** list (`("id" bigint, "name" text)`) rather than a plain column
+   * alias list. Required for a function returning `record` (`jsonb_to_recordset`), and rejected by
+   * PostgreSQL for one that does not (`generate_series`), which is why it is a choice and not a
+   * default. The types come from `shape`'s own codecs, so the two cannot drift.
+   */
+  readonly columnTypes?: boolean
+}
+
+/** The row a {@link Executor.fromRaw} shape describes: one decoded value per declared codec. */
+export type RawShape<C extends Record<string, AnyCodec>> = Defer<
+  Simplify<{ [K in keyof C]: CodecOut<C[K]> }>
+>
+
 export interface LockOpts<A extends string = string> {
   readonly strength?: 'update' | 'no key update' | 'share' | 'key share'
   /**
@@ -1029,7 +1232,10 @@ export interface LockOpts<A extends string = string> {
  * `{ strategy: 'subquery' }` and says so — but that is a runtime distinction, not a type one:
  * both forms are the same expression with a different plan.
  */
-type SelfScope<H extends AnyHandle> = Record<H[typeof NAME] & string, RefsAt<H> & RelPickers<H>>
+type SelfScope<H extends AnyHandle> = Record<
+  H[typeof NAME] & string,
+  RefsAt<H> & AllRefs<RefsAt<H>> & RelPickers<H>
+>
 
 /**
  * `C` is the CTE map the executor that built this insert had in scope, so `.fromSelect(d => …)`
@@ -1230,7 +1436,7 @@ export type { OpClass, OpSpec } from './ops.manifest.js'
 // The builder runtime (WS4). One import for a query file: the operators, the aggregates, the
 // `sql` tag, `nest`, `over`, and the two ways to make an executor.
 // ─────────────────────────────────────────────────────────────────────────────
-export { nest, nestNullable } from './scope.js'
+export { nest, nestNullable, omit } from './scope.js'
 export { over } from './window.js'
 export type { Bound, FrameOpts, WindowLiteral, WindowSpec } from './window.js'
 export { pgPrime, compileOnly, statementStats } from './run.js'
