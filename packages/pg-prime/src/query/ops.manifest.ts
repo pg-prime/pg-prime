@@ -84,7 +84,13 @@ export const OPS: readonly OpSpec[] = [
   },
   { name: 'inQuery', class: 'all', sql: 'a in (select …)', result: 'bool', kind: 'expr' },
   { name: 'coalesce', class: 'all', sql: 'coalesce(a, $n)', result: "a's codec", kind: 'expr' },
-  { name: 'cast', class: 'all', sql: 'a::<codec.sqlName>', result: 'the given codec', kind: 'expr' },
+  {
+    name: 'cast',
+    class: 'all',
+    sql: 'a::<codec.sqlName>',
+    result: 'the given codec',
+    kind: 'expr',
+  },
   { name: 'val', class: 'all', sql: '$n', result: 'the given codec', kind: 'expr' },
 
   // ── text / citext ──────────────────────────────────────────────────────────
@@ -158,20 +164,44 @@ export const OPS: readonly OpSpec[] = [
   { name: 'overlapsNet', class: 'net', sql: 'a && $n', result: 'bool', kind: 'expr' },
 
   // ── boolean combinators / ordering (03 §2.4) ───────────────────────────────
-  { name: 'and', class: 'boolean', sql: '(a and b and …)  ·  () ⇒ true', result: 'bool', kind: 'expr' },
-  { name: 'or', class: 'boolean', sql: '(a or b or …)  ·  () ⇒ false', result: 'bool', kind: 'expr' },
+  {
+    name: 'and',
+    class: 'boolean',
+    sql: '(a and b and …)  ·  () ⇒ true',
+    result: 'bool',
+    kind: 'expr',
+  },
+  {
+    name: 'or',
+    class: 'boolean',
+    sql: '(a or b or …)  ·  () ⇒ false',
+    result: 'bool',
+    kind: 'expr',
+  },
   { name: 'not', class: 'boolean', sql: 'not a', result: 'bool', kind: 'expr' },
   { name: 'isTrue', class: 'boolean', sql: 'a is true', result: 'bool', kind: 'expr' },
   { name: 'isNotTrue', class: 'boolean', sql: 'a is not true', result: 'bool', kind: 'expr' },
   { name: 'isFalse', class: 'boolean', sql: 'a is false', result: 'bool', kind: 'expr' },
   { name: 'isNotFalse', class: 'boolean', sql: 'a is not false', result: 'bool', kind: 'expr' },
   { name: 'exists', class: 'boolean', sql: 'exists (select …)', result: 'bool', kind: 'expr' },
-  { name: 'notExists', class: 'boolean', sql: 'not exists (select …)', result: 'bool', kind: 'expr' },
+  {
+    name: 'notExists',
+    class: 'boolean',
+    sql: 'not exists (select …)',
+    result: 'bool',
+    kind: 'expr',
+  },
   { name: 'asc', class: 'boolean', sql: 'a asc [nulls first|last]', result: '—', kind: 'order' },
   { name: 'desc', class: 'boolean', sql: 'a desc [nulls first|last]', result: '—', kind: 'order' },
 
   // ── aggregates and full-text helpers ───────────────────────────────────────
-  { name: 'fn.count', class: 'aggregate', sql: 'count(*) · count(a)', result: 'int8', kind: 'expr' },
+  {
+    name: 'fn.count',
+    class: 'aggregate',
+    sql: 'count(*) · count(a)',
+    result: 'int8',
+    kind: 'expr',
+  },
   {
     name: 'fn.sum',
     class: 'aggregate',
@@ -239,9 +269,7 @@ export const OPS: readonly OpSpec[] = [
   // rather than in `builtinCodecs()`. PGlite does not ship pgvector, so there is also no target to
   // run the differential against. Shipping the six operators with no codec and no live test would
   // be four rows of `03` §2.9 that look covered and are not.
-  ...(
-    ['l2', 'cosine', 'innerProduct', 'l1', 'hamming', 'jaccard'] as const
-  ).map((name, i) => ({
+  ...(['l2', 'cosine', 'innerProduct', 'l1', 'hamming', 'jaccard'] as const).map((name, i) => ({
     name,
     class: 'vector' as const,
     sql: (['a <-> $n', 'a <=> $n', 'a <#> $n', 'a <+> $n', 'a <~> $n', 'a <%> $n'] as const)[i]!,

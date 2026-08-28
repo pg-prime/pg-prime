@@ -31,7 +31,8 @@ export const BASELINE_OPTIONS: readonly OptionSpec[] = [
     name: "at",
     type: "string",
     placeholder: "id",
-    describe: "adopt an existing directory instead: mark every file up to and including <id> as baselined, executing nothing",
+    describe:
+      "adopt an existing directory instead: mark every file up to and including <id> as baselined, executing nothing",
   },
   { name: "force", type: "boolean", describe: "proceed even though pgprime.migrations is not empty" },
   { name: "by", type: "string", placeholder: "name", describe: "recorded as the plan's author", defaultText: "$USER" },
@@ -49,7 +50,10 @@ export async function runBaseline(config: ResolvedConfig, argv: ParseResult): Pr
       return refusal(
         config,
         started,
-        `${plural(rows.length, "row")} already exist in pgprime.migrations (${rows.slice(0, 3).map((r) => r.id).join(", ")}` +
+        `${plural(rows.length, "row")} already exist in pgprime.migrations (${rows
+          .slice(0, 3)
+          .map((r) => r.id)
+          .join(", ")}` +
           `${rows.length > 3 ? ", …" : ""}). baseline rewrites the start of history; pass --force if that is what you mean.`,
       );
     }
@@ -60,13 +64,17 @@ export async function runBaseline(config: ResolvedConfig, argv: ParseResult): Pr
     if (at !== undefined) {
       const { files } = await readMigrationsDir(config.migrationsDir);
       const target = files.find((f) => f.id === at || String(f.seq).padStart(4, "0") === at || f.name === at);
-      if (!target) return refusal(config, started, `--at ${JSON.stringify(at)} names no migration in ${config.migrationsDir}`);
+      if (!target)
+        return refusal(config, started, `--at ${JSON.stringify(at)} names no migration in ${config.migrationsDir}`);
       // "The database is AT 0003" means 0000..0003 all ran, by whatever tool. Marking only
       // the named file would leave its predecessors pending and `apply` would run them.
       const adopt = files.filter((f) => f.seq < target.seq || (f.seq === target.seq && f.name <= target.name));
       for (const file of adopt) {
         await beginRow(client, {
-          id: file.id, seq: file.seq, name: file.name, checksum: file.checksum,
+          id: file.id,
+          seq: file.seq,
+          name: file.name,
+          checksum: file.checksum,
           planId: file.plan?.planId ?? null,
           fingerprintFrom: file.plan?.from.fingerprint ?? null,
           fingerprintTo: file.plan?.to.fingerprint ?? null,
@@ -142,7 +150,9 @@ export async function runBaseline(config: ResolvedConfig, argv: ParseResult): Pr
     }
 
     await beginRow(client, {
-      id: "0000_baseline", seq: 0, name: "baseline",
+      id: "0000_baseline",
+      seq: 0,
+      name: "baseline",
       checksum: plan.migration.sha256,
       planId: plan.planId,
       fingerprintFrom: plan.from.fingerprint,
@@ -195,7 +205,9 @@ export async function runBaseline(config: ResolvedConfig, argv: ParseResult): Pr
           ["history", "0000_baseline recorded as baselined; nothing was executed"],
         ]),
         bullets("warnings:", warnings),
-      ].filter((l) => l !== "").join("\n"),
+      ]
+        .filter((l) => l !== "")
+        .join("\n"),
     };
   });
 }
@@ -228,18 +240,14 @@ async function freshDatabaseIR(
   // the comment it puts on `public` ('standard public schema') and any extension it installed
   // into a managed schema. Without these a fresh database's own furniture becomes the first
   // statements of every baseline, and its replay-from-empty fingerprint never matches.
-  const ext = await client.query(
-    `SELECT extname FROM pg_extension WHERE oid < ${String(FIRST_NORMAL_OID)}`,
-  );
+  const ext = await client.query(`SELECT extname FROM pg_extension WHERE oid < ${String(FIRST_NORMAL_OID)}`);
   const builtInExtensions = new Set(ext.rows.map((row) => String(row["extname"])));
   const schemaFacts = current.factsOfKind("schema").filter((f) => builtIn.has(idName(f.id)));
   const schemaIds = new Set(schemaFacts.map((f) => encodeId(f.id)));
   const commentFacts = current
     .factsOfKind("comment")
     .filter((f) => f.id.kind === "comment" && schemaIds.has(f.id.target));
-  const extensionFacts = current
-    .factsOfKind("extension")
-    .filter((f) => builtInExtensions.has(idName(f.id)));
+  const extensionFacts = current.factsOfKind("extension").filter((f) => builtInExtensions.has(idName(f.id)));
   const facts = [...schemaFacts, ...commentFacts, ...extensionFacts];
   const kept = new Set(facts.map((f) => encodeId(f.id)));
   const edges = current.edges().filter((e) => kept.has(encodeId(e.from)) && kept.has(encodeId(e.to)));

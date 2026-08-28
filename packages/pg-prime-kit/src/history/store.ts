@@ -96,9 +96,7 @@ function toRow(r: Record<string, unknown>): MigrationRow {
 
 /** Ordered the way the runner orders files: `(seq, name)` (design/06 §4.1). */
 export async function readMigrationRows(client: CatalogClient): Promise<MigrationRow[]> {
-  const r = await client.query(
-    `SELECT ${MIGRATION_COLUMNS} FROM ${HISTORY_SCHEMA}.migrations ORDER BY seq, name`,
-  );
+  const r = await client.query(`SELECT ${MIGRATION_COLUMNS} FROM ${HISTORY_SCHEMA}.migrations ORDER BY seq, name`);
   return r.rows.map(toRow);
 }
 
@@ -184,9 +182,19 @@ export async function beginRow(client: CatalogClient, row: NewMigrationRow): Pro
        applied_by = current_user, applied_from = EXCLUDED.applied_from, error = NULL,
        engine_version = EXCLUDED.engine_version`,
     [
-      row.id, row.seq, row.name, row.checksum, row.planId, row.fingerprintFrom, row.fingerprintTo,
-      row.txmode, row.statementsTotal, row.statementsApplied, row.segmentApplied,
-      row.appliedFrom, row.engineVersion,
+      row.id,
+      row.seq,
+      row.name,
+      row.checksum,
+      row.planId,
+      row.fingerprintFrom,
+      row.fingerprintTo,
+      row.txmode,
+      row.statementsTotal,
+      row.statementsApplied,
+      row.segmentApplied,
+      row.appliedFrom,
+      row.engineVersion,
     ],
   );
 }
@@ -194,10 +202,7 @@ export async function beginRow(client: CatalogClient, row: NewMigrationRow): Pro
 /** design/06 §5.4 — "BEGIN; UPDATE … SET statement_uncertain = i; COMMIT;". */
 export async function markUncertain(client: CatalogClient, id: string, index: number): Promise<void> {
   await client.query("BEGIN");
-  await client.query(
-    `UPDATE ${HISTORY_SCHEMA}.migrations SET statement_uncertain = $2 WHERE id = $1`,
-    [id, index],
-  );
+  await client.query(`UPDATE ${HISTORY_SCHEMA}.migrations SET statement_uncertain = $2 WHERE id = $1`, [id, index]);
   await client.query("COMMIT");
 }
 
@@ -266,9 +271,20 @@ export async function markFailed(
        duration_ms = (EXTRACT(EPOCH FROM (now() - ${HISTORY_SCHEMA}.migrations.started_at)) * 1000)::int,
        error = EXCLUDED.error`,
     [
-      row.id, row.seq, row.name, row.checksum, row.planId, row.fingerprintFrom, row.fingerprintTo,
-      row.txmode, row.statementsTotal, applied, row.segmentApplied,
-      row.appliedFrom, JSON.stringify(error), row.engineVersion,
+      row.id,
+      row.seq,
+      row.name,
+      row.checksum,
+      row.planId,
+      row.fingerprintFrom,
+      row.fingerprintTo,
+      row.txmode,
+      row.statementsTotal,
+      applied,
+      row.segmentApplied,
+      row.appliedFrom,
+      JSON.stringify(error),
+      row.engineVersion,
     ],
   );
 }
@@ -305,10 +321,7 @@ export async function takeLease(client: CatalogClient, runId: string, holder: st
 }
 
 export async function heartbeatLease(client: CatalogClient, runId: string): Promise<void> {
-  await client.query(
-    `UPDATE ${HISTORY_SCHEMA}.lock SET heartbeat_at = now() WHERE run_id = $1::uuid`,
-    [runId],
-  );
+  await client.query(`UPDATE ${HISTORY_SCHEMA}.lock SET heartbeat_at = now() WHERE run_id = $1::uuid`, [runId]);
 }
 
 /** Only ever deletes OUR row, unless `force`. */
@@ -353,9 +366,16 @@ export async function recordSuperseded(
      ) VALUES ($1,$2,$3,$4,$5,NULL,$6,$7,$8,0,NULL,0,'superseded',now(),now(),0,$9,NULL,$10)
      ON CONFLICT (id) DO NOTHING`,
     [
-      file.id, file.seq, file.name, file.checksum,
-      file.plan?.planId ?? null, file.plan?.to.fingerprint ?? null,
-      file.txmode, file.statements.length, appliedFrom, engineVersion,
+      file.id,
+      file.seq,
+      file.name,
+      file.checksum,
+      file.plan?.planId ?? null,
+      file.plan?.to.fingerprint ?? null,
+      file.txmode,
+      file.statements.length,
+      appliedFrom,
+      engineVersion,
     ],
   );
 }
@@ -452,10 +472,9 @@ function toProgress(r: Record<string, unknown>): DataProgress {
 const DATA_COLUMNS = `migration_id, watermark, rows_done, ${TS("updated_at")} AS updated_at`;
 
 export async function readDataProgress(client: CatalogClient, migrationId: string): Promise<DataProgress | null> {
-  const r = await client.query(
-    `SELECT ${DATA_COLUMNS} FROM ${HISTORY_SCHEMA}.data_progress WHERE migration_id = $1`,
-    [migrationId],
-  );
+  const r = await client.query(`SELECT ${DATA_COLUMNS} FROM ${HISTORY_SCHEMA}.data_progress WHERE migration_id = $1`, [
+    migrationId,
+  ]);
   const row = r.rows[0];
   return row === undefined ? null : toProgress(row);
 }

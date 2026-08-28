@@ -110,9 +110,7 @@ export async function listCheckpoints(migrationsDir: string): Promise<Checkpoint
     if ((err as { code?: string }).code === "ENOENT") return [];
     throw err;
   }
-  const irFiles = new Set(
-    await readdir(join(migrationsDir, CHECKPOINT_DIR)).catch(() => [] as string[]),
-  );
+  const irFiles = new Set(await readdir(join(migrationsDir, CHECKPOINT_DIR)).catch(() => [] as string[]));
   const out: CheckpointFile[] = [];
   for (const entry of names) {
     const m = MIGRATION_FILE.exec(entry);
@@ -142,7 +140,9 @@ export async function readCheckpointIr(file: CheckpointFile): Promise<SchemaIR> 
   try {
     parsed = JSON.parse(text);
   } catch (err) {
-    throw new CheckpointFormatError(`${file.irPath} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+    throw new CheckpointFormatError(
+      `${file.irPath} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
   return irFromCheckpoint(parsed);
 }
@@ -263,10 +263,7 @@ export interface WrittenCheckpoint {
  * overwriting one rewrites a file another developer's fresh database may already have
  * jumped to.
  */
-export async function writeCheckpoint(
-  migrationsDir: string,
-  built: BuiltCheckpoint,
-): Promise<WrittenCheckpoint> {
+export async function writeCheckpoint(migrationsDir: string, built: BuiltCheckpoint): Promise<WrittenCheckpoint> {
   const id = `${built.plan.migration.id}_${CHECKPOINT_NAME}`;
   const sqlPath = join(migrationsDir, `${id}.sql`);
   const planPath = join(migrationsDir, `${id}.plan.json`);
@@ -336,10 +333,11 @@ export async function describeDrift(input: DescribeDriftInput): Promise<DriftRep
 /** One sentence for a refusal message, or `null` when there is nothing to add. */
 export function driftSentence(report: DriftReport): string | null {
   if (report.checkpoint === null || report.deltas.length === 0) return null;
-  const head = `Compared with checkpoint ${report.checkpoint}, the live schema differs in ${String(report.deltas.length)} object(s): ` +
+  const head =
+    `Compared with checkpoint ${report.checkpoint}, the live schema differs in ${String(report.deltas.length)} object(s): ` +
     `${report.deltas.slice(0, 12).join(", ")}${report.deltas.length > 12 ? ", …" : ""}.`;
   return report.exact
     ? head
     : `${head} ${report.since.length} migration(s) were applied after that checkpoint (${report.since.join(", ")}), so ` +
-      `their changes are in this list too — take a new checkpoint to narrow it.`;
+        `their changes are in this list too — take a new checkpoint to narrow it.`;
 }

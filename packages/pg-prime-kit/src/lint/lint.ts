@@ -155,10 +155,12 @@ function parseOneNolint(
 
   const code = head[1] ?? "";
   const tail = head[2]?.trim() ?? "";
-  if (tail === "") return fail(`nolint ${code} has no reason — design/06 §3.4 makes it mandatory so the suppression is reviewable`);
+  if (tail === "")
+    return fail(`nolint ${code} has no reason — design/06 §3.4 makes it mandatory so the suppression is reviewable`);
 
   const quoted = NOLINT_REASON.exec(tail);
-  if (!quoted) return fail(`nolint ${code} reason must be a single double-quoted string, received ${JSON.stringify(tail)}`);
+  if (!quoted)
+    return fail(`nolint ${code} reason must be a single double-quoted string, received ${JSON.stringify(tail)}`);
 
   const reason = (quoted[1] ?? "").replace(/\\(.)/g, "$1");
   // `""` and `"   "` are the same evasion as no reason at all, one keystroke longer.
@@ -210,12 +212,7 @@ export function lintPlan(plan: Plan, sqlText: string, options?: LintOptions): Li
   const style = options?.style === true || (selected !== null && [...selected].some(isStyleCode));
 
   const findings: LintFinding[] = [];
-  const record = (
-    code: string,
-    statement: number,
-    subject: string,
-    message: string,
-  ): void => {
+  const record = (code: string, statement: number, subject: string, message: string): void => {
     if (selected !== null && !selected.has(code)) return;
     const suppressor = suppressorFor(directives, code, statement);
     findings.push({

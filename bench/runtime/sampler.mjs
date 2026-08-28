@@ -201,7 +201,8 @@ export function bytesPerOp(
   const batch = Math.max(1, Math.min(maxBatch, Math.round(targetBatchBytes / Math.max(probe, 64))))
   const main = batchMedian(fn, batch, batches, overhead)
   // The cross-check: a quarter of the batch cannot be scavenging where the full one is not.
-  const quarter = batch > 4 ? batchMedian(fn, Math.max(1, batch >> 2), Math.ceil(batches / 2), overhead) : main
+  const quarter =
+    batch > 4 ? batchMedian(fn, Math.max(1, batch >> 2), Math.ceil(batches / 2), overhead) : main
   const worst = Math.max(main, quarter)
   return {
     median: Math.round(worst),
@@ -253,7 +254,12 @@ const REF_WORDS = ['select', '"users"', '.', '"id"', ' as ', '"k"', ', ', 'from'
 export function referenceWorkload() {
   const nodes = []
   for (let i = 0; i < 24; i++) {
-    const n = { k: 'ref', i, name: REF_WORDS[i % REF_WORDS.length], child: i > 0 ? nodes[i - 1] : null }
+    const n = {
+      k: 'ref',
+      i,
+      name: REF_WORDS[i % REF_WORDS.length],
+      child: i > 0 ? nodes[i - 1] : null,
+    }
     Object.freeze(n)
     REF_SET.add(n)
     nodes.push(n)

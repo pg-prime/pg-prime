@@ -129,10 +129,10 @@ function nullsOf(v: unknown, where: string): 'first' | 'last' | undefined {
 }
 
 export function asc(a: AnyOperand, nulls?: 'first' | 'last'): Order {
-  return orderNode(node(a, 'asc()'), 'asc', nullsOf(nulls, "asc(x, nulls)")) as unknown as Order
+  return orderNode(node(a, 'asc()'), 'asc', nullsOf(nulls, 'asc(x, nulls)')) as unknown as Order
 }
 export function desc(a: AnyOperand, nulls?: 'first' | 'last'): Order {
-  return orderNode(node(a, 'desc()'), 'desc', nullsOf(nulls, "desc(x, nulls)")) as unknown as Order
+  return orderNode(node(a, 'desc()'), 'desc', nullsOf(nulls, 'desc(x, nulls)')) as unknown as Order
 }
 
 /** Escape hatch for WS4: an `Order` is an `OrderItem`. */
@@ -216,11 +216,12 @@ export const fn: Fn = {
   // is a typo — `fn.count(u.typoed)` used to compile to `count(*)` and report the wrong number.
   // Arity, not the value, is what tells them apart.
   count(...a: [] | [AnyOperand]) {
-    return (
-      a.length === 0
-        ? aggNode('count', [], int8Codec as AnyCodec, { star: true })
-        : aggNode('count', [node(a[0], 'count()')], int8Codec as AnyCodec)
-    ) as unknown as Expr<bigint, 'int8'>
+    return (a.length === 0
+      ? aggNode('count', [], int8Codec as AnyCodec, { star: true })
+      : aggNode('count', [node(a[0], 'count()')], int8Codec as AnyCodec)) as unknown as Expr<
+      bigint,
+      'int8'
+    >
   },
   sum(a) {
     const codec = codecOfOperand(a)
@@ -249,10 +250,11 @@ export const fn: Fn = {
     return fnNode('now', [], timestamptzCodec as AnyCodec) as unknown as Expr<Date, 'timestamptz'>
   },
   toTsvector(config, a) {
-    return fnNode('to_tsvector', [regconfig(config), node(a, 'toTsvector()')], tsvectorCodec) as unknown as Expr<
-      unknown,
-      'tsvector'
-    >
+    return fnNode(
+      'to_tsvector',
+      [regconfig(config), node(a, 'toTsvector()')],
+      tsvectorCodec,
+    ) as unknown as Expr<unknown, 'tsvector'>
   },
   toTsquery: (config, q) => tsquery('to_tsquery', config, q),
   plaintoTsquery: (config, q) => tsquery('plainto_tsquery', config, q),

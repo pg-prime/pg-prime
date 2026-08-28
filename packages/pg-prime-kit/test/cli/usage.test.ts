@@ -20,7 +20,10 @@ describe("parseArgs", () => {
   ];
 
   it("takes `--flag value`, `--flag=value`, `--no-flag` and `--`", () => {
-    const r = parseArgs(["--to", "0007", "--dry-run", "--lock-wait=45s", "--schema", "a", "--schema", "b", "--", "tail"], specs);
+    const r = parseArgs(
+      ["--to", "0007", "--dry-run", "--lock-wait=45s", "--schema", "a", "--schema", "b", "--", "tail"],
+      specs,
+    );
     expect(r.errors).toEqual([]);
     expect(r.values).toEqual({ to: "0007", "dry-run": true, "lock-wait": 45_000, schema: ["a", "b"] });
     expect(r.positionals).toEqual(["tail"]);
@@ -34,9 +37,13 @@ describe("parseArgs", () => {
   });
 
   it("parses the duration spellings the flags document", () => {
-    expect([parseDuration("500"), parseDuration("500ms"), parseDuration("30s"), parseDuration("2m"), parseDuration("1h")]).toEqual([
-      500, 500, 30_000, 120_000, 3_600_000,
-    ]);
+    expect([
+      parseDuration("500"),
+      parseDuration("500ms"),
+      parseDuration("30s"),
+      parseDuration("2m"),
+      parseDuration("1h"),
+    ]).toEqual([500, 500, 30_000, 120_000, 3_600_000]);
     expect(parseDuration("later")).toBeNull();
   });
 });
@@ -55,7 +62,16 @@ describe("the binary's usage surface", () => {
     const migrate = await runCli(["migrate", "--help"]);
     expect(migrate.code).toBe(EXIT.ok);
     for (const name of [
-      "generate", "apply", "status", "baseline", "check", "verify", "lint", "push", "doctor", "unlock",
+      "generate",
+      "apply",
+      "status",
+      "baseline",
+      "check",
+      "verify",
+      "lint",
+      "push",
+      "doctor",
+      "unlock",
       "checkpoint",
     ]) {
       expect(migrate.stdout).toContain(name);
@@ -98,9 +114,19 @@ describe("the binary's usage surface", () => {
   it("lists design/06 §6.2's twelve commands plus `pull`, and no 'not in this release' section", async () => {
     const r = await runCli(["--help"]);
     for (const command of [
-      "migrate generate", "migrate apply", "migrate status", "migrate baseline", "migrate check",
-      "migrate verify", "migrate lint", "migrate push", "migrate doctor", "migrate unlock",
-      "migrate checkpoint", "db seed", "pull",
+      "migrate generate",
+      "migrate apply",
+      "migrate status",
+      "migrate baseline",
+      "migrate check",
+      "migrate verify",
+      "migrate lint",
+      "migrate push",
+      "migrate doctor",
+      "migrate unlock",
+      "migrate checkpoint",
+      "db seed",
+      "pull",
     ]) {
       expect(r.stdout, `root help should list ${command}`).toContain(command);
     }
@@ -133,8 +159,18 @@ describe("the binary's usage surface", () => {
   it("--output json puts even a usage error on stdout as an envelope", async () => {
     const r = await runCli(["migrate", "apply", "--dryrun", "--output", "json"]);
     expect(r.code).toBe(EXIT.error);
-    const envelope = JSON.parse(r.stdout) as { command: string; status: string; exitCode: number; error: { code: string } };
-    expect(envelope).toMatchObject({ command: "migrate apply", status: "error", exitCode: 1, error: { code: "usage" } });
+    const envelope = JSON.parse(r.stdout) as {
+      command: string;
+      status: string;
+      exitCode: number;
+      error: { code: string };
+    };
+    expect(envelope).toMatchObject({
+      command: "migrate apply",
+      status: "error",
+      exitCode: 1,
+      error: { code: "usage" },
+    });
   });
 
   it("--output json is honoured even when the argv that asked for it names no command", async () => {

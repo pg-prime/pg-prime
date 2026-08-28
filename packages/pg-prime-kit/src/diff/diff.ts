@@ -62,7 +62,12 @@ export function diffIR(currentIn: SchemaIR, desired: SchemaIR, options: DiffOpti
   const deltas: Delta[] = [];
 
   const byId = (ir: SchemaIR): Map<string, Fact> =>
-    new Map(ir.facts().filter((f) => f.id.kind !== "enumLabel").map((f) => [encodeId(f.id), f]));
+    new Map(
+      ir
+        .facts()
+        .filter((f) => f.id.kind !== "enumLabel")
+        .map((f) => [encodeId(f.id), f]),
+    );
 
   const cur = byId(current);
   const des = byId(desired);
@@ -157,7 +162,12 @@ export function diffIR(currentIn: SchemaIR, desired: SchemaIR, options: DiffOpti
       const next = i + 1 < desiredLabels.length ? desiredLabels[i + 1]! : null;
       deltas.push({
         op: "addEnumValue",
-        id: { kind: "enumLabel", schema: desiredType.id.schema, type: (desiredType.id as { name: string }).name, name: label },
+        id: {
+          kind: "enumLabel",
+          schema: desiredType.id.schema,
+          type: (desiredType.id as { name: string }).name,
+          name: label,
+        },
         anchor: prev ? { position: "AFTER", label: prev } : next ? { position: "BEFORE", label: next } : null,
       });
     }

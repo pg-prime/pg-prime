@@ -66,9 +66,7 @@ describe("extension: created if absent, never dropped", () => {
         extractCatalog(c, { schemas: ["public"] }),
       );
       const sql = buildStatements(diffIR(current.ir, desired.ir), desired.ir).statements;
-      expect(sql.map((s) => s.sql)).toEqual([
-        `CREATE EXTENSION IF NOT EXISTS "hstore" SCHEMA "public"`,
-      ]);
+      expect(sql.map((s) => s.sql)).toEqual([`CREATE EXTENSION IF NOT EXISTS "hstore" SCHEMA "public"`]);
       // `IF NOT EXISTS` is not politeness: an extension installed out of band by a DBA is
       // the common case, and failing on it is refusing to adopt the database.
       expect(sql[0]?.idempotent).toBe(true);

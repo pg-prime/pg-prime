@@ -123,13 +123,7 @@ export interface GeneratedFile {
   readonly planPath?: string;
 }
 
-export type GenerateStatus =
-  | "generated"
-  | "up_to_date"
-  | "missing_hints"
-  | "hazards"
-  | "proof_failed"
-  | "refused";
+export type GenerateStatus = "generated" | "up_to_date" | "missing_hints" | "hazards" | "proof_failed" | "refused";
 
 export interface GenerateResult {
   readonly status: GenerateStatus;
@@ -162,7 +156,9 @@ const adminFor = (target: ConnInfo, admin?: ConnInfo): ConnInfo =>
 
 /** `--allow-data-loss` semantics live in `writePlan`; this only reads the plan back. */
 const unacknowledged = (plan: Plan): readonly { code: string; subject: string }[] =>
-  plan.hazards.filter((h) => h.severity === "error" && !h.acknowledged).map((h) => ({ code: h.code, subject: h.subject }));
+  plan.hazards
+    .filter((h) => h.severity === "error" && !h.acknowledged)
+    .map((h) => ({ code: h.code, subject: h.subject }));
 
 export async function generate(input: GenerateInput): Promise<GenerateResult> {
   const started = Date.now();
@@ -307,7 +303,17 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
         );
       }
     } else {
-      proof = await proveIt(input, shadow, schemas, current, desired, staged.files, buildOptions, hints, extractorDiagnostics);
+      proof = await proveIt(
+        input,
+        shadow,
+        schemas,
+        current,
+        desired,
+        staged.files,
+        buildOptions,
+        hints,
+        extractorDiagnostics,
+      );
     }
 
     const stageFingerprints = proof?.stageFingerprints ?? [];
@@ -428,7 +434,8 @@ function draftPlans(
       seq: input.seq,
       // design/06 §4.1: duplicate NNNN is legal, ordered by (seq, name). `_concurrently`
       // sorts after the bare name, which is the order the two have to apply in.
-      name: file.stage === "main" ? input.name : `${input.name}_${file.stage === "concurrent" ? "concurrently" : "data"}`,
+      name:
+        file.stage === "main" ? input.name : `${input.name}_${file.stage === "concurrent" ? "concurrently" : "data"}`,
       statements: file.statements,
       segments: file.segments,
       // The LIVE fingerprint, not `diff.current`'s. `diffIR` returns the current IR with
@@ -578,11 +585,7 @@ export function annotationHints(schema: SchemaLike, defaultSchema = "public"): R
  * the same batch, because `renamedFrom` on a column of a renamed table describes the state
  * before both.
  */
-export function acceptHints(
-  hints: readonly RenameHint[],
-  current: SchemaIR,
-  desired: SchemaIR,
-): RenameHint[] {
+export function acceptHints(hints: readonly RenameHint[], current: SchemaIR, desired: SchemaIR): RenameHint[] {
   const asId = (v: StableId | string): StableId => (typeof v === "string" ? parseId(v) : v);
   const renamedTables = new Map<string, string>();
   const accepted: RenameHint[] = [];
@@ -620,9 +623,7 @@ function unresolvedDecisions(
   drafts: readonly Draft[],
   hints: readonly RenameHint[],
 ): Unresolved[] {
-  const answered = new Set(
-    hints.map((h) => (typeof h.to === "string" ? h.to : encodeId(h.to))),
-  );
+  const answered = new Set(hints.map((h) => (typeof h.to === "string" ? h.to : encodeId(h.to))));
   const out: Unresolved[] = candidates
     .filter((c) => !answered.has(c.to))
     .map((c) => ({
@@ -717,7 +718,10 @@ export interface DataStubInput {
 
 /** Fold any identifier into `MIGRATION_NAME`'s alphabet, so the runner can see the file. */
 export const slug = (text: string): string =>
-  text.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "x";
+  text
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "x";
 
 /**
  * `migrate generate --data`, and the §3.5 row-7 backfill stub — design/06 §7 lane 2.

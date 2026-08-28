@@ -41,10 +41,34 @@ export interface CliIo {
 }
 
 const GLOBAL_OPTIONS: readonly OptionSpec[] = [
-  { name: "config", type: "string", placeholder: "path", describe: "path to pg-prime.config.ts", defaultText: "the nearest one at or above the cwd" },
-  { name: "url", type: "string", placeholder: "url", describe: "postgres:// connection URL; overrides the config file" },
-  { name: "migrations", type: "string", placeholder: "dir", describe: "the migrations directory", defaultText: "./migrations" },
-  { name: "schema", type: "string", placeholder: "name", repeatable: true, describe: "a managed schema; repeatable", defaultText: "public" },
+  {
+    name: "config",
+    type: "string",
+    placeholder: "path",
+    describe: "path to pg-prime.config.ts",
+    defaultText: "the nearest one at or above the cwd",
+  },
+  {
+    name: "url",
+    type: "string",
+    placeholder: "url",
+    describe: "postgres:// connection URL; overrides the config file",
+  },
+  {
+    name: "migrations",
+    type: "string",
+    placeholder: "dir",
+    describe: "the migrations directory",
+    defaultText: "./migrations",
+  },
+  {
+    name: "schema",
+    type: "string",
+    placeholder: "name",
+    repeatable: true,
+    describe: "a managed schema; repeatable",
+    defaultText: "public",
+  },
   { name: "output", type: "string", placeholder: "text|json", describe: "output format", defaultText: "text" },
   { name: "help", type: "boolean", describe: "print this help" },
   { name: "version", type: "boolean", describe: "print the version" },
@@ -81,7 +105,8 @@ const COMMANDS: readonly Command[] = [
     aliases: [],
     summary: "build a migration from the TypeScript schema: diff, order, lock-safe rewrite, prove, write.",
     options: GENERATE_OPTIONS,
-    exits: "0 written or nothing to do · 1 error · 2 a rename or data-loss decision is missing · 3 lint · 7 proof failed",
+    exits:
+      "0 written or nothing to do · 1 error · 2 a rename or data-loss decision is missing · 3 lint · 7 proof failed",
     run: runGenerate,
   },
   {
@@ -111,9 +136,11 @@ const COMMANDS: readonly Command[] = [
   {
     name: "check",
     aliases: [],
-    summary: "the default CI gate: is the repository consistent with the schema, the checksums and the database? No history writes.",
+    summary:
+      "the default CI gate: is the repository consistent with the schema, the checksums and the database? No history writes.",
     options: CHECK_OPTIONS,
-    exits: "0 ok · 1 error · 2 missing hints · 3 lint · 4 the schema changed and no migration was generated · 5 pending",
+    exits:
+      "0 ok · 1 error · 2 missing hints · 3 lint · 4 the schema changed and no migration was generated · 5 pending",
     run: runCheck,
   },
   {
@@ -144,7 +171,8 @@ const COMMANDS: readonly Command[] = [
   {
     name: "doctor",
     aliases: [],
-    summary: "read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables.",
+    summary:
+      "read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables.",
     options: DOCTOR_OPTIONS,
     exits: "0 healthy · 4 findings",
     run: runDoctor,
@@ -296,7 +324,15 @@ export async function main(argv: readonly string[], io: Partial<CliIo> = {}): Pr
       out(`${rootHelp()}\n`);
       return EXIT.ok;
     }
-    return emit(fail("pg-prime", EXIT.error, "usage", `expected a command before ${JSON.stringify(argv[0])}. Try \`pg-prime --help\`.`), earlyFormat);
+    return emit(
+      fail(
+        "pg-prime",
+        EXIT.error,
+        "usage",
+        `expected a command before ${JSON.stringify(argv[0])}. Try \`pg-prime --help\`.`,
+      ),
+      earlyFormat,
+    );
   }
 
   // Routing is positional and one token deep: `pull` is a command of its own, `migrate`
@@ -325,14 +361,28 @@ export async function main(argv: readonly string[], io: Partial<CliIo> = {}): Pr
         return EXIT.ok;
       }
       return emit(
-        fail(noun, EXIT.error, "usage", `pg-prime ${noun} needs a command: ${under(noun).map((c) => c.name).join(", ")}.`),
+        fail(
+          noun,
+          EXIT.error,
+          "usage",
+          `pg-prime ${noun} needs a command: ${under(noun)
+            .map((c) => c.name)
+            .join(", ")}.`,
+        ),
         earlyFormat,
       );
     }
     command = under(noun).find((c) => c.name === verb || c.aliases.includes(verb));
     if (!command) {
       return emit(
-        fail(noun, EXIT.error, "usage", `unknown command \`${noun} ${verb}\`: ${under(noun).map((c) => c.name).join(", ")}.`),
+        fail(
+          noun,
+          EXIT.error,
+          "usage",
+          `unknown command \`${noun} ${verb}\`: ${under(noun)
+            .map((c) => c.name)
+            .join(", ")}.`,
+        ),
         earlyFormat,
       );
     }
@@ -353,7 +403,10 @@ export async function main(argv: readonly string[], io: Partial<CliIo> = {}): Pr
     return emit(fail(label, EXIT.error, "usage", parsed.errors.join("; ")), format);
   }
   if (requested !== undefined && requested !== "text" && requested !== "json") {
-    return emit(fail(label, EXIT.error, "usage", `--output must be text or json, received ${JSON.stringify(requested)}`), format);
+    return emit(
+      fail(label, EXIT.error, "usage", `--output must be text or json, received ${JSON.stringify(requested)}`),
+      format,
+    );
   }
 
   try {

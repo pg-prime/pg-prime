@@ -139,7 +139,12 @@ describe("design/06 §7 lane 2 — a batched, resumable backfill", () => {
 
       /* design/06 §7: `status` shows a running backfill's rows_done. */
       const status = await runCli(["migrate", "status", "--url", urlOf(conn), "--migrations", dir, "--output", "json"]);
-      const data = envelopeOf(status)["data"] as { migrationId: string; migrationState: string; rowsDone: number; done: boolean }[];
+      const data = envelopeOf(status)["data"] as {
+        migrationId: string;
+        migrationState: string;
+        rowsDone: number;
+        done: boolean;
+      }[];
       expect(data).toHaveLength(1);
       expect(data[0]!.migrationId).toBe("0001_backfill_country");
       expect(data[0]!.migrationState).toBe("running");
@@ -151,7 +156,10 @@ describe("design/06 §7 lane 2 — a batched, resumable backfill", () => {
       expect(resumed.code, resumed.stdout + resumed.stderr).toBe(EXIT.ok);
       const envelope = envelopeOf(resumed);
       expect(envelope["status"]).toBe("applied");
-      const applied = envelope["applied"] as { id: string; batch: { rowsDone: number; iterations: number; resumed: boolean } }[];
+      const applied = envelope["applied"] as {
+        id: string;
+        batch: { rowsDone: number; iterations: number; resumed: boolean };
+      }[];
       expect(applied).toHaveLength(1);
       expect(applied[0]!.batch.resumed).toBe(true);
       expect(applied[0]!.batch.rowsDone).toBe(ROWS);
@@ -307,7 +315,7 @@ SELECT 2::bigint AS rows_done, 'stuck'::text AS watermark;
       expect(envelope["status"]).toBe("failed");
       const error = envelope["error"] as { message: string };
       expect(error.message).toContain("without moving its watermark");
-      expect(error.message).toContain("\"stuck\"");
+      expect(error.message).toContain('"stuck"');
 
       const progress = (await progressOf(conn, "0001_stall"))!;
       expect(progress.values["0"]).toBe("stuck");

@@ -47,7 +47,14 @@ import {
   projection,
   select,
 } from '../../src/compile/nodes.js'
-import { arrayCodecOf, boolCodec, int4Codec, int8Codec, textCodec, timestamptzCodec } from '../../src/codec/index.js'
+import {
+  arrayCodecOf,
+  boolCodec,
+  int4Codec,
+  int8Codec,
+  textCodec,
+  timestamptzCodec,
+} from '../../src/codec/index.js'
 import { sql, toNode } from '../../src/sql/fragment.js'
 import * as ops from '../../src/query/types.js'
 import { connect, makeHarness, planProbe, sqlState, type Harness } from '../live/_harness.js'
@@ -165,9 +172,7 @@ function opLeaf(r: () => number, mint: () => string): Expr {
     case 5:
       return asExpr(ops.isDistinctFrom(ur['deleted_at']!, null))
     case 6:
-      return asExpr(
-        ops.between(ur['created_at']!, new Date(0), new Date('2100-01-01T00:00:00Z')),
-      )
+      return asExpr(ops.between(ur['created_at']!, new Date(0), new Date('2100-01-01T00:00:00Z')))
     case 7:
       return asExpr(ops.notILike(ur['name']!, `%${mint()}%`))
     case 8:
@@ -288,10 +293,7 @@ function randomSelect(r: () => number): SelectNode {
   const mint = () => payload(r, n++)
   const orderBy: OrderItem[] = r() < 0.6 ? [pick(r, [desc(u('created_at')), asc(u('id'))])] : []
   return select({
-    projection: [
-      ...randomProjection(r, mint),
-      ...(r() < 0.35 ? [randomNested(r)] : []),
-    ],
+    projection: [...randomProjection(r, mint), ...(r() < 0.35 ? [randomNested(r)] : [])],
     from: usersFrom,
     ...(r() < 0.8 ? { where: randomPredicate(r, int(r, 0, 2), mint) } : {}),
     ...(orderBy.length > 0 ? { orderBy } : {}),
@@ -329,7 +331,12 @@ describe('whole-compiler fuzz', () => {
         expect(compile(ast).sql, label).toBe(c0.sql)
       } catch (e) {
         if (seed !== null) {
-          recordFinding('compiler', { seed, invariant: 'a-d', note: 'offline invariant broke', kind: 'found' })
+          recordFinding('compiler', {
+            seed,
+            invariant: 'a-d',
+            note: 'offline invariant broke',
+            kind: 'found',
+          })
         }
         throw e
       }
@@ -350,7 +357,7 @@ describe('whole-compiler fuzz', () => {
     expect(statementCount(`select E'\\'; ' ; select 2`)).toBe(2)
   })
 
-  it('(d)+(e) PostgreSQL plans the SQL, and runs it with the codecs\' declared param types', async () => {
+  it("(d)+(e) PostgreSQL plans the SQL, and runs it with the codecs' declared param types", async () => {
     // (d) `EXPLAIN (GENERIC_PLAN)` is PG 16+: it plans a parameterised statement with no values
     //     and no execution — exactly the describe-only round trip 03 §3.4 asks for. It says
     //     nothing about parameter TYPES, because it plans every `$n` as untyped.
@@ -373,7 +380,12 @@ describe('whole-compiler fuzz', () => {
     let planned = 0
     let executed = 0
     let tolerated = 0
-    const failures: { stage: 'plan' | 'execute'; sql: string; code?: string | undefined; message: string }[] = []
+    const failures: {
+      stage: 'plan' | 'execute'
+      sql: string
+      code?: string | undefined
+      message: string
+    }[] = []
 
     const record = (stage: 'plan' | 'execute', sql: string, e: unknown): void => {
       const code = sqlState(e)

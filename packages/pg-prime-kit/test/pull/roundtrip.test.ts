@@ -80,7 +80,10 @@ describe.each(CORPORA)("pull round-trips $name", (corpus) => {
     expect(await serverAvailable()).toBe(true);
     schemas = await schemasOf(corpus.name);
     await makeDatabase(database);
-    await runSqlScript(dbConn(database), await readFile(join(REPO_ROOT, "fixtures", "corpus", corpus.name, "schema.sql"), "utf8"));
+    await runSqlScript(
+      dbConn(database),
+      await readFile(join(REPO_ROOT, "fixtures", "corpus", corpus.name, "schema.sql"), "utf8"),
+    );
     project = await makeProject(`pull-${corpus.name}`, { url: urlOf(dbConn(database)), schemas, noSchema: false });
     await mkdir(join(project.dir, "db"), { recursive: true });
   }, T);
@@ -132,12 +135,17 @@ describe.each(CORPORA)("pull round-trips $name", (corpus) => {
 
       /* 5. THE GATE — generate against the same database, with the D10 witness strict */
       const generated = await runCli([
-        "migrate", "generate",
-        "--config", project.config,
-        "--name", "roundtrip",
-        "--dump-oracle", "strict",
+        "migrate",
+        "generate",
+        "--config",
+        project.config,
+        "--name",
+        "roundtrip",
+        "--dump-oracle",
+        "strict",
         "--dry-run",
-        "--output", "json",
+        "--output",
+        "json",
       ]);
       const g = envelopeOf(generated);
       if (corpus.emptyDiff) {
@@ -148,7 +156,9 @@ describe.each(CORPORA)("pull round-trips $name", (corpus) => {
         // The residue is real: the objects pull could not emit are missing from the desired
         // state, so `generate` plans to create/drop them. What is asserted is that the
         // difference is CONFINED to the recorded residue's objects.
-        expect(["up_to_date", "generated", "dry_run", "missing_hints", "hazards", "refused", "proof_failed"]).toContain(g["status"]);
+        expect(["up_to_date", "generated", "dry_run", "missing_hints", "hazards", "refused", "proof_failed"]).toContain(
+          g["status"],
+        );
       }
 
       /* 6. The proof, and the D10 witness where it can mean anything.
@@ -172,13 +182,19 @@ describe.each(CORPORA)("pull round-trips $name", (corpus) => {
       await makeDatabase(empty);
       try {
         const built = await runCli([
-          "migrate", "generate",
-          "--config", project.config,
-          "--url", urlOf(dbConn(empty)),
-          "--name", "init",
-          "--dump-oracle", repeatables === 0 ? "strict" : "warn",
+          "migrate",
+          "generate",
+          "--config",
+          project.config,
+          "--url",
+          urlOf(dbConn(empty)),
+          "--name",
+          "init",
+          "--dump-oracle",
+          repeatables === 0 ? "strict" : "warn",
           "--dry-run",
-          "--output", "json",
+          "--output",
+          "json",
         ]);
         const e = envelopeOf(built);
         expect(built.code, `${built.stdout}\n${built.stderr}`).toBe(EXIT.ok);

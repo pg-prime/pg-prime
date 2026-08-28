@@ -127,11 +127,7 @@ export async function loadDesired(
     ir: remapIr(extracted.ir, reverse),
     pgVersionNum: extracted.pgVersionNum,
     observed: remapObserved(extracted.observed, reverse),
-    diagnostics: [
-      ...emitted.diagnostics,
-      ...shadow.diagnostics,
-      ...remapDiagnostics(extracted.diagnostics, reverse),
-    ],
+    diagnostics: [...emitted.diagnostics, ...shadow.diagnostics, ...remapDiagnostics(extracted.diagnostics, reverse)],
   };
 }
 

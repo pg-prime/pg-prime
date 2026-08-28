@@ -112,4 +112,3 @@ interface OpsByClass<M extends ColMeta> {
 export type MRef<A extends string, K extends string, M extends ColMeta> = Ref<A, K, M> &
   BaseOps<M> &
   OpsByClass<M>[ClassOf<M>]
-

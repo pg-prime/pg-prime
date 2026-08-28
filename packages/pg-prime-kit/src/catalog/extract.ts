@@ -1,10 +1,4 @@
-import {
-  CATALOG_PROVENANCE,
-  SchemaIR,
-  type DependencyEdge,
-  type Fact,
-  type Provenance,
-} from "../ir/fact.js";
+import { CATALOG_PROVENANCE, SchemaIR, type DependencyEdge, type Fact, type Provenance } from "../ir/fact.js";
 import { commentId, encodeId, type StableId } from "../ir/stable-id.js";
 import { defaultNotNullName, quoteQualified } from "../sql/ident.js";
 import { GENERATED_NAME } from "./payloads.js";
@@ -643,10 +637,7 @@ function templatizeIndexDef(def: string): string {
   return out.replace(INDEXDEF_ONLY, "$1");
 }
 
-export async function extractCatalog(
-  client: CatalogClient,
-  options: ExtractOptions = {},
-): Promise<ExtractResult> {
+export async function extractCatalog(client: CatalogClient, options: ExtractOptions = {}): Promise<ExtractResult> {
   const schemas = [...(options.schemas ?? ["public"])].sort();
   const prov = options.provenance ?? CATALOG_PROVENANCE;
   const facts: Fact[] = [];
@@ -663,9 +654,7 @@ export async function extractCatalog(
     // `SET LOCAL x = '<option>'` cannot take a bind, so the option used to be
     // string-interpolated straight from caller input. `set_config` is the same
     // GUC write with a real parameter.
-    await client.query("SELECT set_config('statement_timeout', $1, true)", [
-      options.statementTimeout ?? "30s",
-    ]);
+    await client.query("SELECT set_config('statement_timeout', $1, true)", [options.statementTimeout ?? "30s"]);
     const ver = await client.query("SHOW server_version_num");
     pgVersionNum = Number(Object.values(ver.rows[0] ?? {})[0] ?? 0);
 
@@ -785,9 +774,7 @@ export async function extractCatalog(
       const id: StableId = { kind: "table", schema: str(r["schema"]), name: str(r["name"]) };
       const parentName = nstr(r["parent_name"]);
       const partitionOf =
-        parentName === null
-          ? null
-          : encodeId({ kind: "table", schema: str(r["parent_schema"]), name: parentName });
+        parentName === null ? null : encodeId({ kind: "table", schema: str(r["parent_schema"]), name: parentName });
       facts.push({
         id,
         parent: { kind: "schema", schema: id.schema },
@@ -1165,10 +1152,7 @@ async function observe(
  * first row between the probe and the apply invalidates the answer either way, which is
  * exactly why MF is a hazard rather than a proof.
  */
-export async function probeEmptiness(
-  client: CatalogClient,
-  tables: readonly StableId[],
-): Promise<Set<string>> {
+export async function probeEmptiness(client: CatalogClient, tables: readonly StableId[]): Promise<Set<string>> {
   const empty = new Set<string>();
   for (const t of tables) {
     if (t.kind !== "table") continue;
@@ -1189,9 +1173,7 @@ export async function probeEmptiness(
 export function observedCounts(observed: readonly ObservedObject[]): { kind: string; count: number }[] {
   const counts = new Map<string, number>();
   for (const o of observed) counts.set(o.kind, (counts.get(o.kind) ?? 0) + 1);
-  return [...counts]
-    .map(([kind, count]) => ({ kind, count }))
-    .sort((a, b) => (a.kind < b.kind ? -1 : 1));
+  return [...counts].map(([kind, count]) => ({ kind, count })).sort((a, b) => (a.kind < b.kind ? -1 : 1));
 }
 
 /** One `info` diagnostic per observed kind — `06` §2.2: reported by `status` and `doctor`. */
@@ -1213,10 +1195,7 @@ export function observationDiagnostics(observed: readonly ObservedObject[]): Dia
  * label as a string literal. Over-matching costs a redundant commit boundary;
  * under-matching costs a failed migration — so the bias is deliberate.
  */
-export function evaluatedEnumLabels(
-  expr: string,
-  enumLabels: ReadonlyMap<string, readonly string[]>,
-): StableId[] {
+export function evaluatedEnumLabels(expr: string, enumLabels: ReadonlyMap<string, readonly string[]>): StableId[] {
   const out: StableId[] = [];
   for (const [qualified, labels] of enumLabels) {
     const dot = qualified.lastIndexOf(".");

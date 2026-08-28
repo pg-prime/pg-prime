@@ -140,7 +140,15 @@ describe("third-party corpus: baseline → verify → pg_dump witness (01 §11.6
 
           /* 2. baseline, through the binary. */
           const baseline = await runCli([
-            "migrate", "baseline", "--url", url, "--migrations", dir, ...schemaFlags, "--output", "json",
+            "migrate",
+            "baseline",
+            "--url",
+            url,
+            "--migrations",
+            dir,
+            ...schemaFlags,
+            "--output",
+            "json",
           ]);
           expect(baseline.code, baseline.stdout + baseline.stderr).toBe(EXIT.ok);
           const b = envelopeOf(baseline);
@@ -153,8 +161,18 @@ describe("third-party corpus: baseline → verify → pg_dump witness (01 §11.6
           /* 3. verify: replay 0000_baseline from empty and diff against A. */
           const started = Date.now();
           const verify = await runCli([
-            "migrate", "verify", "--url", url, "--migrations", dir, ...schemaFlags,
-            "--against", "target", "--keep", "--output", "json",
+            "migrate",
+            "verify",
+            "--url",
+            url,
+            "--migrations",
+            dir,
+            ...schemaFlags,
+            "--against",
+            "target",
+            "--keep",
+            "--output",
+            "json",
           ]);
           const replayMs = Date.now() - started;
           const v = envelopeOf(verify);

@@ -16,13 +16,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import {
-  boolCodec,
-  int4Codec,
-  int8Codec,
-  numericCodec,
-  textCodec,
-} from '../../src/codec/index.js'
+import { boolCodec, int4Codec, int8Codec, numericCodec, textCodec } from '../../src/codec/index.js'
 import type { RawPart, SelectNode } from '../../src/compile/ast.js'
 import { compile, compileExpr } from '../../src/compile/compiler.js'
 import {

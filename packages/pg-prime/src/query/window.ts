@@ -131,7 +131,8 @@ function frame(mode: unknown, f: FrameOpts): NonNullable<WindowDef['frame']> {
     mode: oneOf(mode, FRAME_MODES, 'a window frame mode'),
     start: bound(f.from, 'a window frame start'),
     end: f.to === undefined ? undefined : bound(f.to, 'a window frame end'),
-    exclude: f.exclude === undefined ? undefined : oneOf(f.exclude, EXCLUSIONS, 'frame({ exclude })'),
+    exclude:
+      f.exclude === undefined ? undefined : oneOf(f.exclude, EXCLUSIONS, 'frame({ exclude })'),
   }
 }
 
@@ -191,7 +192,8 @@ export function toWindowDef(v: WindowSpec | WindowLiteral | WindowFn): WindowDef
   }
   const lit = v as WindowLiteral
   const def: WindowDef = {
-    partitionBy: lit.partitionBy === undefined ? undefined : toExprList(lit.partitionBy, 'partitionBy'),
+    partitionBy:
+      lit.partitionBy === undefined ? undefined : toExprList(lit.partitionBy, 'partitionBy'),
     orderBy: lit.orderBy === undefined ? undefined : toOrderItems(lit.orderBy),
     frame: lit.frame === undefined ? undefined : frame(lit.frame.mode, lit.frame),
   }

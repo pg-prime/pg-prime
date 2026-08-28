@@ -116,7 +116,8 @@ function intCodec<N extends string>(
   const decodeText = (raw: string): number => {
     if (!INTEGER_TEXT.test(raw)) throw new PgDecodeError(name, raw, 'not an integer')
     const n = Number(raw)
-    if (!Number.isSafeInteger(n)) throw new PgDecodeError(name, raw, 'outside the safe-integer range')
+    if (!Number.isSafeInteger(n))
+      throw new PgDecodeError(name, raw, 'outside the safe-integer range')
     return n
   }
   return def<number, number, N>({
@@ -657,7 +658,15 @@ function parseTimestamptz(raw: string, ctx: CodecContext | undefined, codecName:
   let year = Number(yStr)
   if (bc) year = 1 - year
   const ms = frac ? Number(frac.padEnd(6, '0').slice(0, 3)) : 0
-  let t = Date.UTC(2000, Number(moStr) - 1, Number(dStr), Number(hStr), Number(miStr), Number(sStr), ms)
+  let t = Date.UTC(
+    2000,
+    Number(moStr) - 1,
+    Number(dStr),
+    Number(hStr),
+    Number(miStr),
+    Number(sStr),
+    ms,
+  )
   const d = new Date(t)
   d.setUTCFullYear(year)
   t = d.getTime()
@@ -667,7 +676,8 @@ function parseTimestamptz(raw: string, ctx: CodecContext | undefined, codecName:
     t -= offsetSec * 1000
   }
   const out = new Date(t)
-  if (Number.isNaN(out.getTime())) throw new PgDecodeError(codecName, raw, 'produced an Invalid Date')
+  if (Number.isNaN(out.getTime()))
+    throw new PgDecodeError(codecName, raw, 'produced an Invalid Date')
   return out
 }
 
@@ -720,7 +730,8 @@ export const timestamptzStringCodec = def({
   },
   decodeText: (raw): string => raw,
   decodeJson: (raw) => {
-    if (typeof raw !== 'string') throw new PgDecodeError('timestamptz:string', raw, 'expected string')
+    if (typeof raw !== 'string')
+      throw new PgDecodeError('timestamptz:string', raw, 'expected string')
     return raw
   },
 })
@@ -1014,7 +1025,8 @@ function decodeByteaHex(raw: string): Uint8Array {
   for (let i = 0, p = 2; i < out.length; i++, p += 2) {
     const hi = HEX_NIBBLE[raw.charCodeAt(p)] ?? -1
     const lo = HEX_NIBBLE[raw.charCodeAt(p + 1)] ?? -1
-    if (hi < 0 || lo < 0) throw new PgDecodeError('bytea', raw, `invalid hex digit at offset ${p - 2}`)
+    if (hi < 0 || lo < 0)
+      throw new PgDecodeError('bytea', raw, `invalid hex digit at offset ${p - 2}`)
     out[i] = (hi << 4) | lo
   }
   return out
@@ -1068,7 +1080,11 @@ export function arrayCodec<TIn, TOut, N extends string>(
       // `parseArrayLiteral` is a pure grammar and throws a bare `SyntaxError` with no codec and
       // no column in it. Every other decode failure in this layer is a `PgDecodeError`; a caller
       // catching that class must not miss a malformed array literal.
-      throw new PgDecodeError(name, raw, cause instanceof Error ? cause.message : 'malformed array literal')
+      throw new PgDecodeError(
+        name,
+        raw,
+        cause instanceof Error ? cause.message : 'malformed array literal',
+      )
     }
     return walk(parsed) as (TOut | null)[]
   }
@@ -1091,7 +1107,11 @@ export function arrayCodec<TIn, TOut, N extends string>(
           // `undefined` is NOT SQL NULL. It is a hole in the caller's array — usually an
           // off-by-one or a `map` that forgot to return — and writing NULL for it stores a lie.
           if (leaf === undefined)
-            throw new PgEncodeError(name, leaf, 'an array element (undefined is not SQL NULL — use null)')
+            throw new PgEncodeError(
+              name,
+              leaf,
+              'an array element (undefined is not SQL NULL — use null)',
+            )
           return leaf === null ? null : asText(element.encode(leaf as TIn), name)
         },
         () => elementIsLeaf,
@@ -1134,7 +1154,8 @@ export function arrayCodec<TIn, TOut, N extends string>(
 function asText(p: PgParam, codecName: string): string {
   if (typeof p === 'string') return p
   if (p === null) return ''
-  if (p instanceof Uint8Array) return `\\x${Array.from(p, (b) => HEX[b >> 4]! + HEX[b & 15]!).join('')}`
+  if (p instanceof Uint8Array)
+    return `\\x${Array.from(p, (b) => HEX[b >> 4]! + HEX[b & 15]!).join('')}`
   throw new PgEncodeError(codecName, p, 'a text-encodable array element')
 }
 
@@ -1151,7 +1172,10 @@ export function arrayCodecOf(element: AnyCodec, registry?: CodecRegistry): AnyCo
   if (named) return named
   const hit = DERIVED_ARRAYS.get(element)
   if (hit !== undefined) return hit
-  const built = arrayCodec(element as Codec<never, unknown>, element.arrayOid) as unknown as AnyCodec
+  const built = arrayCodec(
+    element as Codec<never, unknown>,
+    element.arrayOid,
+  ) as unknown as AnyCodec
   DERIVED_ARRAYS.set(element, built)
   return built
 }

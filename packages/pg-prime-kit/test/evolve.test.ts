@@ -12,13 +12,7 @@ import { withClient } from "../src/db/pg.js";
 import { diffIR } from "../src/diff/diff.js";
 import { generateFromDatabases as generate } from "../src/generate.js";
 import { applySegments } from "../src/runner/apply.js";
-import {
-  ADMIN,
-  catalogsNotNullConstraints,
-  destroyDatabase,
-  makeDatabase,
-  serverAvailable,
-} from "./support/db.js";
+import { ADMIN, catalogsNotNullConstraints, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
 
 const CURRENT_DB = "pgprime_spike_evolve_current";
 const DESIRED_DB = "pgprime_spike_evolve_desired";
@@ -67,7 +61,9 @@ describe("evolution: diffing two populated catalogs", () => {
         expect(has(/VALIDATE CONSTRAINT "customers_signup_source_not_null"/)).toBe(true);
         expect(has(/ALTER COLUMN "signup_source" SET NOT NULL/)).toBe(false);
       } else {
-        expect(has(/ADD CONSTRAINT "customers_signup_source_not_null" CHECK \("signup_source" IS NOT NULL\) NOT VALID/)).toBe(true);
+        expect(
+          has(/ADD CONSTRAINT "customers_signup_source_not_null" CHECK \("signup_source" IS NOT NULL\) NOT VALID/),
+        ).toBe(true);
         expect(has(/VALIDATE CONSTRAINT "customers_signup_source_not_null"/)).toBe(true);
         expect(has(/ALTER COLUMN "signup_source" SET NOT NULL/)).toBe(true);
         expect(has(/DROP CONSTRAINT IF EXISTS "customers_signup_source_not_null"/)).toBe(true);
@@ -93,9 +89,7 @@ describe("evolution: diffing two populated catalogs", () => {
       const addUnique = sql.findIndex((s) => /ADD CONSTRAINT "customers_email_key"/.test(s));
       expect(addUnique).toBeGreaterThanOrEqual(0);
 
-      const report = await withClient(target, (c) =>
-        applySegments(c, result.plan.statements, result.plan.segments),
-      );
+      const report = await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
       expect(report.error).toBeUndefined();
 
       const after = await withClient(target, (c) => extractCatalog(c, { schemas: ["public"] }));
@@ -120,9 +114,7 @@ describe("evolution: diffing two populated catalogs", () => {
         schemas: ["public"],
         seq: 1,
         name: "evolve_renamed",
-        renameHints: [
-          { from: "column:public.customers.nickname", to: "column:public.customers.full_name" },
-        ],
+        renameHints: [{ from: "column:public.customers.nickname", to: "column:public.customers.full_name" }],
       });
 
       expect(result.diff.renames).toEqual([
@@ -143,9 +135,7 @@ describe("evolution: diffing two populated catalogs", () => {
       ]);
 
       expect(result.plan.proof.status).toBe("passed");
-      const report = await withClient(target, (c) =>
-        applySegments(c, result.plan.statements, result.plan.segments),
-      );
+      const report = await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
       expect(report.error).toBeUndefined();
       const after = await withClient(target, (c) => extractCatalog(c, { schemas: ["public"] }));
       expect(after.ir.fingerprint).toBe(result.desiredIR.fingerprint);

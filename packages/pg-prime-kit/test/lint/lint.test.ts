@@ -225,7 +225,11 @@ describe("nolint scope is the statement it sits under", () => {
   });
 
   it("goes clean once statement 1 is suppressed too", () => {
-    const both = afterStmt(afterStmt(sql, 0, `-- pg-prime:nolint LK101 "${REASON}"`), 1, '-- pg-prime:nolint LK101 "same"');
+    const both = afterStmt(
+      afterStmt(sql, 0, `-- pg-prime:nolint LK101 "${REASON}"`),
+      1,
+      '-- pg-prime:nolint LK101 "same"',
+    );
     const result = lintPlan(plan, both, { failOn: "warn" });
     expect(result.findings.map((f) => f.suppressedBy)).toEqual([REASON, "same"]);
     expect(result.exitCode).toBe(0);
@@ -243,7 +247,11 @@ describe("nolint scope is the statement it sits under", () => {
   });
 
   it("prefers the per-statement reason over the header one", () => {
-    const text = afterStmt(inHeader(sql, '-- pg-prime:nolint LK101 "blanket"'), 0, '-- pg-prime:nolint LK101 "this one specifically"');
+    const text = afterStmt(
+      inHeader(sql, '-- pg-prime:nolint LK101 "blanket"'),
+      0,
+      '-- pg-prime:nolint LK101 "this one specifically"',
+    );
     const result = lintPlan(plan, text, { failOn: "warn" });
     expect(result.findings.map((f) => f.suppressedBy)).toEqual(["this one specifically", "blanket"]);
   });
@@ -323,6 +331,6 @@ describe("formatFindings", () => {
 
   it("round-trips through json", () => {
     expect(JSON.parse(formatFindings(result, "json")) as unknown).toEqual(result);
-    expect(formatFindings(result, "json")).toContain("\n  \"findings\": [");
+    expect(formatFindings(result, "json")).toContain('\n  "findings": [');
   });
 });

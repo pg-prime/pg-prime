@@ -16,13 +16,50 @@ import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js
 
 export const APPLY_OPTIONS: readonly OptionSpec[] = [
   { name: "to", type: "string", placeholder: "id", describe: "stop after this migration (0007 or 0007_add_orders)" },
-  { name: "dry-run", type: "boolean", describe: "print the exact statement stream, including BEGIN/COMMIT and set_config; write nothing" },
-  { name: "lock-timeout", type: "string", placeholder: "duration", describe: "PostgreSQL lock_timeout for every statement", defaultText: "3s" },
-  { name: "statement-timeout", type: "string", placeholder: "duration", describe: "PostgreSQL statement_timeout, except for intentionally long builds" },
-  { name: "lock-wait", type: "duration", placeholder: "duration", describe: "how long to wait for a concurrent deploy's lock", defaultText: "30s" },
-  { name: "stale-lock-after", type: "duration", placeholder: "duration", describe: "a lease whose heartbeat is older than this is reported stale", defaultText: "60s" },
-  { name: "heartbeat", type: "duration", placeholder: "duration", describe: "how often the lease is refreshed; must be well under --stale-lock-after", defaultText: "5s" },
-  { name: "verify-fingerprint", type: "boolean", describe: "re-extract the catalog instead of trusting the recorded fingerprint_to" },
+  {
+    name: "dry-run",
+    type: "boolean",
+    describe: "print the exact statement stream, including BEGIN/COMMIT and set_config; write nothing",
+  },
+  {
+    name: "lock-timeout",
+    type: "string",
+    placeholder: "duration",
+    describe: "PostgreSQL lock_timeout for every statement",
+    defaultText: "3s",
+  },
+  {
+    name: "statement-timeout",
+    type: "string",
+    placeholder: "duration",
+    describe: "PostgreSQL statement_timeout, except for intentionally long builds",
+  },
+  {
+    name: "lock-wait",
+    type: "duration",
+    placeholder: "duration",
+    describe: "how long to wait for a concurrent deploy's lock",
+    defaultText: "30s",
+  },
+  {
+    name: "stale-lock-after",
+    type: "duration",
+    placeholder: "duration",
+    describe: "a lease whose heartbeat is older than this is reported stale",
+    defaultText: "60s",
+  },
+  {
+    name: "heartbeat",
+    type: "duration",
+    placeholder: "duration",
+    describe: "how often the lease is refreshed; must be well under --stale-lock-after",
+    defaultText: "5s",
+  },
+  {
+    name: "verify-fingerprint",
+    type: "boolean",
+    describe: "re-extract the catalog instead of trusting the recorded fingerprint_to",
+  },
   { name: "dev", type: "boolean", describe: "downgrade checksum drift from an error to a warning" },
   { name: "yes", type: "boolean", describe: "accepted for forward compatibility; apply never prompts" },
   {
@@ -50,16 +87,16 @@ export async function runApply(config: ResolvedConfig, argv: ParseResult): Promi
     ...(bool(argv.values, "dry-run") ? { dryRun: true } : {}),
     ...(bool(argv.values, "dev") ? { dev: true } : {}),
     ...(bool(argv.values, "verify-fingerprint") ? { verifyFingerprint: true } : {}),
-    ...(str(argv.values, "lock-timeout") ?? config.config.lockTimeout
+    ...((str(argv.values, "lock-timeout") ?? config.config.lockTimeout)
       ? { lockTimeout: str(argv.values, "lock-timeout") ?? config.config.lockTimeout! }
       : {}),
-    ...(str(argv.values, "statement-timeout") ?? config.config.statementTimeout
+    ...((str(argv.values, "statement-timeout") ?? config.config.statementTimeout)
       ? { statementTimeout: str(argv.values, "statement-timeout") ?? config.config.statementTimeout! }
       : {}),
-    ...(ms(argv.values, "lock-wait") ?? config.config.lockWaitMs
+    ...((ms(argv.values, "lock-wait") ?? config.config.lockWaitMs)
       ? { lockWaitMs: ms(argv.values, "lock-wait") ?? config.config.lockWaitMs! }
       : {}),
-    ...(ms(argv.values, "stale-lock-after") ?? config.config.staleLockAfterMs
+    ...((ms(argv.values, "stale-lock-after") ?? config.config.staleLockAfterMs)
       ? { staleLockAfterMs: ms(argv.values, "stale-lock-after") ?? config.config.staleLockAfterMs! }
       : {}),
     ...(ms(argv.values, "heartbeat") === undefined ? {} : { heartbeatMs: ms(argv.values, "heartbeat")! }),
@@ -70,7 +107,10 @@ export async function runApply(config: ResolvedConfig, argv: ParseResult): Promi
 }
 
 function envelope(config: ResolvedConfig, r: ApplyPendingResult): CommandOutput {
-  const stream = r.dryRun === null ? null : r.dryRun.map((q) => (q.values === undefined ? { text: q.text } : { text: q.text, values: q.values }));
+  const stream =
+    r.dryRun === null
+      ? null
+      : r.dryRun.map((q) => (q.values === undefined ? { text: q.text } : { text: q.text, values: q.values }));
   return {
     exitCode: r.exitCode,
     envelope: {
@@ -108,7 +148,12 @@ function envelope(config: ResolvedConfig, r: ApplyPendingResult): CommandOutput 
       },
       repeatables: { applied: r.repeatables.applied, unchanged: r.repeatables.unchanged },
       warnings: r.warnings,
-      diagnostics: r.diagnostics.map((d) => ({ code: d.code, severity: d.severity, subject: d.subject ?? null, message: d.message })),
+      diagnostics: r.diagnostics.map((d) => ({
+        code: d.code,
+        severity: d.severity,
+        subject: d.subject ?? null,
+        message: d.message,
+      })),
       stream,
       error: r.error,
     },
@@ -145,7 +190,11 @@ function text(config: ResolvedConfig, r: ApplyPendingResult): string {
       }
       break;
     case "up_to_date":
-      lines.push(r.lock.acquired ? "nothing to do — the database is up to date." : "nothing to do — another deploy already applied everything.");
+      lines.push(
+        r.lock.acquired
+          ? "nothing to do — the database is up to date."
+          : "nothing to do — another deploy already applied everything.",
+      );
       break;
     case "locked":
     case "drift":

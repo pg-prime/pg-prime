@@ -165,14 +165,16 @@ describe('§2.6 — the two bulk strategies and the automatic switch', () => {
     // columns the two sides of the comparison are 30 000 and 30 003, and an implementation whose
     // threshold was 30 001 would pass — R10 M9 proved exactly that.
     const oneCol = (n: number) =>
-      db
-        .insertInto(schema.h.comments)
-        .valuesMany(Array.from({ length: n }, (_, i) => ({ body: `b${i}` })), { chunkSize: 1e6 })
+      db.insertInto(schema.h.comments).valuesMany(
+        Array.from({ length: n }, (_, i) => ({ body: `b${i}` })),
+        { chunkSize: 1e6 },
+      )
     expect(sqlOf(oneCol(30_000))).toContain(' values ')
     expect(sqlOf(oneCol(30_001))).toContain('select * from unnest(')
 
     // …and the same switch through the documented three-column shape.
-    const wide = (n: number) => db.insertInto(schema.h.users).valuesMany(rowsOf(n), { chunkSize: 1e6 })
+    const wide = (n: number) =>
+      db.insertInto(schema.h.users).valuesMany(rowsOf(n), { chunkSize: 1e6 })
     expect(sqlOf(wide(10_000))).toContain(' values ')
     expect(sqlOf(wide(10_001))).toContain('select * from unnest(')
   })
@@ -199,7 +201,7 @@ describe('§2.6 — the two bulk strategies and the automatic switch', () => {
       .valuesMany(rowsOf(21_846), { strategy: 'values', chunkSize: 1e6 })
     expect(() => built.compileAll()).toThrowError(TooManyParametersError)
     expect(() => built.compileAll()).toThrowError(
-      "compiled insert uses 65538 bind parameters; the PostgreSQL wire protocol caps " +
+      'compiled insert uses 65538 bind parameters; the PostgreSQL wire protocol caps ' +
         "parameters at 65535. Use strategy: 'unnest' or chunk the batch.",
     )
   })
@@ -221,7 +223,10 @@ describe('what reaches the wire (the recording mock)', () => {
 
   it('a chunked insert wraps its chunks in ONE transaction on ONE connection', async () => {
     const { driver, db: live } = setup()
-    await live.insertInto(schema.h.users).valuesMany(rowsOf(5_001), { strategy: 'values' }).execute()
+    await live
+      .insertInto(schema.h.users)
+      .valuesMany(rowsOf(5_001), { strategy: 'values' })
+      .execute()
     const texts = driver.log.map((r) => r.text.split('\n')[0]!.slice(0, 12))
     expect(texts[0]).toBe('begin')
     expect(texts.at(-1)).toBe('commit')
@@ -239,7 +244,10 @@ describe('what reaches the wire (the recording mock)', () => {
   it('inside db.transaction(...) the chunks do NOT open a second one', async () => {
     const { driver, db: live } = setup()
     await live.transaction(async (tx) => {
-      await tx.insertInto(schema.h.users).valuesMany(rowsOf(5_001), { strategy: 'values' }).execute()
+      await tx
+        .insertInto(schema.h.users)
+        .valuesMany(rowsOf(5_001), { strategy: 'values' })
+        .execute()
     })
     expect(driver.log.filter((r) => r.text === 'begin')).toHaveLength(1)
     expect(driver.log.filter((r) => r.text === 'commit')).toHaveLength(1)
@@ -269,11 +277,13 @@ describe('§2.7 — insert … select puts each value in the column the projecti
     // (id, email, name, role, …); this projection is spelled (role, name, email). Taking the
     // column list in declaration order wrote `email` into `role` and `role` into `email` — legal
     // SQL, three text columns, no error, every row scrambled.
-    const built = db.insertInto(schema.h.users).fromSelect((d) =>
-      d
-        .from(schema.h.users, 'src')
-        .select(({ src }) => ({ role: src.name, name: src.email, email: src.role })),
-    )
+    const built = db
+      .insertInto(schema.h.users)
+      .fromSelect((d) =>
+        d
+          .from(schema.h.users, 'src')
+          .select(({ src }) => ({ role: src.name, name: src.email, email: src.role })),
+      )
     expect(sqlOf(built)).toBe(
       [
         'insert into "public"."users" ("role", "name", "email")',
@@ -291,4 +301,3 @@ describe('§2.7 — insert … select puts each value in the column the projecti
     ).toThrowError(BuilderError)
   })
 })
-

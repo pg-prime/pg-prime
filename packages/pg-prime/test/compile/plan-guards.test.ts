@@ -69,9 +69,9 @@ describe('a one() relation is limited to one row, always', () => {
   })
 
   it('…and so is an offset, which skips the only row it was allowed to return', () => {
-    expect(() =>
-      compile(withProjection(authorRel({ offset: param(1, int4Codec) }))),
-    ).toThrow(UnsupportedNodeError)
+    expect(() => compile(withProjection(authorRel({ offset: param(1, int4Codec) })))).toThrow(
+      UnsupportedNodeError,
+    )
   })
 
   it('NEGATIVE CONTROL — a many() relation keeps the caller’s limit', () => {
@@ -193,9 +193,7 @@ describe('a dotted nest() alias that would exceed 63 bytes falls back to a short
     const emoji = '🙂'.repeat(30)
     const c = compile(
       select({
-        projection: [
-          group('g', { items: [projection(emoji, u('name'))], nullable: false }),
-        ],
+        projection: [group('g', { items: [projection(emoji, u('name'))], nullable: false })],
         from: usersFrom,
       }),
     )

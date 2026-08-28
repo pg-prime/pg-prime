@@ -21,7 +21,13 @@ import { EXIT, type ExitCode } from "../exit.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
 
 export const CHECKPOINT_OPTIONS: readonly OptionSpec[] = [
-  { name: "seq", type: "string", placeholder: "n", describe: "the checkpoint's number", defaultText: "one past the highest on disk" },
+  {
+    name: "seq",
+    type: "string",
+    placeholder: "n",
+    describe: "the checkpoint's number",
+    defaultText: "one past the highest on disk",
+  },
   { name: "by", type: "string", placeholder: "name", describe: "recorded as the plan's author", defaultText: "$USER" },
   { name: "dry-run", type: "boolean", describe: "print what would be written; write nothing" },
 ];
@@ -42,7 +48,12 @@ async function nextSeq(dir: string): Promise<number> {
 export async function runCheckpoint(config: ResolvedConfig, argv: ParseResult): Promise<CommandOutput> {
   const started = Date.now();
 
-  const envelope = (status: string, exitCode: ExitCode, extra: Readonly<Record<string, unknown>>, text: string): CommandOutput => ({
+  const envelope = (
+    status: string,
+    exitCode: ExitCode,
+    extra: Readonly<Record<string, unknown>>,
+    text: string,
+  ): CommandOutput => ({
     exitCode,
     envelope: {
       command: "migrate checkpoint",
@@ -59,11 +70,17 @@ export async function runCheckpoint(config: ResolvedConfig, argv: ParseResult): 
   });
 
   const refuse = (message: string): CommandOutput =>
-    envelope("refused", EXIT.error, { written: null, migration: null, error: { code: "checkpoint_refused", message } },
-      `migrate checkpoint\n\nREFUSED: ${message}`);
+    envelope(
+      "refused",
+      EXIT.error,
+      { written: null, migration: null, error: { code: "checkpoint_refused", message } },
+      `migrate checkpoint\n\nREFUSED: ${message}`,
+    );
 
   if (!config.hasConnection) {
-    return refuse("no database connection: pass --url, set `url` in pg-prime.config.ts, or export PG_PRIME_DATABASE_URL");
+    return refuse(
+      "no database connection: pass --url, set `url` in pg-prime.config.ts, or export PG_PRIME_DATABASE_URL",
+    );
   }
 
   const seqRaw = str(argv.values, "seq");

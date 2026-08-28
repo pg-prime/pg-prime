@@ -44,10 +44,7 @@ interface HasAst {
  * one), and a brand would reject it. The two are the same rejection of an insert/update/delete
  * reached two ways: `SelectSource` by brand, `QuerySource` by `toAst()`'s return type.
  */
-export type QuerySource =
-  | { toAst(): SelectNode | SetOpNode }
-  | SelectNode
-  | SetOpNode
+export type QuerySource = { toAst(): SelectNode | SetOpNode } | SelectNode | SetOpNode
 
 const BUILDERS = new WeakSet<object>()
 

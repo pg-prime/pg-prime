@@ -100,7 +100,11 @@ export interface PgConnection {
   closeStatement?(name: string): Promise<void>
 
   /** COPY … FROM STDIN. Resolves with the row count from the CommandComplete tag. */
-  copyIn?(sql: string, source: AsyncIterable<Uint8Array>, options?: PgCopyOptions): Promise<PgCopyResult>
+  copyIn?(
+    sql: string,
+    source: AsyncIterable<Uint8Array>,
+    options?: PgCopyOptions,
+  ): Promise<PgCopyResult>
 
   /** COPY … TO STDOUT. Yields raw CopyData payloads; the caller owns framing (text/csv/binary). */
   copyOut?(sql: string, options?: PgCopyOptions): AsyncIterable<Uint8Array>

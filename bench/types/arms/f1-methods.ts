@@ -94,7 +94,11 @@ export interface ExecutorM {
 }
 
 /** Sub-queries hand out method refs too, so a relation projection is measured on the same arm. */
-export interface SubQueryM<Sc extends AnySchema, N extends string, P extends Projection = MRefsIn<Sc, N>> {
+export interface SubQueryM<
+  Sc extends AnySchema,
+  N extends string,
+  P extends Projection = MRefsIn<Sc, N>,
+> {
   readonly [PRJ]: P
   where(f: (t: MRefsIn<Sc, N>) => Expr<boolean>): SubQueryM<Sc, N, P>
   orderBy(f: (t: MRefsIn<Sc, N>) => Projectable | readonly Projectable[]): SubQueryM<Sc, N, P>

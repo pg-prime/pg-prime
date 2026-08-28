@@ -1,9 +1,6 @@
 {
   "_source": "design/04-type-system.md §3.5. CI fails the build on breach.",
-  "_gatedOn": [
-    "5.9.3",
-    "7.0.2"
-  ],
+  "_gatedOn": ["5.9.3", "7.0.2"],
   "instantiationsPerColumnDeclaration": 8,
   "instantiationsPerTableDeclaration": 50,
   "instantiationsPerDeclaredRelation": 50,
@@ -15,8 +12,8 @@
   "instantiationsPerDistinctQuery20ChainedJoins": 12000,
   "instantiationsPerDistinctQueryNestedRelation4Deep": 1500,
   "schemaSizeIndependenceRatio": 1.15,
-  "packageDtsBytes": 524288,
-  "_packageDtsBytesWhy": "Raised from 409 600 to 524 288 B (512 KB) by design/12 §3 S, the session layer. Measured 377 261 B before and 504 595 B after: design/07 §4.2 s ~50 error classes (errors/classes.d.ts 13.4 KB), §1.3 s four handle interfaces inside query/types.d.ts (+7.6 KB), and the declaration files for src/session, src/observe and src/pooler. This is a SIZE gate and not a type-performance one — the headline instantiation counts did not move (ts5.9 80 485 unchanged, ts7 131 388 -> 131 354, i.e. noise), which is the prediction design/12 §3 S made: session types are not on the query hot path. tools/budgets.json gates the same bytes at 900 KB against design/08 §1.2 and passes; this number is the tighter of the two and still ratchets.",
+  "packageDtsBytes": 534528,
+  "_packageDtsBytesWhy": "Raised to 534 528 B (522 KB) at the design/12 round-A integration (2026-08-29): the merged tree measures 533 563 B, which is S's 504 595 B plus B's builder-gap declarations (query/types.d.ts 54 843 -> 72 190 B across B and S together: `$all`, the six join signatures and two laterals, `withRecursive`/`fromRaw`, relation `avg`/`min`/`max`, and 07 §1.3's four handle interfaces) plus K4's schema DSL (`pgDomain`/`pgSequence`/`pgExtension`, the index item options, `partitionBy`/`partitionOf`, `clusterOn`, `t.raw`). Each branch had passed its own raised number; the SUM is what ships, so the budget is set at the merged measurement by the same ceil-to-1 KB rule and ratchets from here. Previous step: raised from 409 600 to 524 288 B by design/12 §3 S, the session layer, measured 377 261 B before and 504 595 B after (design/07 §4.2's ~50 error classes, §1.3's handle interfaces, the src/session, src/observe and src/pooler declaration files). This is a SIZE gate and not a type-performance one: the headline instantiation counts moved +1.9 % over the whole round (80 485 -> 82 028 on TS 5.9.3), inside design/12 §3 B's +2 % band. tools/budgets.json gates the same bytes at 900 KB against design/08 §1.2 and passes; this number is the tighter of the two and still ratchets.",
   "headline": {
     "instantiations": 200000,
     "checkTimeSeconds": {

@@ -51,10 +51,7 @@ export function orderStatements(input: readonly Statement[]): OrderResult {
     succ[a]!.add(b);
     indeg[b]! += 1;
   };
-  const relate = (
-    beforeMap: Map<string, number[]>,
-    afterMap: Map<string, number[]>,
-  ): void => {
+  const relate = (beforeMap: Map<string, number[]>, afterMap: Map<string, number[]>): void => {
     for (const [k, befores] of beforeMap) {
       for (const b of afterMap.get(k) ?? []) for (const a of befores) link(a, b);
     }

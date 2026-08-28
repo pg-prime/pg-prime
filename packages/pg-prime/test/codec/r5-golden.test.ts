@@ -112,10 +112,7 @@ const FIXTURES: Readonly<Record<string, readonly string[]>> = {
   varbit: [`'10101'::varbit`],
   pg_lsn: [`'16/B374D848'::pg_lsn`],
   // ⚠️ PG's to_json inserts an ISO `T` where the wire text has a space. decodeJson normalises.
-  timestamp: [
-    `'2026-08-14 12:00:00.123456'::timestamp`,
-    `'0001-01-01 12:00:00 BC'::timestamp`,
-  ],
+  timestamp: [`'2026-08-14 12:00:00.123456'::timestamp`, `'0001-01-01 12:00:00 BC'::timestamp`],
   timestamptz: [
     `'2026-08-14 06:30:00.123456+00'::timestamptz`,
     // a NON-UTC offset in the text: the decoded instant must be offset-driven, not assumed +00
@@ -148,9 +145,7 @@ const FIXTURES: Readonly<Record<string, readonly string[]>> = {
   'int8[]': [`'{9007199254740993,-1,NULL}'::int8[]`],
   'oid[]': [`'{1259,0}'::oid[]`],
   'float4[]': [`'{1.5,NULL}'::float4[]`],
-  'float8[]': [
-    `array[0.1::float8+0.2::float8, 'NaN'::float8, 'Infinity'::float8, null]`,
-  ],
+  'float8[]': [`array[0.1::float8+0.2::float8, 'NaN'::float8, 'Infinity'::float8, null]`],
   'numeric[]': [`'{1.10,2.20,NULL}'::numeric(10,2)[]`],
   // the escaping zoo. Note the *string* 'NULL' must survive as a string while a real NULL
   // must decode to null — the single most-failed case in hand-rolled array parsers.

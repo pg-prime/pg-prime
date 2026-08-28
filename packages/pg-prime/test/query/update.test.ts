@@ -40,21 +40,33 @@ describe('§2.5 — set / where / returning', () => {
   })
 
   it('the SET list is in table order, so two spellings are one statement', () => {
-    const a = db.update(schema.h.posts).set(() => ({ published: true, title: 'x' })).allRows()
-    const b = db.update(schema.h.posts).set(() => ({ title: 'x', published: true })).allRows()
+    const a = db
+      .update(schema.h.posts)
+      .set(() => ({ published: true, title: 'x' }))
+      .allRows()
+    const b = db
+      .update(schema.h.posts)
+      .set(() => ({ title: 'x', published: true }))
+      .allRows()
     expect(sqlOf(a)).toBe(sqlOf(b))
   })
 
   it('an update with no .set() is refused rather than emitted', () => {
-    expect(() => db.update(schema.h.posts).where(({ posts: p }) => q.isNull(p.title)).toAst()).toThrowError(
-      /needs a \.set\(\{\.\.\.\}\)/,
-    )
+    expect(() =>
+      db
+        .update(schema.h.posts)
+        .where(({ posts: p }) => q.isNull(p.title))
+        .toAst(),
+    ).toThrowError(/needs a \.set\(\{\.\.\.\}\)/)
   })
 
   it('a column the table does not have is named', () => {
-    expect(() => db.update(schema.h.posts).set(() => ({ nope: 1 } as never)).toAst()).toThrowError(
-      /names column\(s\) \[nope\]/,
-    )
+    expect(() =>
+      db
+        .update(schema.h.posts)
+        .set(() => ({ nope: 1 }) as never)
+        .toAst(),
+    ).toThrowError(/names column\(s\) \[nope\]/)
   })
 })
 
@@ -110,7 +122,10 @@ describe('§2.6 — bulk update by key', () => {
       .where(({ posts: p }, v) => q.eq(p.id, v.id))
       .returning(({ posts: p }) => ({ id: p.id, amount: p.amount }))
     expect(built.compile().shape).toMatchObject({
-      fields: [{ key: 'id', codec: { name: 'int8' } }, { key: 'amount', codec: { name: 'numeric' } }],
+      fields: [
+        { key: 'id', codec: { name: 'int8' } },
+        { key: 'amount', codec: { name: 'numeric' } },
+      ],
     })
   })
 

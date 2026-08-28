@@ -104,15 +104,11 @@ describe("acceptance: 3-table fixture round-trips through the in-house engine", 
   it(
     "extraction reports the objects it deliberately does not diff (the completeness rule)",
     async () => {
-      const r = await withClient({ ...ADMIN, database: DESIRED_DB }, (c) =>
-        extractCatalog(c, { schemas: ["public"] }),
-      );
+      const r = await withClient({ ...ADMIN, database: DESIRED_DB }, (c) => extractCatalog(c, { schemas: ["public"] }));
       // Only census-class diagnostics: `unmodeled_kind` is the Tier R/U count and
       // `volatile_default` is LK109's catalog answer (`created_at DEFAULT now()` — STABLE,
       // not IMMUTABLE). Neither is a finding about the schema being wrong.
-      expect(
-        r.diagnostics.filter((d) => d.code !== "unmodeled_kind" && d.code !== "volatile_default"),
-      ).toEqual([]);
+      expect(r.diagnostics.filter((d) => d.code !== "unmodeled_kind" && d.code !== "volatile_default")).toEqual([]);
       expect(r.pgVersionNum).toBeGreaterThanOrEqual(150000);
     },
     T,

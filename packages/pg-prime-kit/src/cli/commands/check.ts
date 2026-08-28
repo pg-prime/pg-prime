@@ -31,7 +31,12 @@ import { EXIT, type ExitCode } from "../exit.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
 
 export const CHECK_OPTIONS: readonly OptionSpec[] = [
-  { name: "shadow", type: "string", placeholder: "url|temp-schema|createdb", describe: "how the desired state is normalized" },
+  {
+    name: "shadow",
+    type: "string",
+    placeholder: "url|temp-schema|createdb",
+    describe: "how the desired state is normalized",
+  },
   { name: "strict-unmodeled", type: "boolean", describe: "a non-empty Tier-U census becomes an error" },
   { name: "no-schema", type: "boolean", describe: "skip question (a); check only checksums and pending files" },
 ];
@@ -166,14 +171,26 @@ export async function runCheck(config: ResolvedConfig, argv: ParseResult): Promi
       `migrate check — ${config.connection.database}`,
       "",
       pairs([
-        ["schema", !wantSchema ? "not checked" : schemaDrift === null ? "could not be checked" : schemaDrift.length === 0 ? "matches" : `${plural(schemaDrift.length, "statement")} would be generated`],
+        [
+          "schema",
+          !wantSchema
+            ? "not checked"
+            : schemaDrift === null
+              ? "could not be checked"
+              : schemaDrift.length === 0
+                ? "matches"
+                : `${plural(schemaDrift.length, "statement")} would be generated`,
+        ],
         ["checksums", drift.length === 0 ? "ok" : `${plural(drift.length, "file")} drifted`],
         ["pending", status.pending.length === 0 ? "none" : plural(status.pending.length, "migration")],
       ]),
       bullets("would generate:", (schemaDrift ?? []).slice(0, 20)),
       bullets("checksum drift:", drift),
       bullets("pending:", status.pending),
-      bullets("unacknowledged hazards:", hazards.map((h) => `${h.code} ${h.subject}`)),
+      bullets(
+        "unacknowledged hazards:",
+        hazards.map((h) => `${h.code} ${h.subject}`),
+      ),
       generateError === null ? "" : `\nERROR: ${generateError}`,
     ]
       .filter((l) => l !== "")

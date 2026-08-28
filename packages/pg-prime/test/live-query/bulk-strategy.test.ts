@@ -95,16 +95,18 @@ describe(`insert: values vs unnest, ${N} rows`, () => {
       .limit(1)
       .execute()
     expect(rows[0]!.body).toBe(`body ${N - 1}`)
-    expect(rows[0]!.at).toStrictEqual(new Date(Date.UTC(2026, 0, 1, 0, 0, (N - 1) % 60, (N - 1) % 1000)))
+    expect(rows[0]!.at).toStrictEqual(
+      new Date(Date.UTC(2026, 0, 1, 0, 0, (N - 1) % 60, (N - 1) % 1000)),
+    )
   })
 })
 
 describe('fromValues: values vs unnest', () => {
   it('both strategies apply the same per-row patch', async () => {
     const ids = async (live: LiveDb) =>
-      (
-        await live.raw(`select id from ${live.fx.ns}.users order by id limit 3`)
-      ).map((r) => BigInt(r[0]!))
+      (await live.raw(`select id from ${live.fx.ns}.users order by id limit 3`)).map((r) =>
+        BigInt(r[0]!),
+      )
 
     const patches = (xs: readonly bigint[]) =>
       xs.map((id, i) => ({ id, balance: `${i + 1}.0${i}` }))

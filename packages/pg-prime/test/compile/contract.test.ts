@@ -13,15 +13,15 @@ import { compile } from '../../src/compile/compiler.js'
 import { paramTypesOf } from '../../src/compile/contract.js'
 import { buildDecoder } from '../../src/compile/decode.js'
 import type { Expr } from '../../src/compile/ast.js'
+import { eq, param, placeholder, projection, select, table } from '../../src/compile/nodes.js'
 import {
-  eq,
-  param,
-  placeholder,
-  projection,
-  select,
-  table,
-} from '../../src/compile/nodes.js'
-import { boolCodec, int4Codec, int8Codec, textCodec, timestamptzCodec, varcharCodec } from '../../src/codec/index.js'
+  boolCodec,
+  int4Codec,
+  int8Codec,
+  textCodec,
+  timestamptzCodec,
+  varcharCodec,
+} from '../../src/codec/index.js'
 import { TooManyParametersError } from '../../src/sql/errors.js'
 import { sql, toNode } from '../../src/sql/fragment.js'
 import { p, postsFrom, u, usersFrom, usersTable } from '../sql/_helpers.js'
@@ -123,7 +123,9 @@ describe('binds', () => {
     const items: Expr[] = []
     for (let i = 0; i <= 65536; i++) items.push(param(i, int4Codec))
     expect(() =>
-      compile(select({ projection: [projection('a', toNode(sql.join(items.map(() => sql`${1}`))))] })),
+      compile(
+        select({ projection: [projection('a', toNode(sql.join(items.map(() => sql`${1}`))))] }),
+      ),
     ).toThrow(TooManyParametersError)
   })
 })
@@ -203,7 +205,7 @@ describe('the injection audit surface is closed', () => {
   it('the compiled SQL is exactly ONE statement', () => {
     const c = compile(
       select({
-        projection: [projection('a', param("a;b;c", textCodec))],
+        projection: [projection('a', param('a;b;c', textCodec))],
         from: usersFrom,
       }),
     )

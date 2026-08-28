@@ -37,7 +37,11 @@ afterAll(async () => {
 })
 
 /** Decode every column of a one-row result through the real plan. */
-async function row(text: string, params: readonly (string | Uint8Array | null)[] = [], paramTypes?: readonly number[]) {
+async function row(
+  text: string,
+  params: readonly (string | Uint8Array | null)[] = [],
+  paramTypes?: readonly number[],
+) {
   const r = await conn.execute({ text, params, ...(paramTypes ? { paramTypes } : {}) })
   const plan = registry.planFor(r.fields)
   return r.rows[0]!.map((v, i) => plan[i]!(v))
@@ -212,7 +216,11 @@ describe('bool, uuid, float8, bytea, json', () => {
   it('bytea decodes hex and ENCODES BINARY (not `\\x` hex doubling)', async () => {
     const bytes = new Uint8Array([0, 255, 128])
     expect(byteaCodec.encode(bytes)).toBeInstanceOf(Uint8Array)
-    const out = await row('select length($1::bytea)::int4, $1::bytea', [byteaCodec.encode(bytes)], [17])
+    const out = await row(
+      'select length($1::bytea)::int4, $1::bytea',
+      [byteaCodec.encode(bytes)],
+      [17],
+    )
     expect(out[0]).toBe(3) // 3 bytes on the wire, not the 8 chars of "\\x00ff80"
     expect(out[1]).toEqual(bytes)
     expect(byteaCodec.toJson!(bytes)).toBe('\\x00ff80')

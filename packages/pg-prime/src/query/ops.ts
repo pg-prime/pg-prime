@@ -177,26 +177,44 @@ const textArrayCodec = arrayCodecOf(textCodec)
  * `text` column — because `Expr<string>` is assignable to `ExprOf<Date | string>`. Pinned in
  * `test/query/types/ops.probe.ts`.
  */
-export function eq<A extends AnyOperand>(a: A, b: NonNullOperand<A[typeof OUT]>): Expr<boolean, 'bool'> {
+export function eq<A extends AnyOperand>(
+  a: A,
+  b: NonNullOperand<A[typeof OUT]>,
+): Expr<boolean, 'bool'> {
   if (b === null || b === undefined) throw new NullOperandError('eq')
   return pred('=', a, b) as unknown as Expr<boolean, 'bool'>
 }
 
-export function neq<A extends AnyOperand>(a: A, b: NonNullOperand<A[typeof OUT]>): Expr<boolean, 'bool'> {
+export function neq<A extends AnyOperand>(
+  a: A,
+  b: NonNullOperand<A[typeof OUT]>,
+): Expr<boolean, 'bool'> {
   if (b === null || b === undefined) throw new NullOperandError('neq')
   return pred('<>', a, b) as unknown as Expr<boolean, 'bool'>
 }
 
-export function lt<A extends AnyOperand>(a: A, b: NonNullOperand<A[typeof OUT]>): Expr<boolean, 'bool'> {
+export function lt<A extends AnyOperand>(
+  a: A,
+  b: NonNullOperand<A[typeof OUT]>,
+): Expr<boolean, 'bool'> {
   return pred('<', a, nonNull(b, 'lt')) as unknown as Expr<boolean, 'bool'>
 }
-export function lte<A extends AnyOperand>(a: A, b: NonNullOperand<A[typeof OUT]>): Expr<boolean, 'bool'> {
+export function lte<A extends AnyOperand>(
+  a: A,
+  b: NonNullOperand<A[typeof OUT]>,
+): Expr<boolean, 'bool'> {
   return pred('<=', a, nonNull(b, 'lte')) as unknown as Expr<boolean, 'bool'>
 }
-export function gt<A extends AnyOperand>(a: A, b: NonNullOperand<A[typeof OUT]>): Expr<boolean, 'bool'> {
+export function gt<A extends AnyOperand>(
+  a: A,
+  b: NonNullOperand<A[typeof OUT]>,
+): Expr<boolean, 'bool'> {
   return pred('>', a, nonNull(b, 'gt')) as unknown as Expr<boolean, 'bool'>
 }
-export function gte<A extends AnyOperand>(a: A, b: NonNullOperand<A[typeof OUT]>): Expr<boolean, 'bool'> {
+export function gte<A extends AnyOperand>(
+  a: A,
+  b: NonNullOperand<A[typeof OUT]>,
+): Expr<boolean, 'bool'> {
   return pred('>=', a, nonNull(b, 'gte')) as unknown as Expr<boolean, 'bool'>
 }
 
@@ -296,7 +314,8 @@ export function inList<A extends AnyOperand>(
   a: A,
   xs: readonly NonNullable<A[typeof OUT]>[],
 ): Expr<boolean, 'bool'> {
-  if (xs.length === 0) return inListNode(toExpr(a, unknownCodec), []) as unknown as Expr<boolean, 'bool'>
+  if (xs.length === 0)
+    return inListNode(toExpr(a, unknownCodec), []) as unknown as Expr<boolean, 'bool'>
   return inAny(toExpr(a, unknownCodec), param(xs, arrayOf(a))) as unknown as Expr<boolean, 'bool'>
 }
 
@@ -502,19 +521,13 @@ function keyCodec(k: string | number): AnyCodec {
 }
 
 /** `a #> $1` — the path is ONE `text[]` parameter, never spliced text. */
-export function jsonPath(
-  a: JsonOperand,
-  path: readonly string[],
-): Expr<unknown, 'json' | 'jsonb'> {
+export function jsonPath(a: JsonOperand, path: readonly string[]): Expr<unknown, 'json' | 'jsonb'> {
   return binary('#>', a, path, textArrayCodec, jsonCodecOf(a)) as unknown as Expr<
     unknown,
     'json' | 'jsonb'
   >
 }
-export function jsonPathText(
-  a: JsonOperand,
-  path: readonly string[],
-): Expr<string | null, 'text'> {
+export function jsonPathText(a: JsonOperand, path: readonly string[]): Expr<string | null, 'text'> {
   return binary('#>>', a, path, textArrayCodec, textCodec) as unknown as Expr<string | null, 'text'>
 }
 export function jsonContains(a: JsonbOperand, doc: unknown): Expr<boolean, 'bool'> {
@@ -549,10 +562,7 @@ export function jsonDelete(a: JsonbOperand, k: Operand<string>): Expr<unknown, '
   return binary('-', a, k, textCodec, jsonbCodec) as unknown as Expr<unknown, 'jsonb'>
 }
 /** `a #- $1` — delete at a path. */
-export function jsonDeletePath(
-  a: JsonbOperand,
-  path: readonly string[],
-): Expr<unknown, 'jsonb'> {
+export function jsonDeletePath(a: JsonbOperand, path: readonly string[]): Expr<unknown, 'jsonb'> {
   return binary('#-', a, path, textArrayCodec, jsonbCodec) as unknown as Expr<unknown, 'jsonb'>
 }
 

@@ -60,9 +60,7 @@ export function makeRemapper(reverse: ReadonlyMap<string, string>): Remapper {
   const rules: { readonly re: RegExp; readonly to: string }[] = [];
   // Longest first: `pgprime_shadow_ab_public` must not be half-matched by a rule for
   // `pgprime_shadow_ab` if both are in the map.
-  const pairs = [...reverse.entries()]
-    .filter(([from, to]) => from !== to)
-    .sort((a, b) => b[0].length - a[0].length);
+  const pairs = [...reverse.entries()].filter(([from, to]) => from !== to).sort((a, b) => b[0].length - a[0].length);
   for (const [from, to] of pairs) {
     const spelled = BARE_IDENT.test(to) ? to : quoteIdent(to);
     rules.push({ re: new RegExp(`"${escapeRe(from)}"`, "g"), to: spelled });
@@ -89,9 +87,7 @@ export function makeRemapper(reverse: ReadonlyMap<string, string>): Remapper {
     // `extension` is keyed `[name]` alone (05 §7.2): nothing to remap, and no `schema` to read.
     if (!("schema" in input)) return input;
     const to = reverse.get(input.schema);
-    return to === undefined || to === input.schema
-      ? input
-      : ({ ...input, schema: to } as StableId);
+    return to === undefined || to === input.schema ? input : ({ ...input, schema: to } as StableId);
   };
 
   return { text, id };
@@ -134,9 +130,7 @@ export function remapIr(ir: SchemaIR, reverse: ReadonlyMap<string, string>): Sch
     };
     return next;
   });
-  const edges: DependencyEdge[] = ir
-    .edges()
-    .map((e) => ({ from: r.id(e.from), to: r.id(e.to), kind: e.kind }));
+  const edges: DependencyEdge[] = ir.edges().map((e) => ({ from: r.id(e.from), to: r.id(e.to), kind: e.kind }));
   return SchemaIR.build(facts, edges);
 }
 

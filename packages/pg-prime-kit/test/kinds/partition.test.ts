@@ -113,7 +113,7 @@ describe("undeclared partitions are adopted, never dropped", () => {
       // The table has to exist before it can be attached; the edge, not the phase, is
       // what guarantees that, so assert on the ORDERED stream.
       const ordered = orderStatements(built.statements).statements.map((s) => s.sql);
-      expect(ordered.findIndex((s) => s.includes("CREATE TABLE \"public\".\"events_2026\""))).toBeLessThan(
+      expect(ordered.findIndex((s) => s.includes('CREATE TABLE "public"."events_2026"'))).toBeLessThan(
         ordered.findIndex((s) => s.includes("ATTACH PARTITION")),
       );
 

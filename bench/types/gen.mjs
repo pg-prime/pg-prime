@@ -191,9 +191,7 @@ function usagesFile({ tables, usages, rels, distinct }) {
   for (let q = 0; q < usages; q++) {
     const i = q % span
     out.push(`type S${q} = Selectable<typeof t${i}>`)
-    out.push(
-      `type P${q} = { a: S${q}['c0']; b: S${q}['c3']; c: S${q}['c7']; d: S${q}['c10'] }`,
-    )
+    out.push(`type P${q} = { a: S${q}['c0']; b: S${q}['c3']; c: S${q}['c7']; d: S${q}['c10'] }`)
     out.push(`export declare const q${q}: P${q}[]`)
     out.push(`export declare const ins${q}: Insertable<typeof t${i}>`)
     out.push(`export declare const upd${q}: Updateable<typeof t${i}>`)
@@ -207,7 +205,6 @@ function usagesFile({ tables, usages, rels, distinct }) {
   }
   return out.join('\n')
 }
-
 
 /**
  * A query-SHAPED type usage is not a query. `usagesFile` above measures the former (projection
@@ -242,7 +239,8 @@ const SHAPES = {
   2: {
     row: '{ a: string; n: bigint; s: string; g: { x: string; y: Date } }',
     keys: ['a', 'n', 's', 'g'],
-    imports: (arm) => ['fn', 'sql'].concat(ARMS[arm].methods ? [] : ['eq', 'gt'], ARMS[arm].nest ? ['nest'] : []),
+    imports: (arm) =>
+      ['fn', 'sql'].concat(ARMS[arm].methods ? [] : ['eq', 'gt'], ARMS[arm].nest ? ['nest'] : []),
     body(arm, q, i, j) {
       const on = ARMS[arm].methods ? 't.a.c2.eq(t.b.c2)' : 'eq(t.a.c2, t.b.c2)'
       const where = ARMS[arm].methods ? `t.a.c3.gt(${q}n)` : `gt(t.a.c3, ${q}n)`
@@ -317,8 +315,7 @@ const SHAPES = {
    * at depth is to project through it. Measured at the time of writing: ~941 instantiations/query.
    */
   6: {
-    row:
-      '{ a: string; l1: { b: string; l2: { c: string; l3: { d: string; l4: { e: string }[] }[] }[] }[] }',
+    row: '{ a: string; l1: { b: string; l2: { c: string; l3: { d: string; l4: { e: string }[] }[] }[] }[] }',
     keys: ['a', 'l1'],
     imports: () => [],
     body(arm, q, i) {
@@ -358,24 +355,23 @@ const SHAPES = {
         ? ['and', 'eq']
         : ['and', 'eq', 'gt', 'has', 'hasKey', 'ilike', 'jsonPathText', 'startsWith'],
     body(arm, q, i) {
-      const preds =
-        ARMS[arm].methods
-          ? [
-              `      t.u.c0.ilike('x%'),`,
-              `      t.u.c9.has('v'),`,
-              `      t.u.c8.hasKey('plan'),`,
-              `      eq(t.u.c8.pathText(['a', 'b']), 'z'),`,
-              `      t.u.c3.gt(${q}n),`,
-              `      t.u.c0.startsWith('a'),`,
-            ]
-          : [
-              `      ilike(t.u.c0, 'x%'),`,
-              `      has(t.u.c9, 'v'),`,
-              `      hasKey(t.u.c8, 'plan'),`,
-              `      eq(jsonPathText(t.u.c8, ['a', 'b']), 'z'),`,
-              `      gt(t.u.c3, ${q}n),`,
-              `      startsWith(t.u.c0, 'a'),`,
-            ]
+      const preds = ARMS[arm].methods
+        ? [
+            `      t.u.c0.ilike('x%'),`,
+            `      t.u.c9.has('v'),`,
+            `      t.u.c8.hasKey('plan'),`,
+            `      eq(t.u.c8.pathText(['a', 'b']), 'z'),`,
+            `      t.u.c3.gt(${q}n),`,
+            `      t.u.c0.startsWith('a'),`,
+          ]
+        : [
+            `      ilike(t.u.c0, 'x%'),`,
+            `      has(t.u.c9, 'v'),`,
+            `      hasKey(t.u.c8, 'plan'),`,
+            `      eq(jsonPathText(t.u.c8, ['a', 'b']), 'z'),`,
+            `      gt(t.u.c3, ${q}n),`,
+            `      startsWith(t.u.c0, 'a'),`,
+          ]
       return [
         `  .from(schema.h.t${i}, 'u')`,
         `  .where((t) =>`,

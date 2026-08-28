@@ -262,9 +262,9 @@ describe('PgConnection.stream() — built on the answer above, zero dependencies
     await conn.execute({ text: 'select 1/0', params: [] }).catch(() => {})
     expect(conn.transactionStatus).toBe('E')
     try {
-      const iterator = conn.stream({ text: 'select id from cur_t', params: [] }, 2)[
-        Symbol.asyncIterator
-      ]()
+      const iterator = conn
+        .stream({ text: 'select id from cur_t', params: [] }, 2)
+        [Symbol.asyncIterator]()
       // an adapter error, not a raw 25P02 escaping un-normalised from the internal BEGIN
       await expect(iterator.next()).rejects.toMatchObject({ pgPrime: { kind: 'adapter' } })
       // …and the caller's failed transaction is still theirs to roll back

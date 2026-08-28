@@ -108,9 +108,7 @@ describe("shadow provisioning never disconnects or destroys what it did not crea
       };
 
       // not a name this tool mints
-      await expect(proveOnShadowClone({ ...base, cloneName: TARGET })).rejects.toBeInstanceOf(
-        UnsafeCloneNameError,
-      );
+      await expect(proveOnShadowClone({ ...base, cloneName: TARGET })).rejects.toBeInstanceOf(UnsafeCloneNameError);
       // shadow-prefixed, but it IS the source
       await expect(proveOnShadowClone({ ...base, cloneName: SOURCE_SHADOW })).rejects.toBeInstanceOf(
         UnsafeCloneNameError,
@@ -124,16 +122,20 @@ describe("shadow provisioning never disconnects or destroys what it did not crea
     T,
   );
 
-  it("terminateConnections refuses any database this tool did not provision", async () => {
-    expect(isShadowDatabase("pgprime_shadow_ab12")).toBe(true);
-    expect(isShadowDatabase("pgprime_shadow_")).toBe(false);
-    expect(isShadowDatabase("postgres")).toBe(false);
+  it(
+    "terminateConnections refuses any database this tool did not provision",
+    async () => {
+      expect(isShadowDatabase("pgprime_shadow_ab12")).toBe(true);
+      expect(isShadowDatabase("pgprime_shadow_")).toBe(false);
+      expect(isShadowDatabase("postgres")).toBe(false);
 
-    await withAdmin(async (admin) => {
-      await expect(terminateConnections(admin, "postgres")).rejects.toBeInstanceOf(UnsafeDatabaseNameError);
-      // and it really did not run: the admin session itself is still usable
-      const r = await admin.query("SELECT 1 AS ok");
-      expect(r.rows[0]?.["ok"]).toBe(1);
-    });
-  }, T);
+      await withAdmin(async (admin) => {
+        await expect(terminateConnections(admin, "postgres")).rejects.toBeInstanceOf(UnsafeDatabaseNameError);
+        // and it really did not run: the admin session itself is still usable
+        const r = await admin.query("SELECT 1 AS ok");
+        expect(r.rows[0]?.["ok"]).toBe(1);
+      });
+    },
+    T,
+  );
 });

@@ -67,6 +67,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      # design/12 decision 19: the one-time format landed after round A; from here on the tree
+      # must stay formatted. `.oxfmtrc.json` ignores the files whose LINE LAYOUT is load-bearing
+      # (`@ts-expect-error` probes, the recorded type-error cases, the JSON envelope goldens).
+      - run: pnpm format:check
 
       # design/08 §1.1: "CI enforces `changeset status --since=origin/main` on every PR touching
       # `packages/`." Both halves matter — a PR that changes a package without a changeset is a

@@ -80,7 +80,10 @@ describe("names are PostgreSQL's own (makeObjectName)", () => {
 
   it("reports a collision instead of inventing PostgreSQL's uniquifying suffix", () => {
     const t = pgTable("c", (col) => ({
-      n: col.integer().check(sql`n > 0`, "dup").check(sql`n < 9`, "dup"),
+      n: col
+        .integer()
+        .check(sql`n > 0`, "dup")
+        .check(sql`n < 9`, "dup"),
     }));
     const result = emitSchema(defineSchema({ t }));
     expect(result.diagnostics.map((d) => d.code)).toContain("constraint_name_collision");
@@ -170,9 +173,7 @@ describe("dependency order", () => {
     );
     // …and the three table nodes an adopted database needs.
     expect(out).toContain('ALTER TABLE "public"."tickets" CLUSTER ON "PK_Tickets"');
-    expect(out.find((s) => s.startsWith('CREATE TABLE "public"."readings" '))).toContain(
-      "PARTITION BY RANGE (at)",
-    );
+    expect(out.find((s) => s.startsWith('CREATE TABLE "public"."readings" '))).toContain("PARTITION BY RANGE (at)");
     expect(out).toContain(
       `ALTER TABLE "public"."readings" ATTACH PARTITION "public"."readings_2024" ` +
         `FOR VALUES FROM ('2024-01-01 00:00:00+00') TO ('2025-01-01 00:00:00+00')`,
@@ -244,9 +245,7 @@ describe("enums", () => {
     const b = pgEnum("mood", ["ok", "bad"]);
     const t1 = pgTable("t1", (c) => ({ m: c.enum(a) }));
     const t2 = pgTable("t2", (c) => ({ m: c.enum(b) }));
-    expect(emitSchema(defineSchema({ t1, t2 })).diagnostics.map((d) => d.code)).toContain(
-      "enum_conflict",
-    );
+    expect(emitSchema(defineSchema({ t1, t2 })).diagnostics.map((d) => d.code)).toContain("enum_conflict");
   });
 });
 
@@ -264,9 +263,7 @@ describe("the tier-3 schema map (design/11 §1.6)", () => {
     expect(text).toContain('CREATE SCHEMA IF NOT EXISTS "pgprime_shadow_dead_public"');
     expect(text).toContain('CREATE SCHEMA IF NOT EXISTS "pgprime_shadow_dead_audit"');
     expect(text).toContain(`CREATE TYPE "pgprime_shadow_dead_public"."member_role"`);
-    expect(text).toContain(
-      `REFERENCES "pgprime_shadow_dead_public"."orgs" ("id")`,
-    );
+    expect(text).toContain(`REFERENCES "pgprime_shadow_dead_public"."orgs" ("id")`);
     expect(text).toContain(`COMMENT ON TABLE "pgprime_shadow_dead_audit"."events"`);
   });
 
@@ -307,17 +304,13 @@ describe("diagnostics that stop a load", () => {
       (c) => ({ a: c.integer() }),
       (c) => [foreignKey({ columns: [c.a], references: () => [target.cols.a, target.cols.b] })],
     );
-    expect(emitSchema(defineSchema({ t, target })).diagnostics.map((d) => d.code)).toContain(
-      "foreign_key_arity",
-    );
+    expect(emitSchema(defineSchema({ t, target })).diagnostics.map((d) => d.code)).toContain("foreign_key_arity");
   });
 
   it("two tables that resolve to the same schema-qualified name", () => {
     const a = pgTable("dup", (c) => ({ id: c.integer() }));
     const b = pgTable("dup", (c) => ({ id: c.integer() }));
-    expect(emitSchema({ tables: { a, b } }).diagnostics.map((d) => d.code)).toContain(
-      "duplicate_table",
-    );
+    expect(emitSchema({ tables: { a, b } }).diagnostics.map((d) => d.code)).toContain("duplicate_table");
   });
 
   it("a default no literal renderer can produce, reported instead of thrown", () => {
@@ -335,9 +328,7 @@ describe("diagnostics that stop a load", () => {
       (c) => ({ a: c.integer().primaryKey(), b: c.integer() }),
       (c) => [primaryKey(c.b)],
     );
-    expect(emitSchema(defineSchema({ t })).diagnostics.map((d) => d.code)).toContain(
-      "duplicate_primary_key",
-    );
+    expect(emitSchema(defineSchema({ t })).diagnostics.map((d) => d.code)).toContain("duplicate_primary_key");
   });
 });
 

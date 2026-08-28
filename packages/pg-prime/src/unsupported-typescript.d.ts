@@ -25,7 +25,9 @@
 // The type parameters are optional and are only as many as the real declaration has, so that a
 // generic use resolves to the brand instead of erroring with "is not generic".
 
-type Unsupported<Message = { ERROR: 'pg-prime requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' }> = Message
+type Unsupported<
+  Message = { ERROR: 'pg-prime requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' },
+> = Message
 
 export declare const ALTERNATE_CODECS: Unsupported
 export declare const AbortError: Unsupported

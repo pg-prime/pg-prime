@@ -36,7 +36,10 @@ export interface SqlSnapshot {
   readonly meta: CompiledMeta
 }
 
-export function toSQLOf(compiled: Compiled<unknown>, values?: Readonly<Record<string, unknown>>): SqlSnapshot {
+export function toSQLOf(
+  compiled: Compiled<unknown>,
+  values?: Readonly<Record<string, unknown>>,
+): SqlSnapshot {
   const params: (PgParam | PlaceholderRef)[] = compiled.binds.map((b) => {
     if (b.k === 'value') return b.encoded
     if (values !== undefined && Object.hasOwn(values, b.name)) {
@@ -128,7 +131,12 @@ export async function explainWith(
     try {
       const r = await explainOn(conn, compiled, runner.env, opts, run)
       await conn.execute({ text: undo, params: [], mode: 'simple' })
-      if (inTx) await conn.execute({ text: 'release savepoint pgprime_explain', params: [], mode: 'simple' })
+      if (inTx)
+        await conn.execute({
+          text: 'release savepoint pgprime_explain',
+          params: [],
+          mode: 'simple',
+        })
       return makeResult(r.plan, r.text, r.executed, true, r.planningTimeMs, r.executionTimeMs)
     } catch (e) {
       await conn.execute({ text: undo, params: [], mode: 'simple' }).catch(() => {})

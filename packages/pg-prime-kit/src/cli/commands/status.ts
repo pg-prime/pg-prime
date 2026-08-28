@@ -7,8 +7,18 @@ import { bool, ms, type OptionSpec, type ParseResult } from "../args.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
 
 export const STATUS_OPTIONS: readonly OptionSpec[] = [
-  { name: "verify-fingerprint", type: "boolean", describe: "re-extract the catalog instead of reading fingerprint_to off the last applied row" },
-  { name: "stale-lock-after", type: "duration", placeholder: "duration", describe: "a lease whose heartbeat is older than this is reported stale", defaultText: "60s" },
+  {
+    name: "verify-fingerprint",
+    type: "boolean",
+    describe: "re-extract the catalog instead of reading fingerprint_to off the last applied row",
+  },
+  {
+    name: "stale-lock-after",
+    type: "duration",
+    placeholder: "duration",
+    describe: "a lease whose heartbeat is older than this is reported stale",
+    defaultText: "60s",
+  },
 ];
 
 export async function runStatus(config: ResolvedConfig, argv: ParseResult): Promise<CommandOutput> {
@@ -19,7 +29,7 @@ export async function runStatus(config: ResolvedConfig, argv: ParseResult): Prom
     repeatables: createRepeatablesPass(),
     repeatablesDir: config.repeatablesDir,
     ...(bool(argv.values, "verify-fingerprint") ? { verifyFingerprint: true } : {}),
-    ...(ms(argv.values, "stale-lock-after") ?? config.config.staleLockAfterMs
+    ...((ms(argv.values, "stale-lock-after") ?? config.config.staleLockAfterMs)
       ? { staleLockAfterMs: ms(argv.values, "stale-lock-after") ?? config.config.staleLockAfterMs! }
       : {}),
   });
@@ -58,7 +68,12 @@ function envelope(config: ResolvedConfig, r: StatusReport): Readonly<Record<stri
       checksumOk: m.checksumOk,
     })),
     pending: r.pending,
-    partial: r.partial.map((m) => ({ id: m.id, statementsApplied: m.statementsApplied, statementsTotal: m.statementsTotal, statementUncertain: m.statementUncertain })),
+    partial: r.partial.map((m) => ({
+      id: m.id,
+      statementsApplied: m.statementsApplied,
+      statementsTotal: m.statementsTotal,
+      statementUncertain: m.statementUncertain,
+    })),
     missingFiles: r.missingFiles,
     checksumDrift: r.checksumDrift,
     lock: {
@@ -67,7 +82,11 @@ function envelope(config: ResolvedConfig, r: StatusReport): Readonly<Record<stri
       staleAfterMs: r.lock.staleAfterMs,
       holder: r.lock.lease,
     },
-    repeatables: { tracked: r.repeatables.tracked, drift: r.repeatables.drift, passImplemented: r.repeatables.passImplemented },
+    repeatables: {
+      tracked: r.repeatables.tracked,
+      drift: r.repeatables.drift,
+      passImplemented: r.repeatables.passImplemented,
+    },
     data: r.data.map((d) => ({
       migrationId: d.migrationId,
       migrationState: d.migrationState,
@@ -78,7 +97,12 @@ function envelope(config: ResolvedConfig, r: StatusReport): Readonly<Record<stri
       done: d.done,
       updatedAt: d.updatedAt,
     })),
-    diagnostics: r.diagnostics.map((d) => ({ code: d.code, severity: d.severity, subject: d.subject ?? null, message: d.message })),
+    diagnostics: r.diagnostics.map((d) => ({
+      code: d.code,
+      severity: d.severity,
+      subject: d.subject ?? null,
+      message: d.message,
+    })),
     error: null,
   };
 }
@@ -88,7 +112,12 @@ function text(config: ResolvedConfig, r: StatusReport): string {
     `migrate status — ${config.connection.database} @ ${config.connection.host}:${String(config.connection.port)}`,
     "",
     pairs([
-      ["history", r.historyPresent ? `present (v${r.historyVersion ?? "?"})` : "absent — this database has never been migrated by pg-prime"],
+      [
+        "history",
+        r.historyPresent
+          ? `present (v${r.historyVersion ?? "?"})`
+          : "absent — this database has never been migrated by pg-prime",
+      ],
       [
         "fingerprint",
         r.fingerprint === null
@@ -96,14 +125,21 @@ function text(config: ResolvedConfig, r: StatusReport): string {
           : `${r.fingerprint} (${r.fingerprintSource ?? "?"})${r.fingerprintDrift ? ` — DRIFT, history records ${r.recordedFingerprint ?? "?"}` : ""}`,
       ],
       ["migrations", `${plural(r.migrations.length, "file")}, ${plural(r.pending.length, "pending")}`],
-      ["lock", r.lock.lease === null ? "free" : `${r.lock.stale ? "STALE " : ""}held by ${r.lock.lease.holder} (run ${r.lock.lease.runId}, beat ${String(r.lock.lease.heartbeatAgeMs)} ms ago)`],
+      [
+        "lock",
+        r.lock.lease === null
+          ? "free"
+          : `${r.lock.stale ? "STALE " : ""}held by ${r.lock.lease.holder} (run ${r.lock.lease.runId}, beat ${String(r.lock.lease.heartbeatAgeMs)} ms ago)`,
+      ],
     ]),
     "",
   ];
   for (const m of r.migrations) {
     lines.push(
       `  ${m.state.padEnd(9)} ${m.id}` +
-        (m.state === "running" || m.state === "failed" ? `  ${String(m.statementsApplied)}/${String(m.statementsTotal)} statements${m.statementUncertain === null ? "" : `, statement ${String(m.statementUncertain)} uncertain`}` : "") +
+        (m.state === "running" || m.state === "failed"
+          ? `  ${String(m.statementsApplied)}/${String(m.statementsTotal)} statements${m.statementUncertain === null ? "" : `, statement ${String(m.statementUncertain)} uncertain`}`
+          : "") +
         (m.checksumOk === false ? "  CHECKSUM DRIFT" : ""),
     );
   }

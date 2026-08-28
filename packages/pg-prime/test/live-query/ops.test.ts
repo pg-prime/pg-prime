@@ -128,8 +128,7 @@ const BOOL3 = () =>
   q.sql`case when ${u().deletedAt} is not null then true when ${u().birthday} is not null then false else null end`.as(
     boolCodec,
   )
-const BOOL3_SQL =
-  `case when u.deleted_at is not null then true when u.birthday is not null then false else null end`
+const BOOL3_SQL = `case when u.deleted_at is not null then true when u.birthday is not null then false else null end`
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The table
@@ -481,7 +480,9 @@ const CASES: Readonly<Record<string, Case>> = {
     pred: () =>
       q.and(
         q.hasKey(u().meta, 'billing'),
-        q.isNull(q.jsonPath(q.jsonDeletePath(u().meta, ['billing', 'country']), ['billing', 'country'])),
+        q.isNull(
+          q.jsonPath(q.jsonDeletePath(u().meta, ['billing', 'country']), ['billing', 'country']),
+        ),
       ),
     oracle: `u.meta ? 'billing' and ((u.meta #- array['billing','country']) #> array['billing','country']) is null`,
     rows: 1,
@@ -755,7 +756,11 @@ const CASES: Readonly<Record<string, Case>> = {
 // Running them
 // ─────────────────────────────────────────────────────────────────────────────
 
-function compiled(e: unknown): { sql: string; params: (string | Uint8Array | null)[]; oids: readonly number[] } {
+function compiled(e: unknown): {
+  sql: string
+  params: (string | Uint8Array | null)[]
+  oids: readonly number[]
+} {
   const out = compileExpr(e as Expr)
   return {
     sql: out.sql,
@@ -766,9 +771,7 @@ function compiled(e: unknown): { sql: string; params: (string | Uint8Array | nul
 
 /** `select <expr>` — the RowDescription is the whole point, so no rows are needed. */
 async function resultOid(expr: unknown, selectAs?: string): Promise<number> {
-  const c = selectAs
-    ? { sql: selectAs, params: [], oids: [] as readonly number[] }
-    : compiled(expr)
+  const c = selectAs ? { sql: selectAs, params: [], oids: [] as readonly number[] } : compiled(expr)
   const r = await conn.execute({
     text: `select ${c.sql} as v from ${fx.ns}.users as u limit 0`,
     params: c.params,
@@ -777,7 +780,11 @@ async function resultOid(expr: unknown, selectAs?: string): Promise<number> {
   return r.fields[0]!.dataTypeID
 }
 
-async function idsWhere(where: string, params: readonly (string | Uint8Array | null)[], oids: readonly number[]): Promise<string[]> {
+async function idsWhere(
+  where: string,
+  params: readonly (string | Uint8Array | null)[],
+  oids: readonly number[],
+): Promise<string[]> {
   const r = await conn.execute({
     text: `select u.id::text from ${fx.ns}.users as u where ${where} order by u.id`,
     params: [...params],
@@ -786,7 +793,7 @@ async function idsWhere(where: string, params: readonly (string | Uint8Array | n
   return r.rows.map((row) => String(row[0]))
 }
 
-describe('result-codec differential — the server confirms every operator\'s claimed OID', () => {
+describe("result-codec differential — the server confirms every operator's claimed OID", () => {
   for (const spec of CONFIRMABLE) {
     const kase = CASES[spec.name]
     it(`${spec.name} → ${spec.result}`, async () => {
@@ -933,17 +940,15 @@ describe('the cases `03` §2.9 names by hand', () => {
     expect(c.sql).toBe('"u"."meta" #>> $1')
     expect(c.params).toHaveLength(1)
     const mine = await idsWhere(`${c.sql} is null`, c.params, c.oids)
-    const theirs = await idsWhere(
-      `(u.meta #>> array['a"b','c\\d','e''f']) is null`,
-      [],
-      [],
-    )
+    const theirs = await idsWhere(`(u.meta #>> array['a"b','c\\d','e''f']) is null`, [], [])
     expect(mine).toStrictEqual(theirs)
     expect(mine).toHaveLength(6)
   })
 
   it('the vocabulary is covered end to end', () => {
-    expect(CONFIRMABLE.length).toBe(OPS.length - OPS.filter((o) => o.deferred || o.kind === 'order').length)
+    expect(CONFIRMABLE.length).toBe(
+      OPS.length - OPS.filter((o) => o.deferred || o.kind === 'order').length,
+    )
     expect(CONFIRMABLE.length).toBeGreaterThan(75)
   })
 })

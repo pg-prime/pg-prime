@@ -136,8 +136,6 @@ describe('interval encodes as ISO-8601, which every IntervalStyle accepts', () =
 
   it('a string passes through, and a non-interval is a PgEncodeError', () => {
     expect(intervalCodec.encode('1 day')).toBe('1 day')
-    expect(() => intervalCodec.encode({ ...zero, seconds: Number.NaN })).toThrow(
-      /finite 'seconds'/,
-    )
+    expect(() => intervalCodec.encode({ ...zero, seconds: Number.NaN })).toThrow(/finite 'seconds'/)
   })
 })

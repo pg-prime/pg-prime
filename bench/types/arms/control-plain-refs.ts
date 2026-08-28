@@ -50,7 +50,11 @@ export type PRefsIn<Sc extends AnySchema, N extends string> = {
   readonly [K in keyof ColsIn<Sc, N>]: Ref<N, K & string, ColsIn<Sc, N>[K]>
 }
 
-export interface SubQueryP<Sc extends AnySchema, N extends string, P extends Projection = PRefsIn<Sc, N>> {
+export interface SubQueryP<
+  Sc extends AnySchema,
+  N extends string,
+  P extends Projection = PRefsIn<Sc, N>,
+> {
   readonly [PRJ]: P
   where(f: (t: PRefsIn<Sc, N>) => Expr<boolean>): SubQueryP<Sc, N, P>
   orderBy(f: (t: PRefsIn<Sc, N>) => Projectable | readonly Projectable[]): SubQueryP<Sc, N, P>

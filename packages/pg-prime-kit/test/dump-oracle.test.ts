@@ -42,9 +42,7 @@ describe("SQL statement splitting", () => {
   });
 
   it("ignores a comment marker inside a string literal", () => {
-    expect(splitStatements("SELECT '-- not a comment; really';")).toEqual([
-      "SELECT '-- not a comment; really'",
-    ]);
+    expect(splitStatements("SELECT '-- not a comment; really';")).toEqual(["SELECT '-- not a comment; really'"]);
   });
 
   it("handles nested block comments", () => {
@@ -97,7 +95,10 @@ CREATE TABLE public.t (
   });
 
   it("is order-independent but not count-independent", () => {
-    expect(compareDumps("CREATE TABLE a (x int); CREATE TABLE b (y int);", "CREATE TABLE b (y int); CREATE TABLE a (x int);").equal).toBe(true);
+    expect(
+      compareDumps("CREATE TABLE a (x int); CREATE TABLE b (y int);", "CREATE TABLE b (y int); CREATE TABLE a (x int);")
+        .equal,
+    ).toBe(true);
     const dup = compareDumps("CREATE TABLE a (x int); CREATE TABLE a (x int);", "CREATE TABLE a (x int);");
     expect(dup.equal).toBe(false);
     expect(dup.extra).toHaveLength(1);

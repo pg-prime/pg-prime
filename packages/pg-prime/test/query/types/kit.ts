@@ -10,7 +10,6 @@
  * `{ a: string | undefined }` do not. That distinction is load-bearing here: `$if`'s boolean
  * overload must produce an *optional* key, not a `| undefined` one.
  */
-export type Eq<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
-  ? true
-  : false
+export type Eq<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 export type Assert<T extends true> = T

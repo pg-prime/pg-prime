@@ -120,9 +120,15 @@ export interface Col<M extends ColMeta> {
   /** Opt in to `NULL`. Columns are `NOT NULL` by default (design/04 D4). */
   nullable: NullableFn<M>
   /** DDL `DEFAULT <literal>`. Does **not** touch `t` — a defaulted column is still non-null on read. */
-  default: DefaultableFn<M, (v: M['t']) => Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>>
+  default: DefaultableFn<
+    M,
+    (v: M['t']) => Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  >
   /** DDL `DEFAULT <expr>`. Seam for agent 03's `sql` tag; takes raw text for now. */
-  defaultSql: DefaultableFn<M, (expr: string) => Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>>
+  defaultSql: DefaultableFn<
+    M,
+    (expr: string) => Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  >
   /** GENERATED ALWAYS: absent from insert *and* update, present in select. */
   generatedAlways(): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: true; pk: M['pk'] }>
   generatedByDefault(): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
@@ -190,7 +196,10 @@ export interface Col<M extends ColMeta> {
     pk: M['pk']
   }>
   /** Client-side default applied on insert. No `DEFAULT` in DDL. */
-  $default: DefaultableFn<M, (fn: () => M['t']) => Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>>
+  $default: DefaultableFn<
+    M,
+    (fn: () => M['t']) => Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  >
   /** Client-side value applied on update. No trigger emitted. */
   $onUpdate(fn: () => M['t']): Col<M>
 }
@@ -241,7 +250,10 @@ class ColumnBuilder implements ColumnRuntime, Bodies {
 
   nullable(): ColumnBuilder {
     if (this.ddl.primaryKey) {
-      this.#reject('.nullable() after .primaryKey()', 'a primary key column is NOT NULL by definition')
+      this.#reject(
+        '.nullable() after .primaryKey()',
+        'a primary key column is NOT NULL by definition',
+      )
     }
     if (this.ddl.identity === 'always') {
       this.#reject('.nullable() after .generatedAlways()', 'a generated column is always NOT NULL')
@@ -275,7 +287,10 @@ class ColumnBuilder implements ColumnRuntime, Bodies {
   }
   primaryKey(): ColumnBuilder {
     if (!this.ddl.notNull) {
-      this.#reject('.primaryKey() after .nullable()', 'a primary key column is NOT NULL by definition')
+      this.#reject(
+        '.primaryKey() after .nullable()',
+        'a primary key column is NOT NULL by definition',
+      )
     }
     return this.#next({ primaryKey: true })
   }
@@ -294,7 +309,8 @@ class ColumnBuilder implements ColumnRuntime, Bodies {
           'file, and a mutually-referencing pair has no declaration order that works without one.',
       )
     }
-    if (options?.name !== undefined) checkName(options.name, `.references({ name: "${options.name}" })`)
+    if (options?.name !== undefined)
+      checkName(options.name, `.references({ name: "${options.name}" })`)
     return this.#next({
       references: {
         target: () => [target()],
@@ -416,7 +432,9 @@ export function checkName(value: unknown, what: string): void {
     quoteIdentPart(value)
   } catch (e) {
     if (e instanceof InvalidIdentifierError) {
-      throw new SchemaError(`pg-prime: ${what} is not a usable PostgreSQL identifier: ${e.reason} (${e.message}).`)
+      throw new SchemaError(
+        `pg-prime: ${what} is not a usable PostgreSQL identifier: ${e.reason} (${e.message}).`,
+      )
     }
     throw e
   }
@@ -429,7 +447,8 @@ export function pgEnum<N extends string, const V extends readonly [string, ...st
 ): PgEnum<N, V> {
   checkName(name, `pgEnum("${name}") type name`)
   if (options?.schema !== undefined) checkName(options.schema, `pgEnum("${name}") schema name`)
-  if (options?.renamedFrom !== undefined) checkName(options.renamedFrom, `pgEnum("${name}", { renamedFrom })`)
+  if (options?.renamedFrom !== undefined)
+    checkName(options.renamedFrom, `pgEnum("${name}", { renamedFrom })`)
   const seen = new Set<string>()
   for (const label of values) {
     // An enum LABEL is a literal, not an identifier — PostgreSQL accepts `''` — but it is still
@@ -521,12 +540,17 @@ export function jsonb(name?: string): Base<unknown, 'jsonb'> {
  */
 export function raw(pgType: string, name?: string): Base<unknown, string> {
   if (typeof pgType !== 'string' || pgType.trim() === '') {
-    throw new SchemaError(`pg-prime: t.raw() needs a PostgreSQL type name, e.g. t.raw('varchar(50)').`)
+    throw new SchemaError(
+      `pg-prime: t.raw() needs a PostgreSQL type name, e.g. t.raw('varchar(50)').`,
+    )
   }
   return make<unknown, string>(pgType, name)
 }
 
-export function enumColumn<E extends AnyPgEnum>(e: E, name?: string): Base<E['values'][number], E['name']> {
+export function enumColumn<E extends AnyPgEnum>(
+  e: E,
+  name?: string,
+): Base<E['values'][number], E['name']> {
   const ddl: ColumnDdl = {
     ...baseDdl(e.name, name),
     enumName: e.name,

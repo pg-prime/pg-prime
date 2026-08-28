@@ -495,6 +495,15 @@ rule's target, a library function that was meant to await and does not, is `src/
 has a one-file override for `src/session/pg-lazy.ts`, the single `import('pg')` that `12` §1
 decision 2 allows; the driver layer still never names `pg`.
 
+**The one-time format (decision 19) · 2026-08-29.** `oxfmt` over the whole tree, one commit, and
+`pnpm format:check` in the `lint` job from then on. Formatting is *not* behaviour-neutral everywhere:
+a formatter that reflows a statement moves it off the line its `@ts-expect-error` guards, and a
+`.json` golden compared as text changes bytes. `.oxfmtrc.json` therefore ignores `**/*.probe.ts`,
+`packages/pg-prime/test/query/types/**`, `tools/type-errors/**` (recorded diagnostics carry line
+numbers), the three test files that use the directive inline (`schema/audit.test.ts`,
+`sql/kysely-cve.test.ts`, `fuzz/builder-generator.ts`), and `packages/*/test/**/*.json` (the kit's
+envelope goldens). Those files keep their hand layout on purpose.
+
 ---
 
 ## 4. Test infrastructure

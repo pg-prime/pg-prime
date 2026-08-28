@@ -113,7 +113,9 @@ export async function writePlan(
     await writeFile(planPath, `${JSON.stringify(plan, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
   } catch (err) {
     if (typeof err === "object" && err !== null && (err as { code?: unknown }).code === "EEXIST") {
-      throw new UnsafePlanPathError(`refusing to overwrite an existing migration ${JSON.stringify(base)} in ${JSON.stringify(root)}`);
+      throw new UnsafePlanPathError(
+        `refusing to overwrite an existing migration ${JSON.stringify(base)} in ${JSON.stringify(root)}`,
+      );
     }
     throw err;
   }

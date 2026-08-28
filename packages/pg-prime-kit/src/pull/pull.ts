@@ -125,9 +125,7 @@ function reportOf(input: PullInput, result: PullResult, out: string): unknown {
     out: relative(dirname(out), out),
     counts: result.counts,
     repeatables: result.repeatables.map((r) => ({ kind: r.kind, identity: r.identity, path: r.path })),
-    unsupported: [...result.unsupported].sort((a, b) =>
-      `${a.kind} ${a.name}` < `${b.kind} ${b.name}` ? -1 : 1,
-    ),
+    unsupported: [...result.unsupported].sort((a, b) => (`${a.kind} ${a.name}` < `${b.kind} ${b.name}` ? -1 : 1)),
     observed: result.observed,
     diagnostics: result.diagnostics
       .filter((d) => d.severity !== "info")
@@ -136,6 +134,8 @@ function reportOf(input: PullInput, result: PullResult, out: string): unknown {
 }
 
 const posixBase = (path: string): string => {
-  const parts = resolve(path).split(sep).filter((p) => p !== "");
+  const parts = resolve(path)
+    .split(sep)
+    .filter((p) => p !== "");
   return parts[parts.length - 1] ?? "sql";
 };

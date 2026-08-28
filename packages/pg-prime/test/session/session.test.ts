@@ -95,7 +95,10 @@ import { mockDriver, serverError } from '../query/_mock-driver.js'
 import type { MockDriver } from '../query/_mock-driver.js'
 import { schema } from '../query/_schema.js'
 
-function setup(opts: Record<string, unknown> = {}): { driver: MockDriver; db: ReturnType<typeof pgPrime<typeof schema>> } {
+function setup(opts: Record<string, unknown> = {}): {
+  driver: MockDriver
+  db: ReturnType<typeof pgPrime<typeof schema>>
+} {
   const driver = mockDriver()
   const db = pgPrime({ driver, schema, registry: defaultRegistry(), ...opts })
   return { driver, db }
@@ -107,14 +110,25 @@ function pgError(
   extra: Record<string, unknown> = {},
 ): Error & { pgPrime: { kind: string; server: Record<string, unknown> } } {
   const e = new Error(`${sqlstate}`) as Error & {
-    pgPrime: { kind: string; server: Record<string, unknown>; connectionUnusable: boolean; adapter: string; message: string }
+    pgPrime: {
+      kind: string
+      server: Record<string, unknown>
+      connectionUnusable: boolean
+      adapter: string
+      message: string
+    }
   }
   e.pgPrime = {
     kind: 'server',
     message: (extra['message'] as string) ?? `scripted ${sqlstate}`,
     connectionUnusable: false,
     adapter: 'mock',
-    server: { severity: 'ERROR', sqlstate, message: (extra['message'] as string) ?? `scripted ${sqlstate}`, ...extra },
+    server: {
+      severity: 'ERROR',
+      sqlstate,
+      message: (extra['message'] as string) ?? `scripted ${sqlstate}`,
+      ...extra,
+    },
   }
   return e
 }
@@ -162,9 +176,12 @@ describe('BEGIN is one statement, never a separate SET TRANSACTION (07 §3.1)', 
   it('emits exactly begin … commit around the callback, on ONE connection', async () => {
     const { driver, db } = setup()
     driver.rows.push([['1']])
-    await db.transaction(async (tx) => {
-      await tx.sql`select 1`.execute()
-    }, { isolation: 'serializable', accessMode: 'read only', deferrable: true })
+    await db.transaction(
+      async (tx) => {
+        await tx.sql`select 1`.execute()
+      },
+      { isolation: 'serializable', accessMode: 'read only', deferrable: true },
+    )
     expect(driver.texts()).toStrictEqual([
       'begin isolation level serializable read only deferrable',
       'select 1',
@@ -177,7 +194,11 @@ describe('BEGIN is one statement, never a separate SET TRANSACTION (07 §3.1)', 
   it('rolls back and rethrows on a throw, and the connection still goes back', async () => {
     const { driver, db } = setup()
     const boom = new Error('user code')
-    await expect(db.transaction(async () => { throw boom })).rejects.toBe(boom)
+    await expect(
+      db.transaction(async () => {
+        throw boom
+      }),
+    ).rejects.toBe(boom)
     expect(driver.texts()).toStrictEqual(['begin', 'rollback'])
     expect(driver.released).toBe(1)
   })
@@ -257,14 +278,9 @@ describe('setLocal is set_config($1,$2,true), batched (07 §3.5)', () => {
   })
 
   it('flattens name/value pairs and stringifies, so a number is a valid GUC value', () => {
-    expect(setConfigParams({ 'app.tenant_id': 7, statement_timeout: '5s', on: true })).toStrictEqual([
-      'app.tenant_id',
-      '7',
-      'statement_timeout',
-      '5s',
-      'on',
-      'true',
-    ])
+    expect(
+      setConfigParams({ 'app.tenant_id': 7, statement_timeout: '5s', on: true }),
+    ).toStrictEqual(['app.tenant_id', '7', 'statement_timeout', '5s', 'on', 'true'])
   })
 
   it('validates the GUC NAME as a typo catcher — the value is a bind and needs nothing', () => {
@@ -348,7 +364,9 @@ describe('advisory locks (07 §3.7, §5.2)', () => {
 describe('rollback() and rollbackWith() (07 §3.7)', () => {
   it('rollback() throws TransactionRollback, which the runner rethrows after ROLLBACK', async () => {
     const { driver, db } = setup()
-    await expect(db.transaction(async (tx) => tx.rollback())).rejects.toBeInstanceOf(TransactionRollback)
+    await expect(db.transaction(async (tx) => tx.rollback())).rejects.toBeInstanceOf(
+      TransactionRollback,
+    )
     expect(driver.texts()).toStrictEqual(['begin', 'rollback'])
   })
 
@@ -585,7 +603,12 @@ describe('the retry LOOP, on a fake clock (07 §3.4)', () => {
     const { driver, db } = setup()
     const boom = new TypeError('user bug')
     await expect(
-      db.transaction(async () => { throw boom }, { isolation: 'serializable' }),
+      db.transaction(
+        async () => {
+          throw boom
+        },
+        { isolation: 'serializable' },
+      ),
     ).rejects.toBe(boom)
     expect(driver.texts().filter((t) => t.startsWith('begin'))).toHaveLength(1)
   })
@@ -627,7 +650,9 @@ describe('IndeterminateCommitError (07 §3.4 exclusion 1, §4.2)', () => {
   it('a connection lost BEFORE commit is an ordinary connection error, not indeterminate', async () => {
     const { driver, db } = setup()
     driver.failOn = (q) => (q.text === 'select 1' ? connectionLost() : undefined)
-    const err = await db.transaction(async (tx) => tx.sql`select 1`.execute()).catch((e: unknown) => e)
+    const err = await db
+      .transaction(async (tx) => tx.sql`select 1`.execute())
+      .catch((e: unknown) => e)
     expect(err).not.toBeInstanceOf(IndeterminateCommitError)
     expect(err).toBeInstanceOf(ConnectionError)
   })
@@ -718,20 +743,29 @@ describe('every SQLSTATE in 07 §4.2 maps to its class (07 §4.5)', () => {
 
   it('an unmodelled SQLSTATE lands on its class ancestor and keeps the raw code', () => {
     // 23xxx we do not model → IntegrityConstraintError, not UnknownQueryError.
-    const e = mapError(pgError('23999'), { context: { handle: 'db' }, errors: resolveErrorOptions(undefined, false) })
+    const e = mapError(pgError('23999'), {
+      context: { handle: 'db' },
+      errors: resolveErrorOptions(undefined, false),
+    })
     expect(e).toBeInstanceOf(IntegrityConstraintError)
     expect((e as QueryError).code).toBe('23999')
     expect((e as QueryError).sqlStateClass).toBe('23')
   })
 
   it('an SQLSTATE in no modelled class at all is UnknownQueryError, still carrying the code', () => {
-    const e = mapError(pgError('XX999'), { context: { handle: 'db' }, errors: resolveErrorOptions(undefined, false) })
+    const e = mapError(pgError('XX999'), {
+      context: { handle: 'db' },
+      errors: resolveErrorOptions(undefined, false),
+    })
     expect(e).toBeInstanceOf(UnknownQueryError)
     expect((e as QueryError).code).toBe('XX999')
   })
 
   it('PgPrimeError is the one ancestor — the builder errors and the runtime errors share it', () => {
-    const e = mapError(pgError('23505'), { context: { handle: 'db' }, errors: resolveErrorOptions(undefined, false) })
+    const e = mapError(pgError('23505'), {
+      context: { handle: 'db' },
+      errors: resolveErrorOptions(undefined, false),
+    })
     expect(e).toBeInstanceOf(PgPrimeError)
     expect(e).toBeInstanceOf(QueryError)
     expect((e as Error).name).toBe('UniqueViolationError')
@@ -739,7 +773,9 @@ describe('every SQLSTATE in 07 §4.2 maps to its class (07 §4.5)', () => {
 
   it('a non-driver throw passes through untouched — a TypeError is not a database condition', () => {
     const boom = new TypeError('nope')
-    expect(mapError(boom, { context: { handle: 'db' }, errors: resolveErrorOptions(undefined, false) })).toBe(boom)
+    expect(
+      mapError(boom, { context: { handle: 'db' }, errors: resolveErrorOptions(undefined, false) }),
+    ).toBe(boom)
   })
 })
 
@@ -776,7 +812,11 @@ describe('redaction (07 §4.3)', () => {
 
   it('includeDetail: true is the one-line opt-in', () => {
     const opts = resolveErrorOptions({ includeDetail: true }, false)
-    const { detail, detailRedacted } = redactDetail('Key (email)=(a@b.c) already exists.', '23505', opts)
+    const { detail, detailRedacted } = redactDetail(
+      'Key (email)=(a@b.c) already exists.',
+      '23505',
+      opts,
+    )
     expect(detail).toBe('Key (email)=(a@b.c) already exists.')
     expect(detailRedacted).toBe(false)
   })
@@ -859,11 +899,14 @@ describe('constraint → schema object (07 §4.4)', () => {
       schema: s,
     }) as UniqueViolationError
     expect(pk.constraint?.kind).toBe('primaryKey')
-    const fk = mapError(pgError('23503', { constraint: 'accounts_org_id_fkey', table: 'accounts' }), {
-      context: { handle: 'db' },
-      errors: resolveErrorOptions(undefined, false),
-      schema: s,
-    }) as ForeignKeyViolationError
+    const fk = mapError(
+      pgError('23503', { constraint: 'accounts_org_id_fkey', table: 'accounts' }),
+      {
+        context: { handle: 'db' },
+        errors: resolveErrorOptions(undefined, false),
+        schema: s,
+      },
+    ) as ForeignKeyViolationError
     expect(fk.constraint?.kind).toBe('foreignKey')
     expect(fk.columns?.map((c) => c.$.dbName)).toStrictEqual(['org_id'])
   })
@@ -899,7 +942,11 @@ describe('InFailedTransactionError carries what poisoned the transaction (07 §3
   it('names the earlier error and points at savepoint()', async () => {
     const { driver, db } = setup()
     driver.failOn = (q) =>
-      q.text === 'select 1' ? pgError('23505', { constraint: 'x' }) : q.text === 'select 2' ? pgError('25P02') : undefined
+      q.text === 'select 1'
+        ? pgError('23505', { constraint: 'x' })
+        : q.text === 'select 2'
+          ? pgError('25P02')
+          : undefined
     const err = await db
       .transaction(async (tx) => {
         await tx.sql`select 1`.execute().catch(() => undefined)
@@ -940,7 +987,11 @@ describe('InFailedTransactionError carries what poisoned the transaction (07 §3
   it('a failure with NO savepoint around it stays recorded, and the 25P02 names it', async () => {
     const { driver, db } = setup()
     driver.failOn = (q) =>
-      q.text === 'select 1' ? pgError('23505') : q.text === 'select 2' ? pgError('25P02') : undefined
+      q.text === 'select 1'
+        ? pgError('23505')
+        : q.text === 'select 2'
+          ? pgError('25P02')
+          : undefined
     const err = await db
       .transaction(async (tx) => {
         await tx.sql`select 1`.execute().catch(() => undefined)
@@ -1036,7 +1087,7 @@ describe('POOLER_PROFILES is data, and a profile only ever restricts (07 §5.1)'
     for (const mode of POOLER_MODES) expect(POOLER_PROFILES[mode].resetQuery).toBe('never')
   })
 
-  it("the matrix is ASYMMETRIC: LISTEN is unsupported under a tx pooler, NOTIFY is not gated", () => {
+  it('the matrix is ASYMMETRIC: LISTEN is unsupported under a tx pooler, NOTIFY is not gated', () => {
     expect(POOLER_PROFILES['pgbouncer-transaction'].listen).toBe('unsupported')
     expect(POOLER_PROFILES.transaction.listen).toBe('unsupported')
     expect(POOLER_PROFILES.none.listen).toBe('ok')
@@ -1106,7 +1157,9 @@ describe('POOLER_PROFILES is data, and a profile only ever restricts (07 §5.1)'
 describe('config validation is eager and names the key (07 §1.1)', () => {
   it('needs exactly one of connection | pool | driver', () => {
     expect(() => pgPrime({ schema } as never)).toThrow(ConfigError)
-    expect(() => pgPrime({ schema, driver: mockDriver(), pool: {} } as never)).toThrow(/exactly ONE/)
+    expect(() => pgPrime({ schema, driver: mockDriver(), pool: {} } as never)).toThrow(
+      /exactly ONE/,
+    )
   })
 
   it('pgPrime is synchronous and lazy — it opens no connection', () => {
@@ -1180,9 +1233,12 @@ describe('config validation is eager and names the key (07 §1.1)', () => {
       expect(call).toThrow(/compileOnly/)
     }
     // …and the thing it CAN do still works.
-    expect(q.from(schema.h.users).select(({ users: u }) => ({ id: u.id })).compile().sql).toContain(
-      'select',
-    )
+    expect(
+      q
+        .from(schema.h.users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .compile().sql,
+    ).toContain('select')
   })
 
   it('handles carry their kind, and every one of them can reach the schema', async () => {
@@ -1218,7 +1274,10 @@ describe('QueryHooks (07 §7.1)', () => {
       },
     })
     driver.rows.push([['7', 'a@b']])
-    await db.from(schema.h.users).select(({ users: u }) => ({ id: u.id, email: u.email })).execute()
+    await db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id, email: u.email }))
+      .execute()
     expect(events).toStrictEqual(['start select users', 'end rows=1 timed=true'])
   })
 
@@ -1333,7 +1392,15 @@ describe('spanAttributes / spanName are pure and import nothing (07 §7.2)', () 
   })
 
   it('everything non-semconv is namespaced under pg_prime.*, so it cannot collide', () => {
-    const attrs = spanAttributes({ ...start, durationMs: 1, rowCount: 2, command: 'INSERT', serverMs: 1, decodeMs: 0, waitedForConnectionMs: 0 })
+    const attrs = spanAttributes({
+      ...start,
+      durationMs: 1,
+      rowCount: 2,
+      command: 'INSERT',
+      serverMs: 1,
+      decodeMs: 0,
+      waitedForConnectionMs: 0,
+    })
     for (const key of Object.keys(attrs)) {
       const known = Object.values(SEMCONV) as string[]
       expect(known.includes(key) || key.startsWith('pg_prime.')).toBe(true)
@@ -1356,7 +1423,12 @@ describe('streamBatches (07 §6.3, design/12 decision 10)', () => {
   it('yields one array per FETCH, the last one shorter, and never an empty one', async () => {
     const { driver, db } = setup()
     driver.chunks.push([
-      { rows: [['1', 'a'], ['2', 'b']] },
+      {
+        rows: [
+          ['1', 'a'],
+          ['2', 'b'],
+        ],
+      },
       { rows: [['3', 'c']] },
       { rows: [] },
     ])
@@ -1397,9 +1469,14 @@ describe('AbortSignal and per-statement timeouts (07 §6.1, §6.2)', () => {
     const ac = new AbortController()
     ac.abort()
     driver.failOn = (q) => (q.signal?.aborted === true ? abortError() : undefined)
-    const err = await db.run(db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })), {
-      signal: ac.signal,
-    }).catch((e: unknown) => e)
+    const err = await db
+      .run(
+        db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })),
+        {
+          signal: ac.signal,
+        },
+      )
+      .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(AbortError)
   })
 
@@ -1413,7 +1490,9 @@ describe('AbortSignal and per-statement timeouts (07 §6.1, §6.2)', () => {
       },
       { timeoutMs: 9_000 },
     )
-    const params = driver.log.filter((r) => r.text.startsWith('select set_config')).map((r) => r.params)
+    const params = driver.log
+      .filter((r) => r.text.startsWith('select set_config'))
+      .map((r) => r.params)
     // One at BEGIN for the transaction, one for the statement that asked for its own. The plain
     // statement in between emits nothing, because the baseline is already in place.
     expect(params).toStrictEqual([
@@ -1422,7 +1501,7 @@ describe('AbortSignal and per-statement timeouts (07 §6.1, §6.2)', () => {
     ])
   })
 
-  it("inside a transaction a timeout is SET LOCAL statement_timeout, and it is not re-emitted", async () => {
+  it('inside a transaction a timeout is SET LOCAL statement_timeout, and it is not re-emitted', async () => {
     const { driver, db } = setup()
     driver.rows.push([['1']], [['1']], [['1']])
     await db.transaction(async (tx) => {
@@ -1435,7 +1514,9 @@ describe('AbortSignal and per-statement timeouts (07 §6.1, §6.2)', () => {
     expect(texts.filter((t) => t.startsWith('select set_config'))).toHaveLength(2)
     // The restore is `set_config(…, NULL, true)`, which puts back the value the session would
     // otherwise have. `'0'` would DISABLE the timeout for the rest of the transaction instead.
-    expect(driver.log.filter((r) => r.text.startsWith('select set_config')).map((r) => r.params)).toStrictEqual([
+    expect(
+      driver.log.filter((r) => r.text.startsWith('select set_config')).map((r) => r.params),
+    ).toStrictEqual([
       ['statement_timeout', '1000'],
       ['statement_timeout', null],
     ])
@@ -1444,10 +1525,13 @@ describe('AbortSignal and per-statement timeouts (07 §6.1, §6.2)', () => {
   it("timeoutStrategy: 'transaction' wraps an autocommit statement, the +2 RTT opt-in", async () => {
     const { driver, db } = setup()
     driver.rows.push([['1']])
-    await db.run(db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })), {
-      timeoutMs: 500,
-      timeoutStrategy: 'transaction',
-    })
+    await db.run(
+      db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })),
+      {
+        timeoutMs: 500,
+        timeoutStrategy: 'transaction',
+      },
+    )
     const kinds = driver.texts().map((t) => t.split(' ').slice(0, 2).join(' '))
     expect(kinds[0]).toBe('begin')
     expect(kinds[1]).toBe('select set_config($1,$2,true)')
@@ -1467,7 +1551,9 @@ function abortError(): Error {
 
 describe('PoolTimeoutError carries pool stats (07 §1.2, §4.2)', () => {
   it("pg's 'timeout exceeded when trying to connect' becomes an alertable event", () => {
-    const raw = new Error('timeout exceeded when trying to connect') as Error & { pgPrime: Record<string, unknown> }
+    const raw = new Error('timeout exceeded when trying to connect') as Error & {
+      pgPrime: Record<string, unknown>
+    }
     raw.pgPrime = {
       kind: 'connection',
       message: 'timeout exceeded when trying to connect',
@@ -1484,7 +1570,6 @@ describe('PoolTimeoutError carries pool stats (07 §1.2, §4.2)', () => {
     expect(e.stats).toStrictEqual({ total: 10, idle: 0, waiting: 4, max: 10 })
   })
 })
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The module graph: two static imports that must never exist

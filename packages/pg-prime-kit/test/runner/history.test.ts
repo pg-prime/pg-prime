@@ -10,7 +10,13 @@
 
 import { describe, expect, it } from "vitest";
 import { withClient, type ConnInfo } from "../../src/db/pg.js";
-import { ensureHistory, historyPresent, historyVersion, HISTORY_SCHEMA, HISTORY_VERSION } from "../../src/history/schema.js";
+import {
+  ensureHistory,
+  historyPresent,
+  historyVersion,
+  HISTORY_SCHEMA,
+  HISTORY_VERSION,
+} from "../../src/history/schema.js";
 import { readLease, takeLease, releaseLease, breakLease } from "../../src/history/store.js";
 import { dbConn, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
 
@@ -19,25 +25,45 @@ const T = 120_000;
 /** design/06 §4.4, transcribed. `column: nullable?` — `true` means the DDL has no NOT NULL. */
 const EXPECTED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   migrations: {
-    id: "text NOT NULL", seq: "integer NOT NULL", name: "text NOT NULL", checksum: "text NOT NULL",
-    plan_id: "text NULL", fingerprint_from: "text NULL", fingerprint_to: "text NULL",
-    txmode: "text NOT NULL", statements_total: "integer NOT NULL", statements_applied: "integer NOT NULL",
-    statement_uncertain: "integer NULL", segment_applied: "integer NOT NULL", status: "text NOT NULL",
-    started_at: "timestamp with time zone NOT NULL", finished_at: "timestamp with time zone NULL",
-    duration_ms: "integer NULL", applied_by: "text NOT NULL", applied_from: "text NULL",
-    error: "jsonb NULL", engine_version: "text NOT NULL",
+    id: "text NOT NULL",
+    seq: "integer NOT NULL",
+    name: "text NOT NULL",
+    checksum: "text NOT NULL",
+    plan_id: "text NULL",
+    fingerprint_from: "text NULL",
+    fingerprint_to: "text NULL",
+    txmode: "text NOT NULL",
+    statements_total: "integer NOT NULL",
+    statements_applied: "integer NOT NULL",
+    statement_uncertain: "integer NULL",
+    segment_applied: "integer NOT NULL",
+    status: "text NOT NULL",
+    started_at: "timestamp with time zone NOT NULL",
+    finished_at: "timestamp with time zone NULL",
+    duration_ms: "integer NULL",
+    applied_by: "text NOT NULL",
+    applied_from: "text NULL",
+    error: "jsonb NULL",
+    engine_version: "text NOT NULL",
   },
   repeatables: {
-    path: "text NOT NULL", checksum: "text NOT NULL",
-    applied_at: "timestamp with time zone NOT NULL", duration_ms: "integer NULL",
+    path: "text NOT NULL",
+    checksum: "text NOT NULL",
+    applied_at: "timestamp with time zone NOT NULL",
+    duration_ms: "integer NULL",
   },
   checkpoints: { id: "text NOT NULL", fingerprint: "text NOT NULL", created_at: "timestamp with time zone NOT NULL" },
   lock: {
-    singleton: "boolean NOT NULL", run_id: "uuid NOT NULL", holder: "text NOT NULL",
-    acquired_at: "timestamp with time zone NOT NULL", heartbeat_at: "timestamp with time zone NOT NULL",
+    singleton: "boolean NOT NULL",
+    run_id: "uuid NOT NULL",
+    holder: "text NOT NULL",
+    acquired_at: "timestamp with time zone NOT NULL",
+    heartbeat_at: "timestamp with time zone NOT NULL",
   },
   data_progress: {
-    migration_id: "text NOT NULL", watermark: "jsonb NOT NULL", rows_done: "bigint NOT NULL",
+    migration_id: "text NOT NULL",
+    watermark: "jsonb NOT NULL",
+    rows_done: "bigint NOT NULL",
     updated_at: "timestamp with time zone NOT NULL",
   },
   meta: { key: "text NOT NULL", value: "text NOT NULL" },
@@ -88,7 +114,10 @@ describe("ensureHistory", () => {
         // Idempotent: a fourth run changes nothing, including the version row.
         await withClient(conn, ensureHistory);
         expect(await shape(conn)).toEqual(EXPECTED);
-        const rows = await withClient(conn, async (c) => (await c.query(`SELECT count(*)::int AS n FROM ${HISTORY_SCHEMA}.meta`)).rows);
+        const rows = await withClient(
+          conn,
+          async (c) => (await c.query(`SELECT count(*)::int AS n FROM ${HISTORY_SCHEMA}.meta`)).rows,
+        );
         expect(Number(rows[0]?.["n"])).toBe(1);
 
         // `lock` is a singleton by construction: the CHECK plus the primary key.

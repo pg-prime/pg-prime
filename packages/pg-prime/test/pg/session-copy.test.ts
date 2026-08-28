@@ -118,7 +118,10 @@ describe('COPY vs insertMany — the crossover (07 §6.6)', () => {
 
         await truncate()
         const insertMs = await time('insertMany', () =>
-          db.insertInto(schema.h.events).valuesMany(data as never, { chunkSize: 5_000 }).execute(),
+          db
+            .insertInto(schema.h.events)
+            .valuesMany(data as never, { chunkSize: 5_000 })
+            .execute(),
         )
         expect(await count()).toBe(n)
 
@@ -145,18 +148,22 @@ describe('COPY vs insertMany — the crossover (07 §6.6)', () => {
     300_000,
   )
 
-  requiresConcurrency()('copyFrom encodes through the CODECS, not through String(value)', async () => {
-    await truncate()
-    // `numeric` is a precision-exact string on the wire and `timestamptz` an ISO instant. A COPY
-    // that stringified the JS values would round the first and localise the second.
-    await db.copyFrom(events, [{ id: 1, kind: 'k', amount: '12345678.91', at: AT }])
-    const [row] = await db
-      .from(schema.h.events)
-      .select(({ events: e }) => ({ amount: e.amount, at: e.at }))
-      .execute()
-    expect(row?.amount).toBe('12345678.91')
-    expect(row && (row.at as Date).toISOString()).toBe(AT.toISOString())
-  }, 120_000)
+  requiresConcurrency()(
+    'copyFrom encodes through the CODECS, not through String(value)',
+    async () => {
+      await truncate()
+      // `numeric` is a precision-exact string on the wire and `timestamptz` an ISO instant. A COPY
+      // that stringified the JS values would round the first and localise the second.
+      await db.copyFrom(events, [{ id: 1, kind: 'k', amount: '12345678.91', at: AT }])
+      const [row] = await db
+        .from(schema.h.events)
+        .select(({ events: e }) => ({ amount: e.amount, at: e.at }))
+        .execute()
+      expect(row?.amount).toBe('12345678.91')
+      expect(row && (row.at as Date).toISOString()).toBe(AT.toISOString())
+    },
+    120_000,
+  )
 
   requiresConcurrency()('the driver advertises the capability it now really has', () => {
     expect(driver.capabilities.copyIn).toBe(true)

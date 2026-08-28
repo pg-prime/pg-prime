@@ -13,7 +13,11 @@ import type { AnyRef } from './ref.js'
  * lazy-resolution device `.references()` uses (design/11 §1.7).
  */
 export type TableExtra =
-  | { readonly node: 'primaryKey'; readonly name: string | undefined; readonly columns: readonly string[] }
+  | {
+      readonly node: 'primaryKey'
+      readonly name: string | undefined
+      readonly columns: readonly string[]
+    }
   | {
       readonly node: 'index'
       readonly name: string
@@ -58,7 +62,11 @@ export type TableExtra =
   /** `ALTER TABLE … CLUSTER ON <index>` (`pg_index.indisclustered`). */
   | { readonly node: 'clusterOn'; readonly index: string }
   /** `… PARTITION BY RANGE (created_at)` on the parent. */
-  | { readonly node: 'partitionBy'; readonly strategy: 'range' | 'list' | 'hash'; readonly key: string }
+  | {
+      readonly node: 'partitionBy'
+      readonly strategy: 'range' | 'list' | 'hash'
+      readonly key: string
+    }
   /** `CREATE TABLE child PARTITION OF parent FOR VALUES …` on a child. */
   | {
       readonly node: 'partitionOf'
@@ -91,7 +99,11 @@ export function primaryKey(...refs: [PrimaryKeyInput] | AnyRef[]): TableExtra {
   const first = refs[0]
   if (refs.length === 1 && isPrimaryKeyInput(first)) {
     if (first.name !== undefined) checkName(first.name, `primaryKey({ name: "${first.name}" })`)
-    return { node: 'primaryKey', name: first.name, columns: dbNames([...first.columns], 'primaryKey({ columns })') }
+    return {
+      node: 'primaryKey',
+      name: first.name,
+      columns: dbNames([...first.columns], 'primaryKey({ columns })'),
+    }
   }
   return { node: 'primaryKey', name: undefined, columns: dbNames(refs as AnyRef[], 'primaryKey()') }
 }
@@ -141,7 +153,10 @@ export interface IndexOptions {
 export type IndexColumnLike = AnyRef | IndexColumn
 
 const isItem = (v: IndexColumnLike): v is IndexColumn =>
-  typeof v === 'object' && v !== null && 'column' in v && (v as { column?: unknown }).column !== undefined
+  typeof v === 'object' &&
+  v !== null &&
+  'column' in v &&
+  (v as { column?: unknown }).column !== undefined
 
 class IndexBuilder {
   #name: string
@@ -167,7 +182,9 @@ class IndexBuilder {
   /** `USING gin` and friends. The method name is not validated — extensions add methods. */
   using(method: string): IndexBuilder {
     if (typeof method !== 'string' || method.trim() === '') {
-      throw new SchemaError(`pg-prime: ${this.#what()}.using() needs an access-method name, e.g. 'gin'.`)
+      throw new SchemaError(
+        `pg-prime: ${this.#what()}.using() needs an access-method name, e.g. 'gin'.`,
+      )
     }
     checkName(method, `${this.#what()}.using("${method}")`)
     this.#using = method
@@ -177,7 +194,8 @@ class IndexBuilder {
   /** A partial index's predicate. Bind parameters are rejected, as in `check()`. */
   where(expression: AnyFragment): IndexBuilder {
     const text = fragmentDdlText(expression, `${this.#what()}.where()`)
-    if (text.trim() === '') throw new SchemaError(`pg-prime: ${this.#what()}.where() has an empty expression.`)
+    if (text.trim() === '')
+      throw new SchemaError(`pg-prime: ${this.#what()}.where() has an empty expression.`)
     this.#where = text
     return this
   }
@@ -195,9 +213,16 @@ class IndexBuilder {
   }
 
   on(...columns: IndexColumnLike[]): TableExtra {
-    if (columns.length === 0) throw new SchemaError(`pg-prime: ${this.#what()} was given no columns.`)
+    if (columns.length === 0)
+      throw new SchemaError(`pg-prime: ${this.#what()} was given no columns.`)
     const items: IndexItem[] = columns.map((c) => {
-      if (!isItem(c)) return { column: refName(c, this.#what()), desc: false, nulls: undefined, opclass: undefined }
+      if (!isItem(c))
+        return {
+          column: refName(c, this.#what()),
+          desc: false,
+          nulls: undefined,
+          opclass: undefined,
+        }
       if (c.nulls !== undefined && c.nulls !== 'first' && c.nulls !== 'last') {
         throw new SchemaError(
           `pg-prime: ${this.#what()} column option \`nulls\` is ${JSON.stringify(c.nulls)}; it must be 'first' or 'last'.`,
@@ -293,7 +318,8 @@ export function unique(name?: string): UniqueBuilder {
 export function check(name: string, expression: AnyFragment): TableExtra {
   checkName(name, `check("${name}") constraint name`)
   const text = fragmentDdlText(expression, `check("${name}")`)
-  if (text.trim() === '') throw new SchemaError(`pg-prime: check("${name}") has an empty expression.`)
+  if (text.trim() === '')
+    throw new SchemaError(`pg-prime: check("${name}") has an empty expression.`)
   return { node: 'check', name, expression: text }
 }
 
@@ -364,10 +390,14 @@ export function clusterOn(index: string): TableExtra {
  */
 export function partitionBy(strategy: 'range' | 'list' | 'hash', key: string): TableExtra {
   if (strategy !== 'range' && strategy !== 'list' && strategy !== 'hash') {
-    throw new SchemaError(`pg-prime: partitionBy() strategy is ${JSON.stringify(strategy)}; use 'range', 'list' or 'hash'.`)
+    throw new SchemaError(
+      `pg-prime: partitionBy() strategy is ${JSON.stringify(strategy)}; use 'range', 'list' or 'hash'.`,
+    )
   }
   if (typeof key !== 'string' || key.trim() === '') {
-    throw new SchemaError(`pg-prime: partitionBy('${strategy}') needs a key, e.g. partitionBy('range', 'created_at').`)
+    throw new SchemaError(
+      `pg-prime: partitionBy('${strategy}') needs a key, e.g. partitionBy('range', 'created_at').`,
+    )
   }
   return { node: 'partitionBy', strategy, key }
 }
@@ -378,11 +408,18 @@ export interface PartitionOfOptions {
   readonly schema?: string
 }
 
-export function partitionOf(parent: string, bound: string, options?: PartitionOfOptions): TableExtra {
+export function partitionOf(
+  parent: string,
+  bound: string,
+  options?: PartitionOfOptions,
+): TableExtra {
   checkName(parent, `partitionOf("${String(parent)}") parent table`)
-  if (options?.schema !== undefined) checkName(options.schema, `partitionOf("${parent}", { schema })`)
+  if (options?.schema !== undefined)
+    checkName(options.schema, `partitionOf("${parent}", { schema })`)
   if (typeof bound !== 'string' || bound.trim() === '') {
-    throw new SchemaError(`pg-prime: partitionOf("${parent}") needs a bound, e.g. "FOR VALUES FROM (1) TO (10)" or "DEFAULT".`)
+    throw new SchemaError(
+      `pg-prime: partitionOf("${parent}") needs a bound, e.g. "FOR VALUES FROM (1) TO (10)" or "DEFAULT".`,
+    )
   }
   return { node: 'partitionOf', parent, parentSchema: options?.schema, bound }
 }

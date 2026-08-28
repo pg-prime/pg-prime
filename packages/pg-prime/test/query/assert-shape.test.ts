@@ -102,7 +102,9 @@ describe('assertShape fires on a lying codec', () => {
     driver.rows.push([['10.50']])
     driver.fields.push([field('total', 1700)])
 
-    const err = await lying(db).execute().catch((e: unknown) => e)
+    const err = await lying(db)
+      .execute()
+      .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CodecMismatchError)
     const text = rendered(err)
     expect(text).toContain(
@@ -218,7 +220,9 @@ describe('assertShape skips what it cannot judge', () => {
 
     driver.rows.push([['7', '[]']])
     driver.fields.push([field('id', 20), field('posts', 25)]) // text — refused
-    const err = await build().execute().catch((e: unknown) => e)
+    const err = await build()
+      .execute()
+      .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CodecMismatchError)
     expect(rendered(err)).toContain('column "posts"')
   })

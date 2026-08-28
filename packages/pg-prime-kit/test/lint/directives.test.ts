@@ -39,7 +39,7 @@ describe("nolint scope follows the stmt markers", () => {
 
   it("accepts the legacy `pg-orm:` prefix that renderSql still writes", () => {
     const { directives, errors } = parseNolint(
-      ['-- pg-orm:stmt 2 lock=accessExclusive', '-- pg-orm:nolint DS103 "column is dead"'].join("\n"),
+      ["-- pg-orm:stmt 2 lock=accessExclusive", '-- pg-orm:nolint DS103 "column is dead"'].join("\n"),
     );
     expect(errors).toEqual([]);
     expect(directives).toEqual([{ code: "DS103", reason: "column is dead", line: 2, statement: 2 }]);
@@ -47,7 +47,11 @@ describe("nolint scope follows the stmt markers", () => {
 
   it("does not treat an unrelated comment as a directive", () => {
     const { directives, errors } = parseNolint(
-      ["-- nolint LK101 \"no namespace\"", "-- pgprime:nolint LK101 \"wrong namespace\"", "-- pg-prime:nolinting LK101 \"not the verb\""].join("\n"),
+      [
+        '-- nolint LK101 "no namespace"',
+        '-- pgprime:nolint LK101 "wrong namespace"',
+        '-- pg-prime:nolinting LK101 "not the verb"',
+      ].join("\n"),
     );
     expect(directives).toEqual([]);
     expect(errors).toEqual([]);

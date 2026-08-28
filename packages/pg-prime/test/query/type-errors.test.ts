@@ -22,7 +22,13 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { budgetOf, caseNames, collect, COMPILERS, readGolden } from '../../../../tools/type-errors/record.mjs'
+import {
+  budgetOf,
+  caseNames,
+  collect,
+  COMPILERS,
+  readGolden,
+} from '../../../../tools/type-errors/record.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TOOL = join(HERE, '..', '..', '..', '..', 'tools', 'type-errors')
@@ -58,11 +64,17 @@ describe.each(Object.entries(COMPILERS))('TypeScript %s', (version, bin) => {
 
     // (1) the case still fails. Without this, deleting a guard turns the golden into `''` and the
     //     diff below would happily pass.
-    expect(lines.length, `${name} produced no diagnostic — the guard it pins is gone`).toBeGreaterThan(0)
+    expect(
+      lines.length,
+      `${name} produced no diagnostic — the guard it pins is gone`,
+    ).toBeGreaterThan(0)
 
     // (2) byte-identical to the golden.
     const golden = readGolden(name, version)
-    expect(golden, `no golden for ${name} on ${version} — run: node tools/type-errors/record.mjs`).not.toBeNull()
+    expect(
+      golden,
+      `no golden for ${name} on ${version} — run: node tools/type-errors/record.mjs`,
+    ).not.toBeNull()
     expect(lines.join('\n')).toBe(golden)
 
     // (3a) the D9 sentence budget, on our own branded messages.

@@ -46,7 +46,11 @@ export function resolveSessionSettings(
   profile: PoolerProfile,
 ): ResolvedSessionSettings {
   const wanted: [string, string][] = []
-  const push = (name: string, value: Duration | string | null | undefined, fallback: string | null): void => {
+  const push = (
+    name: string,
+    value: Duration | string | null | undefined,
+    fallback: string | null,
+  ): void => {
     const v = value === undefined ? fallback : value
     if (v === null) return
     wanted.push([name, duration(v)])

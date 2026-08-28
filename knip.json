@@ -1,25 +1,12 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "ignoreExportsUsedInFile": true,
-  "exclude": [
-    "exports",
-    "types",
-    "nsExports",
-    "nsTypes",
-    "duplicates"
-  ],
+  "exclude": ["exports", "types", "nsExports", "nsTypes", "duplicates"],
   "workspaces": {
     ".": {
-      "entry": [
-        "tools/*.mjs"
-      ],
-      "project": [
-        "tools/**/*.mjs"
-      ],
-      "ignoreDependencies": [
-        "@arethetypeswrong/cli",
-        "publint"
-      ]
+      "entry": ["tools/*.mjs"],
+      "project": ["tools/**/*.mjs"],
+      "ignoreDependencies": ["@arethetypeswrong/cli", "publint"]
     },
     "packages/pg-prime": {
       "entry": [
@@ -30,39 +17,19 @@
         "test/**/_globalSetup.ts",
         "test/**/_setup.ts"
       ],
-      "project": [
-        "src/**/*.ts",
-        "test/**/*.ts"
-      ]
+      "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "packages/pg-prime-kit": {
-      "entry": [
-        "src/index.ts",
-        "src/cli.ts",
-        "test/**/*.test.ts"
-      ],
-      "project": [
-        "src/**/*.ts",
-        "test/**/*.ts"
-      ]
+      "entry": ["src/index.ts", "src/cli.ts", "test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "bench/runtime": {
-      "entry": [
-        "run.mjs",
-        "profile.mjs"
-      ],
-      "project": [
-        "**/*.mjs"
-      ]
+      "entry": ["run.mjs", "profile.mjs"],
+      "project": ["**/*.mjs"]
     },
     "bench/types": {
-      "entry": [
-        "arms/*.ts"
-      ],
-      "project": [
-        "**/*.mjs",
-        "**/*.ts"
-      ]
+      "entry": ["arms/*.ts"],
+      "project": ["**/*.mjs", "**/*.ts"]
     }
   },
   "rules": {

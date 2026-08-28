@@ -44,7 +44,9 @@ const CASES: readonly Case[] = [
   },
   {
     what: 'a prepared-statement name reused for different SQL (query.js) — nothing was sent',
-    error: new Error(`Prepared statements must be unique - 'ps_1' was used for a different statement`),
+    error: new Error(
+      `Prepared statements must be unique - 'ps_1' was used for a different statement`,
+    ),
     kind: 'adapter',
     connectionUnusable: false,
   },

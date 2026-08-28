@@ -3,9 +3,9 @@
   "version": "0.0.0",
   "description": "Migration engine for pg-prime: catalog diffing, plan generation, prove-on-shadow-clone, apply. Pre-alpha — `pg-prime migrate apply|status|baseline|unlock` plus the programmatic API.",
   "license": "MPL-2.0",
-  "type": "module",
-  "engines": {
-    "node": ">=22.12"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-prime/pg-prime.git"
   },
   "bin": {
     "pg-prime": "./dist/cli.js"
@@ -13,6 +13,7 @@
   "files": [
     "dist"
   ],
+  "type": "module",
   "exports": {
     ".": {
       "types@<5.9": "./dist/unsupported-typescript.d.ts",
@@ -32,19 +33,18 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
     "test:pg": "vitest run"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/pg-prime/pg-prime.git"
-  },
   "dependencies": {
     "@types/pg": "^8.21.0",
     "pg": "^8.23.0"
   },
-  "peerDependencies": {
-    "pg-prime": ">=0.0.0"
-  },
   "devDependencies": {
     "pg-prime": "workspace:*",
     "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "pg-prime": ">=0.0.0"
+  },
+  "engines": {
+    "node": ">=22.12"
   }
 }

@@ -22,7 +22,10 @@ import {
 } from './classes.js'
 import type { ColumnRef, ConstraintRef } from './refs.js'
 
-function matches(e: IntegrityConstraintError, args: readonly (ColumnRef | ConstraintRef)[]): boolean {
+function matches(
+  e: IntegrityConstraintError,
+  args: readonly (ColumnRef | ConstraintRef)[],
+): boolean {
   if (args.length === 0) return true
   const first = args[0]
   if (first !== undefined && isConstraintRef(first)) {
@@ -38,10 +41,15 @@ function matches(e: IntegrityConstraintError, args: readonly (ColumnRef | Constr
 }
 
 function isConstraintRef(v: ColumnRef | ConstraintRef): v is ConstraintRef {
-  return typeof (v as ConstraintRef).kind === 'string' && typeof (v as ConstraintRef).name === 'string'
+  return (
+    typeof (v as ConstraintRef).kind === 'string' && typeof (v as ConstraintRef).name === 'string'
+  )
 }
 
-export function isUniqueViolation(e: unknown, ...cols: readonly ColumnRef[]): e is UniqueViolationError
+export function isUniqueViolation(
+  e: unknown,
+  ...cols: readonly ColumnRef[]
+): e is UniqueViolationError
 export function isUniqueViolation(e: unknown, constraint: ConstraintRef): e is UniqueViolationError
 export function isUniqueViolation(
   e: unknown,
@@ -62,7 +70,10 @@ export function isForeignKeyViolation(
   return e instanceof ForeignKeyViolationError && matches(e, args)
 }
 
-export function isCheckViolation(e: unknown, ...cols: readonly ColumnRef[]): e is CheckViolationError
+export function isCheckViolation(
+  e: unknown,
+  ...cols: readonly ColumnRef[]
+): e is CheckViolationError
 export function isCheckViolation(e: unknown, constraint: ConstraintRef): e is CheckViolationError
 export function isCheckViolation(
   e: unknown,
@@ -71,6 +82,9 @@ export function isCheckViolation(
   return e instanceof CheckViolationError && matches(e, args)
 }
 
-export function isNotNullViolation(e: unknown, ...cols: readonly ColumnRef[]): e is NotNullViolationError {
+export function isNotNullViolation(
+  e: unknown,
+  ...cols: readonly ColumnRef[]
+): e is NotNullViolationError {
   return e instanceof NotNullViolationError && matches(e, cols)
 }

@@ -26,7 +26,15 @@
 //
 // Network: step 2 and step 5 install from the npm registry.
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -106,7 +114,13 @@ const CONSUMER_TSCONFIG = {
 }
 
 const sh = (cmd, args, cwd, env) =>
-  execFileSync(cmd, args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } })
+  execFileSync(cmd, args, {
+    cwd,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, ...env },
+  })
 
 function tryRun(cmd, args, cwd) {
   try {
@@ -141,15 +155,23 @@ if (process.argv[1] && process.argv[1].endsWith('pack-smoke.mjs')) {
     // ── publint + attw, on the tarballs ──────────────────────────────────────
     for (const rel of PACKAGES) {
       const dir = join(ROOT, rel)
-      const name = JSON.parse(sh('node', ['-p', 'JSON.stringify(require("./package.json").name)'], dir))
-      const tarball = tarballs.find((t) => t.endsWith(`${name.replace('@', '').replace('/', '-')}-0.0.0.tgz`)) ?? tarballs[0]
+      const name = JSON.parse(
+        sh('node', ['-p', 'JSON.stringify(require("./package.json").name)'], dir),
+      )
+      const tarball =
+        tarballs.find((t) => t.endsWith(`${name.replace('@', '').replace('/', '-')}-0.0.0.tgz`)) ??
+        tarballs[0]
       const pl = tryRun(join(BIN, 'publint'), ['run', '--strict', tarball], ROOT)
       console.log(`publint --strict ${name}: ${pl.ok ? 'clean' : 'FAILED'}`)
       if (!pl.ok) {
         failures.push(`publint --strict ${name}`)
         console.error(pl.out)
       }
-      const at = tryRun(join(BIN, 'attw'), ['--pack', '--profile', 'esm-only', '--format', 'ascii', '--no-emoji', dir], ROOT)
+      const at = tryRun(
+        join(BIN, 'attw'),
+        ['--pack', '--profile', 'esm-only', '--format', 'ascii', '--no-emoji', dir],
+        ROOT,
+      )
       const grid = at.out
         .split('\n')
         .filter((l) => /node16 \(from ESM\)|^bundler|^"/.test(l))
@@ -168,7 +190,11 @@ if (process.argv[1] && process.argv[1].endsWith('pack-smoke.mjs')) {
     sh('npm', ['init', '-y'], app)
     writeFileSync(
       join(app, 'package.json'),
-      JSON.stringify({ name: 'pg-prime-pack-smoke', version: '0.0.0', private: true, type: 'module' }, null, 2),
+      JSON.stringify(
+        { name: 'pg-prime-pack-smoke', version: '0.0.0', private: true, type: 'module' },
+        null,
+        2,
+      ),
     )
     writeFileSync(join(app, 'consumer.ts'), CONSUMER_TS)
     writeFileSync(join(app, 'tsconfig.json'), JSON.stringify(CONSUMER_TSCONFIG, null, 2))
@@ -200,10 +226,13 @@ if (process.argv[1] && process.argv[1].endsWith('pack-smoke.mjs')) {
       failures.push('node_modules/.bin/pg-prime is missing after installing the tarball')
       console.log('pg-prime --help: FAILED (the bin was not linked)')
     } else {
-      const mode = statSync(join(app, 'node_modules', '@pg-prime', 'kit', 'dist', 'cli.js')).mode & 0o111
+      const mode =
+        statSync(join(app, 'node_modules', '@pg-prime', 'kit', 'dist', 'cli.js')).mode & 0o111
       const help = tryRun(bin, ['--help'], app)
       const ok = help.ok && help.out.includes('Usage: pg-prime <command> [options]')
-      console.log(`pg-prime --help: ${ok ? 'ok' : 'FAILED'} (dist/cli.js exec bits ${mode.toString(8)})`)
+      console.log(
+        `pg-prime --help: ${ok ? 'ok' : 'FAILED'} (dist/cli.js exec bits ${mode.toString(8)})`,
+      )
       if (!ok) {
         failures.push('`pg-prime --help` from the installed tarball')
         console.error(help.out)
@@ -218,11 +247,18 @@ if (process.argv[1] && process.argv[1].endsWith('pack-smoke.mjs')) {
     sh('npm', ['install', '--no-audit', '--no-fund', 'typescript@5.8.3'], app)
     const old = tryRun(tsc, ['-p', 'tsconfig.json', '--pretty', 'false'], app)
     const said = old.out.includes('requires TypeScript >= 5.9')
-    console.log(`tsc 5.8.3: ${old.ok ? 'COMPILED (the types@<5.9 gate did not fire)' : 'refused, as designed'}`)
-    const firstLines = old.out.split('\n').filter((l) => l.includes('requires TypeScript >= 5.9')).slice(0, 2)
+    console.log(
+      `tsc 5.8.3: ${old.ok ? 'COMPILED (the types@<5.9 gate did not fire)' : 'refused, as designed'}`,
+    )
+    const firstLines = old.out
+      .split('\n')
+      .filter((l) => l.includes('requires TypeScript >= 5.9'))
+      .slice(0, 2)
     for (const l of firstLines) console.log(`    ${l.trim()}`)
     if (old.ok || !said) {
-      failures.push('the types@<5.9 gate did not produce "requires TypeScript >= 5.9" under TypeScript 5.8.3')
+      failures.push(
+        'the types@<5.9 gate did not produce "requires TypeScript >= 5.9" under TypeScript 5.8.3',
+      )
       console.error(old.out.split('\n').slice(0, 20).join('\n'))
     }
   } finally {

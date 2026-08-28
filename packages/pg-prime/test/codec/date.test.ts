@@ -45,7 +45,11 @@ afterAll(async () => {
 })
 
 /** Decode a single-column result through the real registry plan. */
-async function selectOne(text: string, params: readonly (string | Uint8Array | null)[] = [], paramTypes?: readonly number[]) {
+async function selectOne(
+  text: string,
+  params: readonly (string | Uint8Array | null)[] = [],
+  paramTypes?: readonly number[],
+) {
   const r = await conn.execute({
     text,
     params,

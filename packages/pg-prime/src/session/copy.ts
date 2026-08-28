@@ -72,7 +72,10 @@ export interface CopyColumn {
  * Resolve `{ columns }` against the table, or default to every declared column in declaration
  * order — the same order `insert into t (...)` uses, so the two paths cannot disagree.
  */
-export function copyColumns(meta: TableCodecMeta, requested: readonly string[] | undefined): readonly CopyColumn[] {
+export function copyColumns(
+  meta: TableCodecMeta,
+  requested: readonly string[] | undefined,
+): readonly CopyColumn[] {
   const all: readonly ColumnMeta[] = meta.columns
   if (requested === undefined) return all.map((c) => ({ name: c.name, codec: c.codec }))
   const byKey = meta.byKey
@@ -91,7 +94,11 @@ export function copyColumns(meta: TableCodecMeta, requested: readonly string[] |
 }
 
 /** `copy "schema"."table" ("a","b") from stdin with (format text)` — the statement, built once. */
-export function copyFromSql(meta: TableCodecMeta, columns: readonly CopyColumn[], format: CopyFormat): string {
+export function copyFromSql(
+  meta: TableCodecMeta,
+  columns: readonly CopyColumn[],
+  format: CopyFormat,
+): string {
   const cols = columns.map((c) => `"${c.name.replace(/"/g, '""')}"`).join(', ')
   return `copy ${meta.table.qualified} (${cols}) from stdin with (format ${format})`
 }
@@ -146,7 +153,10 @@ export async function* encodeCopyRows(
 }
 
 /** The seam check, with the sentence that says what to do instead. */
-export function assertCopyIn(conn: PgConnection, adapter: string): asserts conn is PgConnection & {
+export function assertCopyIn(
+  conn: PgConnection,
+  adapter: string,
+): asserts conn is PgConnection & {
   copyIn: NonNullable<PgConnection['copyIn']>
 } {
   if (conn.copyIn === undefined) {
@@ -158,7 +168,10 @@ export function assertCopyIn(conn: PgConnection, adapter: string): asserts conn 
   }
 }
 
-export function assertCopyOut(conn: PgConnection, adapter: string): asserts conn is PgConnection & {
+export function assertCopyOut(
+  conn: PgConnection,
+  adapter: string,
+): asserts conn is PgConnection & {
   copyOut: NonNullable<PgConnection['copyOut']>
 } {
   if (conn.copyOut === undefined) {

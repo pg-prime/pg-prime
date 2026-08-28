@@ -29,14 +29,19 @@
  */
 
 import type { AnyCodec, CodecIn, CodecOut, CodecPg } from '../codec/index.js'
-import type { COLS, META, NAME, OUT, REFS, RELS, SCHEMA, SEL, SRC, TABLES } from '../schema/index.js'
 import type {
-  DeleteNode,
-  InsertNode,
-  SelectNode,
-  SetOpNode,
-  UpdateNode,
-} from '../compile/ast.js'
+  COLS,
+  META,
+  NAME,
+  OUT,
+  REFS,
+  RELS,
+  SCHEMA,
+  SEL,
+  SRC,
+  TABLES,
+} from '../schema/index.js'
+import type { DeleteNode, InsertNode, SelectNode, SetOpNode, UpdateNode } from '../compile/ast.js'
 import type { Compiled } from '../compile/contract.js'
 import type { AnyTable, Handle } from '../schema/index.js'
 import type { WindowFn, WindowLiteral, WindowSpec } from './window.js'
@@ -360,7 +365,9 @@ export interface RelAggs<Sc extends AnySchema, M extends RelMeta> {
    * "no answer". The PG result type is PostgreSQL's, not the operand's: `sum(int4)` is `int8`,
    * `sum(int8)` and `sum(numeric)` are `numeric`.
    */
-  sum<T, P extends NumPg>(f: (t: SubScope<Sc, M['to']>) => NumOperand<T, P>): Expr<SumOut<P>, SumPg<P>>
+  sum<T, P extends NumPg>(
+    f: (t: SubScope<Sc, M['to']>) => NumOperand<T, P>,
+  ): Expr<SumOut<P>, SumPg<P>>
   /**
    * `avg(f)` over the related rows — **nullable**, unlike {@link RelAggs.sum}.
    *
@@ -716,7 +723,10 @@ export interface Query<S extends Sources, O, N = never> extends SetOps<O, readon
    * throws a `BuilderError` naming the undeclared window instead, and `over(e, spec)`'s object
    * form needs no name at all.
    */
-  window(name: string, f: (t: ScopeOf<S, N>) => WindowSpec | WindowLiteral | WindowFn): Query<S, O, N>
+  window(
+    name: string,
+    f: (t: ScopeOf<S, N>) => WindowSpec | WindowLiteral | WindowFn,
+  ): Query<S, O, N>
   /** Row locking. `{ wait: 'skip locked' }` is what makes a queue workload possible (03 §2.8). */
   forUpdate(opts?: LockOpts<keyof S & string>): Query<S, O, N>
 
@@ -793,9 +803,7 @@ export interface Query<S extends Sources, O, N = never> extends SetOps<O, readon
    * caller who has a predicate wants {@link Query.innerJoin}.
    */
   crossJoin<H2 extends AnyHandle, A extends string>(t: H2, alias: A): Query<S & Record<A, H2>, O, N>
-  crossJoin<H2 extends AnyHandle>(
-    t: H2,
-  ): Query<S & Record<H2[typeof NAME] & string, H2>, O, N>
+  crossJoin<H2 extends AnyHandle>(t: H2): Query<S & Record<H2[typeof NAME] & string, H2>, O, N>
 
   /**
    * `inner join lateral (select …) as "alias" on …` (03 §2.2).
@@ -880,9 +888,7 @@ export interface Query<S extends Sources, O, N = never> extends SetOps<O, readon
  * is the one shape whose result the codec layer cannot decode by position. One conditional, on a
  * property nothing reads until the query is actually run.
  */
-type Selected<O, T> = [unknown] extends [O]
-  ? OrmTypeError<ExecuteNeedsProjectionMsg>
-  : T
+type Selected<O, T> = [unknown] extends [O] ? OrmTypeError<ExecuteNeedsProjectionMsg> : T
 
 /**
  * `$if(boolean, f)`, typed honestly.
@@ -908,8 +914,10 @@ export type IfResult<S extends Sources, O, O2, N> = [Exclude<keyof O, keyof O2>]
  * ungrouped query in the program (rule 3 at the top of this file), and it is design/04 §4's
  * "named interfaces for every builder stage" — errors print `GroupedQuery<…>`, not a method body.
  */
-export interface GroupedQuery<S extends Sources, O, N, G extends string>
-  extends SetOps<O, readonly [unknown]> {
+export interface GroupedQuery<S extends Sources, O, N, G extends string> extends SetOps<
+  O,
+  readonly [unknown]
+> {
   readonly [INV]: (o: O) => O
   readonly [ROW]: O
   readonly [SELECT_SOURCE]: true
@@ -918,9 +926,7 @@ export interface GroupedQuery<S extends Sources, O, N, G extends string>
     f: (t: GroupedScope<S, N, G>) => P,
   ): GroupedQuery<S, Project<P>, N, G>
   having(f: (t: GroupedScope<S, N, G>) => Expr<boolean>): GroupedQuery<S, O, N, G>
-  orderBy(
-    f: (t: GroupedScope<S, N, G>) => OrderBy,
-  ): GroupedQuery<S, O, N, G>
+  orderBy(f: (t: GroupedScope<S, N, G>) => OrderBy): GroupedQuery<S, O, N, G>
   limit(n: number): GroupedQuery<S, O, N, G>
   offset(n: number): GroupedQuery<S, O, N, G>
   $call<O2>(f: (q: this) => GroupedQuery<S, O2, N, G>): GroupedQuery<S, O2, N, G>
@@ -1174,7 +1180,10 @@ export interface Tx<Sc extends AnySchema = AnySchema> extends Queryable<Sc> {
    * construction** (`07` §3.3): PostgreSQL cannot change the first three mid-transaction, and a
    * `40001` aborts the whole transaction so retrying at savepoint level is meaningless.
    */
-  transaction<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: SavepointOptions): Promise<NoHandleEscape<T>>
+  transaction<T>(
+    fn: (db: Tx<Sc>) => Promise<T>,
+    opts?: SavepointOptions,
+  ): Promise<NoHandleEscape<T>>
   savepoint<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: SavepointOptions): Promise<NoHandleEscape<T>>
 
   /** Transaction-local GUCs via parameterised `set_config(…, true)` (`07` §3.5). RLS in one line. */
@@ -1283,17 +1292,21 @@ export interface CteExecutor<C extends Sources> {
 export type InsertPatch<T extends AnyTable> = Defer<
   Simplify<
     {
-      [K in keyof ColsOfT<T> as ColsOfT<T>[K]['ro'] extends true
-        ? never
-        : ColsOfT<T>[K]['opt'] extends true
+      [
+        K in keyof ColsOfT<T> as ColsOfT<T>[K]['ro'] extends true
           ? never
-          : K]: Settable<ColsOfT<T>[K]['t']>
+          : ColsOfT<T>[K]['opt'] extends true
+            ? never
+            : K
+      ]: Settable<ColsOfT<T>[K]['t']>
     } & {
-      [K in keyof ColsOfT<T> as ColsOfT<T>[K]['ro'] extends true
-        ? never
-        : ColsOfT<T>[K]['opt'] extends true
-          ? K
-          : never]?: Settable<ColsOfT<T>[K]['t']>
+      [
+        K in keyof ColsOfT<T> as ColsOfT<T>[K]['ro'] extends true
+          ? never
+          : ColsOfT<T>[K]['opt'] extends true
+            ? K
+            : never
+      ]?: Settable<ColsOfT<T>[K]['t']>
     }
   >
 >
@@ -1534,9 +1547,7 @@ export interface DeleteQuery<
     t: H2,
     alias: A,
   ): DeleteQuery<H, O, S & Record<A, H2>>
-  using<H2 extends AnyHandle>(
-    t: H2,
-  ): DeleteQuery<H, O, S & Record<H2[typeof NAME] & string, H2>>
+  using<H2 extends AnyHandle>(t: H2): DeleteQuery<H, O, S & Record<H2[typeof NAME] & string, H2>>
 
   returning<P extends Projection>(f: (t: ScopeOf<S>) => P): DeleteQuery<H, Project<P>, S>
   returningAll(): DeleteQuery<H, SelectAt<H>, S>

@@ -24,7 +24,13 @@ import { EXIT, type ExitCode } from "../exit.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
 
 export const DOCTOR_OPTIONS: readonly OptionSpec[] = [
-  { name: "stale-lock-after", type: "duration", placeholder: "duration", describe: "a lease whose heartbeat is older than this is stale", defaultText: "60s" },
+  {
+    name: "stale-lock-after",
+    type: "duration",
+    placeholder: "duration",
+    describe: "a lease whose heartbeat is older than this is stale",
+    defaultText: "60s",
+  },
 ];
 
 const names = (r: { rows: Record<string, unknown>[] }): string[] => r.rows.map((x) => String(x["name"]));
@@ -83,10 +89,7 @@ export async function runDoctor(config: ResolvedConfig, argv: ParseResult): Prom
 
     /* Tier R: recorded, no longer on disk — design/06 §2.2 says removal is never auto-detected. */
     const tracked = present ? await readRepeatableRows(client) : [];
-    const repeatables = await planRepeatables(
-      config.repeatablesDir,
-      new Map(tracked.map((r) => [r.path, r.checksum])),
-    );
+    const repeatables = await planRepeatables(config.repeatablesDir, new Map(tracked.map((r) => [r.path, r.checksum])));
 
     /* Tier O census and Tier U census. */
     const observed = observedCounts(extracted.observed);
@@ -95,22 +98,32 @@ export async function runDoctor(config: ResolvedConfig, argv: ParseResult): Prom
       .map((d) => ({ kind: d.subject ?? "?", count: d.count ?? 0 }));
 
     const findings: string[] = [
-      ...catalog.invalidIndexes.map((n) => `INVALID index ${n} — a CREATE INDEX CONCURRENTLY did not finish; DROP INDEX CONCURRENTLY it and rebuild`),
+      ...catalog.invalidIndexes.map(
+        (n) =>
+          `INVALID index ${n} — a CREATE INDEX CONCURRENTLY did not finish; DROP INDEX CONCURRENTLY it and rebuild`,
+      ),
       ...catalog.ccnew.map((n) => `${n} is a REINDEX CONCURRENTLY leftover (_ccnew); it is not used by any query`),
-      ...catalog.notValid.map((n) => `${n} is NOT VALID — existing rows were never checked; ALTER TABLE … VALIDATE CONSTRAINT`),
+      ...catalog.notValid.map(
+        (n) => `${n} is NOT VALID — existing rows were never checked; ALTER TABLE … VALIDATE CONSTRAINT`,
+      ),
       // The two fingerprints are in `history` above rather than in the sentence: they are
       // 71 characters each, they say nothing to a human, and putting them here made the
       // finding unreadable in a terminal and unstable in a golden.
       ...(fingerprintDrift
-        ? ["the catalog does not match the fingerprint pgprime.migrations records — something changed outside the migration history (see `history` for both values)"]
+        ? [
+            "the catalog does not match the fingerprint pgprime.migrations records — something changed outside the migration history (see `history` for both values)",
+          ]
         : []),
       ...missingFiles.map((id) => `${id} is recorded as applied but ${id}.sql is not on disk`),
       ...partial.map((p) => `${p} is partially applied`),
       ...(lease.lease !== null && lease.stale
-        ? [`a stale lease is held by ${lease.lease.holder} (last beat ${String(lease.lease.heartbeatAgeMs)} ms ago); \`migrate unlock --force\` breaks it`]
+        ? [
+            `a stale lease is held by ${lease.lease.holder} (last beat ${String(lease.lease.heartbeatAgeMs)} ms ago); \`migrate unlock --force\` breaks it`,
+          ]
         : []),
       ...repeatables.orphaned.map(
-        (p) => `${p} is recorded in pgprime.repeatables but is gone from disk — the objects it created are STILL in the database (design/06 §2.2: a Tier-R removal is never auto-detected)`,
+        (p) =>
+          `${p} is recorded in pgprime.repeatables but is gone from disk — the objects it created are STILL in the database (design/06 §2.2: a Tier-R removal is never auto-detected)`,
       ),
     ];
 
@@ -150,8 +163,16 @@ export async function runDoctor(config: ResolvedConfig, argv: ParseResult): Prom
           ["history", present ? `present, ${plural(rows.length, "row")}` : "absent"],
           ["fingerprint", fingerprintDrift ? `DRIFT (${live} live, ${recorded ?? "?"} recorded)` : live],
           ["lock", lease.lease === null ? "free" : lease.stale ? "STALE" : "held"],
-          ["tier O", observed.length === 0 ? "nothing observed" : observed.map((o) => `${String(o.count)} ${o.kind}`).join(", ")],
-          ["tier U", unmodeled.length === 0 ? "nothing unmodeled" : unmodeled.map((o) => `${String(o.count)} ${o.kind}`).join(", ")],
+          [
+            "tier O",
+            observed.length === 0 ? "nothing observed" : observed.map((o) => `${String(o.count)} ${o.kind}`).join(", "),
+          ],
+          [
+            "tier U",
+            unmodeled.length === 0
+              ? "nothing unmodeled"
+              : unmodeled.map((o) => `${String(o.count)} ${o.kind}`).join(", "),
+          ],
         ]),
         bullets("findings:", findings),
         findings.length === 0 ? "\nno findings." : "",

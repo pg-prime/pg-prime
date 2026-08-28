@@ -106,7 +106,8 @@ function needsQuoting(s: string, delimiter: string): boolean {
 export function writeArrayLiteral(
   values: readonly (string | null | readonly unknown[])[],
   delimiter = ',',
-  encodeLeaf: (v: unknown) => string | null = (v) => (v === null || v === undefined ? null : String(v)),
+  encodeLeaf: (v: unknown) => string | null = (v) =>
+    v === null || v === undefined ? null : String(v),
   isLeaf: (v: readonly unknown[]) => boolean = () => false,
 ): string {
   const part = (v: unknown): string => {

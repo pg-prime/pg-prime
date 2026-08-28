@@ -264,12 +264,7 @@ function lit(v: number | bigint | boolean | null): Fragment<unknown> {
         'GHSA-8cpq-38p9-67gx; there is deliberately no string-literal quoter on this path.)',
     )
   }
-  if (
-    v !== null &&
-    typeof v !== 'number' &&
-    typeof v !== 'bigint' &&
-    typeof v !== 'boolean'
-  ) {
+  if (v !== null && typeof v !== 'number' && typeof v !== 'bigint' && typeof v !== 'boolean') {
     throw new UnsafeLiteralError(
       `sql.lit accepts number | bigint | boolean | null; received ${typeof v}. ` +
         'Use sql`${value}` to pass it as a parameter.',
@@ -372,10 +367,7 @@ export interface SqlTag {
   /** The only primitive in the library that interpolates caller text verbatim. */
   unsafeRaw(text: string): Fragment<unknown>
 
-  join(
-    fragments: readonly Fragment<unknown>[],
-    separator?: Fragment<unknown>,
-  ): Fragment<unknown>
+  join(fragments: readonly Fragment<unknown>[], separator?: Fragment<unknown>): Fragment<unknown>
 
   readonly empty: Fragment<unknown>
 }

@@ -107,11 +107,9 @@ describe('§2.8 — inline and named windows', () => {
   })
 
   it('a frame offset is a literal, not a parameter — one plan, not N', () => {
-    const built = db
-      .from(schema.h.posts)
-      .select(({ posts: p }) => ({
-        v: q.over(q.fn.sum(p.amount), (w) => w.rows({ from: { preceding: 7 } })),
-      }))
+    const built = db.from(schema.h.posts).select(({ posts: p }) => ({
+      v: q.over(q.fn.sum(p.amount), (w) => w.rows({ from: { preceding: 7 } })),
+    }))
     expect(built.compile().binds).toStrictEqual([])
     expect(() =>
       db.from(schema.h.posts).select(({ posts: p }) => ({
@@ -174,4 +172,3 @@ describe('§2.8 — .window() accepts both documented spellings', () => {
     ).toThrowError(BuilderError)
   })
 })
-

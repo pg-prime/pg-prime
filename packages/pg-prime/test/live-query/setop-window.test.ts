@@ -29,13 +29,23 @@ const ns = () => live.fx.ns
 
 describe('§2.8 — set operations', () => {
   const emails = () =>
-    live.db.from(h().users).select(({ users: u }) => ({ v: u.email, kind: q.val('user', textCodec) }))
+    live.db
+      .from(h().users)
+      .select(({ users: u }) => ({ v: u.email, kind: q.val('user', textCodec) }))
   const titles = () =>
-    live.db.from(h().posts).select(({ posts: p }) => ({ v: p.title, kind: q.val('post', textCodec) }))
+    live.db
+      .from(h().posts)
+      .select(({ posts: p }) => ({ v: p.title, kind: q.val('post', textCodec) }))
 
   it('union all keeps duplicates; union removes them', async () => {
-    const all = await emails().unionAll(emails()).orderBy((r) => q.asc(r.v)).execute()
-    const distinct = await emails().union(emails()).orderBy((r) => q.asc(r.v)).execute()
+    const all = await emails()
+      .unionAll(emails())
+      .orderBy((r) => q.asc(r.v))
+      .execute()
+    const distinct = await emails()
+      .union(emails())
+      .orderBy((r) => q.asc(r.v))
+      .execute()
     expectTypeOf(all).toEqualTypeOf<{ v: string; kind: string }[]>()
     expect(all).toHaveLength(12)
     expect(distinct).toHaveLength(6)
@@ -51,7 +61,11 @@ describe('§2.8 — set operations', () => {
   })
 
   it('union all across two tables, ordered and limited on the WHOLE result', async () => {
-    const rows = await emails().unionAll(titles()).orderBy((r) => [q.asc(r.v)]).limit(4).execute()
+    const rows = await emails()
+      .unionAll(titles())
+      .orderBy((r) => [q.asc(r.v)])
+      .limit(4)
+      .execute()
     const oracle = await live.raw(
       `select v, kind from (
          select email as v, 'user' as kind from ${ns()}.users
@@ -73,8 +87,14 @@ describe('§2.8 — set operations', () => {
       .select(({ users: u }) => ({ v: u.email }))
       .where(({ users: u }) => q.isNull(u.deletedAt))
 
-    const both = await admins.intersect(alive).orderBy((r) => q.asc(r.v)).execute()
-    const only = await alive.except(admins).orderBy((r) => q.asc(r.v)).execute()
+    const both = await admins
+      .intersect(alive)
+      .orderBy((r) => q.asc(r.v))
+      .execute()
+    const only = await alive
+      .except(admins)
+      .orderBy((r) => q.asc(r.v))
+      .execute()
 
     const oracleBoth = await live.raw(
       `select email from ${ns()}.users where role = 'member'
@@ -117,7 +137,9 @@ describe('§2.8 — window functions', () => {
       .from(h().posts)
       .select(({ posts: p }) => ({
         title: p.title,
-        n: q.over(q.fn.rowNumber(), (w) => w.partitionBy(p.authorId).orderBy([q.desc(p.createdAt), q.asc(p.id)])),
+        n: q.over(q.fn.rowNumber(), (w) =>
+          w.partitionBy(p.authorId).orderBy([q.desc(p.createdAt), q.asc(p.id)]),
+        ),
       }))
       .orderBy(({ posts: p }) => [q.asc(p.authorId), q.desc(p.createdAt), q.asc(p.id)])
       .execute()
@@ -179,7 +201,9 @@ describe('§2.8 — window functions', () => {
        window w as (partition by author_id order by amount desc)
        order by author_id asc, amount desc`,
     )
-    expect(rows).toStrictEqual(oracle.map(([title, r, d]) => ({ title, r: BigInt(r!), d: BigInt(d!) })))
+    expect(rows).toStrictEqual(
+      oracle.map(([title, r, d]) => ({ title, r: BigInt(r!), d: BigInt(d!) })),
+    )
   })
 
   it('a numeric offset frame', async () => {
@@ -253,11 +277,16 @@ describe('a relation column across a set operation', () => {
     }))
 
   it('R3: union over a relation column runs, and the values are the branch’s own', async () => {
-    const rows = await withPosts().union(withPosts()).orderBy((r) => q.asc(r.v)).execute()
+    const rows = await withPosts()
+      .union(withPosts())
+      .orderBy((r) => q.asc(r.v))
+      .execute()
     expectTypeOf(rows).toEqualTypeOf<{ v: string; rel: { id: bigint }[] }[]>()
     // A union with itself is the identity on a set, so the answer is the branch, deduplicated —
     // which is only computable if the json column has an equality operator at all.
-    const one = await withPosts().orderBy((t) => q.asc(t.u.email)).execute()
+    const one = await withPosts()
+      .orderBy((t) => q.asc(t.u.email))
+      .execute()
     expect(rows).toStrictEqual(one)
     expect(rows.filter((r) => r.rel.length > 0)).toHaveLength(2)
     expect(rows.find((r) => r.v === 'ada@example.com')?.rel).toHaveLength(5)
@@ -278,10 +307,16 @@ describe('a relation column across a set operation', () => {
           v: t.u.email,
           rel: t.u.posts.many((sq) => sq.select((p) => ({ id: p.id })).orderBy((p) => q.asc(p.id))),
         }))
-    const both = await withPosts().intersect(withPosts2()).orderBy((r) => q.asc(r.v)).execute()
+    const both = await withPosts()
+      .intersect(withPosts2())
+      .orderBy((r) => q.asc(r.v))
+      .execute()
     expect(both.map((r) => r.v)).toStrictEqual(['ada@example.com', 'bob@example.com'])
 
-    const rest = await withPosts().except(withPosts2()).orderBy((r) => q.asc(r.v)).execute()
+    const rest = await withPosts()
+      .except(withPosts2())
+      .orderBy((r) => q.asc(r.v))
+      .execute()
     const oracle = await live.raw(
       `select email from ${ns()}.users u where not exists (
          select 1 from ${ns()}.posts p where p.author_id = u.id and p.published
@@ -291,4 +326,3 @@ describe('a relation column across a set operation', () => {
     expect(rest.every((r) => r.rel.length === 0)).toBe(true)
   })
 })
-

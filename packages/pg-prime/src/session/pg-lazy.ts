@@ -41,14 +41,18 @@ async function importPg(): Promise<PgModule> {
   } catch (cause) {
     cached = undefined
     throw new ConfigError(
-      "pgPrime({ connection }) builds the pool with `pg`, which is not installed. It is an " +
+      'pgPrime({ connection }) builds the pool with `pg`, which is not installed. It is an ' +
         'OPTIONAL peer dependency: install it (`npm i pg`), or pass `pool:` (any pg-like pool — ' +
         '@neondatabase/serverless and a Hyperdrive-fed pool both satisfy it structurally) or ' +
         '`driver:` (your own PgDriver) instead. Those two paths need nothing at all (07 §1.1).',
       { cause },
     )
   }
-  const m = mod as { Pool?: unknown; default?: { Pool?: unknown; Client?: unknown }; Client?: unknown }
+  const m = mod as {
+    Pool?: unknown
+    default?: { Pool?: unknown; Client?: unknown }
+    Client?: unknown
+  }
   const Pool = (m.Pool ?? m.default?.Pool) as PgModule['Pool'] | undefined
   const Client = (m.Client ?? m.default?.Client) as PgModule['Client'] | undefined
   if (typeof Pool !== 'function' || typeof Client !== 'function') {
@@ -84,7 +88,9 @@ async function importPg(): Promise<PgModule> {
  * query semantics — so it is free, safe in every profile, and it is the difference between a
  * readable and an unreadable `pg_stat_activity`.
  */
-export function startupOptions(settings: readonly (readonly [string, string])[]): string | undefined {
+export function startupOptions(
+  settings: readonly (readonly [string, string])[],
+): string | undefined {
   if (settings.length === 0) return undefined
   return settings.map(([n, v]) => `-c ${n}=${v.replace(/[\\ ]/g, (c) => `\\${c}`)}`).join(' ')
 }

@@ -32,7 +32,10 @@ export interface TierRObject {
 
 /** Fold an identifier into something safe for a filename, without losing which object it is. */
 const fileSlug = (text: string): string =>
-  text.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "x";
+  text
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || "x";
 
 const q = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 
@@ -195,9 +198,14 @@ export async function readTierR(
   }
   for (const r of functions) {
     const identity = `${str(r["schema"])}.${str(r["name"])}(${str(r["args"])})`;
-    push("function", "010_functions", str(r["schema"]), identity,
+    push(
+      "function",
+      "010_functions",
+      str(r["schema"]),
+      identity,
       `${fileSlug(str(r["schema"]))}__${fileSlug(str(r["name"]))}__${fileSlug(str(r["args"]))}`,
-      `-- pg-prime:object function ${identity}\n${stmt(str(r["def"]))}`);
+      `-- pg-prime:object function ${identity}\n${stmt(str(r["def"]))}`,
+    );
   }
 
   /* 020 — views. */
@@ -207,15 +215,24 @@ export async function readTierR(
     const identity = `${schema}.${name}`;
     const invoker = str(r["security_invoker"]) === "true";
     const barrier = str(r["security_barrier"]) === "true";
-    const options = [`security_invoker = ${invoker ? "true" : "false"}`, ...(barrier ? ["security_barrier = true"] : [])];
+    const options = [
+      `security_invoker = ${invoker ? "true" : "false"}`,
+      ...(barrier ? ["security_barrier = true"] : []),
+    ];
     const note = invoker
       ? "-- security_invoker = true: RLS on the underlying tables is evaluated as the CALLER."
       : "-- security_invoker = false — PostgreSQL's own default, and what this database has.\n" +
         "-- design/00 decision 5 makes `true` the default for a view pg-prime CREATES; pull writes\n" +
         "-- the real value rather than changing who this view's RLS is evaluated as.";
-    push("view", "020_views", schema, identity, `${fileSlug(schema)}__${fileSlug(name)}`,
+    push(
+      "view",
+      "020_views",
+      schema,
+      identity,
+      `${fileSlug(schema)}__${fileSlug(name)}`,
       `-- pg-prime:object view ${identity}\n${note}\nCREATE OR REPLACE VIEW ${q(schema)}.${q(name)} ` +
-      `WITH (${options.join(", ")}) AS\n${stmt(str(r["def"]))}`);
+        `WITH (${options.join(", ")}) AS\n${stmt(str(r["def"]))}`,
+    );
   }
 
   /* 030 — materialized views, then their indexes in the same file. */
@@ -234,14 +251,20 @@ export async function readTierR(
     // `IF NOT EXISTS` and no `OR REPLACE`: PostgreSQL has no `CREATE OR REPLACE
     // MATERIALIZED VIEW`, so re-applying a CHANGED matview needs a human (drop + create is
     // a data loss this file will not perform behind anyone's back).
-    push("matview", "030_matviews", schema, identity, `${fileSlug(schema)}__${fileSlug(name)}`,
+    push(
+      "matview",
+      "030_matviews",
+      schema,
+      identity,
+      `${fileSlug(schema)}__${fileSlug(name)}`,
       [
         `-- pg-prime:object matview ${identity}`,
         "-- PostgreSQL has no CREATE OR REPLACE MATERIALIZED VIEW. Changing the query below needs a",
         "-- DROP first, which is a decision (and a REFRESH) rather than something a repeatable does.",
         `CREATE MATERIALIZED VIEW IF NOT EXISTS ${q(schema)}.${q(name)} AS\n${stmt(str(r["def"]))}`,
         ...(mvIndexes.get(identity) ?? []),
-      ].join("\n"));
+      ].join("\n"),
+    );
   }
 
   /* 040 — RLS enablement, then the policies. */
@@ -249,12 +272,18 @@ export async function readTierR(
     const schema = str(r["schema"]);
     const name = str(r["name"]);
     const identity = `${schema}.${name}`;
-    push("rls", "040_rls", schema, identity, `${fileSlug(schema)}__${fileSlug(name)}`,
+    push(
+      "rls",
+      "040_rls",
+      schema,
+      identity,
+      `${fileSlug(schema)}__${fileSlug(name)}`,
       [
         `-- pg-prime:object rls ${identity}`,
         `ALTER TABLE ${q(schema)}.${q(name)} ENABLE ROW LEVEL SECURITY;`,
         ...(r["forced"] === true ? [`ALTER TABLE ${q(schema)}.${q(name)} FORCE ROW LEVEL SECURITY;`] : []),
-      ].join("\n"));
+      ].join("\n"),
+    );
   }
   for (const r of (await client.query(Q_POLICIES, [list])).rows as Row[]) {
     const schema = str(r["schema"]);
@@ -269,12 +298,18 @@ export async function readTierR(
       ...(r["using_expr"] === null || r["using_expr"] === undefined ? [] : [`  USING (${str(r["using_expr"])})`]),
       ...(r["check_expr"] === null || r["check_expr"] === undefined ? [] : [`  WITH CHECK (${str(r["check_expr"])})`]),
     ];
-    push("policy", "050_policies", schema, identity, `${fileSlug(schema)}__${fileSlug(table)}__${fileSlug(name)}`,
+    push(
+      "policy",
+      "050_policies",
+      schema,
+      identity,
+      `${fileSlug(schema)}__${fileSlug(table)}__${fileSlug(name)}`,
       [
         `-- pg-prime:object policy ${identity}`,
         `DROP POLICY IF EXISTS ${q(name)} ON ${q(schema)}.${q(table)};`,
         `${bits.join("\n")};`,
-      ].join("\n"));
+      ].join("\n"),
+    );
   }
 
   /* 015 — aggregates, before the views: a view may call one (pagila's `group_concat`),
@@ -287,15 +322,22 @@ export async function readTierR(
       `SFUNC = ${str(r["transfn"])}`,
       `STYPE = ${str(r["transtype"])}`,
       ...(r["finalfn"] === null || r["finalfn"] === undefined ? [] : [`FINALFUNC = ${str(r["finalfn"])}`]),
-      ...(r["initcond"] === null || r["initcond"] === undefined ? [] : [`INITCOND = '${str(r["initcond"]).replace(/'/g, "''")}'`]),
+      ...(r["initcond"] === null || r["initcond"] === undefined
+        ? []
+        : [`INITCOND = '${str(r["initcond"]).replace(/'/g, "''")}'`]),
     ];
-    push("aggregate", "015_aggregates", schema, identity,
+    push(
+      "aggregate",
+      "015_aggregates",
+      schema,
+      identity,
       `${fileSlug(schema)}__${fileSlug(name)}__${fileSlug(str(r["args"]))}`,
       [
         `-- pg-prime:object aggregate ${identity}`,
         `DROP AGGREGATE IF EXISTS ${q(schema)}.${q(name)}(${str(r["args"])});`,
         `CREATE AGGREGATE ${q(schema)}.${q(name)}(${str(r["args"])}) (\n  ${parts.join(",\n  ")}\n);`,
-      ].join("\n"));
+      ].join("\n"),
+    );
   }
 
   /* 070 — triggers, last: a trigger's function must exist first. */
@@ -304,12 +346,18 @@ export async function readTierR(
     const table = str(r["table"]);
     const name = str(r["name"]);
     const identity = `${schema}.${table}.${name}`;
-    push("trigger", "070_triggers", schema, identity, `${fileSlug(schema)}__${fileSlug(table)}__${fileSlug(name)}`,
+    push(
+      "trigger",
+      "070_triggers",
+      schema,
+      identity,
+      `${fileSlug(schema)}__${fileSlug(table)}__${fileSlug(name)}`,
       [
         `-- pg-prime:object trigger ${identity}`,
         `DROP TRIGGER IF EXISTS ${q(name)} ON ${q(schema)}.${q(table)};`,
         stmt(str(r["def"])),
-      ].join("\n"));
+      ].join("\n"),
+    );
   }
 
   return { objects, unsupported };

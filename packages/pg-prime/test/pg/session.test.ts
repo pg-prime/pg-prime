@@ -197,7 +197,9 @@ describe('deadlock is NOT retried by default (07 §3.4)', () => {
 
         await new Promise((r) => setTimeout(r, 200))
         // The other session now wants 2, which we hold: a cycle.
-        const other = c.query(`update ${NS}.counters set n = n + 1 where id = 2`).catch((e: unknown) => e)
+        const other = c
+          .query(`update ${NS}.counters set n = n + 1 where id = 2`)
+          .catch((e: unknown) => e)
 
         const err = await ours
         await other
@@ -237,36 +239,43 @@ describe('IndeterminateCommitError (07 §3.4, §4.2)', () => {
    * tier 0 on the mock (`test/session/session.test.ts`), and what tier 2 owns is the
    * **classification** of the real `57P01` that a terminated backend produces.
    */
-  requiresConcurrency()('a terminated backend classifies as 57P01 / OperatorInterventionError', async () => {
-    const own = pgDriver({ pool: makePool(1) as unknown as PgLikePool })
-    try {
-      const victim = pgPrime({ driver: own, schema })
-      const [pidRow] = await victim.sql`select pg_backend_pid() as pid`.execute()
-      const pid = Number(pidRow?.['pid'])
-      expect(pid).toBeGreaterThan(0)
-
-      const killer = await client()
+  requiresConcurrency()(
+    'a terminated backend classifies as 57P01 / OperatorInterventionError',
+    async () => {
+      const own = pgDriver({ pool: makePool(1) as unknown as PgLikePool })
       try {
-        const err = await victim
-          .transaction(async (tx) => {
-            await tx.sql`select 1`.execute()
-            await killer.query('select pg_terminate_backend($1)', [pid])
-            await tx.sql`select pg_sleep(0.2)`.execute()
-          })
-          .catch((e: unknown) => e)
-        // 57P01 admin_shutdown, or the socket dying first. Either way: NOT indeterminate, because
-        // no COMMIT had been written.
-        expect(err).not.toBeInstanceOf(IndeterminateCommitError)
-        const state = sqlState(err)
-        if (state === '57P01') expect(err).toBeInstanceOf(OperatorInterventionError)
-        else announce(`[pg] the terminated backend surfaced as ${String((err as Error).name)}, not 57P01`)
+        const victim = pgPrime({ driver: own, schema })
+        const [pidRow] = await victim.sql`select pg_backend_pid() as pid`.execute()
+        const pid = Number(pidRow?.['pid'])
+        expect(pid).toBeGreaterThan(0)
+
+        const killer = await client()
+        try {
+          const err = await victim
+            .transaction(async (tx) => {
+              await tx.sql`select 1`.execute()
+              await killer.query('select pg_terminate_backend($1)', [pid])
+              await tx.sql`select pg_sleep(0.2)`.execute()
+            })
+            .catch((e: unknown) => e)
+          // 57P01 admin_shutdown, or the socket dying first. Either way: NOT indeterminate, because
+          // no COMMIT had been written.
+          expect(err).not.toBeInstanceOf(IndeterminateCommitError)
+          const state = sqlState(err)
+          if (state === '57P01') expect(err).toBeInstanceOf(OperatorInterventionError)
+          else
+            announce(
+              `[pg] the terminated backend surfaced as ${String((err as Error).name)}, not 57P01`,
+            )
+        } finally {
+          await killer.end()
+        }
       } finally {
-        await killer.end()
+        await own.destroy().catch(() => {})
       }
-    } finally {
-      await own.destroy().catch(() => {})
-    }
-  }, 60_000)
+    },
+    60_000,
+  )
 
   it('a 57P01 that arrives as seam data classifies as OperatorInterventionError', () => {
     const raw = new Error('terminating connection due to administrator command') as Error & {
@@ -279,7 +288,10 @@ describe('IndeterminateCommitError (07 §3.4, §4.2)', () => {
       adapter: 'pg',
       server: { severity: 'FATAL', sqlstate: '57P01', message: 'terminating connection' },
     }
-    const e = mapError(raw, { context: { handle: 'tx' }, errors: resolveErrorOptions(undefined, false) })
+    const e = mapError(raw, {
+      context: { handle: 'tx' },
+      errors: resolveErrorOptions(undefined, false),
+    })
     expect(e).toBeInstanceOf(OperatorInterventionError)
   })
 })
@@ -306,57 +318,69 @@ async function advisoryCount(watcher: pg.Client, key: bigint): Promise<number> {
 }
 
 describe('advisory locks are real, and pg_locks is the oracle (07 §3.7)', () => {
-  requiresConcurrency()('pg_advisory_xact_lock is visible while the transaction runs, and gone after', async () => {
-    const key = 987654321n
-    const watcher = await client()
-    try {
-      expect(await advisoryCount(watcher, key)).toBe(0)
-      const seen = await db.transaction(async (tx) => {
-        expect(await tx.advisoryLock(key)).toBe(true)
-        return advisoryCount(watcher, key)
-      })
-      expect(seen).toBe(1)
-      // `pg_advisory_xact_lock` is released at COMMIT with no unlock call anywhere — that is the
-      // whole reason `07` §5.2 says it is the only advisory lock safe behind a pooler.
-      expect(await advisoryCount(watcher, key)).toBe(0)
-    } finally {
-      await watcher.end()
-    }
-  }, 60_000)
+  requiresConcurrency()(
+    'pg_advisory_xact_lock is visible while the transaction runs, and gone after',
+    async () => {
+      const key = 987654321n
+      const watcher = await client()
+      try {
+        expect(await advisoryCount(watcher, key)).toBe(0)
+        const seen = await db.transaction(async (tx) => {
+          expect(await tx.advisoryLock(key)).toBe(true)
+          return advisoryCount(watcher, key)
+        })
+        expect(seen).toBe(1)
+        // `pg_advisory_xact_lock` is released at COMMIT with no unlock call anywhere — that is the
+        // whole reason `07` §5.2 says it is the only advisory lock safe behind a pooler.
+        expect(await advisoryCount(watcher, key)).toBe(0)
+      } finally {
+        await watcher.end()
+      }
+    },
+    60_000,
+  )
 
-  requiresConcurrency()('try-lock returns false while another session holds it — a real second backend', async () => {
-    const key = 192837465n
-    const holder = await client()
-    try {
-      await holder.query('select pg_advisory_lock($1)', [key.toString()])
-      const got = await db.transaction(async (tx) => tx.advisoryLock(key, { try: true }))
-      expect(got).toBe(false)
-      await holder.query('select pg_advisory_unlock($1)', [key.toString()])
-      expect(await db.transaction(async (tx) => tx.advisoryLock(key, { try: true }))).toBe(true)
-    } finally {
-      await holder.end()
-    }
-  }, 60_000)
+  requiresConcurrency()(
+    'try-lock returns false while another session holds it — a real second backend',
+    async () => {
+      const key = 192837465n
+      const holder = await client()
+      try {
+        await holder.query('select pg_advisory_lock($1)', [key.toString()])
+        const got = await db.transaction(async (tx) => tx.advisoryLock(key, { try: true }))
+        expect(got).toBe(false)
+        await holder.query('select pg_advisory_unlock($1)', [key.toString()])
+        expect(await db.transaction(async (tx) => tx.advisoryLock(key, { try: true }))).toBe(true)
+      } finally {
+        await holder.end()
+      }
+    },
+    60_000,
+  )
 
-  requiresConcurrency()('a SESSION advisory lock outlives its transaction and is released explicitly', async () => {
-    const key = 5566778899n
-    const watcher = await client()
-    try {
-      expect(await advisoryCount(watcher, key)).toBe(0)
-      await db.session(async (s) => {
-        const lock = await s.advisoryLock(key)
-        expect(typeof lock).toBe('object')
-        // It survives a whole transaction on the same session — that is what "session" means, and
-        // it is exactly the property a transaction pooler cannot give you (07 §5.2).
-        await s.transaction(() => Promise.resolve(undefined))
-        expect(await advisoryCount(watcher, key)).toBe(1)
-        expect(await (lock as { unlock(): Promise<boolean> }).unlock()).toBe(true)
-      })
-      expect(await advisoryCount(watcher, key)).toBe(0)
-    } finally {
-      await watcher.end()
-    }
-  }, 60_000)
+  requiresConcurrency()(
+    'a SESSION advisory lock outlives its transaction and is released explicitly',
+    async () => {
+      const key = 5566778899n
+      const watcher = await client()
+      try {
+        expect(await advisoryCount(watcher, key)).toBe(0)
+        await db.session(async (s) => {
+          const lock = await s.advisoryLock(key)
+          expect(typeof lock).toBe('object')
+          // It survives a whole transaction on the same session — that is what "session" means, and
+          // it is exactly the property a transaction pooler cannot give you (07 §5.2).
+          await s.transaction(() => Promise.resolve(undefined))
+          expect(await advisoryCount(watcher, key)).toBe(1)
+          expect(await (lock as { unlock(): Promise<boolean> }).unlock()).toBe(true)
+        })
+        expect(await advisoryCount(watcher, key)).toBe(0)
+      } finally {
+        await watcher.end()
+      }
+    },
+    60_000,
+  )
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -364,48 +388,62 @@ describe('advisory locks are real, and pg_locks is the oracle (07 §3.7)', () =>
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('per-statement timeouts kill pg_sleep, both ways, with DIFFERENT classes (07 §6.2)', () => {
-  requiresConcurrency()('the server-side statement_timeout gives 57014 / QueryCanceledError', async () => {
-    const err = await db
-      .transaction(async (tx) => tx.withOptions({ timeoutMs: 200 }).sql`select pg_sleep(3)`.execute())
-      .catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(QueryCanceledError)
-    expect(sqlState(err)).toBe('57014')
-    // §6.2: the SERVER gave up, and says so.
-    expect((err as QueryCanceledError).context.reason).toBe('statement_timeout')
-  }, 60_000)
-
-  requiresConcurrency()('the client-side timer gives QueryTimeoutError — WE gave up, the server may not have', async () => {
-    const own = pgDriver({ pool: makePool(2) as unknown as PgLikePool })
-    try {
-      const solo = pgPrime({ driver: own, schema })
-      const started = Date.now()
-      const err = await solo
-        .withOptions({ timeoutMs: 250, timeoutStrategy: 'client' })
-        .sql`select pg_sleep(5)`.execute()
+  requiresConcurrency()(
+    'the server-side statement_timeout gives 57014 / QueryCanceledError',
+    async () => {
+      const err = await db
+        .transaction(async (tx) =>
+          tx.withOptions({ timeoutMs: 200 }).sql`select pg_sleep(3)`.execute(),
+        )
         .catch((e: unknown) => e)
-      // Deterministic: a 5 s sleep cannot beat a 250 ms timer.
-      expect(err).toBeInstanceOf(QueryTimeoutError)
-      expect(err).not.toBeInstanceOf(QueryCanceledError)
-      expect((err as Error).message).toMatch(/client-side timer/)
-      expect(Date.now() - started).toBeLessThan(4_000)
-      // §6.1: after a cancel the connection is destroyed rather than reused, but the HANDLE keeps
-      // working — that is the property that matters.
-      expect(await solo.sql`select 1 as one`.execute()).toStrictEqual([{ one: 1 }])
-    } finally {
-      await own.destroy().catch(() => {})
-    }
-  }, 60_000)
+      expect(err).toBeInstanceOf(QueryCanceledError)
+      expect(sqlState(err)).toBe('57014')
+      // §6.2: the SERVER gave up, and says so.
+      expect((err as QueryCanceledError).context.reason).toBe('statement_timeout')
+    },
+    60_000,
+  )
 
-  requiresConcurrency()("timeoutStrategy: 'transaction' bounds an AUTOCOMMIT statement server-side", async () => {
-    const err = await db
-      .withOptions({ timeoutMs: 250, timeoutStrategy: 'transaction' })
-      .sql`select pg_sleep(3)`.execute()
-      .catch((e: unknown) => e)
-    expect(sqlState(err)).toBe('57014')
-    expect(err).toBeInstanceOf(QueryCanceledError)
-    // The +2 RTT bought a SERVER-enforced bound, so the reason is the server's, not ours.
-    expect((err as QueryCanceledError).context.reason).toBe('statement_timeout')
-  }, 60_000)
+  requiresConcurrency()(
+    'the client-side timer gives QueryTimeoutError — WE gave up, the server may not have',
+    async () => {
+      const own = pgDriver({ pool: makePool(2) as unknown as PgLikePool })
+      try {
+        const solo = pgPrime({ driver: own, schema })
+        const started = Date.now()
+        const err = await solo.withOptions({ timeoutMs: 250, timeoutStrategy: 'client' })
+          .sql`select pg_sleep(5)`
+          .execute()
+          .catch((e: unknown) => e)
+        // Deterministic: a 5 s sleep cannot beat a 250 ms timer.
+        expect(err).toBeInstanceOf(QueryTimeoutError)
+        expect(err).not.toBeInstanceOf(QueryCanceledError)
+        expect((err as Error).message).toMatch(/client-side timer/)
+        expect(Date.now() - started).toBeLessThan(4_000)
+        // §6.1: after a cancel the connection is destroyed rather than reused, but the HANDLE keeps
+        // working — that is the property that matters.
+        expect(await solo.sql`select 1 as one`.execute()).toStrictEqual([{ one: 1 }])
+      } finally {
+        await own.destroy().catch(() => {})
+      }
+    },
+    60_000,
+  )
+
+  requiresConcurrency()(
+    "timeoutStrategy: 'transaction' bounds an AUTOCOMMIT statement server-side",
+    async () => {
+      const err = await db.withOptions({ timeoutMs: 250, timeoutStrategy: 'transaction' })
+        .sql`select pg_sleep(3)`
+        .execute()
+        .catch((e: unknown) => e)
+      expect(sqlState(err)).toBe('57014')
+      expect(err).toBeInstanceOf(QueryCanceledError)
+      // The +2 RTT bought a SERVER-enforced bound, so the reason is the server's, not ours.
+      expect((err as QueryCanceledError).context.reason).toBe('statement_timeout')
+    },
+    60_000,
+  )
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -413,27 +451,34 @@ describe('per-statement timeouts kill pg_sleep, both ways, with DIFFERENT classe
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('AbortSignal cancels in flight and the connection is destroyed (07 §6.1)', () => {
-  requiresConcurrency()('aborting mid-query rejects, and the pool does not hand the socket back', async () => {
-    const own = pgDriver({ pool: makePool(2) as unknown as PgLikePool })
-    try {
-      const solo = pgPrime({ driver: own, schema })
-      const ac = new AbortController()
-      const p = solo.sql`select pg_sleep(5)`.execute().catch((e: unknown) => e)
-      setTimeout(() => ac.abort(), 100)
-      // The signal has to be on the statement, so route it through `run`.
-      const q = solo
-        .run(solo.from(schema.h.counters).select(({ counters: c }) => ({ id: c.id })), { signal: ac.signal })
-        .catch((e: unknown) => e)
-      const [slept, aborted] = await Promise.all([p, q])
-      void slept
-      void aborted
-      // Whatever happened to the two statements, the handle still works afterwards — which is the
-      // property that matters: a cancelled query must not poison the pool.
-      expect(await solo.sql`select 1 as one`.execute()).toStrictEqual([{ one: 1 }])
-    } finally {
-      await own.destroy().catch(() => {})
-    }
-  }, 60_000)
+  requiresConcurrency()(
+    'aborting mid-query rejects, and the pool does not hand the socket back',
+    async () => {
+      const own = pgDriver({ pool: makePool(2) as unknown as PgLikePool })
+      try {
+        const solo = pgPrime({ driver: own, schema })
+        const ac = new AbortController()
+        const p = solo.sql`select pg_sleep(5)`.execute().catch((e: unknown) => e)
+        setTimeout(() => ac.abort(), 100)
+        // The signal has to be on the statement, so route it through `run`.
+        const q = solo
+          .run(
+            solo.from(schema.h.counters).select(({ counters: c }) => ({ id: c.id })),
+            { signal: ac.signal },
+          )
+          .catch((e: unknown) => e)
+        const [slept, aborted] = await Promise.all([p, q])
+        void slept
+        void aborted
+        // Whatever happened to the two statements, the handle still works afterwards — which is the
+        // property that matters: a cancelled query must not poison the pool.
+        expect(await solo.sql`select 1 as one`.execute()).toStrictEqual([{ one: 1 }])
+      } finally {
+        await own.destroy().catch(() => {})
+      }
+    },
+    60_000,
+  )
 })
 
 /**

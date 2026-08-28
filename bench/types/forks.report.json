@@ -1,18 +1,11 @@
 {
   "node": "v24.14.1",
-  "compilers": [
-    "5.9.3",
-    "7.0.2"
-  ],
+  "compilers": ["5.9.3", "7.0.2"],
   "method": {
     "marginal": "(instantiations at 2U queries − at U queries) / U, at a fixed schema size and a fixed 25-table distinct span",
     "queriesPerScenario": 25,
     "distinctTablesTouched": 25,
-    "sizes": [
-      25,
-      100,
-      300
-    ],
+    "sizes": [25, 100, 300],
     "oracle": "every generated file asserts its first query's result type with a strict Eq<…>; an arm whose inference degraded to `any` fails to compile rather than measuring cheap"
   },
   "budgets": {

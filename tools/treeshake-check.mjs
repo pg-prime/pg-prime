@@ -112,7 +112,9 @@ async function bundleWithRollup(tmp, name) {
   writeFileSync(entryJs, js.code)
   const bundle = await rollup({
     input: entryJs,
-    plugins: [nodeResolve({ exportConditions: ['node', 'import', 'default'], preferBuiltins: true })],
+    plugins: [
+      nodeResolve({ exportConditions: ['node', 'import', 'default'], preferBuiltins: true }),
+    ],
     onwarn: () => {},
     treeshake: { moduleSideEffects: false },
   })
@@ -155,7 +157,8 @@ export async function run({ update = false, only = undefined } = {}) {
       const es = await bundleWithEsbuild(tmp, name)
       const ro = await bundleWithRollup(tmp, name)
       const budget = budgets[name]
-      if (budget === undefined) throw new Error(`treeshake-check: no budget for fixture \`${name}\` in tools/budgets.json`)
+      if (budget === undefined)
+        throw new Error(`treeshake-check: no budget for fixture \`${name}\` in tools/budgets.json`)
       const goldenPath = join(FIXTURES, name, 'expected-modules.json')
       if (update) {
         writeFileSync(
@@ -174,7 +177,9 @@ export async function run({ update = false, only = undefined } = {}) {
           ) + '\n',
         )
       }
-      const golden = existsSync(goldenPath) ? JSON.parse(readFileSync(goldenPath, 'utf8')).modules : null
+      const golden = existsSync(goldenPath)
+        ? JSON.parse(readFileSync(goldenPath, 'utf8')).modules
+        : null
       const gzEs = gz(es.code)
       const gzRo = gz(ro.code)
       const sizeOk = gzEs <= budget
@@ -185,13 +190,27 @@ export async function run({ update = false, only = undefined } = {}) {
       // file twice, not a disagreement.
       const notEntry = (m) => !m.startsWith(`${name}/entry.`)
       const bundlersAgree = diffSets(es.modules.filter(notEntry), ro.modules.filter(notEntry))
-      results.push({ name, gzEs, gzRo, budget, sizeOk, setOk, setDiff, golden, modules: es.modules, bytes: es.bytes, bundlersAgree })
+      results.push({
+        name,
+        gzEs,
+        gzRo,
+        budget,
+        sizeOk,
+        setOk,
+        setDiff,
+        golden,
+        modules: es.modules,
+        bytes: es.bytes,
+        bundlersAgree,
+      })
     }
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
 
-  console.log(`  ${'fixture'.padEnd(22)} ${'design'.padStart(9)} ${'esbuild'.padStart(9)} ${'budget'.padStart(9)}  ${'rollup'.padStart(9)}  modules`)
+  console.log(
+    `  ${'fixture'.padEnd(22)} ${'design'.padStart(9)} ${'esbuild'.padStart(9)} ${'budget'.padStart(9)}  ${'rollup'.padStart(9)}  modules`,
+  )
   for (const r of results) {
     const design = budgets._design?.[r.name]
     console.log(
@@ -207,23 +226,32 @@ export async function run({ update = false, only = undefined } = {}) {
     // be named in `_overDesign` with a reason, or the tool fails even though the measurement passes.
     const design = budgets._design?.[r.name]
     if (design !== undefined && r.budget > design && !over[`treeshake.${r.name}`]) {
-      failed.push(`${r.name}: budget ${r.budget} B is looser than design's ${design} B and is not named in budgets.json._overDesign`)
+      failed.push(
+        `${r.name}: budget ${r.budget} B is looser than design's ${design} B and is not named in budgets.json._overDesign`,
+      )
     }
     if (!r.sizeOk) {
       failed.push(`${r.name}: ${r.gzEs} B min+gz > budget ${r.budget} B`)
       console.error(`  top 10 contributors to \`${r.name}\` (pre-gzip bytes in the bundle):`)
-      for (const [m, n] of Object.entries(r.bytes).sort((a, b) => b[1] - a[1]).slice(0, 10)) {
+      for (const [m, n] of Object.entries(r.bytes)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)) {
         console.error(`    ${String(n).padStart(7)}  ${m}`)
       }
     }
-    if (r.golden === null) failed.push(`${r.name}: no expected-modules.json — run \`node tools/treeshake-check.mjs --update\``)
+    if (r.golden === null)
+      failed.push(
+        `${r.name}: no expected-modules.json — run \`node tools/treeshake-check.mjs --update\``,
+      )
     else if (!r.setOk) {
       failed.push(`${r.name}: the included module set changed`)
       for (const m of r.setDiff.added) console.error(`    + ${m}`)
       for (const m of r.setDiff.missing) console.error(`    - ${m}`)
     }
     if (r.bundlersAgree.added.length || r.bundlersAgree.missing.length) {
-      console.log(`  note ${r.name}: rollup and esbuild disagree on ${r.bundlersAgree.added.length + r.bundlersAgree.missing.length} module(s)`)
+      console.log(
+        `  note ${r.name}: rollup and esbuild disagree on ${r.bundlersAgree.added.length + r.bundlersAgree.missing.length} module(s)`,
+      )
       for (const m of r.bundlersAgree.added) console.log(`    rollup only: ${m}`)
       for (const m of r.bundlersAgree.missing) console.log(`    esbuild only: ${m}`)
     }
@@ -234,7 +262,10 @@ export async function run({ update = false, only = undefined } = {}) {
 if (process.argv[1] && process.argv[1].endsWith('treeshake-check.mjs')) {
   const argv = process.argv.slice(2)
   const i = argv.indexOf('--case')
-  const { failed } = await run({ update: argv.includes('--update'), only: i === -1 ? undefined : argv[i + 1] })
+  const { failed } = await run({
+    update: argv.includes('--update'),
+    only: i === -1 ? undefined : argv[i + 1],
+  })
   console.log('')
   for (const f of failed) console.error(`FAIL ${f}`)
   if (failed.length) process.exit(1)

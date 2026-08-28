@@ -87,7 +87,9 @@ const calibrateNow = () => {
 const design = budget._design
 
 /** `--quick` trades precision for a ~5x faster local loop. Never used in CI. */
-const S = QUICK ? { samples: 15, iters: 500, warmup: 1000 } : { samples: 60, iters: 2000, warmup: 5000 }
+const S = QUICK
+  ? { samples: 15, iters: 500, warmup: 1000 }
+  : { samples: 60, iters: 2000, warmup: 5000 }
 
 const { api, compiler, decode, fixture } = await loadPackage({ rebuild: REBUILD })
 const fx = fixture.makeFixture(BENCH_NS)
@@ -132,14 +134,23 @@ const keep = (f) => () => {
 }
 
 const compileAlloc = {
-  heavyBuildAndCompile: bytesPerOp(keep(() => heavy().compile()), { warmup: QUICK ? 2000 : 20000 }),
+  heavyBuildAndCompile: bytesPerOp(
+    keep(() => heavy().compile()),
+    { warmup: QUICK ? 2000 : 20000 },
+  ),
   // Not gated — the third point that makes the other two a decomposition rather than two numbers.
   // `toAst()` is the builder chain with nothing planned and nothing emitted, so
   // chain / (compile − emit − chain) / emit splits a compile into "the user's method calls", "the
   // LATERAL planner" and "the emitter", which is the table an optimisation is aimed with.
-  heavyToAst: bytesPerOp(keep(() => heavy().toAst()), { warmup: QUICK ? 2000 : 20000 }),
+  heavyToAst: bytesPerOp(
+    keep(() => heavy().toAst()),
+    { warmup: QUICK ? 2000 : 20000 },
+  ),
   heavyEmit: bytesPerOp(keep(emitOnce), { warmup: QUICK ? 2000 : 20000 }),
-  simpleBuildAndCompile: bytesPerOp(keep(() => simple().compile()), { warmup: QUICK ? 2000 : 20000 }),
+  simpleBuildAndCompile: bytesPerOp(
+    keep(() => simple().compile()),
+    { warmup: QUICK ? 2000 : 20000 },
+  ),
 }
 
 /**
@@ -152,7 +163,10 @@ const compileAlloc = {
  */
 const allocBySource = {
   builderChain: compileAlloc.heavyToAst.median,
-  planner: compileAlloc.heavyBuildAndCompile.median - compileAlloc.heavyToAst.median - compileAlloc.heavyEmit.median,
+  planner:
+    compileAlloc.heavyBuildAndCompile.median -
+    compileAlloc.heavyToAst.median -
+    compileAlloc.heavyEmit.median,
   emitter: compileAlloc.heavyEmit.median,
   total: compileAlloc.heavyBuildAndCompile.median,
 }
@@ -207,11 +221,31 @@ assertOracle('codegen plain', plainCodegenDecoder(rows), handMapRowsPlain(rows))
 
 const DS = { iters: 1, samples: QUICK ? 15 : 60, warmup: 5 }
 const decodePairs = {
-  vsUnchecked: samplePaired(() => decoder(rows), () => handMapRows(rows), DS),
-  vsChecked: samplePaired(() => decoder(rows), () => handMapRowsChecked(rows), DS),
-  dispatchOnly: samplePaired(() => plainDecoder(rows), () => handMapRowsPlain(rows), DS),
-  codegenVsUnchecked: samplePaired(() => codegenDecoder(rows), () => handMapRows(rows), DS),
-  codegenVsChecked: samplePaired(() => codegenDecoder(rows), () => handMapRowsChecked(rows), DS),
+  vsUnchecked: samplePaired(
+    () => decoder(rows),
+    () => handMapRows(rows),
+    DS,
+  ),
+  vsChecked: samplePaired(
+    () => decoder(rows),
+    () => handMapRowsChecked(rows),
+    DS,
+  ),
+  dispatchOnly: samplePaired(
+    () => plainDecoder(rows),
+    () => handMapRowsPlain(rows),
+    DS,
+  ),
+  codegenVsUnchecked: samplePaired(
+    () => codegenDecoder(rows),
+    () => handMapRows(rows),
+    DS,
+  ),
+  codegenVsChecked: samplePaired(
+    () => codegenDecoder(rows),
+    () => handMapRowsChecked(rows),
+    DS,
+  ),
   codegenDispatchOnly: samplePaired(
     () => plainCodegenDecoder(rows),
     () => handMapRowsPlain(rows),
@@ -306,18 +340,42 @@ const check = (name, measured, limit, { mode = 'max', unit = '', skipped = false
     checks.push({ name, measured: null, limit, unit, ok: true, skipped: true })
     return
   }
-  checks.push({ name, measured, limit, unit, mode, ok: mode === 'min' ? measured >= limit : measured <= limit })
+  checks.push({
+    name,
+    measured,
+    limit,
+    unit,
+    mode,
+    ok: mode === 'min' ? measured >= limit : measured <= limit,
+  })
 }
 
 const B = budget
 const ratio = (us) => us / refUs
 
 // design/03 §1.1, absolute: the emitter has 5x headroom, so it is safe to gate on a clock.
-check('compile · emitter p50 (design/03 §1.1)', round(compileResults.heavyEmit.p50, 3), B.compile.emitP50Us, { unit: 'µs' })
+check(
+  'compile · emitter p50 (design/03 §1.1)',
+  round(compileResults.heavyEmit.p50, 3),
+  B.compile.emitP50Us,
+  { unit: 'µs' },
+)
 // …and the same numbers as ratios, which is what actually keeps 30 % sensitivity on a runner.
-check('compile · emitter / reference', round(ratio(compileResults.heavyEmit.p50), 2), B.compile.emitRefRatio)
-check('compile · build+compile / reference', round(ratio(compileResults.heavyBuildAndCompile.p50), 2), B.compile.buildAndCompileRefRatio)
-check('compile · simple select / reference', round(ratio(compileResults.simpleBuildAndCompile.p50), 2), B.compile.simpleRefRatio)
+check(
+  'compile · emitter / reference',
+  round(ratio(compileResults.heavyEmit.p50), 2),
+  B.compile.emitRefRatio,
+)
+check(
+  'compile · build+compile / reference',
+  round(ratio(compileResults.heavyBuildAndCompile.p50), 2),
+  B.compile.buildAndCompileRefRatio,
+)
+check(
+  'compile · simple select / reference',
+  round(ratio(compileResults.simpleBuildAndCompile.p50), 2),
+  B.compile.simpleRefRatio,
+)
 // design/08 §5: ≥ 200 000 simple selects/sec, scaled by the machine factor for the same reason.
 //
 // ─── Which statistic, and why it is not the p50 ─────────────────────────────
@@ -346,33 +404,89 @@ const simplePerSec = 1e6 / compileResults.simpleBuildAndCompile.p50
 const simplePerSecNorm = simplePerSec * (refUs / B._referenceUsOnDesignMachine)
 const simplePerSecBest = 1e6 / compileResults.simpleBuildAndCompile.min
 const simplePerSecBestNorm = simplePerSecBest * (refUs / B._referenceUsOnDesignMachine)
-check('compile · simple selects/sec (machine-normalised, best-case)', Math.round(simplePerSecBestNorm), B.compile.simpleSelectsPerSecond, { mode: 'min', unit: '/s' })
+check(
+  'compile · simple selects/sec (machine-normalised, best-case)',
+  Math.round(simplePerSecBestNorm),
+  B.compile.simpleSelectsPerSecond,
+  { mode: 'min', unit: '/s' },
+)
 
 // Machine-independent, so gated tightly (design/08 §5: allocation is where ORM overhead hides).
-check('compile · bytes/op, build+compile', compileAlloc.heavyBuildAndCompile.median, B.compile.buildAndCompileBytes, { unit: 'B' })
-check('compile · bytes/op, emitter', compileAlloc.heavyEmit.median, B.compile.emitBytes, { unit: 'B' })
-check('compile · bytes/op, simple', compileAlloc.simpleBuildAndCompile.median, B.compile.simpleBytes, { unit: 'B' })
+check(
+  'compile · bytes/op, build+compile',
+  compileAlloc.heavyBuildAndCompile.median,
+  B.compile.buildAndCompileBytes,
+  { unit: 'B' },
+)
+check('compile · bytes/op, emitter', compileAlloc.heavyEmit.median, B.compile.emitBytes, {
+  unit: 'B',
+})
+check(
+  'compile · bytes/op, simple',
+  compileAlloc.simpleBuildAndCompile.median,
+  B.compile.simpleBytes,
+  { unit: 'B' },
+)
 
 // design/03 §1.1's two structural claims, as exact integers.
 for (const [which, s] of Object.entries(structure)) {
   check(`structure · ${which}: intermediate SQL strings`, s.intermediateSqlStrings, 0)
   check(`structure · ${which}: joins producing the SQL`, s.joinsProducingTheSql, 1)
   check(`structure · ${which}: binds arrays`, s.bindArrays, 1)
-  check(`structure · ${which}: binds array is the one pushed into`, s.bindsArrayIsTheOnePushedInto ? 0 : 1, 0)
+  check(
+    `structure · ${which}: binds array is the one pushed into`,
+    s.bindsArrayIsTheOnePushedInto ? 0 : 1,
+    0,
+  )
 }
 
 // design/03 Appendix B: "within 15 % of a hand-written positional mapper". Three oracles, because
 // measuring against one turned out to answer a different question — see `hand-mapper.mjs` and
 // design/09 §3.7. All three are gated; none is at 1.15, and `budget.json` says why in writing.
-check('decode · vs unchecked hand mapper (p50)', round(decodePairs.vsUnchecked.ratioP50, 3), B.decode.ratioVsUncheckedMapperP50)
-check('decode · vs same-checks hand mapper (p50)', round(decodePairs.vsChecked.ratioP50, 3), B.decode.ratioVsCheckedMapperP50)
-check('decode · rows/sec (machine-normalised)', Math.round((rows.length / (decodePairs.vsUnchecked.a.p50 / 1e6)) * (refUs / B._referenceUsOnDesignMachine)), B.decode.rowsPerSecond, { mode: 'min', unit: '/s' })
+check(
+  'decode · vs unchecked hand mapper (p50)',
+  round(decodePairs.vsUnchecked.ratioP50, 3),
+  B.decode.ratioVsUncheckedMapperP50,
+)
+check(
+  'decode · vs same-checks hand mapper (p50)',
+  round(decodePairs.vsChecked.ratioP50, 3),
+  B.decode.ratioVsCheckedMapperP50,
+)
+check(
+  'decode · rows/sec (machine-normalised)',
+  Math.round(
+    (rows.length / (decodePairs.vsUnchecked.a.p50 / 1e6)) * (refUs / B._referenceUsOnDesignMachine),
+  ),
+  B.decode.rowsPerSecond,
+  { mode: 'min', unit: '/s' },
+)
 // The opt-in builder is gated too. An opt-in fast path with no budget is a fast path that rots.
-check('decode · codegen vs unchecked hand mapper (p50)', round(decodePairs.codegenVsUnchecked.ratioP50, 3), B.decode.codegen.ratioVsUncheckedMapperP50)
-check('decode · codegen vs same-checks hand mapper (p50)', round(decodePairs.codegenVsChecked.ratioP50, 3), B.decode.codegen.ratioVsCheckedMapperP50)
-check('decode · codegen rows/sec (machine-normalised)', Math.round((rows.length / (decodePairs.codegenVsUnchecked.a.p50 / 1e6)) * (refUs / B._referenceUsOnDesignMachine)), B.decode.codegen.rowsPerSecond, { mode: 'min', unit: '/s' })
+check(
+  'decode · codegen vs unchecked hand mapper (p50)',
+  round(decodePairs.codegenVsUnchecked.ratioP50, 3),
+  B.decode.codegen.ratioVsUncheckedMapperP50,
+)
+check(
+  'decode · codegen vs same-checks hand mapper (p50)',
+  round(decodePairs.codegenVsChecked.ratioP50, 3),
+  B.decode.codegen.ratioVsCheckedMapperP50,
+)
+check(
+  'decode · codegen rows/sec (machine-normalised)',
+  Math.round(
+    (rows.length / (decodePairs.codegenVsUnchecked.a.p50 / 1e6)) *
+      (refUs / B._referenceUsOnDesignMachine),
+  ),
+  B.decode.codegen.rowsPerSecond,
+  { mode: 'min', unit: '/s' },
+)
 // …and it must stay FASTER than the default, or the flag is a liability rather than a choice.
-check('decode · codegen is faster than the closure tree', round(decodePairs.codegenVsUnchecked.a.p50 / decodePairs.vsUnchecked.a.p50, 3), B.decode.codegen.fractionOfClosureTree)
+check(
+  'decode · codegen is faster than the closure tree',
+  round(decodePairs.codegenVsUnchecked.a.p50 / decodePairs.vsUnchecked.a.p50, 3),
+  B.decode.codegen.fractionOfClosureTree,
+)
 
 if (e2e) {
   // Per case, not one line for all nine: the overhead is a roughly constant amount of client-side
@@ -400,7 +514,8 @@ if (e2e) {
 // and a budget looser than its design figure has to be listed in `_overDesign` with a reason. That
 // makes "loosening a budget is a reviewed change to the JSON with a reason" a gate rather than a
 // convention — and the entries that exist today are exactly WS7's two honest misses.
-const at = (obj, path) => path.split('.').reduce((o, k) => (o === undefined ? undefined : o[k]), obj)
+const at = (obj, path) =>
+  path.split('.').reduce((o, k) => (o === undefined ? undefined : o[k]), obj)
 /** `min` metrics are looser when SMALLER; everything else is looser when larger. */
 const LOWER_IS_LOOSER = new Set(['compile.simpleSelectsPerSecond'])
 for (const [metric, designKey] of Object.entries(B._designLinked)) {
@@ -408,7 +523,12 @@ for (const [metric, designKey] of Object.entries(B._designLinked)) {
   const budgeted = at(B, metric)
   const designed = design[designKey]
   if (budgeted === undefined || designed === undefined) {
-    checks.push({ name: `budget · ${metric} is linked to a design number`, measured: null, limit: designKey, ok: false })
+    checks.push({
+      name: `budget · ${metric} is linked to a design number`,
+      measured: null,
+      limit: designKey,
+      ok: false,
+    })
     continue
   }
   // A per-case map (the e2e budgets) is checked entry by entry against the same design figure, so
@@ -436,16 +556,21 @@ function medianOf(xs) {
 function round(n, d = 2) {
   return Number.isFinite(n) ? Number(n.toFixed(d)) : n
 }
-const fmt = (n, d = 2) => (n === null || n === undefined || Number.isNaN(n) ? '—' : Number(n).toFixed(d))
+const fmt = (n, d = 2) =>
+  n === null || n === undefined || Number.isNaN(n) ? '—' : Number(n).toFixed(d)
 
-console.log(`\npg-prime runtime bench — node ${process.version}, ${process.platform}/${process.arch}`)
+console.log(
+  `\npg-prime runtime bench — node ${process.version}, ${process.platform}/${process.arch}`,
+)
 console.log(
   `reference workload: ${fmt(refUs, 4)} µs/call (reference machine ${B._referenceUsOnDesignMachine} µs; ` +
     `this machine is ${fmt(refUs / B._referenceUsOnDesignMachine, 2)}x its speed), ` +
     `spread across the three calibrations ${fmt(calibDrift * 100, 1)} %`,
 )
 if (compileAlloc.heavyEmit.exact !== true) {
-  console.log('NOTE  run with `node --expose-gc` for exact allocation numbers; these are batch medians.')
+  console.log(
+    'NOTE  run with `node --expose-gc` for exact allocation numbers; these are batch medians.',
+  )
 }
 // `bytesPerOp` sizes its batch from a probe and re-measures at a quarter of it; a disagreement
 // means a scavenge ran inside the batch and the number is a floor rather than a measurement.
@@ -492,10 +617,13 @@ for (const [which, s] of Object.entries(structure)) {
       `binds ${String(s.binds).padStart(3)} in ${s.bindArrays} array, identity ${s.bindsArrayIsTheOnePushedInto ? 'held' : 'LOST'}   ` +
       `intermediate SQL strings ${s.intermediateSqlStrings}   (all joins: ${JSON.stringify(s.joinsBySeparator)})`,
   )
-  if (s.intermediateSqlStrings > 0) console.log(`           ${JSON.stringify(s.intermediateSample)}`)
+  if (s.intermediateSqlStrings > 0)
+    console.log(`           ${JSON.stringify(s.intermediateSample)}`)
 }
 
-console.log(`\n── decode (${rows.length.toLocaleString('en-US')} rows x ${DECODE_KEYS.length} cols) ─────────────────────────────────`)
+console.log(
+  `\n── decode (${rows.length.toLocaleString('en-US')} rows x ${DECODE_KEYS.length} cols) ─────────────────────────────────`,
+)
 const DECODE_LABELS = {
   vsUnchecked: 'closure · vs hand mapper, unchecked  (Appendix B)',
   vsChecked: 'closure · vs hand mapper, same checks (dispatch)',
@@ -504,16 +632,21 @@ const DECODE_LABELS = {
   codegenVsChecked: 'codegen · vs hand mapper, same checks (dispatch)',
   codegenDispatchOnly: 'codegen · vs literal-object copy, identity (row loop)',
 }
-console.log(`  ${'pair'.padEnd(50)} ${'decoder'.padStart(9)} ${'mapper'.padStart(9)} ${'p50 ×'.padStart(7)} ${'p95 ×'.padStart(7)}`)
+console.log(
+  `  ${'pair'.padEnd(50)} ${'decoder'.padStart(9)} ${'mapper'.padStart(9)} ${'p50 ×'.padStart(7)} ${'p95 ×'.padStart(7)}`,
+)
 for (const [k, r] of Object.entries(decodePairs)) {
   console.log(
     `  ${DECODE_LABELS[k].padEnd(50)} ${fmt(r.a.p50, 2).padStart(9)} ${fmt(r.b.p50, 2).padStart(9)} ` +
       `${fmt(r.ratioP50, 3).padStart(7)} ${fmt(r.a.p95 / r.b.p95, 3).padStart(7)}   (µs)`,
   )
 }
-const perSec = (us) => (rows.length / (us / 1e6)).toLocaleString('en-US', { maximumFractionDigits: 0 })
+const perSec = (us) =>
+  (rows.length / (us / 1e6)).toLocaleString('en-US', { maximumFractionDigits: 0 })
 const cellsPerSec = (us) =>
-  ((rows.length * DECODE_KEYS.length) / (us / 1e6)).toLocaleString('en-US', { maximumFractionDigits: 0 })
+  ((rows.length * DECODE_KEYS.length) / (us / 1e6)).toLocaleString('en-US', {
+    maximumFractionDigits: 0,
+  })
 console.log(
   `  closure ${perSec(decodePairs.vsUnchecked.a.p50)} rows/sec · ${cellsPerSec(decodePairs.vsUnchecked.a.p50)} cells/sec` +
     `   codegen ${perSec(decodePairs.codegenVsUnchecked.a.p50)} rows/sec · ${cellsPerSec(decodePairs.codegenVsUnchecked.a.p50)} cells/sec`,
@@ -539,26 +672,105 @@ if (e2e === null) {
 
 // ── the three-way print (R9): design / measured / budget ─────────────────────
 const threeWay = [
-  ['compile, 12-col + 2 joins + 1 relation (emitter)', `${design.compileUs} µs`, `${fmt(compileResults.heavyEmit.p50, 2)} µs`, `${B.compile.emitP50Us} µs`],
-  ['compile, the same, from the builder chain', `${design.compileUs} µs`, `${fmt(compileResults.heavyBuildAndCompile.p50, 2)} µs`, `${fmt(B.compile.buildAndCompileRefRatio * refUs, 1)} µs @ ${fmt(refUs, 3)}`],
-  ['simple selects / sec (best-case, gated)', `${design.simpleSelectsPerSecond.toLocaleString('en-US')}`, Math.round(simplePerSecBestNorm).toLocaleString('en-US'), B.compile.simpleSelectsPerSecond.toLocaleString('en-US')],
-  ['simple selects / sec (from the p50)', `${design.simpleSelectsPerSecond.toLocaleString('en-US')}`, Math.round(simplePerSecNorm).toLocaleString('en-US'), 'reported'],
-  ['intermediate SQL strings', String(design.intermediateSqlStrings), String(structure.heavy.intermediateSqlStrings), '0'],
+  [
+    'compile, 12-col + 2 joins + 1 relation (emitter)',
+    `${design.compileUs} µs`,
+    `${fmt(compileResults.heavyEmit.p50, 2)} µs`,
+    `${B.compile.emitP50Us} µs`,
+  ],
+  [
+    'compile, the same, from the builder chain',
+    `${design.compileUs} µs`,
+    `${fmt(compileResults.heavyBuildAndCompile.p50, 2)} µs`,
+    `${fmt(B.compile.buildAndCompileRefRatio * refUs, 1)} µs @ ${fmt(refUs, 3)}`,
+  ],
+  [
+    'simple selects / sec (best-case, gated)',
+    `${design.simpleSelectsPerSecond.toLocaleString('en-US')}`,
+    Math.round(simplePerSecBestNorm).toLocaleString('en-US'),
+    B.compile.simpleSelectsPerSecond.toLocaleString('en-US'),
+  ],
+  [
+    'simple selects / sec (from the p50)',
+    `${design.simpleSelectsPerSecond.toLocaleString('en-US')}`,
+    Math.round(simplePerSecNorm).toLocaleString('en-US'),
+    'reported',
+  ],
+  [
+    'intermediate SQL strings',
+    String(design.intermediateSqlStrings),
+    String(structure.heavy.intermediateSqlStrings),
+    '0',
+  ],
   ['params array allocations', String(design.bindsArrays), String(structure.heavy.bindArrays), '1'],
-  ['decode 10k x 12 / hand mapper, unchecked', `${design.decodeRatio}`, fmt(decodePairs.vsUnchecked.ratioP50, 3), `${B.decode.ratioVsUncheckedMapperP50}`],
-  ['decode 10k x 12 / hand mapper, same checks', `${design.decodeRatio}`, fmt(decodePairs.vsChecked.ratioP50, 3), `${B.decode.ratioVsCheckedMapperP50}`],
-  ['decode row loop / literal-object copy', `${design.decodeRatio}`, fmt(decodePairs.dispatchOnly.ratioP50, 3), 'reported'],
-  ['  …codegen / hand mapper, unchecked', `${design.decodeRatio}`, fmt(decodePairs.codegenVsUnchecked.ratioP50, 3), `${B.decode.codegen.ratioVsUncheckedMapperP50}`],
-  ['  …codegen / hand mapper, same checks', `${design.decodeRatio}`, fmt(decodePairs.codegenVsChecked.ratioP50, 3), `${B.decode.codegen.ratioVsCheckedMapperP50}`],
-  ['  …codegen row loop / literal-object copy', `${design.decodeRatio}`, fmt(decodePairs.codegenDispatchOnly.ratioP50, 3), 'reported'],
-  ['e2e overhead p50 (nine cases, worst)', `${design.e2eP50}`, e2e ? fmt(Math.max(...e2e.cases.map((c) => c.ratioP50)), 3) : 'skipped', 'per case'],
-  ['e2e overhead p50 (nine cases, median)', `${design.e2eP50}`, e2e ? fmt(medianOf(e2e.cases.map((c) => c.ratioP50)), 3) : 'skipped', 'per case'],
-  ['e2e overhead p95 (nine cases, worst)', `${design.e2eP99}`, e2e ? fmt(Math.max(...e2e.cases.map((c) => c.ratioP95)), 3) : 'skipped', 'per case'],
-  ['e2e overhead p99 (nine cases, worst)', `${design.e2eP99}`, e2e ? fmt(Math.max(...e2e.cases.map((c) => c.ratioP99)), 3) : 'skipped', 'per case'],
+  [
+    'decode 10k x 12 / hand mapper, unchecked',
+    `${design.decodeRatio}`,
+    fmt(decodePairs.vsUnchecked.ratioP50, 3),
+    `${B.decode.ratioVsUncheckedMapperP50}`,
+  ],
+  [
+    'decode 10k x 12 / hand mapper, same checks',
+    `${design.decodeRatio}`,
+    fmt(decodePairs.vsChecked.ratioP50, 3),
+    `${B.decode.ratioVsCheckedMapperP50}`,
+  ],
+  [
+    'decode row loop / literal-object copy',
+    `${design.decodeRatio}`,
+    fmt(decodePairs.dispatchOnly.ratioP50, 3),
+    'reported',
+  ],
+  [
+    '  …codegen / hand mapper, unchecked',
+    `${design.decodeRatio}`,
+    fmt(decodePairs.codegenVsUnchecked.ratioP50, 3),
+    `${B.decode.codegen.ratioVsUncheckedMapperP50}`,
+  ],
+  [
+    '  …codegen / hand mapper, same checks',
+    `${design.decodeRatio}`,
+    fmt(decodePairs.codegenVsChecked.ratioP50, 3),
+    `${B.decode.codegen.ratioVsCheckedMapperP50}`,
+  ],
+  [
+    '  …codegen row loop / literal-object copy',
+    `${design.decodeRatio}`,
+    fmt(decodePairs.codegenDispatchOnly.ratioP50, 3),
+    'reported',
+  ],
+  [
+    'e2e overhead p50 (nine cases, worst)',
+    `${design.e2eP50}`,
+    e2e ? fmt(Math.max(...e2e.cases.map((c) => c.ratioP50)), 3) : 'skipped',
+    'per case',
+  ],
+  [
+    'e2e overhead p50 (nine cases, median)',
+    `${design.e2eP50}`,
+    e2e ? fmt(medianOf(e2e.cases.map((c) => c.ratioP50)), 3) : 'skipped',
+    'per case',
+  ],
+  [
+    'e2e overhead p95 (nine cases, worst)',
+    `${design.e2eP99}`,
+    e2e ? fmt(Math.max(...e2e.cases.map((c) => c.ratioP95)), 3) : 'skipped',
+    'per case',
+  ],
+  [
+    'e2e overhead p99 (nine cases, worst)',
+    `${design.e2eP99}`,
+    e2e ? fmt(Math.max(...e2e.cases.map((c) => c.ratioP99)), 3) : 'skipped',
+    'per case',
+  ],
 ]
-console.log('\n  metric                                                 design      here      budget')
+console.log(
+  '\n  metric                                                 design      here      budget',
+)
 for (const [name, d, here, lim] of threeWay) {
-  console.log(`  ${name.padEnd(50)} ${String(d).padStart(10)} ${String(here).padStart(9)} ${String(lim).padStart(11)}`)
+  console.log(
+    `  ${name.padEnd(50)} ${String(d).padStart(10)} ${String(here).padStart(9)} ${String(lim).padStart(11)}`,
+  )
 }
 
 console.log('')
@@ -571,7 +783,10 @@ for (const c of checks) {
 
 const CAVEATS = [...(B._caveats ?? [])]
 if (e2e === null) CAVEATS.push(`end-to-end skipped: ${e2eSkipped}`)
-if (QUICK) CAVEATS.push('--quick: 1 000 decode rows and a quarter of the samples. Numbers are indicative and NOTHING is gated.')
+if (QUICK)
+  CAVEATS.push(
+    '--quick: 1 000 decode rows and a quarter of the samples. Numbers are indicative and NOTHING is gated.',
+  )
 // Only the MINIMUM of the three calibrations is used, so an ordinary spread (the last one runs on
 // a heap that held 10 000 decoded rows a moment ago, and reads ~50 % slow even after a `gc()`) is
 // not a problem and must not cry wolf. A spread this large means something took the CPU away for a

@@ -233,7 +233,12 @@ export class InsertBuilder {
   }
 
   returningAll(): InsertBuilder {
-    return this.#next({ returning: compileProjection(allOf(this.s.scope[this.s.into.alias] as RefScope), NO_LEFT_JOINS) })
+    return this.#next({
+      returning: compileProjection(
+        allOf(this.s.scope[this.s.into.alias] as RefScope),
+        NO_LEFT_JOINS,
+      ),
+    })
   }
 
   // ── terminals ─────────────────────────────────────────────────────────────
@@ -493,7 +498,12 @@ function isArrayCodec(c: AnyCodec): boolean {
 /** `03` §2.6's two knobs, checked at the boundary rather than trusted from the type layer. */
 function checkBulkOpts(opts: BulkOpts): void {
   const strategy = opts.strategy
-  if (strategy !== undefined && strategy !== 'auto' && strategy !== 'values' && strategy !== 'unnest') {
+  if (
+    strategy !== undefined &&
+    strategy !== 'auto' &&
+    strategy !== 'values' &&
+    strategy !== 'unnest'
+  ) {
     throw new BuilderError(
       `pg-prime: unknown bulk strategy ${JSON.stringify(strategy)} — it is 'auto' (the default), ` +
         `'values' or 'unnest'.`,
@@ -503,9 +513,7 @@ function checkBulkOpts(opts: BulkOpts): void {
   if (size !== undefined && (!Number.isInteger(size) || size < 1)) {
     // A chunk of 0 rows is not a degenerate batch, it is a `for (i += 0)` that never terminates:
     // the loop hangs the process synchronously, before anything reaches a database.
-    throw new BuilderError(
-      `pg-prime: chunkSize must be a positive integer (got ${String(size)}).`,
-    )
+    throw new BuilderError(`pg-prime: chunkSize must be a positive integer (got ${String(size)}).`)
   }
 }
 
@@ -552,7 +560,6 @@ function mergeCtes(outer: readonly CteNode[], inner: readonly CteNode[]): readon
   }
   return Object.freeze(out)
 }
-
 
 function keysOfQuery(n: SelectNode | SetOpNode): readonly string[] {
   let cur: SelectNode | SetOpNode = n
@@ -619,13 +626,19 @@ export class ConflictSpec {
       }
       return this.#meta.byKey[key] as ColumnMeta
     })
-    return this.#next({ ...this.node, target: { k: 'columns', columns, where: whereOf(this.node) } })
+    return this.#next({
+      ...this.node,
+      target: { k: 'columns', columns, where: whereOf(this.node) },
+    })
   }
 
   /** An expression index: `on conflict (lower(email))`. */
   expressions(f: Lambda<unknown>): ConflictSpec {
     const exprs = toExprList(call(f, this.#target), 'onConflict().expressions()')
-    return this.#next({ ...this.node, target: { k: 'expressions', exprs, where: whereOf(this.node) } })
+    return this.#next({
+      ...this.node,
+      target: { k: 'expressions', exprs, where: whereOf(this.node) },
+    })
   }
 
   constraint(name: string): ConflictSpec {
@@ -722,7 +735,9 @@ export function makeInsert(
 ): InsertBuilder {
   const source = sourceOf(h)
   if (source.kind !== 'table') {
-    throw new BuilderError('pg-prime: insertInto() takes a table handle, not a CTE or derived table.')
+    throw new BuilderError(
+      'pg-prime: insertInto() takes a table handle, not a CTE or derived table.',
+    )
   }
   const name = alias ?? source.name
   const meta = metaOf(h as never, ctx.registry)

@@ -71,21 +71,30 @@ describe('the loader rejects a corpus it could not replay', () => {
   }
 
   it('a seed that is not a uint32', () => {
-    withCorpus('{"_why":"t","cases":[{"seed":-1,"invariant":"a","note":"x","kind":"found","added":"2026-01-01"}]}', () => {
-      expect(() => loadCorpus('ident')).toThrow(/not a uint32/)
-    })
+    withCorpus(
+      '{"_why":"t","cases":[{"seed":-1,"invariant":"a","note":"x","kind":"found","added":"2026-01-01"}]}',
+      () => {
+        expect(() => loadCorpus('ident')).toThrow(/not a uint32/)
+      },
+    )
   })
 
   it('an unknown kind', () => {
-    withCorpus('{"_why":"t","cases":[{"seed":1,"invariant":"a","note":"x","kind":"guess","added":"2026-01-01"}]}', () => {
-      expect(() => loadCorpus('ident')).toThrow(/kind "guess"/)
-    })
+    withCorpus(
+      '{"_why":"t","cases":[{"seed":1,"invariant":"a","note":"x","kind":"guess","added":"2026-01-01"}]}',
+      () => {
+        expect(() => loadCorpus('ident')).toThrow(/kind "guess"/)
+      },
+    )
   })
 
   it('an entry with no note — a pin nobody can read is a pin nobody maintains', () => {
-    withCorpus('{"_why":"t","cases":[{"seed":1,"invariant":"a","note":"  ","kind":"found","added":"2026-01-01"}]}', () => {
-      expect(() => loadCorpus('ident')).toThrow(/no note/)
-    })
+    withCorpus(
+      '{"_why":"t","cases":[{"seed":1,"invariant":"a","note":"  ","kind":"found","added":"2026-01-01"}]}',
+      () => {
+        expect(() => loadCorpus('ident')).toThrow(/no note/)
+      },
+    )
   })
 
   it('cases that is not an array', () => {
@@ -99,7 +108,14 @@ describe('recording', () => {
   it('does nothing unless PG_PRIME_FUZZ_RECORD=1 — a fuzzer must not edit its own evidence', () => {
     delete process.env['PG_PRIME_FUZZ_RECORD']
     const before = readFileSync(join(CORPUS_DIR, 'ident.json'), 'utf8')
-    expect(recordFinding('ident', { seed: 12345, invariant: 'a', note: 'should not be written', kind: 'found' })).toBe(false)
+    expect(
+      recordFinding('ident', {
+        seed: 12345,
+        invariant: 'a',
+        note: 'should not be written',
+        kind: 'found',
+      }),
+    ).toBe(false)
     expect(readFileSync(join(CORPUS_DIR, 'ident.json'), 'utf8')).toBe(before)
   })
 
@@ -108,10 +124,31 @@ describe('recording', () => {
     const original = readFileSync(file, 'utf8')
     try {
       process.env['PG_PRIME_FUZZ_RECORD'] = '1'
-      expect(recordFinding('ident', { seed: 99, invariant: 'a', note: 'a note long enough to pass', kind: 'found' })).toBe(true)
-      expect(recordFinding('ident', { seed: 7, invariant: 'a', note: 'another note long enough', kind: 'mutation' })).toBe(true)
+      expect(
+        recordFinding('ident', {
+          seed: 99,
+          invariant: 'a',
+          note: 'a note long enough to pass',
+          kind: 'found',
+        }),
+      ).toBe(true)
+      expect(
+        recordFinding('ident', {
+          seed: 7,
+          invariant: 'a',
+          note: 'another note long enough',
+          kind: 'mutation',
+        }),
+      ).toBe(true)
       // Same seed and same invariant twice is one entry.
-      expect(recordFinding('ident', { seed: 99, invariant: 'a', note: 'a note long enough to pass', kind: 'found' })).toBe(false)
+      expect(
+        recordFinding('ident', {
+          seed: 99,
+          invariant: 'a',
+          note: 'a note long enough to pass',
+          kind: 'found',
+        }),
+      ).toBe(false)
       expect(corpusSeeds('ident')).toStrictEqual([7, 99])
     } finally {
       writeFileSync(file, original)

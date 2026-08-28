@@ -100,7 +100,11 @@ export interface StatementDescriptor<Row> {
   readonly operation: QueryOperation
   readonly tables: readonly string[] | undefined
   /** Runs it. `timing` is filled when somebody is listening. */
-  perform(conn: PgConnection, env: ExecEnv, opts: RunOptions): Promise<{ rows: Row[]; rowCount: number }>
+  perform(
+    conn: PgConnection,
+    env: ExecEnv,
+    opts: RunOptions,
+  ): Promise<{ rows: Row[]; rowCount: number }>
 }
 
 /** A compiled builder query as a descriptor. */
@@ -250,7 +254,10 @@ export class PoolRunner extends BaseRunner {
     return this.runRaw(compiledStatement(compiled), opts)
   }
 
-  async #timedInTransaction<Row>(desc: StatementDescriptor<Row>, o: StatementOptions): Promise<Row[]> {
+  async #timedInTransaction<Row>(
+    desc: StatementDescriptor<Row>,
+    o: StatementOptions,
+  ): Promise<Row[]> {
     const lease = await acquire(this.state, this.signalFor(o))
     let dispose = false
     let opened = false
@@ -301,7 +308,17 @@ export class PoolRunner extends BaseRunner {
       const out: Row[] = []
       try {
         for (const c of all) {
-          out.push(...(await execute(this.state, lease, compiledStatement(c), o, this.handle, 0, undefined)))
+          out.push(
+            ...(await execute(
+              this.state,
+              lease,
+              compiledStatement(c),
+              o,
+              this.handle,
+              0,
+              undefined,
+            )),
+          )
         }
       } catch (e) {
         dispose = poisons(e)
@@ -348,12 +365,17 @@ export class PoolRunner extends BaseRunner {
     if (!this.state.devGuard) return
     if (this.#handle !== 'db') return
     if (o.outsideTransaction === true) return
-    assertNotInsideTransaction(this.state.errors.captureCallSite ? captureCallSite(this.guard) : undefined)
+    assertNotInsideTransaction(
+      this.state.errors.captureCallSite ? captureCallSite(this.guard) : undefined,
+    )
   }
 
   private mapped(e: unknown, sql: string | undefined): unknown {
     return mapError(e, {
-      context: { handle: this.handle, ...(this.defaults.label === undefined ? {} : { label: this.defaults.label }) },
+      context: {
+        handle: this.handle,
+        ...(this.defaults.label === undefined ? {} : { label: this.defaults.label }),
+      },
       errors: this.state.errors,
       sql,
       schema: this.state.schema,
@@ -422,7 +444,13 @@ export class ConnRunner extends BaseRunner {
   }
 
   with(extra: StatementOptions): ConnRunner {
-    return new ConnRunner(this.state, { ...this.defaults, ...extra }, this.conn, this.tx, this.#handle)
+    return new ConnRunner(
+      this.state,
+      { ...this.defaults, ...extra },
+      this.conn,
+      this.tx,
+      this.#handle,
+    )
   }
 
   #assertUsable(): void {
@@ -451,7 +479,8 @@ export class ConnRunner extends BaseRunner {
       return await f(this.conn)
     } catch (e) {
       const mapped = this.#mapped(e, undefined)
-      if (mapped instanceof PgPrimeErrorClass && isPoisoning(mapped)) this.tx.poison.error ??= mapped
+      if (mapped instanceof PgPrimeErrorClass && isPoisoning(mapped))
+        this.tx.poison.error ??= mapped
       throw mapped
     }
   }
@@ -716,7 +745,8 @@ export async function execute<Row>(
 
   const noticeSink =
     hooks.enabled && lease.conn.on !== undefined
-      ? lease.conn.on('notice', ((n: PgNoticeData) => hooks.notice({ notice: n, queryId })) as never)
+      ? lease.conn.on('notice', ((n: PgNoticeData) =>
+          hooks.notice({ notice: n, queryId })) as never)
       : undefined
 
   const timing: RunTiming | undefined = wantEvents ? { serverMs: 0, decodeMs: 0 } : undefined
@@ -761,7 +791,9 @@ export async function execute<Row>(
         waitedForConnectionMs: lease.waitedMs,
       })
       if (shouldLog(state.log, 'error')) {
-        state.log.sink(queryErrorRecord({ ...start, durationMs, error, waitedForConnectionMs: lease.waitedMs }))
+        state.log.sink(
+          queryErrorRecord({ ...start, durationMs, error, waitedForConnectionMs: lease.waitedMs }),
+        )
       }
     }
     throw error

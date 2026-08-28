@@ -48,7 +48,8 @@ const readyForQuery = (status = 'I'): Uint8Array => msg('Z', status)
 const parseComplete = (): Uint8Array => msg('1')
 const bindComplete = (): Uint8Array => msg('2')
 const commandComplete = (tag: string): Uint8Array => msg('C', `${tag}\0`)
-const errorResponse = (): Uint8Array => msg('E', 'SERROR\0C42703\0Mcolumn "nope" does not exist\0\0')
+const errorResponse = (): Uint8Array =>
+  msg('E', 'SERROR\0C42703\0Mcolumn "nope" does not exist\0\0')
 const dataRow = (value: Uint8Array): Uint8Array => {
   const body = new Uint8Array(2 + 4 + value.length)
   const view = new DataView(body.buffer)
@@ -75,14 +76,21 @@ describe('spuriousReadyForQuery — what PostgreSQL would never have sent', () =
   })
 
   it('keeps the one a simple Query and the StartupMessage are entitled to', () => {
-    expect(spuriousReadyForQuery(QUERY, cat(commandComplete('SELECT 1'), readyForQuery()))).toBe(false)
+    expect(spuriousReadyForQuery(QUERY, cat(commandComplete('SELECT 1'), readyForQuery()))).toBe(
+      false,
+    )
     expect(spuriousReadyForQuery(STARTUP, cat(msg('R', '\0\0\0\0'), readyForQuery()))).toBe(false)
   })
 
   it('does nothing when there is no ReadyForQuery to strip', () => {
     expect(spuriousReadyForQuery(PARSE, parseComplete())).toBe(false)
     expect(spuriousReadyForQuery(BIND, bindComplete())).toBe(false)
-    expect(spuriousReadyForQuery(EXECUTE, cat(dataRow(new Uint8Array([0x31])), commandComplete('SELECT 1')))).toBe(false)
+    expect(
+      spuriousReadyForQuery(
+        EXECUTE,
+        cat(dataRow(new Uint8Array([0x31])), commandComplete('SELECT 1')),
+      ),
+    ).toBe(false)
     expect(spuriousReadyForQuery(PARSE, new Uint8Array(0))).toBe(false)
   })
 

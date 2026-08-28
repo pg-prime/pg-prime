@@ -148,7 +148,17 @@ export default defineSchema({ widgets })
       await expectGolden("generate.missing-hints", e);
 
       // …and with the acknowledgement it goes through and is recorded IN THE PLAN.
-      const ok = await cli(p, "generate", "--name", "drop_name", "--allow-data-loss", "--by", "k2b", "--reason", "test");
+      const ok = await cli(
+        p,
+        "generate",
+        "--name",
+        "drop_name",
+        "--allow-data-loss",
+        "--by",
+        "k2b",
+        "--reason",
+        "test",
+      );
       expect(ok.code, ok.stdout + ok.stderr).toBe(EXIT.ok);
       const written = (envelopeOf(ok)["files"] as { plan: string }[])[0]!.plan;
       const plan = JSON.parse(await readFile(written, "utf8")) as { acknowledged: { by: string; blanket: boolean } };
@@ -190,7 +200,11 @@ export default defineSchema({ widgets })
       expect(annotated.code, annotated.stdout + annotated.stderr).toBe(EXIT.ok);
       const renames = envelopeOf(annotated)["renames"] as { from: string; to: string; source: string }[];
       expect(renames).toContainEqual(
-        expect.objectContaining({ from: "column:public.widgets.name", to: "column:public.widgets.label", source: "annotation" }),
+        expect.objectContaining({
+          from: "column:public.widgets.name",
+          to: "column:public.widgets.label",
+          source: "annotation",
+        }),
       );
       expect((await cli(p, "apply")).code).toBe(EXIT.ok);
     },
@@ -233,12 +247,14 @@ export default defineSchema({ widgets })
       expect(ok.code, ok.stdout + ok.stderr).toBe(EXIT.ok);
       await expectGolden("check.ok", envelopeOf(ok));
 
-      await p.writeSchema(BASE_SCHEMA.replace("name: t.text().unique(),", "name: t.text().unique(),\n  colour: t.text().nullable(),"));
+      await p.writeSchema(
+        BASE_SCHEMA.replace("name: t.text().unique(),", "name: t.text().unique(),\n  colour: t.text().nullable(),"),
+      );
       const drift = await cli(p, "check");
       expect(drift.code, drift.stdout + drift.stderr).toBe(EXIT.drift);
       const d = envelopeOf(drift);
       expect(d["status"]).toBe("drift");
-      expect((d["schemaDrift"] as string[]).join("\n")).toContain("ADD COLUMN IF NOT EXISTS \"colour\"");
+      expect((d["schemaDrift"] as string[]).join("\n")).toContain('ADD COLUMN IF NOT EXISTS "colour"');
       await expectGolden("check.drift", d);
     },
     T,
@@ -278,7 +294,9 @@ export default defineSchema({ widgets })
       expect((await cli(p, "apply")).code).toBe(EXIT.ok);
       // The schema gains a column that no migration adds. Replay-from-empty reproduces the
       // MIGRATIONS, and the diff against IR(desired) is exactly the gap.
-      await p.writeSchema(BASE_SCHEMA.replace("name: t.text().unique(),", "name: t.text().unique(),\n  colour: t.text().nullable(),"));
+      await p.writeSchema(
+        BASE_SCHEMA.replace("name: t.text().unique(),", "name: t.text().unique(),\n  colour: t.text().nullable(),"),
+      );
       const r = await cli(p, "verify");
       expect(r.code, r.stdout + r.stderr).toBe(EXIT.drift);
       const e = envelopeOf(r);
@@ -345,10 +363,9 @@ CREATE INDEX CONCURRENTLY widgets_name_idx ON public.widgets (name);
       expect((envelopeOf(bare)["error"] as { message: string }).message).toContain("literal --dev");
       await expectGolden("push.refused", envelopeOf(bare));
 
-      const prod = await runCli(
-        ["migrate", "push", "--dev", "--config", p.config, "--output", "json"],
-        { PG_PRIME_ENV: "production" },
-      );
+      const prod = await runCli(["migrate", "push", "--dev", "--config", p.config, "--output", "json"], {
+        PG_PRIME_ENV: "production",
+      });
       expect(prod.code).toBe(EXIT.error);
       expect((envelopeOf(prod)["error"] as { message: string }).message).toContain("production");
 
@@ -372,9 +389,7 @@ CREATE INDEX CONCURRENTLY widgets_name_idx ON public.widgets (name);
       // R14: the catalog, and the ABSENCE of a history row.
       const state = await withClient(dbConn(`pgprime_k2b_cli_push_dev`), async (client) => {
         const t = await client.query("SELECT to_regclass('public.widgets') AS t");
-        const h = await client.query(
-          "SELECT count(*)::int AS n FROM pg_namespace WHERE nspname = 'pgprime'",
-        );
+        const h = await client.query("SELECT count(*)::int AS n FROM pg_namespace WHERE nspname = 'pgprime'");
         return { table: t.rows[0]?.["t"], history: h.rows[0]?.["n"] };
       });
       expect(state).toEqual({ table: "widgets", history: 0 });
@@ -387,7 +402,9 @@ CREATE INDEX CONCURRENTLY widgets_name_idx ON public.widgets (name);
       // enough — a `baselined` row is explicitly allowed (design/06 §6.2) — so the
       // database is moved forward by one real, applied migration first.
       expect((await cli(p, "baseline")).code).toBe(EXIT.ok);
-      await p.writeSchema(BASE_SCHEMA.replace("name: t.text().unique(),", "name: t.text().unique(),\n  colour: t.text().nullable(),"));
+      await p.writeSchema(
+        BASE_SCHEMA.replace("name: t.text().unique(),", "name: t.text().unique(),\n  colour: t.text().nullable(),"),
+      );
       expect((await cli(p, "generate", "--name", "next")).code).toBe(EXIT.ok);
       expect((await cli(p, "apply")).code).toBe(EXIT.ok);
       const managed = await cli(p, "push", "--dev");

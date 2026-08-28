@@ -60,7 +60,10 @@ export function externalSpecifiers(distDir) {
         add(node.moduleSpecifier.text, f)
       } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
         add(node.argument.literal.text, f)
-      } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      } else if (
+        ts.isImportEqualsDeclaration(node) &&
+        ts.isExternalModuleReference(node.moduleReference)
+      ) {
         add(node.moduleReference.expression.text, f)
       }
       ts.forEachChild(node, visit)
@@ -108,11 +111,15 @@ if (process.argv[1] && process.argv[1].endsWith('check-dts.mjs')) {
       const dtsCount = listFiles(dist).filter((f) => f.endsWith('.d.ts')).length
       const externals = externalSpecifiers(dist)
       const externalList = [...externals.keys()].sort()
-      console.log(`${pkg.dir}: ${dtsCount} .d.ts, external specifiers: ${externalList.length ? externalList.join(', ') : '(none)'}`)
+      console.log(
+        `${pkg.dir}: ${dtsCount} .d.ts, external specifiers: ${externalList.length ? externalList.join(', ') : '(none)'}`,
+      )
       if (pkg.zeroDeps && externalList.length) {
         bad++
         for (const spec of externalList) {
-          console.error(`  FAIL the emitted declarations name \`${spec}\` (in ${externals.get(spec).slice(0, 3).join(', ')}) — pg-prime ships zero dependencies`)
+          console.error(
+            `  FAIL the emitted declarations name \`${spec}\` (in ${externals.get(spec).slice(0, 3).join(', ')}) — pg-prime ships zero dependencies`,
+          )
         }
       }
       for (const [version, tsc] of Object.entries(COMPILERS)) {
@@ -132,7 +139,9 @@ if (process.argv[1] && process.argv[1].endsWith('check-dts.mjs')) {
           ok = false
         }
         const errors = out.split('\n').filter((l) => /error TS\d+/.test(l))
-        console.log(`  TypeScript ${version}: ${errors.length ? `${errors.length} error(s)` : 'clean'} (${Date.now() - started} ms, skipLibCheck: false)`)
+        console.log(
+          `  TypeScript ${version}: ${errors.length ? `${errors.length} error(s)` : 'clean'} (${Date.now() - started} ms, skipLibCheck: false)`,
+        )
         for (const e of errors.slice(0, 20)) console.error(`    ${e}`)
         if (!ok || errors.length) bad++
       }

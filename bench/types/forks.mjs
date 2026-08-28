@@ -82,7 +82,10 @@ const record = (name, scenario) => {
   console.log(
     `${name.padEnd(18)} ` +
       Object.entries(row)
-        .map(([v, r]) => `ts${v} inst=${String(r.instantiations).padStart(7)} check=${r.checkTime.toFixed(3)}s`)
+        .map(
+          ([v, r]) =>
+            `ts${v} inst=${String(r.instantiations).padStart(7)} check=${r.checkTime.toFixed(3)}s`,
+        )
         .join('  '),
   )
   return row
@@ -160,7 +163,16 @@ rmSync(DTS_OUT, { recursive: true, force: true })
 mkdirSync(DTS_OUT, { recursive: true })
 execFileSync(
   process.execPath,
-  [COMPILERS['5.9.3'], '-p', join(ROOT, 'packages', 'pg-prime', 'tsconfig.json'), '--outDir', DTS_OUT, '--emitDeclarationOnly', '--pretty', 'false'],
+  [
+    COMPILERS['5.9.3'],
+    '-p',
+    join(ROOT, 'packages', 'pg-prime', 'tsconfig.json'),
+    '--outDir',
+    DTS_OUT,
+    '--emitDeclarationOnly',
+    '--pretty',
+    'false',
+  ],
   { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
 )
 // The arms live in `bench/types/arms/`, outside the package, so the method-table arm needs its
@@ -168,10 +180,23 @@ execFileSync(
 execFileSync(
   process.execPath,
   [
-    COMPILERS['5.9.3'], join(HERE, 'arms', 'f1-ops-methods.ts'), join(HERE, 'arms', 'f1-ops-free.ts'),
-    '--declaration', '--emitDeclarationOnly', '--outDir', join(DTS_OUT, 'arms'),
-    '--target', 'es2023', '--module', 'nodenext', '--moduleResolution', 'nodenext',
-    '--strict', '--skipLibCheck', '--pretty', 'false',
+    COMPILERS['5.9.3'],
+    join(HERE, 'arms', 'f1-ops-methods.ts'),
+    join(HERE, 'arms', 'f1-ops-free.ts'),
+    '--declaration',
+    '--emitDeclarationOnly',
+    '--outDir',
+    join(DTS_OUT, 'arms'),
+    '--target',
+    'es2023',
+    '--module',
+    'nodenext',
+    '--moduleResolution',
+    'nodenext',
+    '--strict',
+    '--skipLibCheck',
+    '--pretty',
+    'false',
   ],
   { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
 )
@@ -191,15 +216,19 @@ const bytes = (...p) => {
 // winning arm REPLACES the core — so it is reported but never differenced.
 const dts = {
   querySurface: bytes('query', 'types.d.ts'),
-  opsFree: bytes('arms', 'bench', 'types', 'arms', 'f1-ops-free.d.ts') ?? bytes('arms', 'f1-ops-free.d.ts'),
-  opsMethods: bytes('arms', 'bench', 'types', 'arms', 'f1-ops-methods.d.ts') ?? bytes('arms', 'f1-ops-methods.d.ts'),
-
+  opsFree:
+    bytes('arms', 'bench', 'types', 'arms', 'f1-ops-free.d.ts') ??
+    bytes('arms', 'f1-ops-free.d.ts'),
+  opsMethods:
+    bytes('arms', 'bench', 'types', 'arms', 'f1-ops-methods.d.ts') ??
+    bytes('arms', 'f1-ops-methods.d.ts'),
 }
 
 // ── derive ───────────────────────────────────────────────────────────────────
 
 const I = (name, v) => results[name]?.[v]?.instantiations
-const round = (n, d = 2) => (n === undefined || Number.isNaN(n) || !Number.isFinite(n) ? null : Number(n.toFixed(d)))
+const round = (n, d = 2) =>
+  n === undefined || Number.isNaN(n) || !Number.isFinite(n) ? null : Number(n.toFixed(d))
 
 const derived = {}
 for (const arm of [...ARM_NAMES, LIVE, 'plain']) {
@@ -208,20 +237,25 @@ for (const arm of [...ARM_NAMES, LIVE, 'plain']) {
     const per = {}
     for (const v of Object.keys(COMPILERS)) {
       const marginal = {}
-      for (const t of SIZES) marginal[t] = (I(`${arm}-s${shape}-t${t}-u${2 * U}`, v) - I(`${arm}-s${shape}-t${t}-u${U}`, v)) / U
+      for (const t of SIZES)
+        marginal[t] =
+          (I(`${arm}-s${shape}-t${t}-u${2 * U}`, v) - I(`${arm}-s${shape}-t${t}-u${U}`, v)) / U
       per[v] = {
         marginal: Object.fromEntries(SIZES.map((t) => [t, round(marginal[t], 1)])),
         ratio100: round(marginal[100] / marginal[25], 3),
         ratio300: round(marginal[300] / marginal[25], 3),
         budget: PER_QUERY[shape],
-        withinBudget: PER_QUERY[shape] === null || marginal[SIZES[SIZES.length - 1]] <= PER_QUERY[shape],
+        withinBudget:
+          PER_QUERY[shape] === null || marginal[SIZES[SIZES.length - 1]] <= PER_QUERY[shape],
         flat: (marginal[300] ?? marginal[100]) / marginal[25] <= RATIO,
       }
     }
     derived[arm].shapes[shape] = per
   }
   derived[arm].admissible = SHAPES.filter((s) => PER_QUERY[s] !== null).every((s) =>
-    Object.keys(COMPILERS).every((v) => derived[arm].shapes[s][v].withinBudget && derived[arm].shapes[s][v].flat),
+    Object.keys(COMPILERS).every(
+      (v) => derived[arm].shapes[s][v].withinBudget && derived[arm].shapes[s][v].flat,
+    ),
   )
 }
 
@@ -238,7 +272,11 @@ const linearity = {}
 for (const v of Object.keys(COMPILERS)) {
   const first = (I(`base04-s3-t100-u${2 * U}`, v) - I(`base04-s3-t100-u${U}`, v)) / U
   const second = (I(`base04-s3-t100-u${3 * U}`, v) - I(`base04-s3-t100-u${2 * U}`, v)) / U
-  linearity[v] = { firstInterval: round(first, 1), secondInterval: round(second, 1), linear: first === second }
+  linearity[v] = {
+    firstInterval: round(first, 1),
+    secondInterval: round(second, 1),
+    linear: first === second,
+  }
 }
 
 // ── print ────────────────────────────────────────────────────────────────────
@@ -277,8 +315,10 @@ for (const shape of SHAPES) {
 // run.mjs measures it at 36). It is the cost of materialising all 12 ref property types for a
 // table, which is what fork F1's intersection lands on — reported as a slope, and as the delta
 // between the arms, which is the only number the decision needs.
-console.log('\n── cost of materialising a table\'s full ref surface (slope over table count) ──')
-console.log(`  ${'ts'.padEnd(8)}${'base'.padStart(8)}${'plain'.padStart(8)}${'f1'.padStart(8)}   what the methods themselves cost`)
+console.log("\n── cost of materialising a table's full ref surface (slope over table count) ──")
+console.log(
+  `  ${'ts'.padEnd(8)}${'base'.padStart(8)}${'plain'.padStart(8)}${'f1'.padStart(8)}   what the methods themselves cost`,
+)
 for (const v of Object.keys(COMPILERS)) {
   const b = refsPerTable.base04[v]
   const p = refsPerTable.plain[v]
@@ -298,7 +338,10 @@ for (const [program, p] of Object.entries(PROGRAMS)) {
     for (const v of Object.keys(COMPILERS)) {
       const r = results[`${program}-${arm}`][v]
       const base = results[`${program}-base04`][v].instantiations
-      const delta = arm === 'base04' ? '' : `  ${r.instantiations > base ? '+' : ''}${round(((r.instantiations - base) / base) * 100, 1)}% vs base`
+      const delta =
+        arm === 'base04'
+          ? ''
+          : `  ${r.instantiations > base ? '+' : ''}${round(((r.instantiations - base) / base) * 100, 1)}% vs base`
       console.log(
         `  ${arm.padEnd(8)}ts${v.padEnd(8)}inst=${String(r.instantiations).padStart(7)}  ` +
           `check=${r.checkTime.toFixed(3)}s  mem=${String(r.memoryMb).padStart(4)}MB${delta}`,
@@ -310,9 +353,10 @@ for (const [program, p] of Object.entries(PROGRAMS)) {
 console.log('\n── emitted .d.ts bytes ──────────────────────────────────────────────────────')
 console.log(`  shared query surface (types.d.ts)          ${String(dts.querySurface).padStart(7)}B`)
 console.log(`  F1 arm A  operators as free functions     ${String(dts.opsFree).padStart(7)}B`)
-console.log(`  F1 arm B  operators as ref methods        ${String(dts.opsMethods).padStart(7)}B` +
-  `   (${dts.opsMethods > dts.opsFree ? '+' : ''}${round(((dts.opsMethods - dts.opsFree) / dts.opsFree) * 100, 1)}%)`)
-
+console.log(
+  `  F1 arm B  operators as ref methods        ${String(dts.opsMethods).padStart(7)}B` +
+    `   (${dts.opsMethods > dts.opsFree ? '+' : ''}${round(((dts.opsMethods - dts.opsFree) / dts.opsFree) * 100, 1)}%)`,
+)
 
 console.log('\n── F1 with the rebuild artifact removed: f1 − plain, per program ────────────')
 const f1Corrected = {}
@@ -322,7 +366,11 @@ for (const program of Object.keys(PROGRAMS)) {
     const b = results[`${program}-base04`][v].instantiations
     const pl = results[`${program}-plain`][v].instantiations
     const f = results[`${program}-f1`][v].instantiations
-    f1Corrected[program][v] = { methods: f - pl, methodsPct: round(((f - pl) / pl) * 100, 1), artifact: pl - b }
+    f1Corrected[program][v] = {
+      methods: f - pl,
+      methodsPct: round(((f - pl) / pl) * 100, 1),
+      artifact: pl - b,
+    }
     console.log(
       `  ${program.padEnd(8)}ts${v.padEnd(8)}methods ${String(f - pl).padStart(6)} ` +
         `(${round(((f - pl) / pl) * 100, 1)}%)   rebuild artifact ${String(pl - b).padStart(6)} ` +
@@ -331,23 +379,32 @@ for (const program of Object.keys(PROGRAMS)) {
   }
 }
 
-console.log('\n── admissibility (shapes 1-3; shape 4 has no budget line) ────────────────────────────────────────────────────────────')
+console.log(
+  '\n── admissibility (shapes 1-3; shape 4 has no budget line) ────────────────────────────────────────────────────────────',
+)
 for (const arm of ARM_NAMES) {
-  console.log(`  ${arm.padEnd(8)}${derived[arm].admissible ? 'ADMISSIBLE' : 'INADMISSIBLE'}  ${derived[arm].label}`)
+  console.log(
+    `  ${arm.padEnd(8)}${derived[arm].admissible ? 'ADMISSIBLE' : 'INADMISSIBLE'}  ${derived[arm].label}`,
+  )
 }
 
 const report = {
   node: process.version,
   compilers: Object.keys(COMPILERS),
   method: {
-    marginal: '(instantiations at 2U queries − at U queries) / U, at a fixed schema size and a fixed 25-table distinct span',
+    marginal:
+      '(instantiations at 2U queries − at U queries) / U, at a fixed schema size and a fixed 25-table distinct span',
     queriesPerScenario: U,
     distinctTablesTouched: DISTINCT,
     sizes: SIZES,
     oracle:
-      'every generated file asserts its first query\'s result type with a strict Eq<…>; an arm whose inference degraded to `any` fails to compile rather than measuring cheap',
+      "every generated file asserts its first query's result type with a strict Eq<…>; an arm whose inference degraded to `any` fails to compile rather than measuring cheap",
   },
-  budgets: { perQuery: PER_QUERY, ratio: RATIO, perTableDeclaration: budget.instantiationsPerTableDeclaration },
+  budgets: {
+    perQuery: PER_QUERY,
+    ratio: RATIO,
+    perTableDeclaration: budget.instantiationsPerTableDeclaration,
+  },
   results,
   derived,
   refsPerTable,

@@ -23,17 +23,7 @@ import type {
   TableRuntime,
 } from "pg-prime";
 
-export type {
-  ColumnDdl,
-  PgDomain,
-  PgEnum,
-  PgExtension,
-  PgSchema,
-  PgSequence,
-  RefRuntime,
-  TableExtra,
-  TableRuntime,
-};
+export type { ColumnDdl, PgDomain, PgEnum, PgExtension, PgSchema, PgSequence, RefRuntime, TableExtra, TableRuntime };
 
 /** One table, as `defineSchema(...)`'s registry holds it. */
 export interface TableLike {

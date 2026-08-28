@@ -81,7 +81,8 @@ function declared(t: TableRuntime): CatalogColumn[] {
       // PostgreSQL names an array type `_base` whatever its dimensionality.
       udtName: ddl.arrayDim > 0 ? `_${base}` : base,
       nullable: !ddl.notNull,
-      identity: ddl.identity === 'always' ? 'ALWAYS' : ddl.identity === 'byDefault' ? 'BY DEFAULT' : 'NO',
+      identity:
+        ddl.identity === 'always' ? 'ALWAYS' : ddl.identity === 'byDefault' ? 'BY DEFAULT' : 'NO',
       dims: ddl.arrayDim,
     }
   })
@@ -95,13 +96,16 @@ function differences(want: CatalogColumn[], got: CatalogColumn[]): string[] {
   const out: string[] = []
   const w = byName(want)
   const g = byName(got)
-  for (const name of w.keys()) if (!g.has(name)) out.push(`declared but not in the database: ${name}`)
-  for (const name of g.keys()) if (!w.has(name)) out.push(`in the database but not declared: ${name}`)
+  for (const name of w.keys())
+    if (!g.has(name)) out.push(`declared but not in the database: ${name}`)
+  for (const name of g.keys())
+    if (!w.has(name)) out.push(`in the database but not declared: ${name}`)
   for (const [name, a] of w) {
     const b = g.get(name)
     if (!b) continue
     for (const key of ['udtName', 'nullable', 'identity', 'dims'] as const) {
-      if (a[key] !== b[key]) out.push(`${name}.${key}: declared ${String(a[key])}, database ${String(b[key])}`)
+      if (a[key] !== b[key])
+        out.push(`${name}.${key}: declared ${String(a[key])}, database ${String(b[key])}`)
     }
   }
   return out.sort()
@@ -115,7 +119,10 @@ describe('R5 — information_schema ≡ TableRuntime', () => {
 
 describe('the seed is the dataset Appendix A promises', () => {
   const count = async (table: string): Promise<number> =>
-    Number((await conn.execute({ text: `select count(*) from ${fx.ns}.${table}`, params: [] })).rows[0]![0])
+    Number(
+      (await conn.execute({ text: `select count(*) from ${fx.ns}.${table}`, params: [] }))
+        .rows[0]![0],
+    )
 
   it('has the row counts every other live test will assume', async () => {
     expect({
@@ -129,7 +136,10 @@ describe('the seed is the dataset Appendix A promises', () => {
   })
 
   it('starts post ids past 2^53, so a JSON-number id loses a digit', async () => {
-    const r = await conn.execute({ text: `select min(id), max(id) from ${fx.ns}.posts`, params: [] })
+    const r = await conn.execute({
+      text: `select min(id), max(id) from ${fx.ns}.posts`,
+      params: [],
+    })
     expect(r.rows[0]![0]).toBe('9007199254740993')
     expect(Number(r.rows[0]![0])).toBe(9007199254740992) // the bug, made visible
     expect(r.rows[0]![1]).toBe('9007199254740998')

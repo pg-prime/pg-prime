@@ -53,7 +53,10 @@ export const orgs = pgTable(
     slug: t.text().unique("orgs_slug_key", { nullsNotDistinct: true }),
     // every remaining scalar builder, so the round-trip covers the whole codec table
     displayName: t.varchar().nullable(),
-    seats: t.integer().default(5).check(sql`seats > 0`),
+    seats: t
+      .integer()
+      .default(5)
+      .check(sql`seats > 0`),
     rank: t.smallint().default(0),
     quota: t.bigint().default(1000n),
     active: t.boolean().default(true),
@@ -159,11 +162,7 @@ export const events = audit.table(
     at: t.timestamptz().defaultSql("now()"),
     payload: t.jsonb().nullable(),
   }),
-  (t) => [
-    primaryKey(t.id),
-    index("events_org_at_idx").on(t.orgId, t.at),
-    comment("Append-only audit log."),
-  ],
+  (t) => [primaryKey(t.id), index("events_org_at_idx").on(t.orgId, t.at), comment("Append-only audit log.")],
 );
 
 /* -------------------------------------------------------------------------- */

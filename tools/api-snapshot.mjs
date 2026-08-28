@@ -57,7 +57,12 @@ export const PACKAGES = [
 export function entriesOf(pkgJson) {
   return Object.entries(pkgJson.exports)
     .filter(([, v]) => v && typeof v === 'object')
-    .map(([subpath, cond]) => ({ subpath, types: cond.types, js: cond.default, stub: cond['types@<5.9'] }))
+    .map(([subpath, cond]) => ({
+      subpath,
+      types: cond.types,
+      js: cond.default,
+      stub: cond['types@<5.9'],
+    }))
 }
 
 /**
@@ -135,7 +140,9 @@ export async function snapshot(pkg) {
     const dts = join(pkgDir, e.types)
     const js = join(pkgDir, e.js)
     if (!existsSync(dts) || !existsSync(js)) {
-      throw new Error(`api-snapshot: ${pkg.name}${e.subpath} points at ${e.types} / ${e.js}, which do not exist — run \`pnpm build\` first`)
+      throw new Error(
+        `api-snapshot: ${pkg.name}${e.subpath} points at ${e.types} / ${e.js}, which do not exist — run \`pnpm build\` first`,
+      )
     }
     const declared = readDts(dts)
     const runtime = await readRuntime(js)
@@ -147,7 +154,8 @@ export async function snapshot(pkg) {
           `only in .d.ts: [${onlyDeclared}], only in .js: [${onlyRuntime}]`,
       )
     }
-    if (runtime.includes('default')) problems.push(`${pkg.name}${e.subpath}: has a default export (design/08 §2.3 forbids it)`)
+    if (runtime.includes('default'))
+      problems.push(`${pkg.name}${e.subpath}: has a default export (design/08 §2.3 forbids it)`)
     entries[e.subpath] = { values: runtime, types: declared.types }
     entries[e.subpath]._arity = declared.arity
   }
@@ -206,7 +214,8 @@ export function renderStub(pkgName, root) {
   lines.push('')
   for (const name of root.types) {
     const n = root._arity[name] ?? 0
-    const params = n === 0 ? '' : `<${Array.from({ length: n }, (_, i) => `T${i} = any`).join(', ')}>`
+    const params =
+      n === 0 ? '' : `<${Array.from({ length: n }, (_, i) => `T${i} = any`).join(', ')}>`
     lines.push(`export type ${name}${params} = ${brand}`)
   }
   lines.push('')
@@ -222,7 +231,7 @@ function goldenBody(pkgName, entries) {
     _source:
       'design/08 §2.3 — the committed public-surface golden. `node tools/api-snapshot.mjs` rewrites it; ' +
       '`--check` is the gate. `values` is Object.keys() of the built entry; `types` is the entry .d.ts read ' +
-      'through the TypeScript 5.9.3 compiler API. `_arity` is each type\'s declared type-parameter count and ' +
+      "through the TypeScript 5.9.3 compiler API. `_arity` is each type's declared type-parameter count and " +
       'exists only so the types@<5.9 stub can mirror it.',
     package: pkgName,
     entries,
@@ -273,8 +282,10 @@ if (process.argv[1] && process.argv[1].endsWith('api-snapshot.mjs')) {
               console.error(`    entry \`${subpath}\`: added`)
               continue
             }
-            for (const line of diffLists(`${subpath} values`, was.values, rec.values)) console.error(line)
-            for (const line of diffLists(`${subpath} types`, was.types, rec.types)) console.error(line)
+            for (const line of diffLists(`${subpath} values`, was.values, rec.values))
+              console.error(line)
+            for (const line of diffLists(`${subpath} types`, was.types, rec.types))
+              console.error(line)
           }
           for (const subpath of Object.keys(before)) {
             if (!entries[subpath]) console.error(`    entry \`${subpath}\`: removed`)
@@ -292,7 +303,9 @@ if (process.argv[1] && process.argv[1].endsWith('api-snapshot.mjs')) {
       const onDisk = existsSync(stubPath) ? readFileSync(stubPath, 'utf8') : null
       if (onDisk !== stub) {
         drift++
-        console.error(`  DRIFT ${pkg.dir}/src/unsupported-typescript.d.ts (the types@<5.9 stub no longer mirrors the root entry)`)
+        console.error(
+          `  DRIFT ${pkg.dir}/src/unsupported-typescript.d.ts (the types@<5.9 stub no longer mirrors the root entry)`,
+        )
       }
     } else {
       writeFileSync(stubPath, stub)
@@ -304,7 +317,9 @@ if (process.argv[1] && process.argv[1].endsWith('api-snapshot.mjs')) {
     process.exit(1)
   }
   if (check && drift) {
-    console.error(`\n${drift} file(s) drifted — run \`pnpm api-snapshot\` and review the diff (design/08 §2.3)`)
+    console.error(
+      `\n${drift} file(s) drifted — run \`pnpm api-snapshot\` and review the diff (design/08 §2.3)`,
+    )
     process.exit(1)
   }
   console.log(check ? '\nno drift' : `\nrecorded → ${GOLDEN_DIR} and the two types@<5.9 stubs`)

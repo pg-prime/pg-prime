@@ -54,10 +54,15 @@ export function driverDataOf(e: unknown): PgDriverErrorData | undefined {
   // caller as a bare `Error`. Widening here rather than at every read site keeps the rule in one
   // place.
   const server = (data as { server?: unknown }).server
-  if (typeof server === 'object' && server !== null && typeof (server as { sqlstate?: unknown }).sqlstate === 'string') {
+  if (
+    typeof server === 'object' &&
+    server !== null &&
+    typeof (server as { sqlstate?: unknown }).sqlstate === 'string'
+  ) {
     return {
       kind: 'server',
-      message: (data as { message?: string }).message ?? (server as { message?: string }).message ?? '',
+      message:
+        (data as { message?: string }).message ?? (server as { message?: string }).message ?? '',
       connectionUnusable: (data as { connectionUnusable?: boolean }).connectionUnusable ?? false,
       adapter: (data as { adapter?: string }).adapter ?? 'unknown',
       ...(data as object),
@@ -110,7 +115,11 @@ export function mapError(e: unknown, o: MapOptions): unknown {
   return mapDriverError(data, e, o)
 }
 
-export function mapDriverError(data: PgDriverErrorData, cause: unknown, o: MapOptions): PgPrimeError {
+export function mapDriverError(
+  data: PgDriverErrorData,
+  cause: unknown,
+  o: MapOptions,
+): PgPrimeError {
   const sql = redactSql(o.sql ?? data.sql, o.errors)
   const base = {
     cause,
@@ -137,7 +146,11 @@ export function mapDriverError(data: PgDriverErrorData, cause: unknown, o: MapOp
   // best, and the underlying `Error`'s own the last resort — a mapped error that says nothing is
   // strictly worse than the raw one it replaced, and an adapter (or a test double) that fills only
   // `server.sqlstate` is a shape we accept in `driverDataOf`.
-  const text = firstNonEmpty(server?.message, data.message, cause instanceof Error ? cause.message : '')
+  const text = firstNonEmpty(
+    server?.message,
+    data.message,
+    cause instanceof Error ? cause.message : '',
+  )
   const { detail, detailRedacted } = redactDetail(server?.detail, state, o.errors)
 
   const init: QueryErrorInit = {
@@ -151,9 +164,7 @@ export function mapDriverError(data: PgDriverErrorData, cause: unknown, o: MapOp
     ...(detail === undefined ? {} : { detail }),
     detailRedacted,
     context:
-      state === '57014'
-        ? { ...o.context, reason: cancelReason(data, server?.message) }
-        : o.context,
+      state === '57014' ? { ...o.context, reason: cancelReason(data, server?.message) } : o.context,
   }
 
   if (state === '25P02') {
@@ -242,8 +253,13 @@ const KIND_LABEL: Readonly<Record<string, string>> = {
   notNull: 'not-null constraint',
 }
 
-function inFailedTransactionMessage(serverMessage: string | undefined, poisonedBy: PgPrimeError | undefined): string {
-  const head = serverMessage ?? 'current transaction is aborted, commands ignored until end of transaction block'
+function inFailedTransactionMessage(
+  serverMessage: string | undefined,
+  poisonedBy: PgPrimeError | undefined,
+): string {
+  const head =
+    serverMessage ??
+    'current transaction is aborted, commands ignored until end of transaction block'
   if (poisonedBy === undefined) return head
   return (
     `${head} — the transaction was aborted earlier by ${poisonedBy.name}: ${poisonedBy.message}. ` +
@@ -277,10 +293,16 @@ function connectionError(
   if (osCode === 'ETIMEDOUT' || message === 'timeout expired') {
     return new ConnectionTimeoutError(message, base)
   }
-  if (osCode !== undefined && (osCode.startsWith('ERR_TLS') || osCode.startsWith('CERT_') || osCode.startsWith('UNABLE_TO_'))) {
+  if (
+    osCode !== undefined &&
+    (osCode.startsWith('ERR_TLS') || osCode.startsWith('CERT_') || osCode.startsWith('UNABLE_TO_'))
+  ) {
     return new TlsError(message, base)
   }
-  if (data.server?.sqlstate.startsWith('28') === true || /password authentication failed|SASL|SCRAM/i.test(message)) {
+  if (
+    data.server?.sqlstate.startsWith('28') === true ||
+    /password authentication failed|SASL|SCRAM/i.test(message)
+  ) {
     return new AuthenticationError(message, base)
   }
   if (

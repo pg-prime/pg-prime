@@ -20,8 +20,16 @@ let conn: PgConnection
 beforeAll(async () => {
   h = await makeHarness()
   conn = await h.driver.acquire()
-  await conn.execute({ text: 'drop type if exists pgprime_mood cascade', params: [], mode: 'simple' })
-  await conn.execute({ text: 'drop domain if exists pgprime_pos cascade', params: [], mode: 'simple' })
+  await conn.execute({
+    text: 'drop type if exists pgprime_mood cascade',
+    params: [],
+    mode: 'simple',
+  })
+  await conn.execute({
+    text: 'drop domain if exists pgprime_pos cascade',
+    params: [],
+    mode: 'simple',
+  })
   await conn.execute({
     text: `create type pgprime_mood as enum ('sad','ok','happy')`,
     params: [],
@@ -34,7 +42,11 @@ beforeAll(async () => {
   })
 })
 afterAll(async () => {
-  await conn?.execute({ text: 'drop type if exists pgprime_mood cascade', params: [], mode: 'simple' })
+  await conn?.execute({
+    text: 'drop type if exists pgprime_mood cascade',
+    params: [],
+    mode: 'simple',
+  })
   await conn?.execute({
     text: 'drop domain if exists pgprime_pos cascade',
     params: [],

@@ -95,7 +95,9 @@ describe('for update … with a row already locked by another session', () => {
   requiresConcurrency()('nowait raises 55P03 rather than waiting', async () => {
     await lockOneRow()
     try {
-      const err = await claim('nowait').execute().catch((e: unknown) => e)
+      const err = await claim('nowait')
+        .execute()
+        .catch((e: unknown) => e)
       expect(sqlState(err)).toBe('55P03')
     } finally {
       await a.execute({ text: 'rollback', params: [], mode: 'simple' })

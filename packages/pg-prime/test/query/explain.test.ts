@@ -58,12 +58,17 @@ describe('what goes on the wire', () => {
     const driver = mockDriver()
     const db = pgPrime({ driver, schema })
     driver.rows.push(jsonPlan({ 'Planning Time': 0.25, 'Execution Time': 3.5 }))
-    const r = await db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })).explain({
-      analyze: true,
-    })
-    expect(driver.log[0]?.text.startsWith(
-      'explain (analyze true, buffers true, timing true, settings true, format json) ',
-    )).toBe(true)
+    const r = await db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .explain({
+        analyze: true,
+      })
+    expect(
+      driver.log[0]?.text.startsWith(
+        'explain (analyze true, buffers true, timing true, settings true, format json) ',
+      ),
+    ).toBe(true)
     expect(r.executed).toBe(true)
     expect(r.planningTimeMs).toBe(0.25)
     expect(r.executionTimeMs).toBe(3.5)
@@ -93,7 +98,9 @@ describe('what goes on the wire', () => {
       .explain({ costs: false, verbose: true, buffers: true, settings: false })
     // `EXPLAIN (BUFFERS)` without ANALYZE is an error before PG 16, and asking for it is almost
     // always a mistake rather than a request, so it is dropped rather than forwarded.
-    expect(driver.log[0]?.text.startsWith('explain (verbose true, costs false, format json) ')).toBe(true)
+    expect(
+      driver.log[0]?.text.startsWith('explain (verbose true, costs false, format json) '),
+    ).toBe(true)
   })
 })
 

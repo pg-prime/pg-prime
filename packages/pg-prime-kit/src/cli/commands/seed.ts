@@ -22,7 +22,11 @@ export const SEED_OPTIONS: readonly OptionSpec[] = [
     describe: "also run seeds/<name>/**; repeatable",
     defaultText: "the base set (seeds/*.sql, seeds/*.ts) only",
   },
-  { name: "force", type: "boolean", describe: "seed anyway on a production-tagged environment or a --prod-pattern match" },
+  {
+    name: "force",
+    type: "boolean",
+    describe: "seed anyway on a production-tagged environment or a --prod-pattern match",
+  },
   {
     name: "prod-pattern",
     type: "string",
@@ -38,7 +42,12 @@ export async function runSeedCommand(config: ResolvedConfig, argv: ParseResult):
   const started = Date.now();
   const seedsDir = str(argv.values, "seeds") ?? config.seedsDir;
 
-  const envelope = (status: string, exitCode: ExitCode, extra: Readonly<Record<string, unknown>>, text: string): CommandOutput => ({
+  const envelope = (
+    status: string,
+    exitCode: ExitCode,
+    extra: Readonly<Record<string, unknown>>,
+    text: string,
+  ): CommandOutput => ({
     exitCode,
     envelope: {
       command: "db seed",
@@ -69,12 +78,21 @@ export async function runSeedCommand(config: ResolvedConfig, argv: ParseResult):
     return envelope(
       "listed",
       EXIT.ok,
-      { sets, files: files.map((f) => ({ path: f.path, kind: f.kind, set: f.set })), applied: [], skipped: [], error: null },
+      {
+        sets,
+        files: files.map((f) => ({ path: f.path, kind: f.kind, set: f.set })),
+        applied: [],
+        skipped: [],
+        error: null,
+      },
       [
         `db seed --list — ${seedsDir}`,
         "",
         pairs([["sets on disk", sets.length === 0 ? "(none)" : sets.join(", ")]]),
-        bullets("would run:", files.map((f) => `${f.path}  [${f.kind}${f.set === null ? "" : `, set ${f.set}`}]`)),
+        bullets(
+          "would run:",
+          files.map((f) => `${f.path}  [${f.kind}${f.set === null ? "" : `, set ${f.set}`}]`),
+        ),
       ]
         .filter((l) => l !== "")
         .join("\n"),
@@ -97,7 +115,12 @@ export async function runSeedCommand(config: ResolvedConfig, argv: ParseResult):
       return envelope(
         "refused",
         EXIT.error,
-        { sets: list(argv.values, "set") ?? [], applied: [], skipped: [], error: { code: "config", message: err.message } },
+        {
+          sets: list(argv.values, "set") ?? [],
+          applied: [],
+          skipped: [],
+          error: { code: "config", message: err.message },
+        },
         `db seed\n\nREFUSED: ${err.message}`,
       );
     }
@@ -110,7 +133,13 @@ export async function runSeedCommand(config: ResolvedConfig, argv: ParseResult):
     exitCode,
     {
       sets: result.sets,
-      applied: result.applied.map((a) => ({ path: a.path, kind: a.kind, set: a.set, statements: a.statements, durationMs: a.durationMs })),
+      applied: result.applied.map((a) => ({
+        path: a.path,
+        kind: a.kind,
+        set: a.set,
+        statements: a.statements,
+        durationMs: a.durationMs,
+      })),
       skipped: result.skipped,
       error: result.error,
     },
@@ -128,7 +157,9 @@ function text(r: SeedResult, seedsDir: string): string {
   return [
     `db seed — ran ${plural(r.applied.length, "seed")} from ${seedsDir}`,
     "",
-    ...r.applied.map((a) => `  ${a.path}  [${a.kind}]  ${plural(a.statements, "statement")}  ${String(a.durationMs)} ms`),
+    ...r.applied.map(
+      (a) => `  ${a.path}  [${a.kind}]  ${plural(a.statements, "statement")}  ${String(a.durationMs)} ms`,
+    ),
     "",
     "Nothing was recorded in pgprime.migrations — seeds are not migration history (design/06 §7).",
   ].join("\n");

@@ -17,7 +17,16 @@
 //      and a 0644 `bin` is one of the things it fails on. `tools/pack-smoke.mjs` proves the end
 //      state by running `pg-prime --help` out of an installed tarball.
 import { execFileSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -33,7 +42,9 @@ export const TSC_59 = join(ROOT, 'node_modules', 'typescript59', 'bin', 'tsc')
 export function handWrittenDts(dir) {
   const out = []
   const walk = (abs, rel) => {
-    for (const e of readdirSync(abs, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const e of readdirSync(abs, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )) {
       if (e.isDirectory()) walk(join(abs, e.name), rel ? `${rel}/${e.name}` : e.name)
       else if (e.name.endsWith('.d.ts')) out.push(rel ? `${rel}/${e.name}` : e.name)
     }
@@ -56,12 +67,18 @@ export function listFiles(dir) {
   return out.sort()
 }
 
-export function buildPackage(pkgDir, { out = join(pkgDir, 'dist'), tsc = TSC_7, quiet = false } = {}) {
+export function buildPackage(
+  pkgDir,
+  { out = join(pkgDir, 'dist'), tsc = TSC_7, quiet = false } = {},
+) {
   rmSync(out, { recursive: true, force: true })
   const args = [tsc, '-p', join(pkgDir, 'tsconfig.build.json'), '--pretty', 'false']
   if (out !== join(pkgDir, 'dist')) args.push('--outDir', out)
   const started = Date.now()
-  execFileSync(process.execPath, args, { stdio: ['ignore', 'inherit', 'inherit'], encoding: 'utf8' })
+  execFileSync(process.execPath, args, {
+    stdio: ['ignore', 'inherit', 'inherit'],
+    encoding: 'utf8',
+  })
 
   const copied = []
   for (const rel of handWrittenDts(join(pkgDir, 'src'))) {
@@ -80,9 +97,11 @@ export function buildPackage(pkgDir, { out = join(pkgDir, 'dist'), tsc = TSC_7, 
       // `bin` is written relative to the package root and points into `dist/`.
       const rel = target.replace(/^\.\//, '').replace(/^dist\//, '')
       const abs = join(out, ...rel.split('/'))
-      if (!existsSync(abs)) throw new Error(`build-package: bin target ${target} is missing from ${out}`)
+      if (!existsSync(abs))
+        throw new Error(`build-package: bin target ${target} is missing from ${out}`)
       const text = readFileSync(abs, 'utf8')
-      if (!text.startsWith('#!')) throw new Error(`build-package: bin target ${target} has no shebang`)
+      if (!text.startsWith('#!'))
+        throw new Error(`build-package: bin target ${target} has no shebang`)
       chmodSync(abs, 0o755)
       executable.push(rel)
     }
@@ -95,7 +114,9 @@ export function buildPackage(pkgDir, { out = join(pkgDir, 'dist'), tsc = TSC_7, 
     console.log(
       `${relative(ROOT, pkgDir).split(sep).join('/')} → ${relative(ROOT, out).split(sep).join('/')}  ` +
         `${files.length} files, ${(bytes / 1024).toFixed(1)} KB, ${ms} ms` +
-        (copied.length ? `  (+${copied.length} hand-written .d.ts copied: ${copied.join(', ')})` : '') +
+        (copied.length
+          ? `  (+${copied.length} hand-written .d.ts copied: ${copied.join(', ')})`
+          : '') +
         (executable.length ? `  (+x: ${executable.join(', ')})` : ''),
     )
   }

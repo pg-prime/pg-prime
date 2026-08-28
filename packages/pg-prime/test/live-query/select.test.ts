@@ -72,7 +72,11 @@ describe('§2.1 — select / where / order / limit', () => {
     expect(compiled.binds).toStrictEqual([{ k: 'value', encoded: '3', oid: 23 }])
     // …and PostgreSQL accepts it, which `limit $1::text` would not.
     expect(
-      await live.db.from(h().users).select(({ users: u }) => ({ id: u.id })).limit(3).execute(),
+      await live.db
+        .from(h().users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .limit(3)
+        .execute(),
     ).toHaveLength(3)
   })
 
@@ -182,7 +186,9 @@ describe('§2.2 — joins, nest, and the positional decoder', () => {
   it('a left join that misses nulls the WHOLE nested object', async () => {
     const rows = await live.db
       .from(h().users)
-      .leftJoin(h().posts, 'p', ({ users: u, p }) => q.and(q.eq(p.authorId, u.id), q.eq(p.title, 'bobs')))
+      .leftJoin(h().posts, 'p', ({ users: u, p }) =>
+        q.and(q.eq(p.authorId, u.id), q.eq(p.title, 'bobs')),
+      )
       .select(({ users: u, p }) => ({
         email: u.email,
         post: q.nestNullable({ id: p.id, title: p.title }),
@@ -264,7 +270,9 @@ describe('§2.2 — joins, nest, and the positional decoder', () => {
   it('R4: plain nest() on the same query keeps per-field nulls', async () => {
     const rows = await live.db
       .from(h().users)
-      .leftJoin(h().posts, 'p', ({ users: u, p }) => q.and(q.eq(p.authorId, u.id), q.eq(p.title, 'bobs')))
+      .leftJoin(h().posts, 'p', ({ users: u, p }) =>
+        q.and(q.eq(p.authorId, u.id), q.eq(p.title, 'bobs')),
+      )
       .select(({ users: u, p }) => ({ email: u.email, post: q.nest({ id: p.id, title: p.title }) }))
       .where(({ users: u }) => q.eq(u.email, 'ada@example.com'))
       .execute()
@@ -405,9 +413,7 @@ describe('§2.8 — distinct on, group by, subqueries', () => {
   })
 
   it('exists / inQuery against a builder sub-select', async () => {
-    const authors = live.db
-      .from(h().posts)
-      .select(({ posts: p }) => ({ authorId: p.authorId }))
+    const authors = live.db.from(h().posts).select(({ posts: p }) => ({ authorId: p.authorId }))
     const viaIn = await live.db
       .from(h().users)
       .select(({ users: u }) => ({ email: u.email }))
@@ -660,7 +666,10 @@ describe('§2.2 — lateral joins (12 B)', () => {
         .from(h().posts, 'p')
         .fullJoin(h().users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
         .select(({ u }) => ({ id: u.id })),
-      live.db.from(h().posts, 'p').crossJoin(h().users, 'u').select(({ u }) => ({ id: u.id })),
+      live.db
+        .from(h().posts, 'p')
+        .crossJoin(h().users, 'u')
+        .select(({ u }) => ({ id: u.id })),
     ]) {
       await assertPlans(live, built.compile().sql, [], pgMajor())
     }

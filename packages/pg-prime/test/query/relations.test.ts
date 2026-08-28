@@ -107,15 +107,12 @@ describe('the 03 §2.3 feed query', () => {
   })
 
   it('names every table it reads, including the ones only a relation reaches', () => {
-    expect(feed.compile().meta.reads.map((r) => r.name).sort()).toEqual([
-      'comments',
-      'posts',
-      'posts',
-      'posts',
-      'posts',
-      'users',
-      'users',
-    ])
+    expect(
+      feed
+        .compile()
+        .meta.reads.map((r) => r.name)
+        .sort(),
+    ).toEqual(['comments', 'posts', 'posts', 'posts', 'posts', 'users', 'users'])
   })
 })
 
@@ -223,7 +220,13 @@ describe('some / none / every / exists', () => {
   const q = () => live.from(fx.schema.h.users, 'u').select((t) => ({ id: t.u.id }))
 
   it('some is EXISTS', () => {
-    expect(whereOf(q().where((t) => t.u.posts.some((p) => isTrue(p.published))).compile())).toBe(
+    expect(
+      whereOf(
+        q()
+          .where((t) => t.u.posts.some((p) => isTrue(p.published)))
+          .compile(),
+      ),
+    ).toBe(
       [
         'exists (',
         '  select 1 as "v"',
@@ -235,8 +238,16 @@ describe('some / none / every / exists', () => {
   })
 
   it('none is NOT EXISTS over the same body', () => {
-    const some = whereOf(q().where((t) => t.u.posts.some((p) => isTrue(p.published))).compile())
-    const none = whereOf(q().where((t) => t.u.posts.none((p) => isTrue(p.published))).compile())
+    const some = whereOf(
+      q()
+        .where((t) => t.u.posts.some((p) => isTrue(p.published)))
+        .compile(),
+    )
+    const none = whereOf(
+      q()
+        .where((t) => t.u.posts.none((p) => isTrue(p.published)))
+        .compile(),
+    )
     expect(none).toBe(`not ${some}`)
   })
 
@@ -245,7 +256,13 @@ describe('some / none / every / exists', () => {
     // `not exists (… and not p)` would count that row as satisfying `every`; `(p) is not true`
     // does not. It is also vacuously true on a parent with no related rows at all, which is what
     // `NOT EXISTS` gives and what 03 §2.3 pins.
-    expect(whereOf(q().where((t) => t.u.posts.every((p) => isTrue(p.published))).compile())).toBe(
+    expect(
+      whereOf(
+        q()
+          .where((t) => t.u.posts.every((p) => isTrue(p.published)))
+          .compile(),
+      ),
+    ).toBe(
       [
         'not exists (',
         '  select 1 as "v"',
@@ -257,7 +274,13 @@ describe('some / none / every / exists', () => {
   })
 
   it('exists() is some() with no predicate', () => {
-    expect(whereOf(q().where((t) => t.u.posts.exists()).compile())).toBe(
+    expect(
+      whereOf(
+        q()
+          .where((t) => t.u.posts.exists())
+          .compile(),
+      ),
+    ).toBe(
       [
         'exists (',
         '  select 1 as "v"',
@@ -304,7 +327,9 @@ describe('m2m through a junction', () => {
       .from(fx.schema.h.posts, 'p')
       .select((t) => ({ n: t.p.tags.count() }))
       .compile()
-    expect(c.sql).toContain('inner join "ns"."post_tags" as "post_tags" on "post_tags"."tag_id" = "tags"."id"')
+    expect(c.sql).toContain(
+      'inner join "ns"."post_tags" as "post_tags" on "post_tags"."tag_id" = "tags"."id"',
+    )
     expect(c.sql).toContain('where "post_tags"."post_id" = "p"."id"')
   })
 })
@@ -330,13 +355,13 @@ describe('all / one / strategy / variant', () => {
       .select((t) => ({ posts: t.users.posts.all() }))
       .compile()
     expect(c.sql).toContain(
-      "json_build_object('id', \"posts\".\"id\"::text, 'authorId', \"posts\".\"author_id\"::text, " +
-        "'title', \"posts\".\"title\", 'amount', \"posts\".\"amount\"::text, 'published', " +
+      'json_build_object(\'id\', "posts"."id"::text, \'authorId\', "posts"."author_id"::text, ' +
+        '\'title\', "posts"."title", \'amount\', "posts"."amount"::text, \'published\', ' +
         '"posts"."published", \'createdAt\', "posts"."created_at")',
     )
   })
 
-  it("a required `one` decodes non-null; a `maybeOne` decodes `| null`", () => {
+  it('a required `one` decodes non-null; a `maybeOne` decodes `| null`', () => {
     const required = db
       .from(schema.h.posts, 'posts')
       .select((t) => ({ a: t.posts.author.all() }))
@@ -345,8 +370,12 @@ describe('all / one / strategy / variant', () => {
       .from(fx.schema.h.posts, 'p')
       .select((t) => ({ kv: t.p.kv.all() }))
       .compile()
-    expect((required.shape as unknown as { fields: { nullable?: boolean }[] }).fields[0]?.nullable).toBe(false)
-    expect((optional.shape as unknown as { fields: { nullable?: boolean }[] }).fields[0]?.nullable).toBe(true)
+    expect(
+      (required.shape as unknown as { fields: { nullable?: boolean }[] }).fields[0]?.nullable,
+    ).toBe(false)
+    expect(
+      (optional.shape as unknown as { fields: { nullable?: boolean }[] }).fields[0]?.nullable,
+    ).toBe(true)
   })
 
   it("strategy: 'subquery' emits the same query as a correlated scalar subquery", () => {
@@ -403,14 +432,27 @@ describe('defaults carried by the declaration (03 §4.1)', () => {
   const d2 = compileOnly(s2)
 
   it('ANDs the declared `where` into every accessor, including the aggregates', () => {
-    const many = d2.from(s2.h.users, 'u').select((t) => ({ p: t.u.posts.all() })).compile()
-    const count = d2.from(s2.h.users, 'u').select((t) => ({ n: t.u.posts.count() })).compile()
-    expect(many.sql).toContain('where ("posts"."author_id" = "u"."id" and "posts"."deleted_at" is null)')
-    expect(count.sql).toContain('where ("posts"."author_id" = "u"."id" and "posts"."deleted_at" is null)')
+    const many = d2
+      .from(s2.h.users, 'u')
+      .select((t) => ({ p: t.u.posts.all() }))
+      .compile()
+    const count = d2
+      .from(s2.h.users, 'u')
+      .select((t) => ({ n: t.u.posts.count() }))
+      .compile()
+    expect(many.sql).toContain(
+      'where ("posts"."author_id" = "u"."id" and "posts"."deleted_at" is null)',
+    )
+    expect(count.sql).toContain(
+      'where ("posts"."author_id" = "u"."id" and "posts"."deleted_at" is null)',
+    )
   })
 
   it('uses the declared `orderBy` when the caller supplies none', () => {
-    const c = d2.from(s2.h.users, 'u').select((t) => ({ p: t.u.posts.all() })).compile()
+    const c = d2
+      .from(s2.h.users, 'u')
+      .select((t) => ({ p: t.u.posts.all() }))
+      .compile()
     expect(c.sql).toContain('order by "posts"."created_at" desc')
     expect(c.sql).toContain('order by "x"."k0" desc')
   })
@@ -431,7 +473,10 @@ describe('defaults carried by the declaration (03 §4.1)', () => {
 
 describe('child aliases', () => {
   it('binds the child under its own registry key', () => {
-    const c = db.from(schema.h.users, 'u').select((t) => ({ p: t.u.posts.all() })).compile()
+    const c = db
+      .from(schema.h.users, 'u')
+      .select((t) => ({ p: t.u.posts.all() }))
+      .compile()
     expect(c.sql).toContain('from "public"."posts" as "posts"')
   })
 
@@ -472,7 +517,12 @@ describe('avg / min / max over a relation (12 B)', () => {
 
   it('R4 — sum IS coalesced and avg/min/max are NOT: zero is a sum, never an average', () => {
     const sqlFor = (f: (t: never) => unknown): string =>
-      (db.from(schema.h.users, 'users').select(f as never).compile() as { sql: string }).sql
+      (
+        db
+          .from(schema.h.users, 'users')
+          .select(f as never)
+          .compile() as { sql: string }
+      ).sql
     expect(
       sqlFor(((t: { users: { posts: { sum: (f: unknown) => unknown } } }) => ({
         v: t.users.posts.sum((p: { amount: unknown }) => p.amount),
@@ -492,7 +542,10 @@ describe('avg / min / max over a relation (12 B)', () => {
   it('min / max keep the operand codec, so a bigint stays exact past 2^53', () => {
     const c = db
       .from(schema.h.users, 'users')
-      .select((t) => ({ newest: t.users.posts.max((p) => p.id), oldest: t.users.posts.min((p) => p.id) }))
+      .select((t) => ({
+        newest: t.users.posts.max((p) => p.id),
+        oldest: t.users.posts.min((p) => p.id),
+      }))
       .compile()
     expect(c.sql).toContain('max("posts"."id") as "v"')
     expect(c.sql).toContain('min("posts"."id") as "v"')
@@ -610,7 +663,9 @@ describe('FK inference (12 decision 18)', () => {
       )
     expect(build).toThrowError(SchemaError)
     expect(build).toThrowError(/could be inferred from 2 foreign keys/)
-    expect(build).toThrowError(/memberships\.orgId -> orgs\.id, memberships\.parentOrgId -> orgs\.id/)
+    expect(build).toThrowError(
+      /memberships\.orgId -> orgs\.id, memberships\.parentOrgId -> orgs\.id/,
+    )
   })
 
   it('a composite `foreignKey(...)` extra is inferred, and pairs positionally', () => {
@@ -618,7 +673,9 @@ describe('FK inference (12 decision 18)', () => {
     const child = pgTable(
       'kids',
       (t) => ({ id: t.bigint().primaryKey(), pa: t.bigint(), pb: t.text() }),
-      (t) => [foreignKey({ columns: [t.pa, t.pb], references: () => [parent[REFS].a, parent[REFS].b] })],
+      (t) => [
+        foreignKey({ columns: [t.pa, t.pb], references: () => [parent[REFS].a, parent[REFS].b] }),
+      ],
     )
     const tables = { pairs: parent, kids: child }
     const s = defineSchema(
@@ -649,7 +706,10 @@ describe('FK inference (12 decision 18)', () => {
   it('a self-referencing key resolves in both directions', () => {
     const nodes = pgTable('nodes', (t) => ({
       id: t.bigint().primaryKey(),
-      parentId: t.bigint().nullable().references((): RefLike => nodes[REFS].id),
+      parentId: t
+        .bigint()
+        .nullable()
+        .references((): RefLike => nodes[REFS].id),
     }))
     const tables = { nodes }
     const s = defineSchema(
@@ -683,9 +743,9 @@ describe('FK inference (12 decision 18)', () => {
         tables,
         defineRelations(tables, (r) => ({ kids: { org: r.one[to]() } })),
       )
-    expect(resolveRelations(build('orgsA').tables, build('orgsA').rels)['kids']?.['org']).toMatchObject(
-      { from: ['orgId'], to: ['id'], target: 'orgsA' },
-    )
+    expect(
+      resolveRelations(build('orgsA').tables, build('orgsA').rels)['kids']?.['org'],
+    ).toMatchObject({ from: ['orgId'], to: ['id'], target: 'orgsA' })
     expect(() => build('orgsB')).toThrowError(/nothing in "kids" references "orgs"/)
   })
 
@@ -800,7 +860,10 @@ describe('defineSchema validation', () => {
         tables,
         defineRelations(tables, (r) => ({
           posts: {
-            author: r.one.users({ from: [posts[REFS].id, posts[REFS].authorId], to: users[REFS].id }),
+            author: r.one.users({
+              from: [posts[REFS].id, posts[REFS].authorId],
+              to: users[REFS].id,
+            }),
           },
         })),
       ),
@@ -850,7 +913,7 @@ describe('relations in RETURNING', () => {
     ).toThrow(/strategy: 'subquery'/)
   })
 
-  it("…and works with it", () => {
+  it('…and works with it', () => {
     const c = live
       .update(fx.schema.h.posts)
       .set(() => ({ title: 'x' }))
@@ -1107,4 +1170,3 @@ describe('a relation column under distinct is jsonb', () => {
     ).not.toThrow()
   })
 })
-

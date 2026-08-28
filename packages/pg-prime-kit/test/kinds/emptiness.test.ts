@@ -69,22 +69,24 @@ describe("MF rules are gated on a probe, not on optimism", () => {
     async () => {
       const cur = { ...ADMIN, database: CUR };
       const current = await withClient(cur, (c) => extractCatalog(c, { schemas: ["public"] }));
-      const desired = await withClient({ ...ADMIN, database: DES }, (c) =>
-        extractCatalog(c, { schemas: ["public"] }),
-      );
+      const desired = await withClient({ ...ADMIN, database: DES }, (c) => extractCatalog(c, { schemas: ["public"] }));
       const diff = diffIR(current.ir, desired.ir);
       const emptyTables = await withClient(cur, (c) =>
-        probeEmptiness(c, current.ir.factsOfKind("table").map((f) => f.id)),
+        probeEmptiness(
+          c,
+          current.ir.factsOfKind("table").map((f) => f.id),
+        ),
       );
 
-      const codesFor = (table: string, opts: Parameters<typeof buildStatements>[2]): string[] => [
-        ...new Set(
-          buildStatements(diff, desired.ir, opts)
-            .statements.filter((s) => s.sql.includes(`"${table}"`))
-            .flatMap((s) => s.hazards)
-            .filter((h) => h.startsWith("MF")),
-        ),
-      ].sort();
+      const codesFor = (table: string, opts: Parameters<typeof buildStatements>[2]): string[] =>
+        [
+          ...new Set(
+            buildStatements(diff, desired.ir, opts)
+              .statements.filter((s) => s.sql.includes(`"${table}"`))
+              .flatMap((s) => s.hazards)
+              .filter((h) => h.startsWith("MF")),
+          ),
+        ].sort();
 
       // With the probe: the populated table keeps its MF hazards, the empty one loses them.
       expect(codesFor("busy", { emptyTables })).toEqual(["MF101", "MF104"]);

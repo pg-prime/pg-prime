@@ -227,9 +227,9 @@ describe('the codegen decoder is the same decoder, generated (03 §1.3 AS BUILT)
     }
     const out = buildDecoder<Record<string, unknown>>(shape, undefined, 'codegen')([['v']])
     expect(out).toStrictEqual([{ [key]: 'v' }])
-    expect(buildDecoder<Record<string, unknown>>(shape, undefined, 'closure')([['v']])).toStrictEqual(
-      out,
-    )
+    expect(
+      buildDecoder<Record<string, unknown>>(shape, undefined, 'closure')([['v']]),
+    ).toStrictEqual(out)
     expect((globalThis as Record<string, unknown>)['PWNED']).toBeUndefined()
   })
 
@@ -257,7 +257,9 @@ describe("a runtime that forbids `eval` (design/03 §1.3's reason for the defaul
   const withoutNewFunction = <T>(f: () => T): T => {
     const real = globalThis.Function
     const refuse = function Function() {
-      throw new EvalError("Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script")
+      throw new EvalError(
+        "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script",
+      )
     } as unknown as FunctionConstructor
     globalThis.Function = refuse
     try {

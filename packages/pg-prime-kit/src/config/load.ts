@@ -186,7 +186,11 @@ const declarationOf = (v: unknown): string | null => {
   if (typeof v !== "object" || v === null) return null;
   const r = v as { kind?: unknown; name?: unknown };
   if (typeof r.name !== "string") return null;
-  return r.kind === "enum" || r.kind === "domain" || r.kind === "sequence" || r.kind === "extension" || r.kind === "schema"
+  return r.kind === "enum" ||
+    r.kind === "domain" ||
+    r.kind === "sequence" ||
+    r.kind === "extension" ||
+    r.kind === "schema"
     ? r.kind
     : null;
 };
@@ -203,10 +207,7 @@ const hasTables = (v: unknown): v is { tables: Record<string, unknown> } => {
   return typeof t === "object" && t !== null && !Array.isArray(t);
 };
 
-export async function loadSchema(
-  paths: string | readonly string[],
-  base: string,
-): Promise<LoadedSchema> {
+export async function loadSchema(paths: string | readonly string[], base: string): Promise<LoadedSchema> {
   const list = (typeof paths === "string" ? [paths] : [...paths]).map((p) => (isAbsolute(p) ? p : resolve(base, p)));
   if (list.length === 0) throw new ConfigError("`schema` names no file");
 
@@ -235,8 +236,7 @@ export async function loadSchema(
       }
       throw err;
     }
-    const registry =
-      hasTables(mod["default"]) ? mod["default"] : Object.values(mod).find((v) => hasTables(v));
+    const registry = hasTables(mod["default"]) ? mod["default"] : Object.values(mod).find((v) => hasTables(v));
     const candidates: unknown[] = registry ? Object.values(registry.tables) : Object.values(mod);
     let found = 0;
     for (const value of candidates) {
@@ -396,7 +396,9 @@ export function resolveConfig(input: ResolveInput): ResolvedConfig {
   const abs = (p: string): string => (isAbsolute(p) ? p : resolve(base, p));
   const envTag = env[ENV_VAR] ?? null;
   const schemaPaths =
-    config.schema === undefined ? [] : (typeof config.schema === "string" ? [config.schema] : [...config.schema]).map(abs);
+    config.schema === undefined
+      ? []
+      : (typeof config.schema === "string" ? [config.schema] : [...config.schema]).map(abs);
   return {
     file: input.configFile,
     config,

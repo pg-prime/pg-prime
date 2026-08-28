@@ -115,7 +115,13 @@ async function readdirSorted(absDir: string): Promise<Dirent[] | null> {
   return entries;
 }
 
-async function collect(absDir: string, rel: string, prefix: string, set: string | null, out: SeedFile[]): Promise<void> {
+async function collect(
+  absDir: string,
+  rel: string,
+  prefix: string,
+  set: string | null,
+  out: SeedFile[],
+): Promise<void> {
   const entries = await readdirSorted(absDir);
   if (entries === null) return;
   for (const e of entries) {
@@ -123,7 +129,17 @@ async function collect(absDir: string, rel: string, prefix: string, set: string 
     const kind = isSeedFile(e.name);
     if (kind === null) continue;
     const abs = join(absDir, e.name);
-    if (!e.isFile() && !(e.isSymbolicLink() && (await stat(abs).then((s) => s.isFile(), () => false)))) continue;
+    if (
+      !e.isFile() &&
+      !(
+        e.isSymbolicLink() &&
+        (await stat(abs).then(
+          (s) => s.isFile(),
+          () => false,
+        ))
+      )
+    )
+      continue;
     const childRel = rel === "" ? e.name : `${rel}/${e.name}`;
     out.push({ path: `${prefix}/${childRel}`, absPath: abs, kind, set });
   }

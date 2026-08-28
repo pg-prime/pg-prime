@@ -9,7 +9,12 @@
  * on the claim.
  */
 
-import type { AnyHandle, Defer, Projectable, Simplify } from '../../../packages/pg-prime/src/schema/index.js'
+import type {
+  AnyHandle,
+  Defer,
+  Projectable,
+  Simplify,
+} from '../../../packages/pg-prime/src/schema/index.js'
 import type { NAME } from '../../../packages/pg-prime/src/schema/index.js'
 import type {
   Expr,

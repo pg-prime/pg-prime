@@ -12,13 +12,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type pg from 'pg'
-import {
-  boolCodec,
-  int4Codec,
-  int8Codec,
-  numericCodec,
-  textCodec,
-} from '../../src/codec/index.js'
+import { boolCodec, int4Codec, int8Codec, numericCodec, textCodec } from '../../src/codec/index.js'
 import type { Expr } from '../../src/compile/ast.js'
 import { compile } from '../../src/compile/compiler.js'
 import {

@@ -277,12 +277,7 @@
       }
     },
     {
-      "files": [
-        "packages/*/test/**",
-        "packages/*/vitest.config.ts",
-        "bench/**",
-        "tools/**"
-      ],
+      "files": ["packages/*/test/**", "packages/*/vitest.config.ts", "bench/**", "tools/**"],
       "rules": {
         "no-restricted-imports": "off",
         "import/no-default-export": "off",

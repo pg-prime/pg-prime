@@ -117,7 +117,11 @@ describe("parseDatabaseUrl", () => {
 
   it("defaults the port and brackets an IPv6 host correctly", () => {
     expect(parseDatabaseUrl("postgresql://postgres@[::1]/app").conn).toEqual({
-      host: "::1", port: 5432, user: "postgres", password: "", database: "app",
+      host: "::1",
+      port: 5432,
+      user: "postgres",
+      password: "",
+      database: "app",
     });
   });
 
@@ -139,10 +143,15 @@ describe("resolveConfig", () => {
 
   it("--url beats the config file, which beats PG_PRIME_DATABASE_URL, which beats DATABASE_URL", () => {
     const env = { PG_PRIME_DATABASE_URL: "postgres://e@h/env", DATABASE_URL: "postgres://d@h/generic" };
-    expect(resolveConfig({ ...base, config: { url: "postgres://c@h/cfg" }, url: "postgres://f@h/flag", env }).connection.database).toBe("flag");
+    expect(
+      resolveConfig({ ...base, config: { url: "postgres://c@h/cfg" }, url: "postgres://f@h/flag", env }).connection
+        .database,
+    ).toBe("flag");
     expect(resolveConfig({ ...base, config: { url: "postgres://c@h/cfg" }, env }).connection.database).toBe("cfg");
     expect(resolveConfig({ ...base, config: {}, env }).connection.database).toBe("env");
-    expect(resolveConfig({ ...base, config: {}, env: { DATABASE_URL: env.DATABASE_URL } }).connection.database).toBe("generic");
+    expect(resolveConfig({ ...base, config: {}, env: { DATABASE_URL: env.DATABASE_URL } }).connection.database).toBe(
+      "generic",
+    );
   });
 
   it("resolves relative paths against the CONFIG FILE, not the cwd", () => {
@@ -165,14 +174,17 @@ describe("resolveConfig", () => {
   });
 
   it("no connection anywhere is a message that says what to do", () => {
-    expect(() => resolveConfig({ ...base, config: {}, env: {} })).toThrow(/pass --url, set `url` in pg-prime.config.ts, or export PG_PRIME_DATABASE_URL/);
+    expect(() => resolveConfig({ ...base, config: {}, env: {} })).toThrow(
+      /pass --url, set `url` in pg-prime.config.ts, or export PG_PRIME_DATABASE_URL/,
+    );
   });
 });
 
 describe("the binary reads the config file", () => {
   it("finds pg-prime.config.mjs beside the cwd and uses its url", async () => {
     const dir = await project("cli", {
-      "pg-prime.config.mjs": "export default { url: 'postgres://nobody:x@127.0.0.1:1/none', migrations: 'migrations' }\n",
+      "pg-prime.config.mjs":
+        "export default { url: 'postgres://nobody:x@127.0.0.1:1/none', migrations: 'migrations' }\n",
     });
     const r = await runCli(["migrate", "status", "--output", "json", "--config", join(dir, "pg-prime.config.mjs")]);
     expect(r.code).toBe(EXIT.error);
@@ -203,8 +215,19 @@ describe("the binary reads the config file", () => {
   it("TypeScript the stripper cannot erase gives ONE sentence naming Node and the .mjs way out", async () => {
     // `enum` needs code generation, so `--experimental-strip-types` refuses it — the same
     // class of failure as a Node too old to strip at all, and reachable on this one.
-    const dir = await project("reexec", { "pg-prime.config.ts": "enum Mode { A }\nexport default { migrations: String(Mode.A) }\n" });
-    const args = ["migrate", "status", "--output", "json", "--config", join(dir, "pg-prime.config.ts"), "--url", "postgres://u:p@127.0.0.1:1/x"];
+    const dir = await project("reexec", {
+      "pg-prime.config.ts": "enum Mode { A }\nexport default { migrations: String(Mode.A) }\n",
+    });
+    const args = [
+      "migrate",
+      "status",
+      "--output",
+      "json",
+      "--config",
+      join(dir, "pg-prime.config.ts"),
+      "--url",
+      "postgres://u:p@127.0.0.1:1/x",
+    ];
 
     // With the guard already set (as it is inside the one re-exec the CLI allows itself):
     const guarded = await runCli(args, { [STRIP_TYPES_MARKER]: "1" });

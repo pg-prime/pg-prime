@@ -98,9 +98,9 @@ describe('describe() — Parse + Describe(S) + Sync, with NO Execute', () => {
     })
     const err = await conn.describe!('select * from no_such_table').catch((e: unknown) => e)
     expect((err as { pgPrime: { server: { position?: number } } }).pgPrime.server.position).toBe(15)
-    expect(typeof (err as { pgPrime: { server: { position?: number } } }).pgPrime.server.position).toBe(
-      'number',
-    )
+    expect(
+      typeof (err as { pgPrime: { server: { position?: number } } }).pgPrime.server.position,
+    ).toBe('number')
     expect(conn.usable).toBe(true)
     expect((await conn.execute({ text: 'select 1', params: [] })).rows).toEqual([['1']])
   })

@@ -120,13 +120,7 @@ describe('inside db.transaction() a stream joins, it does not nest', () => {
     expect(seen).toStrictEqual([{ id: 7n }])
     // Exactly one `begin` and one `commit`, both the transaction's own. A nested BEGIN is a
     // 25001 warning and a commit that ends the wrong scope (03 §2.6's rule, applied to cursors).
-    expect(kinds(driver.texts())).toStrictEqual([
-      'begin',
-      'declare',
-      'fetch',
-      'close',
-      'commit',
-    ])
+    expect(kinds(driver.texts())).toStrictEqual(['begin', 'declare', 'fetch', 'close', 'commit'])
     expect(driver.acquired).toBe(1)
   })
 
@@ -145,7 +139,10 @@ describe('inside db.transaction() a stream joins, it does not nest', () => {
         break
       }
       // Still inside the SAME transaction: this statement must reach the server before commit.
-      await tx.from(schema.h.users).select(({ users: u }) => ({ id: u.id })).execute()
+      await tx
+        .from(schema.h.users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .execute()
     })
 
     expect(kinds(driver.texts())).toStrictEqual([
@@ -165,7 +162,20 @@ describe('assertShape and the dynamic decode run on the first chunk', () => {
     const db = pgPrime({ driver, schema })
     driver.chunks.push([
       // `id` is declared int8 (20); the server says text (25).
-      { rows: [['7']], fields: [{ name: 'id', dataTypeID: 25, dataTypeModifier: -1, tableID: 0, columnID: 0, dataTypeSize: -1, format: 'text' }] },
+      {
+        rows: [['7']],
+        fields: [
+          {
+            name: 'id',
+            dataTypeID: 25,
+            dataTypeModifier: -1,
+            tableID: 0,
+            columnID: 0,
+            dataTypeSize: -1,
+            format: 'text',
+          },
+        ],
+      },
     ])
 
     await expect(

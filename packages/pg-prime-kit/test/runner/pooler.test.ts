@@ -47,7 +47,9 @@ describe.skipIf(POOLER_URL === undefined)("a transaction-mode pooler is refused"
     expect(await serverAvailable()).toBe(true);
     dir = await tempDir("pgprime-k1-pooler");
     pooled = parseDatabaseUrl(POOLER_URL!).conn;
-    const routed = await withClient(pooled, async (c) => String((await c.query("SELECT current_database() AS db")).rows[0]?.["db"]));
+    const routed = await withClient(pooled, async (c) =>
+      String((await c.query("SELECT current_database() AS db")).rows[0]?.["db"]),
+    );
     pooled = { ...pooled, database: routed };
     direct = { ...ADMIN, database: routed };
     hadHistory = await withClient(direct, historyPresent);
@@ -57,7 +59,9 @@ describe.skipIf(POOLER_URL === undefined)("a transaction-mode pooler is refused"
     // The negative control below runs a real `apply`, which creates the history schema in
     // whatever database the pooler routes to — a shared one, not a scratch one. Put it back.
     if (!hadHistory) {
-      await withClient(direct, (c) => c.query(`DROP SCHEMA IF EXISTS ${HISTORY_SCHEMA} CASCADE`)).catch(() => undefined);
+      await withClient(direct, (c) => c.query(`DROP SCHEMA IF EXISTS ${HISTORY_SCHEMA} CASCADE`)).catch(
+        () => undefined,
+      );
     }
   });
 
@@ -113,7 +117,16 @@ describe.skipIf(POOLER_URL === undefined)("a transaction-mode pooler is refused"
   it(
     "through the binary: exit 1 with the refusal in the envelope",
     async () => {
-      const result = await runCli(["migrate", "apply", "--url", urlOf(pooled), "--migrations", dir, "--output", "json"]);
+      const result = await runCli([
+        "migrate",
+        "apply",
+        "--url",
+        urlOf(pooled),
+        "--migrations",
+        dir,
+        "--output",
+        "json",
+      ]);
       expect(result.code).toBe(EXIT.error);
       const envelope = envelopeOf(result);
       expect(envelope["status"]).toBe("refused");
@@ -126,7 +139,16 @@ describe.skipIf(POOLER_URL === undefined)("a transaction-mode pooler is refused"
   it(
     "the direct connection through the binary is accepted (the negative control)",
     async () => {
-      const result = await runCli(["migrate", "apply", "--url", urlOf(direct), "--migrations", dir, "--output", "json"]);
+      const result = await runCli([
+        "migrate",
+        "apply",
+        "--url",
+        urlOf(direct),
+        "--migrations",
+        dir,
+        "--output",
+        "json",
+      ]);
       expect(result.code, result.stdout + result.stderr).toBe(EXIT.ok);
       expect(envelopeOf(result)["status"]).toBe("up_to_date");
     },

@@ -117,15 +117,18 @@ describe('writeArrayLiteral', () => {
   })
 
   it('nests', () => {
-    expect(writeArrayLiteral([['1', '2'], ['3', null]])).toBe('{{1,2},{3,NULL}}')
+    expect(
+      writeArrayLiteral([
+        ['1', '2'],
+        ['3', null],
+      ]),
+    ).toBe('{{1,2},{3,NULL}}')
   })
 
   it('quoting is DELIMITER-RELATIVE: a comma is ordinary text in a ";"-delimited array', () => {
     // `(1,1),(0,0)` contains commas but no `;`, so under `;` it needs no quotes at all —
     // which is exactly how PostgreSQL itself renders `box[]` (asserted live below).
-    expect(writeArrayLiteral(['(1,1),(0,0)', '(3,3),(2,2)'], ';')).toBe(
-      '{(1,1),(0,0);(3,3),(2,2)}',
-    )
+    expect(writeArrayLiteral(['(1,1),(0,0)', '(3,3),(2,2)'], ';')).toBe('{(1,1),(0,0);(3,3),(2,2)}')
     // …and the same strings under `,` MUST be quoted, or they would parse as six elements.
     expect(writeArrayLiteral(['(1,1),(0,0)', '(3,3),(2,2)'], ',')).toBe(
       '{"(1,1),(0,0)","(3,3),(2,2)"}',
@@ -134,7 +137,17 @@ describe('writeArrayLiteral', () => {
 })
 
 describe('LIVE ORACLE — PostgreSQL agrees with both halves', () => {
-  const zoo = ['a', 'b,c', null, 'NULL', '{}', 'he said "hi"', String.raw`back\slash`, '  pad  ', '']
+  const zoo = [
+    'a',
+    'b,c',
+    null,
+    'NULL',
+    '{}',
+    'he said "hi"',
+    String.raw`back\slash`,
+    '  pad  ',
+    '',
+  ]
 
   it("what we WRITE, PG reads back as the same JS array (the 'NULL' string included)", async () => {
     const literal = writeArrayLiteral(zoo)
@@ -153,7 +166,9 @@ describe('LIVE ORACLE — PostgreSQL agrees with both halves', () => {
       params: [],
     })
     const raw = String(r.rows[0]![0])
-    expect(raw).toBe(String.raw`{a,"b,c",NULL,"NULL","{}","he said \"hi\"","back\\slash","  pad  ",""}`)
+    expect(raw).toBe(
+      String.raw`{a,"b,c",NULL,"NULL","{}","he said \"hi\"","back\\slash","  pad  ",""}`,
+    )
     expect(parseArrayLiteral(raw)).toEqual(zoo)
   })
 

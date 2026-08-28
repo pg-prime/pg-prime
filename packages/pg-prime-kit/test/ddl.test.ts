@@ -53,7 +53,11 @@ function irWithIndex(indexName: string): SchemaIR {
     },
   ];
   return SchemaIR.build(facts, [
-    { from: { kind: "index", schema: "public", name: indexName }, to: { kind: "table", schema: "public", name: "t" }, kind: "depends" },
+    {
+      from: { kind: "index", schema: "public", name: indexName },
+      to: { kind: "table", schema: "public", name: "t" },
+      kind: "depends",
+    },
   ]);
 }
 

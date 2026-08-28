@@ -102,7 +102,9 @@ export function probeEmitterStructure(compileOnce) {
     joinsProducingTheSql: sqlJoins.length,
     /** design/03 §1.1: ZERO intermediate SQL strings. See the filter above for what counts. */
     intermediateSqlStrings: intermediate.length,
-    intermediateSample: intermediate.slice(0, 3).map((j) => ({ sep: j.sep, text: j.result.slice(0, 60) })),
+    intermediateSample: intermediate
+      .slice(0, 3)
+      .map((j) => ({ sep: j.sep, text: j.result.slice(0, 60) })),
     /** The chunk array's length at assembly time — informational, and it moves with the emitter. */
     chunkCount: sqlJoins[0]?.length ?? null,
     /** design/03 §1.1: ONE params array. */

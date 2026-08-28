@@ -55,11 +55,18 @@ describe('metaOf — identity and caching', () => {
 describe('metaOf — the mapping', () => {
   it('carries table identity from TableRuntime, defaulting the schema to public', () => {
     const m = metaOf(users, new Registry())
-    expect(m.table).toMatchObject({ schema: 'public', name: 'users', qualified: '"public"."users"' })
+    expect(m.table).toMatchObject({
+      schema: 'public',
+      name: 'users',
+      qualified: '"public"."users"',
+    })
   })
 
   it('resolves the DB name through the casing strategy, not the TS key', () => {
-    const t = pgTable('t', (c) => ({ createdAt: c.timestamptz(), explicitName: c.text('weird_col') }))
+    const t = pgTable('t', (c) => ({
+      createdAt: c.timestamptz(),
+      explicitName: c.text('weird_col'),
+    }))
     const m = metaOf(t, new Registry())
     expect(m.byKey['createdAt']?.name).toBe('created_at')
     expect(m.byKey['explicitName']?.name).toBe('weird_col')
@@ -153,7 +160,13 @@ describe('metaOf — enums', () => {
   it('an enum array asks the registry for `mood[]`', () => {
     const t = pgTable('t', (c) => ({ moods: c.enum(mood).array() }))
     const r = new Registry()
-    const element = { ...textCodec, name: 'mood', oid: 99001, sqlName: 'mood', typeClass: 'enum' as const }
+    const element = {
+      ...textCodec,
+      name: 'mood',
+      oid: 99001,
+      sqlName: 'mood',
+      typeClass: 'enum' as const,
+    }
     r.register(element)
     r.register({ ...arrayCodecOf(element), name: 'mood[]', oid: 99002 })
     expect(metaOf(t, r).byKey['moods']?.codec.oid).toBe(99002)

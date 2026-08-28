@@ -53,8 +53,9 @@ describe('a registered node that is not an expression is refused at the tag', ()
   })
 
   it('…and so does a statement and a FROM item', () => {
-    expect(() => sql`${select({ projection: [projection('id', u('id'))], from: usersFrom })}`)
-      .toThrow(InvalidFragmentError)
+    expect(
+      () => sql`${select({ projection: [projection('id', u('id'))], from: usersFrom })}`,
+    ).toThrow(InvalidFragmentError)
     expect(() => sql`${table(tableMeta('public', 'users'))}`).toThrow(InvalidFragmentError)
   })
 

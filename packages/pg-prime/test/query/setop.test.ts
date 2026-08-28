@@ -24,7 +24,10 @@ const posts = () =>
 
 describe('§2.8 — the six set operations', () => {
   it('union all, then order/limit on the whole result', () => {
-    const built = users().unionAll(posts()).orderBy((r) => q.asc(r.id)).limit(50)
+    const built = users()
+      .unionAll(posts())
+      .orderBy((r) => q.asc(r.id))
+      .limit(50)
     expect(sqlOf(built)).toBe(
       [
         'select "users"."id" as "id", $1 as "kind"',
@@ -40,9 +43,13 @@ describe('§2.8 — the six set operations', () => {
 
   it('the ORDER BY names the OUTPUT column, unqualified', () => {
     // `order by "users"."id"` after a UNION is a syntax error; the result set has no alias.
-    expect(sqlOf(users().unionAll(posts()).orderBy((r) => q.desc(r.kind)))).toContain(
-      '\norder by "kind" desc',
-    )
+    expect(
+      sqlOf(
+        users()
+          .unionAll(posts())
+          .orderBy((r) => q.desc(r.kind)),
+      ),
+    ).toContain('\norder by "kind" desc')
   })
 
   it('all six spellings emit their own keyword', () => {
@@ -94,7 +101,9 @@ describe('§2.8 — the six set operations', () => {
       .fromCte('both')
       .select(({ both: b }) => ({ id: b.id, kind: b.kind }))
     expect(sqlOf(cte)).toContain('with "both" as (')
-    expect(cte.compile().shape).toMatchObject({ fields: [{ codec: { name: 'int8' } }, { codec: { name: 'text' } }] })
+    expect(cte.compile().shape).toMatchObject({
+      fields: [{ codec: { name: 'int8' } }, { codec: { name: 'text' } }],
+    })
   })
 })
 
@@ -182,4 +191,3 @@ describe('a relation column under a DISTINCT set operation is jsonb', () => {
     expect(rel().union(rel()).compile().shape).toStrictEqual(rel().unionAll(rel()).compile().shape)
   })
 })
-

@@ -206,9 +206,7 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
 
   const rawTables = Object.values(schema.tables)
     .map((t) => t.$)
-    .sort((a, b) =>
-      cmp(`${a.schema ?? defaultSchema} ${a.name}`, `${b.schema ?? defaultSchema} ${b.name}`),
-    );
+    .sort((a, b) => cmp(`${a.schema ?? defaultSchema} ${a.name}`, `${b.schema ?? defaultSchema} ${b.name}`));
 
   for (const rt of rawTables) {
     const key = qualify(rt.schema ?? defaultSchema, rt.name);
@@ -289,7 +287,9 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
       ...tables.map((t) => mapped(t.schema, `table ${t.key}`)),
       ...[...enums.values()].map((e) => mapped(e.schema, `type ${qualify(e.schema, e.name)}`)),
       ...domains.map((d) => mapped(d.schema ?? defaultSchema, `domain ${qualify(d.schema ?? defaultSchema, d.name)}`)),
-      ...sequences.map((s) => mapped(s.schema ?? defaultSchema, `sequence ${qualify(s.schema ?? defaultSchema, s.name)}`)),
+      ...sequences.map((s) =>
+        mapped(s.schema ?? defaultSchema, `sequence ${qualify(s.schema ?? defaultSchema, s.name)}`),
+      ),
       ...(schema.schemas ?? []).map((s) => mapped(s.name, `schema ${s.name}`)),
     ]),
   ].sort(cmp);
@@ -367,10 +367,7 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
     const child = decl.runtime.extras.find((e) => e.node === "partitionOf");
     if (child !== undefined && child.node === "partitionOf") {
       const parentSchema = child.parentSchema ?? decl.schema;
-      const parent = quoteQualified(
-        mapped(parentSchema, `table ${qualify(parentSchema, child.parent)}`),
-        child.parent,
-      );
+      const parent = quoteQualified(mapped(parentSchema, `table ${qualify(parentSchema, child.parent)}`), child.parent);
       sql.push(`ALTER TABLE ${parent} ATTACH PARTITION ${target} ${child.bound}`);
     }
   }
@@ -549,10 +546,7 @@ function buildTable(decl: TableDecl, ctx: BuildContext): void {
       );
     }
     for (const [i, chk] of ddl.checks.entries()) {
-      const name = claim(
-        chk.name ?? makeObjectName(decl.name, ref.dbName, "check"),
-        `check #${i} on ${ref.dbName}`,
-      );
+      const name = claim(chk.name ?? makeObjectName(decl.name, ref.dbName, "check"), `check #${i} on ${ref.dbName}`);
       bits.push(`CONSTRAINT ${quoteIdent(name)} CHECK (${chk.expression})`);
     }
     if (ddl.references !== undefined) {
@@ -750,7 +744,9 @@ function columnType(ddl: ColumnDdl, ctx: BuildContext, decl: TableDecl): string 
 interface FkInput {
   readonly name: string;
   readonly columns: readonly string[];
-  readonly targets: readonly { readonly $: { readonly table: string; readonly schema: string | undefined; readonly dbName: string } }[];
+  readonly targets: readonly {
+    readonly $: { readonly table: string; readonly schema: string | undefined; readonly dbName: string };
+  }[];
   readonly onDelete: string | undefined;
   readonly onUpdate: string | undefined;
   readonly deferrable: boolean;
@@ -856,7 +852,8 @@ function collectIndexesAndComments(
         // `items` is absent on an extras array built before the options landed (a hand-made
         // `{ node: 'index', … }` in a test, or an older `pg-prime` on the peer range), so
         // the plain column list is the fallback rather than a crash.
-        items: extra.items ?? extra.columns.map((column) => ({ column, desc: false, nulls: undefined, opclass: undefined })),
+        items:
+          extra.items ?? extra.columns.map((column) => ({ column, desc: false, nulls: undefined, opclass: undefined })),
         using: extra.using,
         where: extra.where,
         include: extra.include ?? [],
@@ -891,10 +888,7 @@ function collectIndexesAndComments(
  * sorted key order and each component's members are sorted, so two runs over the same registry
  * produce byte-identical SQL whatever order the registry object was built in.
  */
-function topoOrder(
-  tables: readonly TableDecl[],
-  byKey: ReadonlyMap<string, TableDecl>,
-): TableDecl[] {
+function topoOrder(tables: readonly TableDecl[], byKey: ReadonlyMap<string, TableDecl>): TableDecl[] {
   const keys = tables.map((t) => t.key);
   const succ = new Map<string, string[]>();
   for (const t of tables) {

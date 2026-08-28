@@ -14,12 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { generateFromDatabases as generate } from "../src/generate.js";
-import {
-  ProofRequiredError,
-  UnacknowledgedHazardError,
-  UnsafePlanPathError,
-  writePlan,
-} from "../src/plan/emit.js";
+import { ProofRequiredError, UnacknowledgedHazardError, UnsafePlanPathError, writePlan } from "../src/plan/emit.js";
 import { buildPlan, hazardSeverity, migrationId, InvalidMigrationIdError, renderSql } from "../src/plan/plan.js";
 import { PHASE, type Statement } from "../src/diff/statement.js";
 import { ADMIN, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
@@ -108,9 +103,7 @@ describe("design/06 §3.6 — destructive changes need a recorded acknowledgemen
   it("refuses a DROP COLUMN plan whose DS103 is unacknowledged", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pg-prime-ack-"));
     const plan = buildPlan({ ...base, statements: [DROP_COLUMN] });
-    expect(plan.hazards.map((h) => [h.code, h.severity, h.acknowledged])).toEqual([
-      ["DS103", "error", false],
-    ]);
+    expect(plan.hazards.map((h) => [h.code, h.severity, h.acknowledged])).toEqual([["DS103", "error", false]]);
     expect(plan.acknowledged).toBeNull();
     await expect(writePlan(dir, plan)).rejects.toBeInstanceOf(UnacknowledgedHazardError);
   });

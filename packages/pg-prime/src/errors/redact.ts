@@ -81,7 +81,10 @@ export function parseDetail(detail: string | undefined): ParsedDetail | undefine
   if (detail === undefined) return undefined
   const m = KEY_RE.exec(detail)
   if (m === null) return undefined
-  const columns = (m[1] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '')
+  const columns = (m[1] ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '')
   const values = splitTopLevel(m[2] ?? '')
   const table = IN_TABLE_RE.exec(detail)?.[1]
   return table === undefined ? { columns, values } : { columns, values, referencedTable: table }
@@ -141,10 +144,12 @@ export function redactDetail(
  * `Error.captureStackTrace` is V8-only; the `new Error().stack` fallback keeps the feature working
  * on a runtime without it, at the cost of one extra frame to elide.
  */
-const CAPTURE = (Error as { captureStackTrace?: (t: object, f?: unknown) => void }).captureStackTrace
+const CAPTURE = (Error as { captureStackTrace?: (t: object, f?: unknown) => void })
+  .captureStackTrace
 
 /** Frames belonging to this library, elided so the first line is the user's own code. */
-const INTERNAL = /[/\\](?:src|dist)[/\\](?:query|session|errors|driver|observe|pooler|compile|codec|sql)[/\\]/
+const INTERNAL =
+  /[/\\](?:src|dist)[/\\](?:query|session|errors|driver|observe|pooler|compile|codec|sql)[/\\]/
 
 export function captureCallSite(boundary?: unknown): string | undefined {
   const holder: { stack?: string | undefined } = {}

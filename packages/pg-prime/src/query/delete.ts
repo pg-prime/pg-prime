@@ -100,7 +100,10 @@ export class DeleteBuilder {
 
   returningAll(): DeleteBuilder {
     return this.#next({
-      returning: compileProjection(allOf(this.s.scope[this.s.from.alias] as RefScope), NO_LEFT_JOINS),
+      returning: compileProjection(
+        allOf(this.s.scope[this.s.from.alias] as RefScope),
+        NO_LEFT_JOINS,
+      ),
     })
   }
 
@@ -161,7 +164,9 @@ export function makeDelete(
 ): DeleteBuilder {
   const source = sourceOf(h)
   if (source.kind !== 'table') {
-    throw new BuilderError('pg-prime: deleteFrom() takes a table handle, not a CTE or derived table.')
+    throw new BuilderError(
+      'pg-prime: deleteFrom() takes a table handle, not a CTE or derived table.',
+    )
   }
   const name = checkAlias(alias ?? source.name)
   const meta = metaOf(h as never, ctx.registry)

@@ -47,7 +47,10 @@ describe("apply: corpus plans, from empty, twice", () => {
       name: "acceptance, in one step",
       slug: "acc",
       steps: [{ name: "acceptance", fixture: "acceptance/desired.sql" }],
-      probe: { sql: "SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r'", expected: 3 },
+      probe: {
+        sql: "SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r'",
+        expected: 3,
+      },
     },
     {
       name: "evolve, in two steps",
@@ -68,7 +71,10 @@ describe("apply: corpus plans, from empty, twice", () => {
         { name: "step_one", fixture: "enum-ordering/current.sql" },
         { name: "step_two", fixture: "enum-ordering/desired.sql" },
       ],
-      probe: { sql: "SELECT count(*)::int FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='order_status' AND e.enumlabel = 'refunded'", expected: 1 },
+      probe: {
+        sql: "SELECT count(*)::int FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='order_status' AND e.enumlabel = 'refunded'",
+        expected: 1,
+      },
     },
     {
       name: "multi-schema, in one step",
@@ -95,7 +101,9 @@ describe("apply: corpus plans, from empty, twice", () => {
           expect(first.error, JSON.stringify(first.error)).toBeNull();
           expect(first.status).toBe("applied");
           expect(first.exitCode).toBe(EXIT.ok);
-          expect(first.applied.map((a) => a.id)).toEqual(chain.plans.map((p) => `${p.migration.id}_${p.migration.name}`));
+          expect(first.applied.map((a) => a.id)).toEqual(
+            chain.plans.map((p) => `${p.migration.id}_${p.migration.name}`),
+          );
 
           /* Oracle 1 — pg_catalog. */
           expect(await fingerprintOf(conn, schemas)).toBe(chain.finalFingerprint);

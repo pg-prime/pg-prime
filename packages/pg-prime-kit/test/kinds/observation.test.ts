@@ -11,11 +11,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  extractCatalog,
-  observationDiagnostics,
-  observedCounts,
-} from "../../src/catalog/extract.js";
+import { extractCatalog, observationDiagnostics, observedCounts } from "../../src/catalog/extract.js";
 import { diffIR } from "../../src/diff/diff.js";
 import { runSqlScript, withClient } from "../../src/db/pg.js";
 import { encodeId } from "../../src/ir/stable-id.js";
@@ -72,7 +68,12 @@ describe("Tier O is observed and Tier U is counted", () => {
     for (const forbidden of ["role", "acl", "publication", "collation"]) {
       expect([...factKinds]).not.toContain(forbidden);
     }
-    expect(result.ir.facts().map((f) => encodeId(f.id)).filter((s) => s.includes("pgprime_k3_reader"))).toEqual([]);
+    expect(
+      result.ir
+        .facts()
+        .map((f) => encodeId(f.id))
+        .filter((s) => s.includes("pgprime_k3_reader")),
+    ).toEqual([]);
   });
 
   it("observation is reportable as counts, sorted and stable", () => {
@@ -86,9 +87,7 @@ describe("Tier O is observed and Tier U is counted", () => {
 
   it("the Tier U census counts what `06` §2.2 lists, and separates it from Tier R", () => {
     const census = new Map(
-      result.diagnostics
-        .filter((d) => d.code === "unmodeled_kind")
-        .map((d) => [d.subject ?? "?", d] as const),
+      result.diagnostics.filter((d) => d.code === "unmodeled_kind").map((d) => [d.subject ?? "?", d] as const),
     );
     expect(census.get("statisticsObject")?.count).toBe(1);
     expect(census.get("textSearchConfig")?.count).toBe(1);
@@ -112,9 +111,7 @@ describe("Tier O is observed and Tier U is counted", () => {
     });
     const escalated = strict.diagnostics.filter((d) => d.code === "unmodeled_kind_strict");
     expect(escalated.every((d) => d.severity === "error")).toBe(true);
-    expect(escalated.map((d) => d.subject)).toEqual(
-      expect.arrayContaining(["statisticsObject", "textSearchConfig"]),
-    );
+    expect(escalated.map((d) => d.subject)).toEqual(expect.arrayContaining(["statisticsObject", "textSearchConfig"]));
     // Tier R is authored on purpose: escalating a view the repo owns would make
     // `--strict-unmodeled` unusable in any project that has one.
     expect(escalated.map((d) => d.subject)).not.toContain("view");

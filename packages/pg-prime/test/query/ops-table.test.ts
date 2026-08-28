@@ -60,12 +60,7 @@ const ORDER: readonly OpClass[] = [
 const cell = (s: string): string => s.replaceAll('|', '\\|')
 
 function render(): string {
-  const lines = [
-    START,
-    '',
-    '| Class | Function | SQL | Result codec |',
-    '|---|---|---|---|',
-  ]
+  const lines = [START, '', '| Class | Function | SQL | Result codec |', '|---|---|---|---|']
   for (const klass of ORDER) {
     const rows = OPS.filter((o) => o.class === klass)
     for (const [i, o] of rows.entries()) {

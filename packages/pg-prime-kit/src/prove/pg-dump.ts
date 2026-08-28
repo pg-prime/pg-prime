@@ -293,7 +293,8 @@ export function normalizeDump(raw: string): string[] {
     .sort();
 }
 
-const CREATE_TABLE = /^CREATE\s+(?:(?:GLOBAL|LOCAL)\s+)?(?:(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)\s*\(/i;
+const CREATE_TABLE =
+  /^CREATE\s+(?:(?:GLOBAL|LOCAL)\s+)?(?:(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)\s*\(/i;
 
 /**
  * Rewrite a `CREATE TABLE` with its column/constraint list sorted, so that two tables

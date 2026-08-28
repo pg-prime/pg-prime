@@ -110,12 +110,7 @@ describe("txmode none: crash mid-CIC, then resume", () => {
   it(
     "SIGKILL during the concurrent build; the next apply finishes it and the index is valid",
     async () => {
-      const child = spawnCli([
-        "migrate", "apply",
-        "--url", urlOf(conn),
-        "--migrations", dir,
-        "--output", "json",
-      ]);
+      const child = spawnCli(["migrate", "apply", "--url", urlOf(conn), "--migrations", dir, "--output", "json"]);
 
       // Wait for PostgreSQL itself to say the build is under way: the CIC's first
       // transaction has committed an INVALID catalog entry, and our bookkeeping says the

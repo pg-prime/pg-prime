@@ -29,7 +29,8 @@ import { makeAppendixA } from './_appendix-a.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DOC = join(HERE, '..', '..', '..', '..', 'design', '03-query-builder.md')
-const START = '<!-- appendix-a:start — generated from test/query/appendix-a.test.ts; do not edit -->'
+const START =
+  '<!-- appendix-a:start — generated from test/query/appendix-a.test.ts; do not edit -->'
 const END = '<!-- appendix-a:end -->'
 
 // ─────────────────────────────────────────────────────────────────────────────

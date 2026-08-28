@@ -19,9 +19,7 @@
       "largestDtsBytes": 72190,
       "jsBytes": 889856,
       "zeroDependencies": true,
-      "optionalPeers": [
-        "pg"
-      ]
+      "optionalPeers": ["pg"]
     },
     "packages/pg-prime-kit": {
       "_design": {

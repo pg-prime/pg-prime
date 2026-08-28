@@ -75,7 +75,11 @@ export function envelopeOf(result: CliResult): Record<string, unknown> {
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Poll `probe` until it returns a truthy value, or throw after `timeoutMs`. */
-export async function waitFor<T>(what: string, probe: () => Promise<T | null | undefined | false>, timeoutMs = 30_000): Promise<T> {
+export async function waitFor<T>(
+  what: string,
+  probe: () => Promise<T | null | undefined | false>,
+  timeoutMs = 30_000,
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = await probe();

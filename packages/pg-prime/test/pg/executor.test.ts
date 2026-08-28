@@ -39,9 +39,14 @@ import {
 const NS = 'pgprime_pg_executor'
 
 /** A two-column table; enough to name a relation and nothing more. */
-const widgets = pgTable('widgets', (t) => ({ id: t.integer().primaryKey(), name: t.text() }), undefined, {
-  schema: NS,
-})
+const widgets = pgTable(
+  'widgets',
+  (t) => ({ id: t.integer().primaryKey(), name: t.text() }),
+  undefined,
+  {
+    schema: NS,
+  },
+)
 const schema = defineSchema({ widgets })
 
 const DDL = `
@@ -130,7 +135,10 @@ describe('{ statement: "named" } really prepares on the server', () => {
     const db = pgPrime({ driver: h.driver, schema, statement: 'named' })
     let mine = 0
     await db.transaction(async (tx) => {
-      await tx.from(schema.h.widgets).select(({ widgets: w }) => ({ id: w.id })).execute()
+      await tx
+        .from(schema.h.widgets)
+        .select(({ widgets: w }) => ({ id: w.id }))
+        .execute()
       const here =
         await tx.sql`select count(*)::int4 as n from pg_prepared_statements where name like 'pgprime_%'`.execute()
       mine = Number(here[0]?.['n'])
@@ -159,7 +167,10 @@ describe('{ statement: "named" } really prepares on the server', () => {
       await withOwnBackend(async (own) => {
         const db = pgPrime({ driver: own.driver, schema })
         await db.transaction(async (tx) => {
-          await tx.from(schema.h.widgets).select(({ widgets: w }) => ({ id: w.id })).execute()
+          await tx
+            .from(schema.h.widgets)
+            .select(({ widgets: w }) => ({ id: w.id }))
+            .execute()
           const rows =
             await tx.sql`select count(*)::int4 as n from pg_prepared_statements`.execute()
           expect(rows[0]?.['n']).toBe(0)
@@ -179,12 +190,18 @@ describe('{ statement: "named" } really prepares on the server', () => {
           preparedStatements: { maxPerConnection: 1 },
         })
         await db.transaction(async (tx) => {
-          await tx.from(schema.h.widgets).select(({ widgets: w }) => ({ id: w.id })).execute()
+          await tx
+            .from(schema.h.widgets)
+            .select(({ widgets: w }) => ({ id: w.id }))
+            .execute()
           const first = await tx.sql`select name from pg_prepared_statements`.execute()
           expect(first).toHaveLength(1)
 
           // A second, different statement evicts the first at maxPerConnection = 1.
-          await tx.from(schema.h.widgets).select(({ widgets: w }) => ({ name: w.name })).execute()
+          await tx
+            .from(schema.h.widgets)
+            .select(({ widgets: w }) => ({ name: w.name }))
+            .execute()
           const second = await tx.sql`select name from pg_prepared_statements`.execute()
           // Still one — and a DIFFERENT one. If eviction had merely forgotten the entry, the
           // server-side statement would still be here and this would be two. That is the whole
@@ -294,96 +311,117 @@ describe('through a PgBouncer transaction-mode pool (07 §5.1)', () => {
     return { db, done: async () => void (await driver.destroy()) }
   }
 
-  requiresPgBouncer()('the DEFAULT (unnamed) works, repeatedly, across pooled connections', async () => {
-    const { db, done } = makeDb()
-    try {
-      for (let i = 0; i < 10; i++) {
-        expect(
-          await db
-            .from(schema.h.widgets)
-            .select(({ widgets: w }) => ({ id: w.id, name: w.name }))
-            .where(({ widgets: w }) => q.eq(w.id, 1))
-            .execute(),
-        ).toStrictEqual([{ id: 1, name: 'one' }])
+  requiresPgBouncer()(
+    'the DEFAULT (unnamed) works, repeatedly, across pooled connections',
+    async () => {
+      const { db, done } = makeDb()
+      try {
+        for (let i = 0; i < 10; i++) {
+          expect(
+            await db
+              .from(schema.h.widgets)
+              .select(({ widgets: w }) => ({ id: w.id, name: w.name }))
+              .where(({ widgets: w }) => q.eq(w.id, 1))
+              .execute(),
+          ).toStrictEqual([{ id: 1, name: 'one' }])
+        }
+        // One round trip, zero session state — the reason it is the default (`07` §2.2).
+        expect(statementStats(db).statement).toBe('unnamed')
+      } finally {
+        await done()
       }
-      // One round trip, zero session state — the reason it is the default (`07` §2.2).
-      expect(statementStats(db).statement).toBe('unnamed')
-    } finally {
-      await done()
-    }
-  })
+    },
+  )
 
-  requiresPgBouncer()('the NAMED opt-in also works, and pins which of `07` s two outcomes we get', async () => {
-    const { db, done } = makeDb({ statement: 'named' })
-    try {
-      const p = db
-        .from(schema.h.widgets)
-        .select(({ widgets: w }) => ({ id: w.id, name: w.name }))
-        .where(({ widgets: w }) => q.eq(w.id, q.placeholder('id', int4Codec)))
-        .prepare<{ id: number }>('bouncer_widget', { statement: 'named' })
+  requiresPgBouncer()(
+    'the NAMED opt-in also works, and pins which of `07` s two outcomes we get',
+    async () => {
+      const { db, done } = makeDb({ statement: 'named' })
+      try {
+        const p = db
+          .from(schema.h.widgets)
+          .select(({ widgets: w }) => ({ id: w.id, name: w.name }))
+          .where(({ widgets: w }) => q.eq(w.id, q.placeholder('id', int4Codec)))
+          .prepare<{ id: number }>('bouncer_widget', { statement: 'named' })
 
-      // 20 executions, each of which PgBouncer may route to a different server connection.
-      for (let i = 0; i < 20; i++) {
-        expect(await p.execute({ id: 1 })).toStrictEqual([{ id: 1, name: 'one' }])
+        // 20 executions, each of which PgBouncer may route to a different server connection.
+        for (let i = 0; i < 20; i++) {
+          expect(await p.execute({ id: 1 })).toStrictEqual([{ id: 1, name: 'one' }])
+        }
+
+        // THE PIN. PgBouncer >= 1.21 tracks named statements per client when
+        // `max_prepared_statements > 0`, rewriting the name on the way through, so we should see
+        // ZERO self-heals — the `26000` path exists for poolers that do not, and for a server that
+        // was restarted underneath us. If this line ever goes red the environment changed, and the
+        // right response is to read `07` §5.2's matrix rather than to loosen the assertion.
+        const stats = statementStats(db)
+        expect(stats.selfHeals).toBe(0)
+        expect(stats.downgraded).toBe(false)
+      } finally {
+        await done()
       }
+    },
+  )
 
-      // THE PIN. PgBouncer >= 1.21 tracks named statements per client when
-      // `max_prepared_statements > 0`, rewriting the name on the way through, so we should see
-      // ZERO self-heals — the `26000` path exists for poolers that do not, and for a server that
-      // was restarted underneath us. If this line ever goes red the environment changed, and the
-      // right response is to read `07` §5.2's matrix rather than to loosen the assertion.
-      const stats = statementStats(db)
-      expect(stats.selfHeals).toBe(0)
-      expect(stats.downgraded).toBe(false)
-    } finally {
-      await done()
-    }
-  })
-
-  requiresPgBouncer()('LRU eviction through the pooler keeps working — protocol Close, not DEALLOCATE', async () => {
-    const { db, done } = makeDb({ statement: 'named', preparedStatements: { maxPerConnection: 1 } })
-    try {
-      // `maxPerConnection: 1` forces an eviction on every alternation, so this exercises the
-      // protocol `Close('S', name)` path against a pooler that rewrites statement names in flight.
-      for (let i = 0; i < 6; i++) {
-        expect(
-          await db.from(schema.h.widgets).select(({ widgets: w }) => ({ id: w.id })).execute(),
-        ).toHaveLength(3)
-        expect(
-          await db.from(schema.h.widgets).select(({ widgets: w }) => ({ name: w.name })).execute(),
-        ).toHaveLength(3)
-      }
-      expect(statementStats(db).downgraded).toBe(false)
-    } finally {
-      await done()
-    }
-  })
-
-  requiresPgBouncer()('PIN: `DEALLOCATE ALL` through the pooler is FATAL 08P01 — hence `07` §2.4 s ban', async () => {
-    // This is the measured reason `07` §2.4 says "never SQL `DEALLOCATE`, never `DEALLOCATE ALL`
-    // / `DISCARD ALL`". With `max_prepared_statements > 0` PgBouncer keeps its OWN client→server
-    // name map and rewrites names in flight; a `DEALLOCATE ALL` desynchronises that map, and the
-    // next Bind gets `08P01 protocol_violation` at severity FATAL — the connection is gone, and
-    // no self-heal can help because the statement is not merely missing, the session is.
-    //
-    // Our own eviction path never emits it (the test above), so this pins the environment rather
-    // than our behaviour: if a future PgBouncer makes it survivable, this line is where we find out.
-    const { db, done } = makeDb({ statement: 'named' })
-    try {
-      const p = db
-        .from(schema.h.widgets)
-        .select(({ widgets: w }) => ({ id: w.id }))
-        .prepare(undefined, { statement: 'named' })
-      expect(await p.execute({})).toHaveLength(3)
-      await db.transaction(async (tx) => {
-        await tx.sql`deallocate all`.execute()
+  requiresPgBouncer()(
+    'LRU eviction through the pooler keeps working — protocol Close, not DEALLOCATE',
+    async () => {
+      const { db, done } = makeDb({
+        statement: 'named',
+        preparedStatements: { maxPerConnection: 1 },
       })
-      const err = await p.execute({}).catch((e: unknown) => e)
-      expect(sqlState(err)).toBe('08P01')
-    } finally {
-      await done()
-    }
-  })
+      try {
+        // `maxPerConnection: 1` forces an eviction on every alternation, so this exercises the
+        // protocol `Close('S', name)` path against a pooler that rewrites statement names in flight.
+        for (let i = 0; i < 6; i++) {
+          expect(
+            await db
+              .from(schema.h.widgets)
+              .select(({ widgets: w }) => ({ id: w.id }))
+              .execute(),
+          ).toHaveLength(3)
+          expect(
+            await db
+              .from(schema.h.widgets)
+              .select(({ widgets: w }) => ({ name: w.name }))
+              .execute(),
+          ).toHaveLength(3)
+        }
+        expect(statementStats(db).downgraded).toBe(false)
+      } finally {
+        await done()
+      }
+    },
+  )
+
+  requiresPgBouncer()(
+    'PIN: `DEALLOCATE ALL` through the pooler is FATAL 08P01 — hence `07` §2.4 s ban',
+    async () => {
+      // This is the measured reason `07` §2.4 says "never SQL `DEALLOCATE`, never `DEALLOCATE ALL`
+      // / `DISCARD ALL`". With `max_prepared_statements > 0` PgBouncer keeps its OWN client→server
+      // name map and rewrites names in flight; a `DEALLOCATE ALL` desynchronises that map, and the
+      // next Bind gets `08P01 protocol_violation` at severity FATAL — the connection is gone, and
+      // no self-heal can help because the statement is not merely missing, the session is.
+      //
+      // Our own eviction path never emits it (the test above), so this pins the environment rather
+      // than our behaviour: if a future PgBouncer makes it survivable, this line is where we find out.
+      const { db, done } = makeDb({ statement: 'named' })
+      try {
+        const p = db
+          .from(schema.h.widgets)
+          .select(({ widgets: w }) => ({ id: w.id }))
+          .prepare(undefined, { statement: 'named' })
+        expect(await p.execute({})).toHaveLength(3)
+        await db.transaction(async (tx) => {
+          await tx.sql`deallocate all`.execute()
+        })
+        const err = await p.execute({}).catch((e: unknown) => e)
+        expect(sqlState(err)).toBe('08P01')
+      } finally {
+        await done()
+      }
+    },
+  )
 })
 
 /** Kept honest under `noUnusedLocals`; `liveTarget`/`sqlState` are the harness's own vocabulary. */

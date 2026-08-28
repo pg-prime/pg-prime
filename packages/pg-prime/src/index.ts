@@ -294,7 +294,13 @@ export type {
 // Driver (design/02)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export { PgDriverError, isServerErrorShape, normaliseError, pgDriver, toServerErrorData } from './driver/index.js'
+export {
+  PgDriverError,
+  isServerErrorShape,
+  normaliseError,
+  pgDriver,
+  toServerErrorData,
+} from './driver/index.js'
 
 export type {
   PgAcquireOptions,
@@ -329,7 +335,13 @@ export type {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export { compileOnly, pgPrime, statementStats } from './query/run.js'
-export type { CopyFromApi, CopyToApi, DbConfig, PgPrimeOptions, StatementStats } from './query/run.js'
+export type {
+  CopyFromApi,
+  CopyToApi,
+  DbConfig,
+  PgPrimeOptions,
+  StatementStats,
+} from './query/run.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The session layer (design/07). Handles, transactions, errors, pooler profiles,
@@ -602,17 +614,7 @@ export {
   tsRankCd,
   val,
 } from './query/ops.js'
-export {
-  and,
-  asc,
-  desc,
-  exists,
-  fn,
-  not,
-  notExists,
-  or,
-  toOrderItem,
-} from './query/fn.js'
+export { and, asc, desc, exists, fn, not, notExists, or, toOrderItem } from './query/fn.js'
 export type { Fn } from './query/fn.js'
 
 export { nest, nestNullable, omit } from './query/projection.js'

@@ -76,7 +76,9 @@ export function loadCorpus(name: CorpusName): readonly CorpusEntry[] {
       throw new Error(`test/fuzz/corpus/${name}.json: seed ${c.seed} has kind "${String(c.kind)}"`)
     }
     if (c.note.trim() === '') {
-      throw new Error(`test/fuzz/corpus/${name}.json: seed ${c.seed} has no note — a pin nobody can read is a pin nobody will maintain`)
+      throw new Error(
+        `test/fuzz/corpus/${name}.json: seed ${c.seed} has no note — a pin nobody can read is a pin nobody will maintain`,
+      )
     }
   }
   return parsed.cases

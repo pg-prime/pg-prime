@@ -1,9 +1,9 @@
 {
   "name": "@pg-prime/bench-types",
-  "private": true,
   "version": "0.0.0",
+  "private": true,
+  "description": "Type-budget harness (design/04 §3.5) + the WS0 API-fork measurement (design/09 §3.0). No dependencies: uses the workspace root toolchain (typescript 7.0.2 + typescript59 alias 5.9.3).",
   "type": "module",
-  "description": "Type-budget harness (design/04 \u00a73.5) + the WS0 API-fork measurement (design/09 \u00a73.0). No dependencies: uses the workspace root toolchain (typescript 7.0.2 + typescript59 alias 5.9.3).",
   "scripts": {
     "bench": "node run.mjs",
     "bench:quick": "node run.mjs --quick",

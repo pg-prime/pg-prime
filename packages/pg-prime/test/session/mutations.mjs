@@ -22,7 +22,7 @@ const MUTATIONS = [
   {
     id: 'M1',
     file: 'src/session/transaction.ts',
-    from: "  if (opts.accessMode !== undefined) sql += ` ${opts.accessMode}`",
+    from: '  if (opts.accessMode !== undefined) sql += ` ${opts.accessMode}`',
     to: '  // accessMode dropped',
     why: 'BEGIN silently loses READ ONLY — the transaction would be writable when the caller asked for a read.',
     run: 'unit:test/session/session.test.ts',
@@ -115,7 +115,7 @@ const MUTATIONS = [
   {
     id: 'M12',
     file: 'src/errors/sqlstate.ts',
-    from: "  return SQLSTATE_MAP[code] ?? SQLSTATE_CLASS_FALLBACK[code.slice(0, 2)] ?? UnknownQueryError",
+    from: '  return SQLSTATE_MAP[code] ?? SQLSTATE_CLASS_FALLBACK[code.slice(0, 2)] ?? UnknownQueryError',
     to: '  return SQLSTATE_MAP[code] ?? UnknownQueryError',
     why: 'An unmodelled SQLSTATE stops landing on its class ancestor — 07 §4.1 rule 3, the thing that makes adding a leaf later non-breaking.',
     run: 'unit:test/session/session.test.ts',
@@ -148,8 +148,8 @@ const MUTATIONS = [
   {
     id: 'M16',
     file: 'src/session/listen.ts',
-    from: '          for (const channel of this.#channels.keys()) {\n            this.#emit(channel, \'reconnect\', { attempt, downMs })\n            this.#emit(channel, \'gap\', { downMs })\n          }',
-    to: '          for (const channel of this.#channels.keys()) {\n            this.#emit(channel, \'reconnect\', { attempt, downMs })\n          }',
+    from: "          for (const channel of this.#channels.keys()) {\n            this.#emit(channel, 'reconnect', { attempt, downMs })\n            this.#emit(channel, 'gap', { downMs })\n          }",
+    to: "          for (const channel of this.#channels.keys()) {\n            this.#emit(channel, 'reconnect', { attempt, downMs })\n          }",
     why: 'The reconnect stops emitting `gap` — notifications lost during the outage become silently lost, which 07 §6.5 calls the correctness feature.',
     run: 'pg:test/pg/session-listen.test.ts',
   },
@@ -200,7 +200,8 @@ function runSuite(spec) {
     env['PG_PRIME_TEST_URL'] ??= 'postgres://postgres:postgres@127.0.0.1:54334/postgres'
     env['PG_PRIME_TEST_PGBOUNCER_URL'] ??= 'postgres://postgres:postgres@127.0.0.1:56434/postgres'
   }
-  if (project === 'live') env['PG_PRIME_TEST_URL'] ??= 'postgres://postgres:postgres@127.0.0.1:54334/postgres'
+  if (project === 'live')
+    env['PG_PRIME_TEST_URL'] ??= 'postgres://postgres:postgres@127.0.0.1:54334/postgres'
   try {
     execFileSync(
       'npx',
@@ -230,7 +231,9 @@ for (const mut of MUTATIONS) {
   try {
     const r = runSuite(mut.run)
     rows.push({ id: mut.id, file, why: mut.why, run: mut.run, ...r })
-    console.log(`${mut.id}  ${r.red ? `RED (${r.failed} failed) ${r.where}` : '*** GREEN — NOTHING CAUGHT IT ***'}`)
+    console.log(
+      `${mut.id}  ${r.red ? `RED (${r.failed} failed) ${r.where}` : '*** GREEN — NOTHING CAUGHT IT ***'}`,
+    )
   } finally {
     writeFileSync(file, original)
   }

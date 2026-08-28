@@ -206,9 +206,7 @@ function needsParens(e: Expr): boolean {
  */
 function isNegativeLit(e: Expr): boolean {
   return (
-    e.k === 'lit' &&
-    (typeof e.value === 'number' || typeof e.value === 'bigint') &&
-    e.value < 0
+    e.k === 'lit' && (typeof e.value === 'number' || typeof e.value === 'bigint') && e.value < 0
   )
 }
 

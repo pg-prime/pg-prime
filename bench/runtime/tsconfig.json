@@ -8,8 +8,5 @@
     "sourceMap": false,
     "types": ["node"]
   },
-  "include": [
-    "../../packages/pg-prime/src/**/*.ts",
-    "../../packages/pg-prime/test/live/fixture.ts"
-  ]
+  "include": ["../../packages/pg-prime/src/**/*.ts", "../../packages/pg-prime/test/live/fixture.ts"]
 }

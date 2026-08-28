@@ -39,12 +39,7 @@ export interface ApplyOptions {
  * timeout used to be string-interpolated into DDL. `set_config` is the same GUC write
  * with a real parameter, and it takes the local/session flag as data too.
  */
-export async function setConfig(
-  client: CatalogClient,
-  name: string,
-  value: string,
-  local: boolean,
-): Promise<void> {
+export async function setConfig(client: CatalogClient, name: string, value: string, local: boolean): Promise<void> {
   await client.query("SELECT set_config($1, $2, $3)", [name, value, local]);
 }
 
@@ -109,7 +104,9 @@ export async function applySegments(
 
 /** Derived, never fixed: two unrelated schema sets in one database must not serialize. */
 export function advisoryLockKey(database: string, schemas: readonly string[]): bigint {
-  const digest = createHash("sha256").update(`${database}:${[...schemas].sort().join(",")}`).digest();
+  const digest = createHash("sha256")
+    .update(`${database}:${[...schemas].sort().join(",")}`)
+    .digest();
   return BigInt.asIntN(64, digest.readBigUInt64BE(0));
 }
 
@@ -197,7 +194,9 @@ export async function acquireSessionLock(
   database: string,
   schemas: readonly string[],
 ): Promise<boolean> {
-  const r = await client.query("SELECT pg_try_advisory_lock($1) AS ok", [advisoryLockKey(database, schemas).toString()]);
+  const r = await client.query("SELECT pg_try_advisory_lock($1) AS ok", [
+    advisoryLockKey(database, schemas).toString(),
+  ]);
   return r.rows[0]?.["ok"] === true;
 }
 

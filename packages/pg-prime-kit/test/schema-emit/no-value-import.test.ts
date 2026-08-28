@@ -56,9 +56,7 @@ describe("the kit imports pg-prime for types only (design/11 §1.3)", () => {
   });
 
   it("has no value import of pg-prime anywhere in src/, except design/12 decision 12's one site", () => {
-    const offenders = pgPrimeImports().filter(
-      (i) => !/^\s*(?:import|export)\s+type\b/.test(i.line),
-    );
+    const offenders = pgPrimeImports().filter((i) => !/^\s*(?:import|export)\s+type\b/.test(i.line));
     const allowed: string[] = [];
     const rest: string[] = [];
     for (const o of offenders) {
@@ -79,9 +77,7 @@ describe("the kit imports pg-prime for types only (design/11 §1.3)", () => {
   });
 
   it("declares pg-prime as a peerDependency and a workspace devDependency, not a dependency", () => {
-    const pkg = JSON.parse(
-      readFileSync(join(SRC, "..", "package.json"), "utf8"),
-    ) as {
+    const pkg = JSON.parse(readFileSync(join(SRC, "..", "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;

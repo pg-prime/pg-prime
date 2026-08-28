@@ -76,9 +76,18 @@ const DISTINCT = 25
 const QU = 25
 const QSIZES = [25, 300]
 const QSHAPES = {
-  1: { budget: 'instantiationsPerDistinctQuerySimpleSelect', label: 'simple select (4 cols, 1 where)' },
-  2: { budget: 'instantiationsPerDistinctQueryJoinAggSqlNest', label: 'join + aggregate + sql + nest' },
-  3: { budget: 'instantiationsPerDistinctQueryWithRelationProjection', label: 'select + relation projection' },
+  1: {
+    budget: 'instantiationsPerDistinctQuerySimpleSelect',
+    label: 'simple select (4 cols, 1 where)',
+  },
+  2: {
+    budget: 'instantiationsPerDistinctQueryJoinAggSqlNest',
+    label: 'join + aggregate + sql + nest',
+  },
+  3: {
+    budget: 'instantiationsPerDistinctQueryWithRelationProjection',
+    label: 'select + relation projection',
+  },
   // ── WS-L E19: the two shapes the audit measured and nothing gated ─────────
   //
   // Both are ~10-40× the type work of shape 1, so they run at `count: 5` rather than `QU: 25`.
@@ -120,7 +129,16 @@ const SCENARIOS = [
   // ── informational: every usage introduces a table not yet instantiated ─────
   { name: 'q100cold', tables: 100, cols: 12, rels: 2, rows: true, usages: U, distinct: 2 * U },
   // ── design/04 §3.5 headline: 100t × 12c, 200 relations, all row shapes, 200 queries
-  { name: 'headline', tables: 100, cols: 12, rels: 2, rows: true, usages: 200, distinct: 100, repeats: 3 },
+  {
+    name: 'headline',
+    tables: 100,
+    cols: 12,
+    rels: 2,
+    rows: true,
+    usages: 200,
+    distinct: 100,
+    repeats: 3,
+  },
   // ── the three per-query budget lines, one marginal pair per (shape, size) ──
   ...Object.keys(QSHAPES).flatMap((shape) =>
     QSIZES.flatMap((t) =>
@@ -162,14 +180,16 @@ for (const s of scenarios) {
 
 // ── derived metrics ─────────────────────────────────────────────────────────
 const I = (name, v) => results[name]?.[v]?.instantiations
-const round = (n, d = 2) => (n === undefined || Number.isNaN(n) || !Number.isFinite(n) ? null : Number(n.toFixed(d)))
+const round = (n, d = 2) =>
+  n === undefined || Number.isNaN(n) || !Number.isFinite(n) ? null : Number(n.toFixed(d))
 
 const derived = {}
 for (const v of Object.keys(COMPILERS)) {
   // Declaration cost: slope, so the fixed per-program cost cancels.
   const perTable = (I('d100r0', v) - I('d25r0', v)) / 75
   const perTableSmall = (I('d25r0', v) - I('d10r0', v)) / 15
-  const perRelation = (I('d100r2', v) - I('d100r0', v) - (I('d25r2', v) - I('d25r0', v))) / (200 - 50)
+  const perRelation =
+    (I('d100r2', v) - I('d100r0', v) - (I('d25r2', v) - I('d25r0', v))) / (200 - 50)
   const perTableRows = (I('rows100', v) - I('d100r2', v) - (I('rows25', v) - I('d25r2', v))) / 75
 
   // THE gated metric: 2U − U at a fixed schema size (see the header comment).
@@ -267,8 +287,13 @@ function packageDtsBytes() {
     process.execPath,
     [
       COMPILERS['5.9.3'],
-      '-p', join(ROOT, 'packages', 'pg-prime', 'tsconfig.json'),
-      '--outDir', out, '--emitDeclarationOnly', '--pretty', 'false',
+      '-p',
+      join(ROOT, 'packages', 'pg-prime', 'tsconfig.json'),
+      '--outDir',
+      out,
+      '--emitDeclarationOnly',
+      '--pretty',
+      'false',
     ],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
   )
@@ -305,31 +330,81 @@ const check = (name, version, actual, limit) => {
 
 for (const v of Object.keys(COMPILERS)) {
   const d = derived[v]
-  check('instantiations / column (declaration)', v, d.instantiationsPerColumnDeclaration, budget.instantiationsPerColumnDeclaration)
-  check('instantiations / table (declaration)', v, d.instantiationsPerTableDeclaration, budget.instantiationsPerTableDeclaration)
-  check('instantiations / declared relation', v, d.instantiationsPerDeclaredRelation, budget.instantiationsPerDeclaredRelation)
-  check('instantiations / table, all 3 row shapes', v, d.instantiationsPerTableAllRowShapes, budget.instantiationsPerTableAllRowShapes)
-  check('marginal instantiations / usage (100t)', v, d.marginalInstantiationsPerUsage.at100Tables, budget.marginalInstantiationsPerUsage)
-  check('SCHEMA-SIZE INDEPENDENCE RATIO 100t/25t', v, d.schemaSizeIndependenceRatio, budget.schemaSizeIndependenceRatio)
-  check('SCHEMA-SIZE INDEPENDENCE RATIO 300t/25t', v, d.schemaSizeIndependenceRatio300, budget.schemaSizeIndependenceRatio)
+  check(
+    'instantiations / column (declaration)',
+    v,
+    d.instantiationsPerColumnDeclaration,
+    budget.instantiationsPerColumnDeclaration,
+  )
+  check(
+    'instantiations / table (declaration)',
+    v,
+    d.instantiationsPerTableDeclaration,
+    budget.instantiationsPerTableDeclaration,
+  )
+  check(
+    'instantiations / declared relation',
+    v,
+    d.instantiationsPerDeclaredRelation,
+    budget.instantiationsPerDeclaredRelation,
+  )
+  check(
+    'instantiations / table, all 3 row shapes',
+    v,
+    d.instantiationsPerTableAllRowShapes,
+    budget.instantiationsPerTableAllRowShapes,
+  )
+  check(
+    'marginal instantiations / usage (100t)',
+    v,
+    d.marginalInstantiationsPerUsage.at100Tables,
+    budget.marginalInstantiationsPerUsage,
+  )
+  check(
+    'SCHEMA-SIZE INDEPENDENCE RATIO 100t/25t',
+    v,
+    d.schemaSizeIndependenceRatio,
+    budget.schemaSizeIndependenceRatio,
+  )
+  check(
+    'SCHEMA-SIZE INDEPENDENCE RATIO 300t/25t',
+    v,
+    d.schemaSizeIndependenceRatio300,
+    budget.schemaSizeIndependenceRatio,
+  )
   check('headline instantiations', v, I('headline', v), budget.headline.instantiations)
-  check('headline check time (s)', v, results.headline[v].checkTime, budget.headline.checkTimeSeconds[v])
+  check(
+    'headline check time (s)',
+    v,
+    results.headline[v].checkTime,
+    budget.headline.checkTimeSeconds[v],
+  )
   check('headline peak memory (MB)', v, results.headline[v].memoryMb, budget.headline.peakMemoryMb)
 
   // ── WS1: the three per-query lines, now gated (design/09 §3.1) ────────────
   for (const spec of Object.values(QSHAPES)) {
     const pq = d.perQuery[spec.budget]
     check(`per-query ${spec.label} (300t)`, v, pq.at300Tables, budget[spec.budget])
-    check(`per-query ${spec.label} 300t/25t`, v, pq.schemaSizeIndependenceRatio300, budget.schemaSizeIndependenceRatio)
+    check(
+      `per-query ${spec.label} 300t/25t`,
+      v,
+      pq.schemaSizeIndependenceRatio300,
+      budget.schemaSizeIndependenceRatio,
+    )
   }
 }
 
 check('package .d.ts bytes', '—', dts.total, budget.packageDtsBytes)
 
 console.log('')
-console.log(`package .d.ts: ${(dts.total / 1024).toFixed(1)} KB across ${Object.keys(dts.files).length} files ` +
-  `(budget ${(budget.packageDtsBytes / 1024).toFixed(0)} KB); largest: ` +
-  Object.entries(dts.files).slice(0, 3).map(([f, b]) => `${f} ${(b / 1024).toFixed(1)}KB`).join(', '))
+console.log(
+  `package .d.ts: ${(dts.total / 1024).toFixed(1)} KB across ${Object.keys(dts.files).length} files ` +
+    `(budget ${(budget.packageDtsBytes / 1024).toFixed(0)} KB); largest: ` +
+    Object.entries(dts.files)
+      .slice(0, 3)
+      .map(([f, b]) => `${f} ${(b / 1024).toFixed(1)}KB`)
+      .join(', '),
+)
 console.log('')
 for (const c of checks) {
   console.log(
@@ -341,31 +416,93 @@ for (const c of checks) {
 // ── measured-vs-design/04 print, so drift from the design doc is visible ─────
 const m4 = budget._design04Measured
 const cmp = [
-  ['instantiations / column (declaration)', m4.instantiationsPerColumnDeclaration, derived['5.9.3'].instantiationsPerColumnDeclaration, budget.instantiationsPerColumnDeclaration],
-  ['instantiations / table (declaration)', m4.instantiationsPerTableDeclaration, derived['5.9.3'].instantiationsPerTableDeclaration, budget.instantiationsPerTableDeclaration],
-  ['instantiations / declared relation', m4.instantiationsPerDeclaredRelation, derived['5.9.3'].instantiationsPerDeclaredRelation, budget.instantiationsPerDeclaredRelation],
-  ['instantiations / table, all row shapes', m4.instantiationsPerTableAllRowShapes, derived['5.9.3'].instantiationsPerTableAllRowShapes, budget.instantiationsPerTableAllRowShapes],
-  ['marginal instantiations / query', m4.marginalInstantiationsPerUsage, derived['5.9.3'].marginalInstantiationsPerUsage.at100Tables, budget.marginalInstantiationsPerUsage],
-  ['schema-size independence ratio', m4.schemaSizeIndependenceRatio, derived['5.9.3'].schemaSizeIndependenceRatio, budget.schemaSizeIndependenceRatio],
-  ['headline instantiations (ts5.9)', m4.headline.instantiations['5.9.3'], I('headline', '5.9.3'), budget.headline.instantiations],
-  ['headline instantiations (ts7)', m4.headline.instantiations['7.0.2'], I('headline', '7.0.2'), budget.headline.instantiations],
-  ['headline check time s (ts5.9)', m4.headline.checkTimeSeconds['5.9.3'], results.headline['5.9.3'].checkTime, budget.headline.checkTimeSeconds['5.9.3']],
-  ['headline check time s (ts7)', m4.headline.checkTimeSeconds['7.0.2'], results.headline['7.0.2'].checkTime, budget.headline.checkTimeSeconds['7.0.2']],
-  ['headline peak memory MB (ts5.9)', m4.headline.peakMemoryMb['5.9.3'], results.headline['5.9.3'].memoryMb, budget.headline.peakMemoryMb],
-  ['headline peak memory MB (ts7)', m4.headline.peakMemoryMb['7.0.2'], results.headline['7.0.2'].memoryMb, budget.headline.peakMemoryMb],
+  [
+    'instantiations / column (declaration)',
+    m4.instantiationsPerColumnDeclaration,
+    derived['5.9.3'].instantiationsPerColumnDeclaration,
+    budget.instantiationsPerColumnDeclaration,
+  ],
+  [
+    'instantiations / table (declaration)',
+    m4.instantiationsPerTableDeclaration,
+    derived['5.9.3'].instantiationsPerTableDeclaration,
+    budget.instantiationsPerTableDeclaration,
+  ],
+  [
+    'instantiations / declared relation',
+    m4.instantiationsPerDeclaredRelation,
+    derived['5.9.3'].instantiationsPerDeclaredRelation,
+    budget.instantiationsPerDeclaredRelation,
+  ],
+  [
+    'instantiations / table, all row shapes',
+    m4.instantiationsPerTableAllRowShapes,
+    derived['5.9.3'].instantiationsPerTableAllRowShapes,
+    budget.instantiationsPerTableAllRowShapes,
+  ],
+  [
+    'marginal instantiations / query',
+    m4.marginalInstantiationsPerUsage,
+    derived['5.9.3'].marginalInstantiationsPerUsage.at100Tables,
+    budget.marginalInstantiationsPerUsage,
+  ],
+  [
+    'schema-size independence ratio',
+    m4.schemaSizeIndependenceRatio,
+    derived['5.9.3'].schemaSizeIndependenceRatio,
+    budget.schemaSizeIndependenceRatio,
+  ],
+  [
+    'headline instantiations (ts5.9)',
+    m4.headline.instantiations['5.9.3'],
+    I('headline', '5.9.3'),
+    budget.headline.instantiations,
+  ],
+  [
+    'headline instantiations (ts7)',
+    m4.headline.instantiations['7.0.2'],
+    I('headline', '7.0.2'),
+    budget.headline.instantiations,
+  ],
+  [
+    'headline check time s (ts5.9)',
+    m4.headline.checkTimeSeconds['5.9.3'],
+    results.headline['5.9.3'].checkTime,
+    budget.headline.checkTimeSeconds['5.9.3'],
+  ],
+  [
+    'headline check time s (ts7)',
+    m4.headline.checkTimeSeconds['7.0.2'],
+    results.headline['7.0.2'].checkTime,
+    budget.headline.checkTimeSeconds['7.0.2'],
+  ],
+  [
+    'headline peak memory MB (ts5.9)',
+    m4.headline.peakMemoryMb['5.9.3'],
+    results.headline['5.9.3'].memoryMb,
+    budget.headline.peakMemoryMb,
+  ],
+  [
+    'headline peak memory MB (ts7)',
+    m4.headline.peakMemoryMb['7.0.2'],
+    results.headline['7.0.2'].memoryMb,
+    budget.headline.peakMemoryMb,
+  ],
 ]
 console.log('\n  metric                                    design/04       here      budget')
 for (const [name, d4, here, lim] of cmp) {
-  console.log(`  ${name.padEnd(40)} ${String(d4).padStart(9)} ${String(here).padStart(10)} ${String(lim).padStart(11)}`)
+  console.log(
+    `  ${name.padEnd(40)} ${String(d4).padStart(9)} ${String(here).padStart(10)} ${String(lim).padStart(11)}`,
+  )
 }
 
 const CAVEATS = [
-  'The headline scenario is a FLOOR, not design/04 §3.5\'s scenario. design/04 counted 200 real ' +
+  "The headline scenario is a FLOOR, not design/04 §3.5's scenario. design/04 counted 200 real " +
     'query-builder calls (join + where + aggregate + sql + nested group + relation projection each, ' +
     '251–661 marginal instantiations apiece). No query builder exists yet (agent 03), so a "query" ' +
     'here is a query-SHAPED type usage — projection off the select row + insert + update + a column ' +
     'ref + a Loaded relation contract — costing 40. Expect the headline instantiation and check-time ' +
-    'numbers to rise toward design/04\'s once the builder lands; the budget headroom is sized for it.',
+    "numbers to rise toward design/04's once the builder lands; the budget headroom is sized for it.",
   'What this spike does establish is the COST SHAPE, which is the line design/04 §3.5 calls "the single ' +
     'most important in the table": the marginal cost of one more usage is 40 instantiations at 25, 100 ' +
     'and 300 tables, on both compilers — ratio 1.000, budget 1.15.',
@@ -388,7 +525,9 @@ const report = {
     usagesPerScenario: U,
     distinctTablesTouched: DISTINCT,
   },
-  scenarios: Object.fromEntries(scenarios.map((s) => [s.name, { ...s, repeats: REPEATS ?? s.repeats ?? 1 }])),
+  scenarios: Object.fromEntries(
+    scenarios.map((s) => [s.name, { ...s, repeats: REPEATS ?? s.repeats ?? 1 }]),
+  ),
   results,
   derived,
   dts,

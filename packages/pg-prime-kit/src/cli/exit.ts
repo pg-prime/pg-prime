@@ -28,14 +28,7 @@ export const EXIT = {
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
 
 /** Every terminal state `applyPending` can report, and the code it exits with. */
-export type RunnerStatus =
-  | "applied"
-  | "up_to_date"
-  | "dry_run"
-  | "drift"
-  | "locked"
-  | "failed"
-  | "refused";
+export type RunnerStatus = "applied" | "up_to_date" | "dry_run" | "drift" | "locked" | "failed" | "refused";
 
 export const RUNNER_EXIT: Readonly<Record<RunnerStatus, ExitCode>> = {
   applied: EXIT.ok,

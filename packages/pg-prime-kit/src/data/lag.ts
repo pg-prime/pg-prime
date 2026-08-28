@@ -49,7 +49,9 @@ export async function readPrimaryLag(client: CatalogClient): Promise<LagReading>
   for (const row of r.rows) {
     const ms = Number(row["lag_ms"] ?? 0);
     if (Number.isFinite(ms) && ms > worst) worst = ms;
-    detail.push(`${String(row["name"])} ${String(row["state"])} replay_lsn=${String(row["replay_lsn"] ?? "?")} lag=${String(Math.round(ms))}ms`);
+    detail.push(
+      `${String(row["name"])} ${String(row["state"])} replay_lsn=${String(row["replay_lsn"] ?? "?")} lag=${String(Math.round(ms))}ms`,
+    );
   }
   return { lagMs: worst, replicas: r.rows.length, source: "primary", detail };
 }
@@ -85,7 +87,9 @@ export async function readReplicaLag(replicas: readonly ConnInfo[]): Promise<Lag
       );
     } catch (err) {
       worst = Number.POSITIVE_INFINITY;
-      detail.push(`${conn.host}:${String(conn.port)}/${conn.database} UNREACHABLE (${err instanceof Error ? err.message : String(err)})`);
+      detail.push(
+        `${conn.host}:${String(conn.port)}/${conn.database} UNREACHABLE (${err instanceof Error ? err.message : String(err)})`,
+      );
     }
   }
   return { lagMs: worst, replicas: replicas.length, source: "replicas", detail };

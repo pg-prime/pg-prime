@@ -13,13 +13,7 @@ import { extractCatalog } from "../../src/catalog/extract.js";
 import { GENERATED_NAME } from "../../src/catalog/payloads.js";
 import { runSqlScript, withClient } from "../../src/db/pg.js";
 import { encodeId, type StableId } from "../../src/ir/stable-id.js";
-import {
-  ADMIN,
-  catalogsNotNullConstraints,
-  destroyDatabase,
-  makeDatabase,
-  serverAvailable,
-} from "../support/db.js";
+import { ADMIN, catalogsNotNullConstraints, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
 
 const DB = "pgprime_k3_payloads";
 const T = 180_000;
@@ -111,9 +105,7 @@ describe("Tier-M payloads carry what pg_catalog says", () => {
       text: "the table",
     });
     expect(payload({ kind: "comment", target: "column:public.t.plain" })["text"]).toBe("the column");
-    expect(payload({ kind: "comment", target: "constraint:public.t.t_no_overlap" })["text"]).toBe(
-      "the constraint",
-    );
+    expect(payload({ kind: "comment", target: "constraint:public.t.t_no_overlap" })["text"]).toBe("the constraint");
     // A target with no comment has no fact — absence is the absence, not an empty string.
     expect(ir.ir.has({ kind: "comment", target: "column:public.t.id" })).toBe(false);
   });
@@ -135,14 +127,10 @@ describe("Tier-M payloads carry what pg_catalog says", () => {
     // `gen` has a `pg_attrdef` row too, and it must NOT become a `default` fact: the
     // expression is part of the column and PostgreSQL cannot `SET DEFAULT` it.
     expect(ir.ir.has({ kind: "default", schema: "public", table: "t", name: "gen" })).toBe(false);
-    expect(payload({ kind: "column", schema: "public", table: "t", name: "gen" })["generationExpr"]).toBe(
-      "(id * 2)",
-    );
+    expect(payload({ kind: "column", schema: "public", table: "t", name: "gen" })["generationExpr"]).toBe("(id * 2)");
     // ...and the plain column's own payload no longer carries the default at all, which
     // is what makes "the default changed" a different delta from "the column changed".
-    expect(payload({ kind: "column", schema: "public", table: "t", name: "plain" })).not.toHaveProperty(
-      "default",
-    );
+    expect(payload({ kind: "column", schema: "public", table: "t", name: "plain" })).not.toHaveProperty("default");
   });
 
   it("notNullValidated is null on <18 and true on a validated 18 constraint", async () => {

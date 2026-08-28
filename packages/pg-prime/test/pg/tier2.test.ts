@@ -12,7 +12,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect } from 'vitest'
-import { makeHarness, requiresConcurrency, requiresVersion, type Harness } from '../live/_harness.js'
+import {
+  makeHarness,
+  requiresConcurrency,
+  requiresVersion,
+  type Harness,
+} from '../live/_harness.js'
 import type { PgConnection } from '../../src/driver/index.js'
 
 /** Arbitrary, but stable and ours: `pg-prime` in ASCII, shifted into the advisory-lock key space. */
@@ -34,14 +39,21 @@ afterAll(async () => {
   await h?.end()
 })
 
-const one = async (conn: PgConnection, text: string, params: string[] = []): Promise<string | null> => {
+const one = async (
+  conn: PgConnection,
+  text: string,
+  params: string[] = [],
+): Promise<string | null> => {
   const v = (await conn.execute({ text, params })).rows[0]?.[0]
   return typeof v === 'string' ? v : null
 }
 
 describe('tier 2 — two connections are two backends', () => {
   requiresConcurrency()('they report different pids', async () => {
-    const [pidA, pidB] = [await one(a, 'select pg_backend_pid()'), await one(b, 'select pg_backend_pid()')]
+    const [pidA, pidB] = [
+      await one(a, 'select pg_backend_pid()'),
+      await one(b, 'select pg_backend_pid()'),
+    ]
     expect(pidA).not.toBe(pidB)
     // and the driver agrees with the server about which one it is holding
     expect(String(a.backendPid)).toBe(pidA)
@@ -64,30 +76,33 @@ describe('tier 2 — two connections are two backends', () => {
     }
   })
 
-  requiresConcurrency()('a row locked by one is skipped, not returned, by `skip locked`', async () => {
-    await a.execute({ text: 'drop table if exists pgprime_tier2_q', params: [], mode: 'simple' })
-    await a.execute({
-      text: `create table pgprime_tier2_q (id int primary key)`,
-      params: [],
-      mode: 'simple',
-    })
-    await a.execute({ text: `insert into pgprime_tier2_q values (1), (2)`, params: [] })
-    await a.execute({ text: 'begin', params: [] })
-    try {
-      expect(await one(a, 'select id from pgprime_tier2_q where id = 1 for update')).toBe('1')
-      // The queue-workload guarantee: B must see 2 and never block on 1.
-      const rows = (
-        await b.execute({
-          text: 'select id from pgprime_tier2_q order by id for update skip locked',
-          params: [],
-        })
-      ).rows.map((r) => r[0])
-      expect(rows).toEqual(['2'])
-    } finally {
-      await a.execute({ text: 'rollback', params: [] })
-      await a.execute({ text: 'drop table pgprime_tier2_q', params: [], mode: 'simple' })
-    }
-  })
+  requiresConcurrency()(
+    'a row locked by one is skipped, not returned, by `skip locked`',
+    async () => {
+      await a.execute({ text: 'drop table if exists pgprime_tier2_q', params: [], mode: 'simple' })
+      await a.execute({
+        text: `create table pgprime_tier2_q (id int primary key)`,
+        params: [],
+        mode: 'simple',
+      })
+      await a.execute({ text: `insert into pgprime_tier2_q values (1), (2)`, params: [] })
+      await a.execute({ text: 'begin', params: [] })
+      try {
+        expect(await one(a, 'select id from pgprime_tier2_q where id = 1 for update')).toBe('1')
+        // The queue-workload guarantee: B must see 2 and never block on 1.
+        const rows = (
+          await b.execute({
+            text: 'select id from pgprime_tier2_q order by id for update skip locked',
+            params: [],
+          })
+        ).rows.map((r) => r[0])
+        expect(rows).toEqual(['2'])
+      } finally {
+        await a.execute({ text: 'rollback', params: [] })
+        await a.execute({ text: 'drop table pgprime_tier2_q', params: [], mode: 'simple' })
+      }
+    },
+  )
 })
 
 describe('tier 2 — version-gated SQL', () => {

@@ -128,7 +128,7 @@ describe('unknownCodec refuses what it cannot spell, instead of inventing a spel
 // json / jsonb
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('jsonb/json encode: `JSON.stringify(v) ?? \'null\'` had four holes', () => {
+describe("jsonb/json encode: `JSON.stringify(v) ?? 'null'` had four holes", () => {
   it('undefined / a function / a symbol are errors, not the JSON null', () => {
     // all three stringify to `undefined`, and `?? 'null'` then stored JSON null.
     expect(() => jsonbCodec.encode(undefined)).toThrow(PgEncodeError)
@@ -184,7 +184,11 @@ describe('Date encoding: PostgreSQL spelling, not `toISOString()`', () => {
   it('year ≥ 10000 goes out in plain digits and round-trips', async () => {
     expect(timestamptzCodec.encode(YEAR_10000)).toBe('10000-01-01 00:00:00.000Z')
     expect(timestampCodec.encode(YEAR_10000)).toBe('10000-01-01 00:00:00.000')
-    const out = await selectOne('select $1::timestamptz', [timestamptzCodec.encode(YEAR_10000)], [1184])
+    const out = await selectOne(
+      'select $1::timestamptz',
+      [timestamptzCodec.encode(YEAR_10000)],
+      [1184],
+    )
     expect((out as Date).getTime()).toBe(YEAR_10000.getTime())
   })
 

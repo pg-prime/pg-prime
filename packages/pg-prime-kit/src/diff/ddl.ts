@@ -13,13 +13,7 @@ import type {
 } from "../catalog/payloads.js";
 import type { Fact, SchemaIR } from "../ir/fact.js";
 import { encodeId, idSchema, parseId, type StableId } from "../ir/stable-id.js";
-import {
-  chooseConstraintName,
-  defaultNotNullName,
-  quoteIdent,
-  quoteLiteral,
-  quoteQualified,
-} from "../sql/ident.js";
+import { chooseConstraintName, defaultNotNullName, quoteIdent, quoteLiteral, quoteQualified } from "../sql/ident.js";
 import type { Delta } from "./delta.js";
 import type { DiffResult } from "./diff.js";
 import { labelsOf } from "./diff.js";
@@ -139,7 +133,12 @@ export function mentionsVolatileFunction(expression: string): boolean {
 
 /** The `default` fact hanging off a column, if the IR has one. */
 function defaultExprOf(ir: SchemaIR, colId: StableId): string | null {
-  const f = ir.get({ kind: "default", schema: (colId as { schema: string }).schema, table: (colId as { table: string }).table, name: (colId as { name: string }).name });
+  const f = ir.get({
+    kind: "default",
+    schema: (colId as { schema: string }).schema,
+    table: (colId as { table: string }).table,
+    name: (colId as { name: string }).name,
+  });
   return f === undefined ? null : String((f.payload as unknown as DefaultPayload).expression);
 }
 
@@ -170,11 +169,7 @@ function constraintNamesOn(ir: SchemaIR, table: StableId): (candidate: string) =
 
 /* ---------------------------- the builder --------------------------- */
 
-export function buildStatements(
-  diff: DiffResult,
-  desired: SchemaIR,
-  options: BuildOptions = {},
-): BuildResult {
+export function buildStatements(diff: DiffResult, desired: SchemaIR, options: BuildOptions = {}): BuildResult {
   const statements: Statement[] = [];
   const diagnostics: Diagnostic[] = [...diff.diagnostics];
   const current = diff.current;
@@ -294,22 +289,23 @@ export function buildStatements(
       // catalog-only rename replaces what used to be a DROP + ADD — which for a PK
       // fails outright while a dependent FK exists, and for an FK costs a full
       // VALIDATE scan.
-      statements.push(simple(
-        `ALTER TABLE ${quoteQualified(from.schema, from.table)} RENAME CONSTRAINT ${quoteIdent(from.name)} TO ${quoteIdent(to.name)}`,
-        {
-          verb: "alter",
-          kind: "constraint",
-          produces: [id(to)],
-          consumes: [id({ kind: "table", schema: to.schema, name: to.table })],
-          destroys: [id(from)],
-          hazards: ["BC104"],
-          phase: PHASE.rename,
-        },
-      ));
+      statements.push(
+        simple(
+          `ALTER TABLE ${quoteQualified(from.schema, from.table)} RENAME CONSTRAINT ${quoteIdent(from.name)} TO ${quoteIdent(to.name)}`,
+          {
+            verb: "alter",
+            kind: "constraint",
+            produces: [id(to)],
+            consumes: [id({ kind: "table", schema: to.schema, name: to.table })],
+            destroys: [id(from)],
+            hazards: ["BC104"],
+            phase: PHASE.rename,
+          },
+        ),
+      );
     } else if (from.kind === "index" && to.kind === "index") {
-      statements.push(simple(
-        `ALTER INDEX ${quoteQualified(from.schema, from.name)} RENAME TO ${quoteIdent(to.name)}`,
-        {
+      statements.push(
+        simple(`ALTER INDEX ${quoteQualified(from.schema, from.name)} RENAME TO ${quoteIdent(to.name)}`, {
           verb: "alter",
           kind: "index",
           produces: [id(to)],
@@ -317,8 +313,8 @@ export function buildStatements(
           destroys: [id(from)],
           hazards: ["BC104"],
           phase: PHASE.rename,
-        },
-      ));
+        }),
+      );
     } else {
       diagnostics.push({
         code: "unsupported_rename",
@@ -359,14 +355,16 @@ export function buildStatements(
         const f = d.fact;
         switch (f.id.kind) {
           case "schema":
-            statements.push(simple(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(f.id.schema)}`, {
-              verb: "create",
-              kind: "schema",
-              produces: [id(f.id)],
-              phase: PHASE.createSchema,
-              lockClass: "none",
-              idempotent: true,
-            }));
+            statements.push(
+              simple(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(f.id.schema)}`, {
+                verb: "create",
+                kind: "schema",
+                produces: [id(f.id)],
+                phase: PHASE.createSchema,
+                lockClass: "none",
+                idempotent: true,
+              }),
+            );
             break;
           case "type":
             statements.push(...createType(f.id, f.payload as unknown as TypePayload, desired));
@@ -379,27 +377,28 @@ export function buildStatements(
             // sequence to exist, and the plan died with `relation "t_id_seq"
             // does not exist`. Ownership is therefore a separate statement:
             // the CREATE consumes only its schema, the ALTER consumes the column.
-            statements.push(simple(sequenceDDL(f.id, p, "create", false), {
-              verb: "create",
-              kind: "sequence",
-              produces: [id(f.id)],
-              consumes: [id({ kind: "schema", schema: f.id.schema })],
-              phase: PHASE.createSequence,
-              lockClass: "none",
-              idempotent: true,
-            }));
+            statements.push(
+              simple(sequenceDDL(f.id, p, "create", false), {
+                verb: "create",
+                kind: "sequence",
+                produces: [id(f.id)],
+                consumes: [id({ kind: "schema", schema: f.id.schema })],
+                phase: PHASE.createSequence,
+                lockClass: "none",
+                idempotent: true,
+              }),
+            );
             if (p.ownedBy) {
-              statements.push(simple(
-                `ALTER SEQUENCE ${quoteQualified(f.id.schema, f.id.name)} ${ownedByClause(p.ownedBy)}`,
-                {
+              statements.push(
+                simple(`ALTER SEQUENCE ${quoteQualified(f.id.schema, f.id.name)} ${ownedByClause(p.ownedBy)}`, {
                   verb: "alter",
                   kind: "sequence",
                   consumes: [id(f.id), p.ownedBy],
                   phase: PHASE.alterSequence,
                   lockClass: "none",
                   idempotent: true,
-                },
-              ));
+                }),
+              );
             }
             break;
           }
@@ -432,7 +431,10 @@ export function buildStatements(
               consumes: [
                 id({ kind: "schema", schema: t.schema }),
                 ...cols.flatMap((c) =>
-                  desired.outgoingEdges(c.id).filter((e) => e.kind === "depends" || e.kind === "evaluates").map((e) => id(e.to)),
+                  desired
+                    .outgoingEdges(c.id)
+                    .filter((e) => e.kind === "depends" || e.kind === "evaluates")
+                    .map((e) => id(e.to)),
                 ),
               ],
               destroys: [],
@@ -446,10 +448,14 @@ export function buildStatements(
               phase: PHASE.createTable,
             });
             if (p.rowSecurity) {
-              statements.push(simple(
-                `ALTER TABLE ${quoteQualified(t.schema, t.name)} ENABLE ROW LEVEL SECURITY`,
-                { verb: "alter", kind: "table", consumes: [id(t)], phase: PHASE.alterTable },
-              ));
+              statements.push(
+                simple(`ALTER TABLE ${quoteQualified(t.schema, t.name)} ENABLE ROW LEVEL SECURITY`, {
+                  verb: "alter",
+                  kind: "table",
+                  consumes: [id(t)],
+                  phase: PHASE.alterTable,
+                }),
+              );
             }
             // Truthiness, not `!== null`: a payload can arrive from a serialized
             // checkpoint written before this field existed, or from a caller that
@@ -463,23 +469,26 @@ export function buildStatements(
             // A default on a table or column THIS plan creates is already in its column
             // clause — see the `column` case for why it has to be inline there.
             if (createdTables.has(parentTableId(f.id)!)) break;
-            if (createdColumns.has(id({ kind: "column", schema: f.id.schema, table: f.id.table, name: f.id.name }))) break;
+            if (createdColumns.has(id({ kind: "column", schema: f.id.schema, table: f.id.table, name: f.id.name })))
+              break;
             statements.push(setDefault(f.id, String(f.payload["expression"]), desired));
             break;
           }
           case "typeAttribute": {
             if (createdTypes.has(id({ kind: "type", schema: f.id.schema, name: f.id.type }))) break;
             const a = f.payload as unknown as TypeAttributePayload;
-            statements.push(simple(
-              `ALTER TYPE ${quoteQualified(f.id.schema, f.id.type)} ADD ATTRIBUTE ${quoteIdent(f.id.name)} ${a.type}${a.collation ? ` COLLATE ${quoteIdent(a.collation)}` : ""} CASCADE`,
-              {
-                verb: "alter",
-                kind: "typeAttribute",
-                produces: [id(f.id)],
-                consumes: [id({ kind: "type", schema: f.id.schema, name: f.id.type })],
-                phase: PHASE.alterType,
-              },
-            ));
+            statements.push(
+              simple(
+                `ALTER TYPE ${quoteQualified(f.id.schema, f.id.type)} ADD ATTRIBUTE ${quoteIdent(f.id.name)} ${a.type}${a.collation ? ` COLLATE ${quoteIdent(a.collation)}` : ""} CASCADE`,
+                {
+                  verb: "alter",
+                  kind: "typeAttribute",
+                  produces: [id(f.id)],
+                  consumes: [id({ kind: "type", schema: f.id.schema, name: f.id.type })],
+                  phase: PHASE.alterType,
+                },
+              ),
+            );
             break;
           }
           case "comment":
@@ -490,9 +499,8 @@ export function buildStatements(
             // Declare-only (design/06 §2.2): created if absent, NEVER dropped. The
             // `IF NOT EXISTS` is not politeness — an extension is frequently installed
             // by a DBA out of band, and failing on that is refusing to adopt a database.
-            statements.push(simple(
-              `CREATE EXTENSION IF NOT EXISTS ${quoteIdent(f.id.name)} SCHEMA ${quoteIdent(e.schema)}`,
-              {
+            statements.push(
+              simple(`CREATE EXTENSION IF NOT EXISTS ${quoteIdent(f.id.name)} SCHEMA ${quoteIdent(e.schema)}`, {
                 verb: "create",
                 kind: "extension",
                 produces: [id(f.id)],
@@ -500,8 +508,8 @@ export function buildStatements(
                 phase: PHASE.createExtension,
                 lockClass: "none",
                 idempotent: true,
-              },
-            ));
+              }),
+            );
             break;
           }
           case "column": {
@@ -511,13 +519,7 @@ export function buildStatements(
             const def = defaultExprOf(desired, c);
             const hazards: string[] = [];
             const tableId = id({ kind: "table", schema: c.schema, name: c.table });
-            if (
-              p.notNull &&
-              def === null &&
-              !p.identity &&
-              p.generated !== "s" &&
-              !emptyTables.has(tableId)
-            ) {
+            if (p.notNull && def === null && !p.identity && p.generated !== "s" && !emptyTables.has(tableId)) {
               hazards.push("MF103");
             }
             // LK109: only a VOLATILE default rewrites the table. A constant one has used
@@ -617,10 +619,16 @@ export function buildStatements(
               sql: `ALTER TABLE ${quoteQualified(c.schema, c.table)} ADD COLUMN IF NOT EXISTS ${columnClause(c, p, def)}`,
               verb: "alter",
               kind: "column",
-              produces: [id(f.id), ...(def === null ? [] : [id({ kind: "default", schema: c.schema, table: c.table, name: c.name })])],
+              produces: [
+                id(f.id),
+                ...(def === null ? [] : [id({ kind: "default", schema: c.schema, table: c.table, name: c.name })]),
+              ],
               consumes: [
                 id({ kind: "table", schema: c.schema, name: c.table }),
-                ...desired.outgoingEdges(f.id).filter((e) => e.kind === "depends" || e.kind === "evaluates").map((e) => id(e.to)),
+                ...desired
+                  .outgoingEdges(f.id)
+                  .filter((e) => e.kind === "depends" || e.kind === "evaluates")
+                  .map((e) => id(e.to)),
               ],
               destroys: [],
               releases: [],
@@ -711,16 +719,18 @@ export function buildStatements(
             const a = after.payload as unknown as TypeAttributePayload;
             const ta = after.id as StableId & { kind: "typeAttribute" };
             reportCompositeInUse(ta, current, diagnostics);
-            statements.push(simple(
-              `ALTER TYPE ${quoteQualified(ta.schema, ta.type)} ALTER ATTRIBUTE ${quoteIdent(ta.name)} SET DATA TYPE ${a.type}${a.collation ? ` COLLATE ${quoteIdent(a.collation)}` : ""} CASCADE`,
-              {
-                verb: "alter",
-                kind: "typeAttribute",
-                consumes: [id(after.id), id({ kind: "type", schema: ta.schema, name: ta.type })],
-                phase: PHASE.alterType,
-                hazards: ["BC103"],
-              },
-            ));
+            statements.push(
+              simple(
+                `ALTER TYPE ${quoteQualified(ta.schema, ta.type)} ALTER ATTRIBUTE ${quoteIdent(ta.name)} SET DATA TYPE ${a.type}${a.collation ? ` COLLATE ${quoteIdent(a.collation)}` : ""} CASCADE`,
+                {
+                  verb: "alter",
+                  kind: "typeAttribute",
+                  consumes: [id(after.id), id({ kind: "type", schema: ta.schema, name: ta.type })],
+                  phase: PHASE.alterType,
+                  hazards: ["BC103"],
+                },
+              ),
+            );
             break;
           }
           case "extension": {
@@ -729,16 +739,18 @@ export function buildStatements(
             // The only extension attribute that is diffed at all (see `ExtensionPayload`),
             // and still never a DROP: declare-only means the object survives every plan.
             if (b.schema !== a.schema) {
-              statements.push(simple(
-                `ALTER EXTENSION ${quoteIdent((after.id as { name: string }).name)} SET SCHEMA ${quoteIdent(a.schema)}`,
-                {
-                  verb: "alter",
-                  kind: "extension",
-                  consumes: [id(after.id), id({ kind: "schema", schema: a.schema })],
-                  phase: PHASE.alterExtension,
-                  lockClass: "none",
-                },
-              ));
+              statements.push(
+                simple(
+                  `ALTER EXTENSION ${quoteIdent((after.id as { name: string }).name)} SET SCHEMA ${quoteIdent(a.schema)}`,
+                  {
+                    verb: "alter",
+                    kind: "extension",
+                    consumes: [id(after.id), id({ kind: "schema", schema: a.schema })],
+                    phase: PHASE.alterExtension,
+                    lockClass: "none",
+                  },
+                ),
+              );
             }
             break;
           }
@@ -768,16 +780,27 @@ export function buildStatements(
               });
             }
             if (b.persistence !== a.persistence) {
-              statements.push(simple(
-                `ALTER TABLE ${quoteQualified(t.schema, t.name)} SET ${a.persistence === "u" ? "UNLOGGED" : "LOGGED"}`,
-                { verb: "alter", kind: "table", consumes: [id(t)], phase: PHASE.alterTable, hazards: ["LK112"], rewrite: true },
-              ));
+              statements.push(
+                simple(
+                  `ALTER TABLE ${quoteQualified(t.schema, t.name)} SET ${a.persistence === "u" ? "UNLOGGED" : "LOGGED"}`,
+                  {
+                    verb: "alter",
+                    kind: "table",
+                    consumes: [id(t)],
+                    phase: PHASE.alterTable,
+                    hazards: ["LK112"],
+                    rewrite: true,
+                  },
+                ),
+              );
             }
             if (b.rowSecurity !== a.rowSecurity) {
-              statements.push(simple(
-                `ALTER TABLE ${quoteQualified(t.schema, t.name)} ${a.rowSecurity ? "ENABLE" : "DISABLE"} ROW LEVEL SECURITY`,
-                { verb: "alter", kind: "table", consumes: [id(t)], phase: PHASE.alterTable },
-              ));
+              statements.push(
+                simple(
+                  `ALTER TABLE ${quoteQualified(t.schema, t.name)} ${a.rowSecurity ? "ENABLE" : "DISABLE"} ROW LEVEL SECURITY`,
+                  { verb: "alter", kind: "table", consumes: [id(t)], phase: PHASE.alterTable },
+                ),
+              );
             }
             if ((b.clusterOn ?? null) !== (a.clusterOn ?? null)) {
               statements.push(
@@ -804,12 +827,14 @@ export function buildStatements(
           }
           case "sequence": {
             const p = after.payload as unknown as SequencePayload;
-            statements.push(simple(sequenceDDL(after.id, p, "alter"), {
-              verb: "alter",
-              kind: "sequence",
-              consumes: [id(after.id), ...(p.ownedBy ? [p.ownedBy] : [])],
-              phase: PHASE.alterSequence,
-            }));
+            statements.push(
+              simple(sequenceDDL(after.id, p, "alter"), {
+                verb: "alter",
+                kind: "sequence",
+                consumes: [id(after.id), ...(p.ownedBy ? [p.ownedBy] : [])],
+                phase: PHASE.alterSequence,
+              }),
+            );
             break;
           }
           default:
@@ -841,18 +866,20 @@ export function buildStatements(
             // that no longer exists, and `releases` would order it after its own column.
             if (!current.has({ kind: "column", schema: c.schema, table: c.table, name: c.name })) break;
             if (droppedColumns.has(id({ kind: "column", schema: c.schema, table: c.table, name: c.name }))) break;
-            statements.push(simple(
-              `ALTER TABLE ${quoteQualified(c.schema, c.table)} ALTER COLUMN ${quoteIdent(c.name)} DROP DEFAULT`,
-              {
-                verb: "drop",
-                kind: "default",
-                destroys: [id(f.id)],
-                consumes: [id({ kind: "column", schema: c.schema, table: c.table, name: c.name })],
-                releases: referencesHeldBy(current, f.id),
-                phase: PHASE.setDefault,
-                idempotent: true,
-              },
-            ));
+            statements.push(
+              simple(
+                `ALTER TABLE ${quoteQualified(c.schema, c.table)} ALTER COLUMN ${quoteIdent(c.name)} DROP DEFAULT`,
+                {
+                  verb: "drop",
+                  kind: "default",
+                  destroys: [id(f.id)],
+                  consumes: [id({ kind: "column", schema: c.schema, table: c.table, name: c.name })],
+                  releases: referencesHeldBy(current, f.id),
+                  phase: PHASE.setDefault,
+                  idempotent: true,
+                },
+              ),
+            );
             break;
           }
           case "comment": {
@@ -860,7 +887,11 @@ export function buildStatements(
             // A comment on something this plan drops needs no statement of its own, and
             // `COMMENT ON` against a missing object is an error, not a no-op.
             if (target.kind === "table" && droppedTables.has(id(target))) break;
-            if ((target.kind === "column" || target.kind === "constraint") && droppedTables.has(id({ kind: "table", schema: target.schema, name: target.table }))) break;
+            if (
+              (target.kind === "column" || target.kind === "constraint") &&
+              droppedTables.has(id({ kind: "table", schema: target.schema, name: target.table }))
+            )
+              break;
             if (!current.has(target)) break;
             statements.push(commentStatement(f.id, null));
             break;
@@ -868,19 +899,21 @@ export function buildStatements(
           case "typeAttribute": {
             const ta = f.id as StableId & { kind: "typeAttribute" };
             if (droppedTypes.has(id({ kind: "type", schema: ta.schema, name: ta.type }))) break;
-            statements.push(simple(
-              `ALTER TYPE ${quoteQualified(ta.schema, ta.type)} DROP ATTRIBUTE IF EXISTS ${quoteIdent(ta.name)} CASCADE`,
-              {
-                verb: "drop",
-                kind: "typeAttribute",
-                destroys: [id(f.id)],
-                consumes: [id({ kind: "type", schema: ta.schema, name: ta.type })],
-                phase: PHASE.alterType,
-                dataLoss: "destructive",
-                idempotent: true,
-                hazards: ["DS103"],
-              },
-            ));
+            statements.push(
+              simple(
+                `ALTER TYPE ${quoteQualified(ta.schema, ta.type)} DROP ATTRIBUTE IF EXISTS ${quoteIdent(ta.name)} CASCADE`,
+                {
+                  verb: "drop",
+                  kind: "typeAttribute",
+                  destroys: [id(f.id)],
+                  consumes: [id({ kind: "type", schema: ta.schema, name: ta.type })],
+                  phase: PHASE.alterType,
+                  dataLoss: "destructive",
+                  idempotent: true,
+                  hazards: ["DS103"],
+                },
+              ),
+            );
             break;
           }
           case "extension":
@@ -931,38 +964,44 @@ export function buildStatements(
             break;
           }
           case "sequence":
-            statements.push(simple(`DROP SEQUENCE IF EXISTS ${quoteQualified(f.id.schema, (f.id as { name: string }).name)}`, {
-              verb: "drop",
-              kind: "sequence",
-              destroys: [id(f.id)],
-              releases: referencesHeldBy(current, f.id),
-              phase: PHASE.dropSequence,
-              dataLoss: "destructive",
-              idempotent: true,
-            }));
+            statements.push(
+              simple(`DROP SEQUENCE IF EXISTS ${quoteQualified(f.id.schema, (f.id as { name: string }).name)}`, {
+                verb: "drop",
+                kind: "sequence",
+                destroys: [id(f.id)],
+                releases: referencesHeldBy(current, f.id),
+                phase: PHASE.dropSequence,
+                dataLoss: "destructive",
+                idempotent: true,
+              }),
+            );
             break;
           case "type":
-            statements.push(simple(`DROP TYPE IF EXISTS ${quoteQualified(f.id.schema, (f.id as { name: string }).name)}`, {
-              verb: "drop",
-              kind: "type",
-              destroys: [id(f.id), ...current.descendantsOf(f.id).map((c) => id(c.id))],
-              releases: referencesHeldBy(current, f.id),
-              phase: PHASE.dropType,
-              dataLoss: "destructive",
-              idempotent: true,
-              hazards: ["DS104"],
-            }));
+            statements.push(
+              simple(`DROP TYPE IF EXISTS ${quoteQualified(f.id.schema, (f.id as { name: string }).name)}`, {
+                verb: "drop",
+                kind: "type",
+                destroys: [id(f.id), ...current.descendantsOf(f.id).map((c) => id(c.id))],
+                releases: referencesHeldBy(current, f.id),
+                phase: PHASE.dropType,
+                dataLoss: "destructive",
+                idempotent: true,
+                hazards: ["DS104"],
+              }),
+            );
             break;
           case "schema":
-            statements.push(simple(`DROP SCHEMA IF EXISTS ${quoteIdent(f.id.schema)}`, {
-              verb: "drop",
-              kind: "schema",
-              destroys: [id(f.id)],
-              phase: PHASE.dropSchema,
-              dataLoss: "destructive",
-              idempotent: true,
-              hazards: ["DS101"],
-            }));
+            statements.push(
+              simple(`DROP SCHEMA IF EXISTS ${quoteIdent(f.id.schema)}`, {
+                verb: "drop",
+                kind: "schema",
+                destroys: [id(f.id)],
+                phase: PHASE.dropSchema,
+                dataLoss: "destructive",
+                idempotent: true,
+                hazards: ["DS101"],
+              }),
+            );
             break;
           default:
             break;
@@ -1076,10 +1115,7 @@ function createType(t: StableId & { kind: "type" }, p: TypePayload, desired: Sch
       simple(`CREATE TYPE ${name} AS ENUM (${labels.map(quoteLiteral).join(", ")})`, {
         verb: "create",
         kind: "type",
-        produces: [
-          id(t),
-          ...labels.map((l) => id({ kind: "enumLabel", schema: t.schema, type: t.name, name: l })),
-        ],
+        produces: [id(t), ...labels.map((l) => id({ kind: "enumLabel", schema: t.schema, type: t.name, name: l }))],
         consumes,
         phase: PHASE.createType,
         lockClass: "none",
@@ -1162,26 +1198,38 @@ function alterType(
   if (a.typtype !== "d") return out;
 
   if (b.default !== a.default) {
-    out.push(mk(a.default === null ? `ALTER DOMAIN ${name} DROP DEFAULT` : `ALTER DOMAIN ${name} SET DEFAULT ${a.default}`, { idempotent: true }));
+    out.push(
+      mk(a.default === null ? `ALTER DOMAIN ${name} DROP DEFAULT` : `ALTER DOMAIN ${name} SET DEFAULT ${a.default}`, {
+        idempotent: true,
+      }),
+    );
   }
   if (b.notNull !== a.notNull) {
-    out.push(mk(`ALTER DOMAIN ${name} ${a.notNull ? "SET" : "DROP"} NOT NULL`, {
-      idempotent: true,
-      // Every column of the domain's type is scanned, on every table that uses it.
-      hazards: a.notNull ? ["MF104", "LK107"] : [],
-    }));
+    out.push(
+      mk(`ALTER DOMAIN ${name} ${a.notNull ? "SET" : "DROP"} NOT NULL`, {
+        idempotent: true,
+        // Every column of the domain's type is scanned, on every table that uses it.
+        hazards: a.notNull ? ["MF104", "LK107"] : [],
+      }),
+    );
   }
   const before = new Set(b.checks ?? []);
   const after = new Set(a.checks ?? []);
   const nameOf = (c: string): string => c.slice(0, c.indexOf(" "));
   for (const c of before) {
     if (after.has(c)) continue;
-    out.push(mk(`ALTER DOMAIN ${name} DROP CONSTRAINT IF EXISTS ${quoteIdent(nameOf(c))}`, { verb: "drop", idempotent: true }));
+    out.push(
+      mk(`ALTER DOMAIN ${name} DROP CONSTRAINT IF EXISTS ${quoteIdent(nameOf(c))}`, { verb: "drop", idempotent: true }),
+    );
   }
   for (const c of after) {
     if (before.has(c)) continue;
     const sp = c.indexOf(" ");
-    out.push(mk(`ALTER DOMAIN ${name} ADD CONSTRAINT ${quoteIdent(c.slice(0, sp))} ${c.slice(sp + 1)}`, { hazards: ["MF106"] }));
+    out.push(
+      mk(`ALTER DOMAIN ${name} ADD CONSTRAINT ${quoteIdent(c.slice(0, sp))} ${c.slice(sp + 1)}`, {
+        hazards: ["MF106"],
+      }),
+    );
   }
   // `desired` is unused for a domain, but the signature matches `createType`'s so a
   // future composite path has the IR it needs without another plumbing change.
@@ -1244,7 +1292,13 @@ function setDefault(d: StableId, expression: string, desired: SchemaIR): Stateme
       produces: [id(d)],
       // The `evaluates` edges are what force a default naming a NEW enum label into the
       // segment after its `ADD VALUE` — the §1.3 bug, at the grain the default now has.
-      consumes: [id(column), ...desired.outgoingEdges(d).filter((e) => e.kind !== "owner").map((e) => id(e.to))],
+      consumes: [
+        id(column),
+        ...desired
+          .outgoingEdges(d)
+          .filter((e) => e.kind !== "owner")
+          .map((e) => id(e.to)),
+      ],
       phase: PHASE.setDefault,
       idempotent: true,
       // Since PG 11 a non-volatile default uses `attmissingval` and does not rewrite;
@@ -1299,12 +1353,7 @@ function commentTarget(target: StableId): [string, string[]] {
   }
 }
 
-function sequenceDDL(
-  sid: StableId,
-  p: SequencePayload,
-  mode: "create" | "alter",
-  includeOwnedBy = true,
-): string {
+function sequenceDDL(sid: StableId, p: SequencePayload, mode: "create" | "alter", includeOwnedBy = true): string {
   const name = quoteQualified(idSchema(sid), (sid as { name: string }).name);
   const head = mode === "create" ? `CREATE SEQUENCE IF NOT EXISTS ${name}` : `ALTER SEQUENCE ${name}`;
   const body = `${head} AS ${p.dataType} INCREMENT BY ${p.increment} MINVALUE ${p.minValue} MAXVALUE ${p.maxValue} START WITH ${p.start} CACHE ${p.cache} ${p.cycle ? "CYCLE" : "NO CYCLE"}`;
@@ -1338,8 +1387,7 @@ interface AddConstraintContext {
  * or D6 refuses the plan, and guessing at a definition grammar is how that stops being
  * true on a version we did not test.
  */
-const PK_UNIQUE_DEF =
-  /^(PRIMARY KEY|UNIQUE(?: NULLS NOT DISTINCT)?)\s*\(([^()]*)\)(?:\s+INCLUDE\s*\(([^()]*)\))?$/;
+const PK_UNIQUE_DEF = /^(PRIMARY KEY|UNIQUE(?: NULLS NOT DISTINCT)?)\s*\(([^()]*)\)(?:\s+INCLUDE\s*\(([^()]*)\))?$/;
 
 interface RebuildableUnique {
   readonly primary: boolean;
@@ -1544,17 +1592,14 @@ function uniquenessProviders(ir: SchemaIR, fk: StableId): string[] {
 
 function validateConstraint(f: Fact): Statement {
   const c = f.id as StableId & { kind: "constraint" };
-  return simple(
-    `ALTER TABLE ${quoteQualified(c.schema, c.table)} VALIDATE CONSTRAINT ${quoteIdent(c.name)}`,
-    {
-      verb: "alter",
-      kind: "constraint",
-      consumes: [id(f.id)],
-      lockClass: "shareUpdateExclusive",
-      idempotent: true,
-      phase: PHASE.validateConstraint,
-    },
-  );
+  return simple(`ALTER TABLE ${quoteQualified(c.schema, c.table)} VALIDATE CONSTRAINT ${quoteIdent(c.name)}`, {
+    verb: "alter",
+    kind: "constraint",
+    consumes: [id(f.id)],
+    lockClass: "shareUpdateExclusive",
+    idempotent: true,
+    phase: PHASE.validateConstraint,
+  });
 }
 
 function dropConstraint(f: Fact, current: SchemaIR): Statement {
@@ -1805,9 +1850,7 @@ function notNullTransition(
   const catalogued = a.notNullConstraint !== null;
   // design/06 §3.4: MF104 is `error` unless the table is proven empty. `probeEmptiness`
   // is the only thing that can prove it, and offline it proves nothing.
-  const mf104 = emptyTables.has(id({ kind: "table", schema: c.schema, name: c.table }))
-    ? []
-    : ["MF104"];
+  const mf104 = emptyTables.has(id({ kind: "table", schema: c.schema, name: c.table })) ? [] : ["MF104"];
 
   if (b.notNull && !a.notNull) {
     out.push(mk(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP NOT NULL`, { idempotent: true }));

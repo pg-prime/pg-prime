@@ -473,7 +473,10 @@ function digSelect(n: SelectNode | SetOpNode, out: string[]): boolean {
     if (!digAll(n.groupBy, out)) return false
   }
   return (
-    digOpt(n.having, out) && digOrder(n.orderBy, out) && digOpt(n.limit, out) && digOpt(n.offset, out)
+    digOpt(n.having, out) &&
+    digOrder(n.orderBy, out) &&
+    digOpt(n.limit, out) &&
+    digOpt(n.offset, out)
   )
 }
 
@@ -655,10 +658,7 @@ function rewriteOrder(
   return out === undefined ? xs : Object.freeze(out)
 }
 
-function rewriteWindow(
-  w: WindowDef | { ref: string },
-  cse: Cse,
-): WindowDef | { ref: string } {
+function rewriteWindow(w: WindowDef | { ref: string }, cse: Cse): WindowDef | { ref: string } {
   if ('ref' in w) return w
   const partitionBy = w.partitionBy === undefined ? undefined : rewriteAll(w.partitionBy, cse)
   const orderBy = rewriteOrder(w.orderBy, cse)
@@ -739,10 +739,7 @@ function rewriteClauses(n: SelectNode, cse: Cse): SelectNode {
   })
 }
 
-function rewriteItems(
-  items: readonly ProjectionItem[],
-  cse: Cse,
-): readonly ProjectionItem[] {
+function rewriteItems(items: readonly ProjectionItem[], cse: Cse): readonly ProjectionItem[] {
   let changed = false
   const out = items.map((item) => {
     if (item.nested !== undefined) return item
@@ -847,7 +844,7 @@ function jsonVariant(
     throw new BuilderError(
       `pg-prime: relation "${label}" asks for { variant: 'json' } in a statement that compares ` +
         'whole rows (distinct, union, intersect, except), and PostgreSQL cannot compare json ' +
-        "(42883). Drop the option — jsonb is used there automatically — or drop the distinct.",
+        '(42883). Drop the option — jsonb is used there automatically — or drop the distinct.',
     )
   }
   return 'jsonb'
@@ -1058,7 +1055,10 @@ function flatten(
  * `GroupPlan.sentinel` indexes the group's *children*; the decoder needs an index into the *row*.
  * Only a leaf column can serve — a nested group or a relation has no single column to test.
  */
-function sentinelRow(sentinel: number | undefined, fields: readonly FieldPlan[]): number | undefined {
+function sentinelRow(
+  sentinel: number | undefined,
+  fields: readonly FieldPlan[],
+): number | undefined {
   if (sentinel === undefined) return undefined
   const f = fields[sentinel]
   return f !== undefined && f.k === 'col' ? f.idx : undefined

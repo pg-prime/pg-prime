@@ -48,10 +48,23 @@ describe("baseline", () => {
       const replayed = await fresh("replayed");
       const dir = (await emptyMigrations("bl-out")).dir;
 
-      const r = await runCli(["migrate", "baseline", "--url", urlOf(dbConn(adopted)), "--migrations", dir, "--output", "json"]);
+      const r = await runCli([
+        "migrate",
+        "baseline",
+        "--url",
+        urlOf(dbConn(adopted)),
+        "--migrations",
+        dir,
+        "--output",
+        "json",
+      ]);
       expect(r.code, r.stdout + r.stderr).toBe(EXIT.ok);
       const envelope = envelopeOf(r);
-      const migration = envelope["migration"] as { statements: number; fingerprint: string; proof: { status: string; reason: string } };
+      const migration = envelope["migration"] as {
+        statements: number;
+        fingerprint: string;
+        proof: { status: string; reason: string };
+      };
       expect(migration.proof).toMatchObject({ status: "skipped", reason: "baseline" });
       expect(migration.statements).toBeGreaterThan(0);
 
@@ -68,7 +81,11 @@ describe("baseline", () => {
         from: { fingerprint: string };
         proof: { status: string; reason: string };
       };
-      expect(plan.proof).toEqual({ status: "skipped", reason: "baseline", at: expect.any(String) as unknown as string });
+      expect(plan.proof).toEqual({
+        status: "skipped",
+        reason: "baseline",
+        at: expect.any(String) as unknown as string,
+      });
 
       /* Replay: apply it to an empty database and compare catalogs. */
       const applied = await applyPending(dbConn(replayed), dir);
@@ -79,7 +96,9 @@ describe("baseline", () => {
       /* And `status` on the adopted database has nothing pending. */
       const report = await migrationStatus(dbConn(adopted), dir);
       expect(report.status).toBe("up_to_date");
-      expect(report.migrations.map((m) => [m.id, m.state, m.checksumOk])).toEqual([["0000_baseline", "baselined", true]]);
+      expect(report.migrations.map((m) => [m.id, m.state, m.checksumOk])).toEqual([
+        ["0000_baseline", "baselined", true],
+      ]);
     },
     T,
   );
@@ -91,7 +110,9 @@ describe("baseline", () => {
       const dir = (await emptyMigrations("bl-occupied")).dir;
       const url = urlOf(dbConn(database));
 
-      expect((await runCli(["migrate", "baseline", "--url", url, "--migrations", dir, "--output", "json"])).code).toBe(EXIT.ok);
+      expect((await runCli(["migrate", "baseline", "--url", url, "--migrations", dir, "--output", "json"])).code).toBe(
+        EXIT.ok,
+      );
 
       const refused = await runCli(["migrate", "baseline", "--url", url, "--migrations", dir, "--output", "json"]);
       expect(refused.code).toBe(EXIT.error);
@@ -101,7 +122,17 @@ describe("baseline", () => {
 
       // --force gets past the history check and then hits the OTHER refusal that matters:
       // a migration file is immutable, so `writePlan` will not overwrite one.
-      const forced = await runCli(["migrate", "baseline", "--url", url, "--migrations", dir, "--force", "--output", "json"]);
+      const forced = await runCli([
+        "migrate",
+        "baseline",
+        "--url",
+        url,
+        "--migrations",
+        dir,
+        "--force",
+        "--output",
+        "json",
+      ]);
       expect(forced.code).toBe(EXIT.error);
       expect((envelopeOf(forced)["error"] as { message: string }).message).toContain("refusing to overwrite");
     },
@@ -120,7 +151,18 @@ describe("baseline", () => {
       const database = await fresh("at", "evolve/current.sql");
       const url = urlOf(dbConn(database));
 
-      const r = await runCli(["migrate", "baseline", "--url", url, "--migrations", chain.dir, "--at", "0001", "--output", "json"]);
+      const r = await runCli([
+        "migrate",
+        "baseline",
+        "--url",
+        url,
+        "--migrations",
+        chain.dir,
+        "--at",
+        "0001",
+        "--output",
+        "json",
+      ]);
       expect(r.code, r.stdout + r.stderr).toBe(EXIT.ok);
       const envelope = envelopeOf(r);
       expect(envelope["status"]).toBe("marked");

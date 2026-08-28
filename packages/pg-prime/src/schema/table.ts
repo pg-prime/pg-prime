@@ -107,7 +107,10 @@ export type Refs<T extends AnyTable> = T[typeof REFS]
 
 /** design/05 D12: DB names default from the TS key via the casing strategy. */
 export function snakeCase(key: string): string {
-  return key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').toLowerCase()
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .toLowerCase()
 }
 
 export interface TableOptions {
@@ -122,7 +125,12 @@ class TableImpl implements TableRuntime {
   readonly extras: readonly TableExtra[]
   readonly #byKey: Map<string, RefRuntime>
 
-  constructor(name: string, schema: string | undefined, columns: readonly RefRuntime[], extras: readonly TableExtra[]) {
+  constructor(
+    name: string,
+    schema: string | undefined,
+    columns: readonly RefRuntime[],
+    extras: readonly TableExtra[],
+  ) {
     this.name = name
     this.schema = schema
     this.columns = columns
@@ -204,7 +212,13 @@ export function pgTable<N extends string, B extends Record<string, AnyCol>>(
       )
     }
     dbNames.set(dbName, key)
-    const rt: RefRuntime = Object.freeze({ table: name, schema: options?.schema, key, dbName, column: col })
+    const rt: RefRuntime = Object.freeze({
+      table: name,
+      schema: options?.schema,
+      key,
+      dbName,
+      column: col,
+    })
     runtimes.push(rt)
     refs[key] = Object.freeze({ [SRC]: name, [NAME]: key, [META]: col, $: rt })
   }

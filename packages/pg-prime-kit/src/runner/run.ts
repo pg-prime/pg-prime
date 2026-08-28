@@ -21,12 +21,7 @@ import { hostname } from "node:os";
 import pg from "pg";
 import { extractCatalog, type CatalogClient, type Diagnostic } from "../catalog/extract.js";
 import { RUNNER_EXIT, type ExitCode, type RunnerStatus } from "../cli/exit.js";
-import {
-  describeDrift,
-  driftSentence,
-  listCheckpoints,
-  type DriftReport,
-} from "../checkpoint/checkpoint.js";
+import { describeDrift, driftSentence, listCheckpoints, type DriftReport } from "../checkpoint/checkpoint.js";
 import { runBatchStatement, type BatchEvent, type LagEvent } from "../data/batch.js";
 import type { Segment } from "../diff/order.js";
 import { withClient, type ConnInfo } from "../db/pg.js";
@@ -234,7 +229,12 @@ export interface ApplyPendingOptions {
 
 export type RunnerEvent =
   | { readonly kind: "lock"; readonly state: "waiting" | "acquired" | "unavailable"; readonly waitedMs: number }
-  | { readonly kind: "migration"; readonly id: string; readonly state: "start" | "done" | "retry" | "failed"; readonly detail?: string }
+  | {
+      readonly kind: "migration";
+      readonly id: string;
+      readonly state: "start" | "done" | "retry" | "failed";
+      readonly detail?: string;
+    }
   | { readonly kind: "statement"; readonly id: string; readonly index: number; readonly total: number }
   | BatchEvent
   | LagEvent
@@ -285,7 +285,12 @@ class CaptureClient implements CatalogClient {
 
 /* --------------------------------- helpers -------------------------------- */
 
-function newRow(file: MigrationFile, total: number, engineVersion: string, appliedFrom: string | null): NewMigrationRow {
+function newRow(
+  file: MigrationFile,
+  total: number,
+  engineVersion: string,
+  appliedFrom: string | null,
+): NewMigrationRow {
   return {
     id: file.id,
     seq: file.seq,
@@ -434,13 +439,15 @@ export async function applyPendingOn(
   const warnings: string[] = [];
   const diagnostics: Diagnostic[] = [];
 
-  const empty: PreflightReport = { invalidIndexes: [], notValidConstraints: [], ccnewLeftovers: [], touchedByPending: [] };
+  const empty: PreflightReport = {
+    invalidIndexes: [],
+    notValidConstraints: [],
+    ccnewLeftovers: [],
+    touchedByPending: [],
+  };
   const noLock: LockReport = { acquired: false, runId: null, waitedMs: 0, holder: null, stale: false };
   const noRepeatables: RepeatablesReport = { applied: [], unchanged: [] };
-  const done = (
-    status: RunnerStatus,
-    extra: Partial<ApplyPendingResult> = {},
-  ): ApplyPendingResult => ({
+  const done = (status: RunnerStatus, extra: Partial<ApplyPendingResult> = {}): ApplyPendingResult => ({
     status,
     exitCode: RUNNER_EXIT[status],
     applied: [],
@@ -477,7 +484,9 @@ export async function applyPendingOn(
   /* 3. Ensure the history schema. Read-only under --dry-run. */
   if (!dryRun) await ensureHistory(client);
   else if (!(await historyPresent(client))) {
-    warnings.push(`${HISTORY_SCHEMA}.migrations does not exist yet; --dry-run reports the run against an empty history`);
+    warnings.push(
+      `${HISTORY_SCHEMA}.migrations does not exist yet; --dry-run reports the run against an empty history`,
+    );
   }
   const present = dryRun ? await historyPresent(client) : true;
 
@@ -495,9 +504,7 @@ export async function applyPendingOn(
   let lock: LockReport = noLock;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let heartbeatConn: { readonly client: CatalogClient; readonly close: () => Promise<void> } | null = null;
-  const database = String(
-    (await client.query("SELECT current_database() AS db")).rows[0]?.["db"] ?? "",
-  );
+  const database = String((await client.query("SELECT current_database() AS db")).rows[0]?.["db"] ?? "");
 
   if (!dryRun) {
     const deadline = started + (options.lockWaitMs ?? DEFAULTS.lockWaitMs);
@@ -539,10 +546,18 @@ export async function applyPendingOn(
     }
     await takeLease(client, runId, appliedFrom);
     emit({ kind: "lock", state: "acquired", waitedMs });
-    lock = { acquired: true, runId, waitedMs, holder: lease, stale: lease !== null && lease.heartbeatAgeMs > staleAfter };
+    lock = {
+      acquired: true,
+      runId,
+      waitedMs,
+      holder: lease,
+      stale: lease !== null && lease.heartbeatAgeMs > staleAfter,
+    };
     heartbeatConn = options.heartbeatConnection ? await options.heartbeatConnection().catch(() => null) : null;
     if (options.heartbeatConnection && heartbeatConn === null) {
-      warnings.push("could not open a second connection for the lease heartbeat; beating from the migration connection instead");
+      warnings.push(
+        "could not open a second connection for the lease heartbeat; beating from the migration connection instead",
+      );
     }
     const beatOn = heartbeatConn?.client ?? client;
     heartbeat = setInterval(() => {
@@ -640,7 +655,7 @@ export async function applyPendingOn(
         jump !== undefined
           ? `fresh database: jumped to checkpoint ${jump.id} and recorded ${superseded.length} earlier file(s) as superseded`
           : `existing database: recorded ${superseded.length} checkpoint file(s) as superseded and continued linearly ` +
-            `(${superseded.map((f) => f.id).join(", ")})`,
+              `(${superseded.map((f) => f.id).join(", ")})`,
       );
     } else if (superseded.length > 0) {
       for (const file of superseded) settled.add(file.id);
@@ -655,7 +670,10 @@ export async function applyPendingOn(
           done("failed", {
             lock,
             pending: pending.map((f) => f.id),
-            error: { code: "unknown_target", message: `--to ${JSON.stringify(options.to)} names no migration in ${migrationsDir}` },
+            error: {
+              code: "unknown_target",
+              message: `--to ${JSON.stringify(options.to)} names no migration in ${migrationsDir}`,
+            },
           }),
         );
       }
@@ -680,7 +698,9 @@ export async function applyPendingOn(
       if (fatal) {
         return await finish(
           done("failed", {
-            lock, applied, preflight,
+            lock,
+            applied,
+            preflight,
             pending: pending.map((f) => f.id),
             error: { code: "plan_invalid", message: fatal.message, migration: file.id },
           }),
@@ -695,7 +715,13 @@ export async function applyPendingOn(
         if (options.dev === true) warnings.push(text);
         else {
           return await finish(
-            done("drift", { lock, applied, preflight, pending: pending.map((f) => f.id), error: { code: "checksum_drift", message: text, migration: file.id } }),
+            done("drift", {
+              lock,
+              applied,
+              preflight,
+              pending: pending.map((f) => f.id),
+              error: { code: "checksum_drift", message: text, migration: file.id },
+            }),
           );
         }
       }
@@ -714,7 +740,9 @@ export async function applyPendingOn(
         if (want !== have) {
           return await finish(
             done("drift", {
-              lock, applied, preflight,
+              lock,
+              applied,
+              preflight,
               pending: pending.map((f) => f.id),
               error: {
                 code: "fingerprint_mismatch",
@@ -750,7 +778,9 @@ export async function applyPendingOn(
           const named = drift === null ? null : driftSentence(drift);
           return await finish(
             done("drift", {
-              lock, applied, preflight,
+              lock,
+              applied,
+              preflight,
               pending: pending.map((f) => f.id),
               fingerprint: live,
               error: {
@@ -781,7 +811,10 @@ export async function applyPendingOn(
       const progress =
         file.directives.batch !== null && present && !dryRun ? await readDataProgress(client, file.id) : null;
       const outcome = await runFile(target, file, exec, byId.get(file.id), {
-        engineVersion, appliedFrom, sleep, emit,
+        engineVersion,
+        appliedFrom,
+        sleep,
+        emit,
         lockTimeout: options.lockTimeout ?? DEFAULTS.lockTimeout,
         ...(options.statementTimeout === undefined ? {} : { statementTimeout: options.statementTimeout }),
         retryBaseMs: options.retryBaseMs ?? DEFAULTS.retryBaseMs,
@@ -794,7 +827,10 @@ export async function applyPendingOn(
         emit({ kind: "migration", id: file.id, state: "failed", detail: outcome.failure.message });
         return await finish(
           done("failed", {
-            lock, applied, preflight, fingerprint,
+            lock,
+            applied,
+            preflight,
+            fingerprint,
             pending: pending.map((f) => f.id).filter((id) => !applied.some((a) => a.id === id)),
             dryRun: dryRun ? capture.issued : null,
             error: outcome.failure,
@@ -824,7 +860,11 @@ export async function applyPendingOn(
     const status: RunnerStatus = dryRun ? "dry_run" : applied.length > 0 ? "applied" : "up_to_date";
     return await finish(
       done(status, {
-        lock, applied, preflight, fingerprint, repeatables,
+        lock,
+        applied,
+        preflight,
+        fingerprint,
+        repeatables,
         pending: [],
         dryRun: dryRun ? capture.issued : null,
       }),
@@ -893,7 +933,10 @@ async function runFile(
     sql: recordAppliedSql(record),
     verb: "alter",
     kind: "history",
-    produces: [], consumes: [], destroys: [], releases: [],
+    produces: [],
+    consumes: [],
+    destroys: [],
+    releases: [],
     transactionality: "transactional",
     lockClass: "rowExclusive",
     idempotent: true,
@@ -923,18 +966,28 @@ async function runFile(
     const budget = RETRY[state ?? ""] ?? 1;
     if (retries + 1 < budget) {
       retries += 1;
-      ctx.emit({ kind: "migration", id: file.id, state: "retry", detail: `SQLSTATE ${state ?? "?"} attempt ${retries + 1}/${budget}` });
+      ctx.emit({
+        kind: "migration",
+        id: file.id,
+        state: "retry",
+        detail: `SQLSTATE ${state ?? "?"} attempt ${retries + 1}/${budget}`,
+      });
       await ctx.sleep(backoff(retries, ctx.retryBaseMs, ctx.random));
       continue;
     }
     const applied = Math.min(report.appliedStatements, total);
-    await markFailed(client, { ...record, status: "failed" }, {
-      code: "sql_error",
-      message: report.error?.message ?? "unknown failure",
-      ...(state === undefined ? {} : { sqlState: state }),
-      ...(report.error === undefined ? {} : { statementIndex: report.error.statementIndex, sql: report.error.sql }),
-      attempts: retries + 1,
-    }, atomic ? 0 : applied).catch(() => undefined);
+    await markFailed(
+      client,
+      { ...record, status: "failed" },
+      {
+        code: "sql_error",
+        message: report.error?.message ?? "unknown failure",
+        ...(state === undefined ? {} : { sqlState: state }),
+        ...(report.error === undefined ? {} : { statementIndex: report.error.statementIndex, sql: report.error.sql }),
+        attempts: retries + 1,
+      },
+      atomic ? 0 : applied,
+    ).catch(() => undefined);
     return outcome(Date.now() - startedAt, null, retries, {
       code: "sql_error",
       message: `${file.id} failed: ${report.error?.message ?? "unknown failure"}`,
@@ -1024,22 +1077,35 @@ async function runBare(
         attempt += 1;
         if (attempt < budget) {
           retries += 1;
-          ctx.emit({ kind: "migration", id: file.id, state: "retry", detail: `statement ${i}: SQLSTATE ${state ?? "?"} attempt ${attempt + 1}/${budget}` });
+          ctx.emit({
+            kind: "migration",
+            id: file.id,
+            state: "retry",
+            detail: `statement ${i}: SQLSTATE ${state ?? "?"} attempt ${attempt + 1}/${budget}`,
+          });
           await ctx.sleep(backoff(attempt, ctx.retryBaseMs, ctx.random));
           continue;
         }
         await resetSessionGucs(client).catch(() => undefined);
-        await markFailed(client, { ...record, status: "failed" }, {
-          code: "sql_error",
-          message: message(err),
-          ...(state === undefined ? {} : { sqlState: state }),
-          statementIndex: i,
-          sql: s.sql,
-          attempts: attempt,
-        }, i).catch(() => undefined);
+        await markFailed(
+          client,
+          { ...record, status: "failed" },
+          {
+            code: "sql_error",
+            message: message(err),
+            ...(state === undefined ? {} : { sqlState: state }),
+            statementIndex: i,
+            sql: s.sql,
+            attempts: attempt,
+          },
+          i,
+        ).catch(() => undefined);
         return {
           retries,
-          batch: directive === null ? null : { rowsDone: progress.rowsDone, iterations: progress.iterations, resumed: resumedBatch },
+          batch:
+            directive === null
+              ? null
+              : { rowsDone: progress.rowsDone, iterations: progress.iterations, resumed: resumedBatch },
           failure: {
             code: "sql_error",
             message: `${file.id} failed at statement ${i}: ${message(err)}`,
@@ -1059,7 +1125,10 @@ async function runBare(
   return {
     retries,
     failure: null,
-    batch: directive === null ? null : { rowsDone: progress.rowsDone, iterations: progress.iterations, resumed: resumedBatch },
+    batch:
+      directive === null
+        ? null
+        : { rowsDone: progress.rowsDone, iterations: progress.iterations, resumed: resumedBatch },
   };
 }
 
@@ -1157,7 +1226,10 @@ export interface LeaseInspection {
   readonly staleAfterMs: number;
 }
 
-export async function inspectLease(client: CatalogClient, staleAfterMs: number = DEFAULTS.staleLockAfterMs): Promise<LeaseInspection> {
+export async function inspectLease(
+  client: CatalogClient,
+  staleAfterMs: number = DEFAULTS.staleLockAfterMs,
+): Promise<LeaseInspection> {
   if (!(await historyPresent(client))) return { lease: null, stale: false, staleAfterMs };
   const lease = await readLease(client);
   return { lease, stale: lease !== null && lease.heartbeatAgeMs > staleAfterMs, staleAfterMs };

@@ -37,7 +37,11 @@ export interface DiagnosticSignal {
 }
 
 export interface PoolerDiagnosis {
-  readonly verdict: 'direct' | 'likely-session-pooled' | 'likely-transaction-pooled' | 'inconclusive'
+  readonly verdict:
+    | 'direct'
+    | 'likely-session-pooled'
+    | 'likely-transaction-pooled'
+    | 'inconclusive'
   /** Never `'high'`. This is a heuristic, by construction. */
   readonly confidence: 'low' | 'medium'
   readonly recommendedPoolerMode: PoolerMode
@@ -81,7 +85,11 @@ export interface DbDiagnosis {
   readonly notes: readonly string[]
 }
 
-type Exec = (conn: PgConnection, sql: string, params?: readonly string[]) => Promise<readonly (readonly unknown[])[]>
+type Exec = (
+  conn: PgConnection,
+  sql: string,
+  params?: readonly string[],
+) => Promise<readonly (readonly unknown[])[]>
 
 const exec: Exec = async (conn, sql, params = []) => {
   const r = await conn.execute({ text: sql, params: params as string[] })
@@ -215,11 +223,7 @@ export async function diagnosePooler(
       ? 'likely-transaction-pooled'
       : 'direct'
   const recommended: PoolerMode =
-    verdict === 'direct'
-      ? 'none'
-      : namedWorks === true
-        ? 'pgbouncer-transaction'
-        : 'transaction'
+    verdict === 'direct' ? 'none' : namedWorks === true ? 'pgbouncer-transaction' : 'transaction'
   return Object.freeze({
     verdict,
     // Medium once the decisive probe answered; low when only the pid pair spoke.
@@ -358,7 +362,9 @@ export async function diagnose(inputs: DiagnoseInputs): Promise<DbDiagnosis> {
       [`{${EFFECTIVE.join(',')}}`],
     )
     for (const row of rows) settings[String(row[0])] = String(row[1])
-    maxConnections = numeric(settings['max_connections'] ?? cell(await exec(conn, 'show max_connections')))
+    maxConnections = numeric(
+      settings['max_connections'] ?? cell(await exec(conn, 'show max_connections')),
+    )
     superuserReserved = numeric(cell(await exec(conn, 'show superuser_reserved_connections')))
     inUse = numeric(cell(await exec(conn, 'select count(*) from pg_catalog.pg_stat_activity')))
   } finally {

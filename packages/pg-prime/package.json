@@ -1,24 +1,25 @@
 {
   "name": "pg-prime",
   "version": "0.0.0",
-  "description": "PostgreSQL-only, type-safe TypeScript ORM. Zero dependencies, ESM-only. Pre-alpha \u2014 the API will change.",
+  "description": "PostgreSQL-only, type-safe TypeScript ORM. Zero dependencies, ESM-only. Pre-alpha — the API will change.",
+  "keywords": [
+    "migrations",
+    "orm",
+    "postgres",
+    "postgresql",
+    "typesafe",
+    "typescript"
+  ],
   "license": "MPL-2.0",
-  "type": "module",
-  "engines": {
-    "node": ">=22.12"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-prime/pg-prime.git"
   },
-  "peerDependencies": {
-    "pg": ">=8.11"
-  },
-  "peerDependenciesMeta": {
-    "pg": {
-      "optional": true
-    }
-  },
-  "sideEffects": false,
   "files": [
     "dist"
   ],
+  "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types@<5.9": "./dist/unsupported-typescript.d.ts",
@@ -60,19 +61,18 @@
     "test:pg": "vitest run",
     "test:watch": "vitest --project unit"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/pg-prime/pg-prime.git"
-  },
-  "keywords": [
-    "postgres",
-    "postgresql",
-    "orm",
-    "typescript",
-    "migrations",
-    "typesafe"
-  ],
   "devDependencies": {
     "pg": "^8.23.0"
+  },
+  "peerDependencies": {
+    "pg": ">=8.11"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.12"
   }
 }

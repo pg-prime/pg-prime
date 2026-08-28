@@ -134,9 +134,7 @@ describe("design/06 §3.5 — the three rewrites that need a second file", () =>
         expect(result.proof?.status, result.proof?.error).toBe("passed");
         expect(result.proof?.dumpOracle?.status).toBe("passed");
 
-        expect(files.map((f) => `${f.id}:${f.stage}`)).toEqual([
-          "0001_cic_concurrently:concurrent",
-        ]);
+        expect(files.map((f) => `${f.id}:${f.stage}`)).toEqual(["0001_cic_concurrently:concurrent"]);
         const plan = files[0]!.plan!;
         expect(plan.txmode).toBe("none");
         expect(plan.statements.map((s) => s.sql)).toEqual([

@@ -71,22 +71,39 @@ describe('§2.7 — .with() widens the scope', () => {
       .select(({ r, u }) => ({ email: u.email, total: q.fn.sum(r.amount) }))
       .groupBy(({ u }) => [u.email])
       .having(({ r }) => q.gt(q.fn.sum(r.amount), '1000'))
-    expect(sqlOf(built)).toContain('inner join "public"."users" as "u" on "r"."authorId" = "u"."id"')
+    expect(sqlOf(built)).toContain(
+      'inner join "public"."users" as "u" on "r"."authorId" = "u"."id"',
+    )
     expect(sqlOf(built)).toContain('group by "u"."email"')
     expect(sqlOf(built)).toContain('having sum("r"."amount") > $2')
   })
 
   it('MATERIALIZED / NOT MATERIALIZED is one option', () => {
     const body = (d: q.Executor) => d.from(schema.h.posts).select(({ posts: p }) => ({ id: p.id }))
-    expect(sqlOf(db.with('x', body, { materialized: true }).fromCte('x').select(({ x }) => ({ id: x.id })))).toContain(
-      'with "x" as materialized (',
-    )
-    expect(sqlOf(db.with('x', body, { materialized: false }).fromCte('x').select(({ x }) => ({ id: x.id })))).toContain(
-      'with "x" as not materialized (',
-    )
-    expect(sqlOf(db.with('x', body).fromCte('x').select(({ x }) => ({ id: x.id })))).toContain(
-      'with "x" as (',
-    )
+    expect(
+      sqlOf(
+        db
+          .with('x', body, { materialized: true })
+          .fromCte('x')
+          .select(({ x }) => ({ id: x.id })),
+      ),
+    ).toContain('with "x" as materialized (')
+    expect(
+      sqlOf(
+        db
+          .with('x', body, { materialized: false })
+          .fromCte('x')
+          .select(({ x }) => ({ id: x.id })),
+      ),
+    ).toContain('with "x" as not materialized (')
+    expect(
+      sqlOf(
+        db
+          .with('x', body)
+          .fromCte('x')
+          .select(({ x }) => ({ id: x.id })),
+      ),
+    ).toContain('with "x" as (')
   })
 
   it('two CTEs are comma-separated, in declaration order', () => {
@@ -126,7 +143,9 @@ describe('Appendix A — the writable CTE that feeds an INSERT … SELECT', () =
           .returning(({ posts: p }) => ({ title: p.title, amount: p.amount })),
       )
       .insertInto(schema.h.posts)
-      .fromSelect((d) => d.fromCte('moved').select(({ moved: m }) => ({ title: m.title, amount: m.amount })))
+      .fromSelect((d) =>
+        d.fromCte('moved').select(({ moved: m }) => ({ title: m.title, amount: m.amount })),
+      )
       .returning(({ posts: p }) => ({ id: p.id }))
 
     expect(sqlOf(built)).toBe(
@@ -153,7 +172,10 @@ describe('Appendix A — the writable CTE that feeds an INSERT … SELECT', () =
     const sql = sqlOf(
       db
         .with('moved', (d) =>
-          d.deleteFrom(schema.h.posts).allRows().returning(({ posts: p }) => ({ title: p.title })),
+          d
+            .deleteFrom(schema.h.posts)
+            .allRows()
+            .returning(({ posts: p }) => ({ title: p.title })),
         )
         .insertInto(schema.h.posts)
         .fromSelect((d) => d.fromCte('moved').select(({ moved: m }) => ({ title: m.title }))),
@@ -194,7 +216,13 @@ describe('§2.7 — withRecursive (12 B, decision 17)', () => {
     )
 
   it('emits WITH RECURSIVE … AS (base UNION ALL step), byte for byte', () => {
-    expect(sqlOf(tree().fromCte('tree').select(({ tree: t }) => ({ id: t.id })))).toBe(
+    expect(
+      sqlOf(
+        tree()
+          .fromCte('tree')
+          .select(({ tree: t }) => ({ id: t.id })),
+      ),
+    ).toBe(
       [
         'with recursive "tree" as (',
         '  select "comments"."id" as "id", "comments"."body" as "body"',
@@ -228,7 +256,7 @@ describe('§2.7 — withRecursive (12 B, decision 17)', () => {
     expect(sql).not.toContain('union all')
   })
 
-  it("the row type and the codecs come from the BASE term, and reach the outer query", () => {
+  it('the row type and the codecs come from the BASE term, and reach the outer query', () => {
     const compiled = tree()
       .fromCte('tree')
       .select(({ tree: t }) => ({ id: t.id, body: t.body }))
@@ -380,4 +408,3 @@ describe('§2.7 — a chained .with() does not re-declare the earlier CTEs', () 
     expect(sqlOf(built).indexOf('"inner"')).toBeGreaterThan(sqlOf(built).indexOf('with "outer"'))
   })
 })
-

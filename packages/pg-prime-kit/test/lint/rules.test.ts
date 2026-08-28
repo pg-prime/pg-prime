@@ -89,12 +89,15 @@ describe("TX201 — every statement in a txmode-none file must be re-runnable", 
   });
 
   it("negative control: the idempotent spelling of the same statement is silent", () => {
-    const plan = planOf([
-      stmt('CREATE TABLE IF NOT EXISTS "public"."t" ("a" integer)', {
-        idempotent: true,
-        transactionality: NON_TX,
-      }),
-    ], false);
+    const plan = planOf(
+      [
+        stmt('CREATE TABLE IF NOT EXISTS "public"."t" ("a" integer)', {
+          idempotent: true,
+          transactionality: NON_TX,
+        }),
+      ],
+      false,
+    );
     expect(codes(plan)).not.toContain("TX201");
   });
 
@@ -123,9 +126,7 @@ describe("LK111 / DS105 — the Tier-R objects the differ never sees", () => {
   it("a word inside a string literal is data, not a statement", () => {
     // `codeMask` blanks literals before any of these regexes run. Without it, seeding a
     // row whose text mentions a trigger would report LK111 on an INSERT.
-    const plan = planOf([
-      stmt(`INSERT INTO "public"."t" (note) VALUES ('CREATE TRIGGER / DROP MATERIALIZED VIEW')`),
-    ]);
+    const plan = planOf([stmt(`INSERT INTO "public"."t" (note) VALUES ('CREATE TRIGGER / DROP MATERIALIZED VIEW')`)]);
     expect(codes(plan)).not.toContain("LK111");
     expect(codes(plan)).not.toContain("DS105");
   });
@@ -144,9 +145,7 @@ describe("ST101–ST106 are opt-in (design/06 §3.4: default off)", () => {
 
   it("style findings are warn, so the default --fail-on stays green", () => {
     const result = lintPlan(SERIAL, planSql(SERIAL), { style: true });
-    expect(result.findings.map((f) => f.severity)).toEqual(
-      result.findings.map(() => "warn"),
-    );
+    expect(result.findings.map((f) => f.severity)).toEqual(result.findings.map(() => "warn"));
     expect(result.exitCode).toBe(0);
   });
 

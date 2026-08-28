@@ -134,7 +134,9 @@ describe('the pg-prime barrel', () => {
     const built = db
       .from(schema.h.users)
       .select(({ users: u }) => ({ id: u.id, email: u.email }))
-      .where(({ users: u }) => pgPrime.and(pgPrime.isNull(u.deletedAt), pgPrime.like(u.email, '%@acme')))
+      .where(({ users: u }) =>
+        pgPrime.and(pgPrime.isNull(u.deletedAt), pgPrime.like(u.email, '%@acme')),
+      )
       .orderBy(({ users: u }) => pgPrime.desc(u.id))
       .limit(10)
     expect(built.compile().sql).toBe(

@@ -244,11 +244,7 @@ export function rawFrom(n: Omit<RawFromNode, 'k' | 'qAlias'>): RawFromNode {
   return mkNode({ ...n, k: 'rawFrom' as const, qAlias: quoteIdentPart(n.alias) })
 }
 
-export function join(
-  type: JoinNode['type'],
-  item: FromItem,
-  on?: Expr | undefined,
-): JoinNode {
+export function join(type: JoinNode['type'], item: FromItem, on?: Expr | undefined): JoinNode {
   return mkNode({ k: 'join' as const, type, item, on })
 }
 
@@ -284,12 +280,7 @@ export function lit(
   return mkNode({ k: 'lit' as const, value, codec })
 }
 
-export function bin(
-  op: BinaryOp,
-  l: Expr,
-  r: Expr,
-  resultCodec: AnyCodec = boolCodec,
-): Expr {
+export function bin(op: BinaryOp, l: Expr, r: Expr, resultCodec: AnyCodec = boolCodec): Expr {
   return mkNode({ k: 'bin' as const, op, l, r, resultCodec })
 }
 
@@ -412,8 +403,7 @@ export function agg(
   })
 }
 
-export const countStar = (): AggNode =>
-  agg('count', [], int8Codec, { star: true })
+export const countStar = (): AggNode => agg('count', [], int8Codec, { star: true })
 
 export function cast(e: Expr, to: string, resultCodec: AnyCodec): CastNode {
   return mkNode({ k: 'cast' as const, e, to, resultCodec })
@@ -532,11 +522,7 @@ export function siteOf(node: object): string | undefined {
 
 // ─────────────────────────── Clauses / statements ───────────────────────────
 
-export function order(
-  e: Expr,
-  dir: 'asc' | 'desc' = 'asc',
-  nulls?: 'first' | 'last',
-): OrderItem {
+export function order(e: Expr, dir: 'asc' | 'desc' = 'asc', nulls?: 'first' | 'last'): OrderItem {
   return mkNode({ e, dir, nulls })
 }
 

@@ -139,7 +139,10 @@ export function serve(db: PGlite, host = '127.0.0.1'): Promise<PgliteBridge> {
           })
           .catch((e: unknown) => {
             // Without this the chain stays rejected and every later message is dropped in silence.
-            console.error(`[live] PGlite bridge failed on message '${String.fromCharCode(type)}':`, e)
+            console.error(
+              `[live] PGlite bridge failed on message '${String.fromCharCode(type)}':`,
+              e,
+            )
             socket.destroy()
           })
           .finally(() => {
@@ -250,7 +253,7 @@ export function spuriousReadyForQuery(type: number, out: Uint8Array): boolean {
 function lastMessageIsReadyForQuery(out: Uint8Array): boolean {
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength)
   let last = -1
-  for (let i = 0; i + 5 <= out.length; ) {
+  for (let i = 0; i + 5 <= out.length;) {
     const length = view.getInt32(i + 1)
     if (length < 4) return false // not framing we understand; strip nothing
     last = i
@@ -268,16 +271,12 @@ function lastMessageIsReadyForQuery(out: Uint8Array): boolean {
 function describe(out: Uint8Array): string {
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength)
   const parts: string[] = []
-  for (let i = 0; i + 5 <= out.length; ) {
+  for (let i = 0; i + 5 <= out.length;) {
     const length = view.getInt32(i + 1)
     if (length < 4) return `${parts.join(' ')} <unframed +${out.length - i}B>`
     const type = String.fromCharCode(out[i]!)
-    parts.push(
-      type === 'Z' ? `Z(${String.fromCharCode(out[i + 5]!)})` : `${type}${length + 1}`,
-    )
+    parts.push(type === 'Z' ? `Z(${String.fromCharCode(out[i + 5]!)})` : `${type}${length + 1}`)
     i += 1 + length
   }
   return parts.join(' ')
 }
-
-

@@ -33,7 +33,9 @@ const { mockDriver } = await import('./_mock-driver.js')
 const { schema } = await import('./_schema.js')
 
 /** The OID the query will decode this column with — `undefined` until a registry has resolved it. */
-function oidOfFirstColumn(shape: import('../../src/compile/contract.js').ResultShape): number | undefined {
+function oidOfFirstColumn(
+  shape: import('../../src/compile/contract.js').ResultShape,
+): number | undefined {
   if (shape.k !== 'row') throw new Error('expected a row shape')
   const field = shape.fields[0]
   if (field === undefined || field.k !== 'col') throw new Error('expected a column field')
@@ -63,7 +65,9 @@ describe('pgPrime() does not decode against the process-wide registry', () => {
         .compile().shape
 
     // A fresh registry has never met this database, so the codec is still the *pending* one.
-    expect(oidOfFirstColumn(shape(pgPrime({ driver: mockDriver(), schema: moodSchema })))).toBeUndefined()
+    expect(
+      oidOfFirstColumn(shape(pgPrime({ driver: mockDriver(), schema: moodSchema }))),
+    ).toBeUndefined()
     // Handing the shared one over explicitly still works — this is isolation, not a regression.
     expect(
       oidOfFirstColumn(
@@ -94,9 +98,15 @@ describe('the decode plan is built once per compiled statement', () => {
     const db = pgPrime({ driver, schema })
     driver.rows.push([['7', 'ada@x']], [['t']])
     built.n = 0
-    await db.from(schema.h.users).select(({ users: u }) => ({ id: u.id, email: u.email })).execute()
+    await db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id, email: u.email }))
+      .execute()
     expect(
-      await db.from(schema.h.posts).select(({ posts: p }) => ({ published: p.published })).execute(),
+      await db
+        .from(schema.h.posts)
+        .select(({ posts: p }) => ({ published: p.published }))
+        .execute(),
     ).toStrictEqual([{ published: true }])
     expect(built.n).toBe(2)
   })
@@ -107,9 +117,8 @@ describe('the decode plan is built once per compiled statement', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { field } = await import('./_mock-driver.js')
-const { int8Codec, numericCodec, timestamptzCodec, unknownCodec } = await import(
-  '../../src/codec/index.js'
-)
+const { int8Codec, numericCodec, timestamptzCodec, unknownCodec } =
+  await import('../../src/codec/index.js')
 const { sql } = await import('../../src/sql/index.js')
 const q = await import('../../src/query/types.js')
 
@@ -165,10 +174,10 @@ describe('execute() — the wire shape (03 §1.3)', () => {
     driver.rows.push([], [['1']], [['2']], [['3']])
     const first = await db
       .insertInto(schema.h.comments)
-      .valuesMany(
-        [{ body: 'a' }, { body: 'b' }, { body: 'c' }, { body: 'd' }, { body: 'e' }],
-        { strategy: 'values', chunkSize: 2 },
-      )
+      .valuesMany([{ body: 'a' }, { body: 'b' }, { body: 'c' }, { body: 'd' }, { body: 'e' }], {
+        strategy: 'values',
+        chunkSize: 2,
+      })
       .returning(({ comments: c }) => ({ id: c.id }))
       .executeTakeFirst()
 
@@ -189,7 +198,10 @@ describe('execute() — the wire shape (03 §1.3)', () => {
     const db = pgPrime({ driver, schema })
     driver.rows.push([])
     expect(
-      await db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })).executeTakeFirst(),
+      await db
+        .from(schema.h.users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .executeTakeFirst(),
     ).toBeUndefined()
   })
 })

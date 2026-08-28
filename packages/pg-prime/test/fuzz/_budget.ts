@@ -29,11 +29,18 @@ export const FUZZ_ORACLE_CASES = Number(process.env['PG_PRIME_FUZZ_ORACLE_CASES'
  * collection and during a test's own output buffering, which is how design/09 §2.2's "skips
  * loudly" was silently untrue until WS6 (§3.6).
  */
-export function announceSample(oracle: string, sampled: number, total: number, limiter = 'PG_PRIME_FUZZ_ORACLE_CASES'): void {
+export function announceSample(
+  oracle: string,
+  sampled: number,
+  total: number,
+  limiter = 'PG_PRIME_FUZZ_ORACLE_CASES',
+): void {
   const dropped = total - sampled
   process.stderr.write(
     `[fuzz] ${oracle}: ${sampled.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} cases ` +
       `reach the server` +
-      (dropped > 0 ? ` — ${dropped.toLocaleString('en-US')} not sampled (${limiter})\n` : ' (no cap applied)\n'),
+      (dropped > 0
+        ? ` — ${dropped.toLocaleString('en-US')} not sampled (${limiter})\n`
+        : ' (no cap applied)\n'),
   )
 }

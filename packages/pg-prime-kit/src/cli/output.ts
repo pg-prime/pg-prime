@@ -19,7 +19,11 @@ export interface CommandOutput {
 }
 
 export function render(out: CommandOutput, format: OutputFormat): string {
-  return format === "json" ? `${JSON.stringify(out.envelope, null, 2)}\n` : out.text.endsWith("\n") ? out.text : `${out.text}\n`;
+  return format === "json"
+    ? `${JSON.stringify(out.envelope, null, 2)}\n`
+    : out.text.endsWith("\n")
+      ? out.text
+      : `${out.text}\n`;
 }
 
 /** Millisecond precision, always UTC, always the same width — one `at` field everywhere. */

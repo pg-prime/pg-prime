@@ -102,7 +102,11 @@ export interface RelNode {
   readonly config: RelConfig | undefined
 }
 
-function namespace(keys: readonly string[], kind: 'one' | 'many', opt: boolean): Record<string, unknown> {
+function namespace(
+  keys: readonly string[],
+  kind: 'one' | 'many',
+  opt: boolean,
+): Record<string, unknown> {
   // Null-prototype: a table registered under the key `__proto__` would otherwise retarget the
   // namespace's prototype instead of becoming a picker, and `r.many.__proto__(...)` would be
   // `Object.prototype`, not a function.
@@ -196,8 +200,7 @@ export type RelsAt<Sc, N extends PropertyKey> = NonNullable<
   Sc[typeof RELS & keyof Sc][N & keyof Sc[typeof RELS & keyof Sc]]
 >
 
-export type ColsAt<Sc, N extends PropertyKey> = TableOf<Sc, N>[typeof COLS &
-  keyof TableOf<Sc, N>]
+export type ColsAt<Sc, N extends PropertyKey> = TableOf<Sc, N>[typeof COLS & keyof TableOf<Sc, N>]
 
 export type SelAt<Sc, N extends PropertyKey> = TableOf<Sc, N>[typeof SEL & keyof TableOf<Sc, N>]
 
@@ -212,7 +215,12 @@ export type RelOut<M extends RelMeta, O> = M['kind'] extends 'many'
 // Loaded<> — a structural contract, not a brand (design/04 §2.5, D7)
 // ─────────────────────────────────────────────────────────────────────────────
 
-type LoadedIn<Sc extends AnySchema, N extends string, K extends string, F extends PropertyKey> = Defer<
+type LoadedIn<
+  Sc extends AnySchema,
+  N extends string,
+  K extends string,
+  F extends PropertyKey,
+> = Defer<
   Simplify<
     { [P in F & keyof ColsAt<Sc, N>]: ColsAt<Sc, N>[P]['t'] } & {
       [P in K & keyof RelsAt<Sc, N>]-?: RelOut<RelsAt<Sc, N>[P], SelAt<Sc, RelsAt<Sc, N>[P]['to']>>
@@ -281,9 +289,7 @@ export interface ResolvedThrough {
 }
 
 /** Table key → relation name → resolved relation. Frozen. */
-export type ResolvedRelations = Readonly<
-  Record<string, Readonly<Record<string, ResolvedRelation>>>
->
+export type ResolvedRelations = Readonly<Record<string, Readonly<Record<string, ResolvedRelation>>>>
 
 /**
  * Keyed on **both** halves, `tables` outermost.
@@ -433,8 +439,22 @@ function one(
       to: keysOf(jTo, junction.table, `${where} \`through.to\``),
     })
   } else {
-    const h1 = inferFk(junction.table, parentTable, `${where} \`through\` (junction to parent)`, parent, node.to, node.kind)
-    const h2 = inferFk(junction.table, target, `${where} \`through\` (junction to target)`, parent, node.to, node.kind)
+    const h1 = inferFk(
+      junction.table,
+      parentTable,
+      `${where} \`through\` (junction to parent)`,
+      parent,
+      node.to,
+      node.kind,
+    )
+    const h2 = inferFk(
+      junction.table,
+      target,
+      `${where} \`through\` (junction to target)`,
+      parent,
+      node.to,
+      node.kind,
+    )
     from = declared ? keysOf(cfg.from, parentTable, `${where} \`from\``) : h1.parent
     to = declared ? keysOf(cfg.to, target, `${where} \`to\``) : h2.parent
     through = Object.freeze({ table: junction.table, from: h1.child, to: h2.child })
@@ -483,7 +503,6 @@ function finish(
   cfg: RelConfig | undefined,
   where: string,
 ): ResolvedRelation {
-
   return Object.freeze({
     name,
     kind: node.kind,
@@ -678,7 +697,13 @@ function compat(
   }
 }
 
-function arity(a: readonly string[], b: readonly string[], where: string, an: string, bn: string): void {
+function arity(
+  a: readonly string[],
+  b: readonly string[],
+  where: string,
+  an: string,
+  bn: string,
+): void {
   if (a.length !== b.length) {
     throw new SchemaError(
       `pg-prime: ${where} pairs ${a.length} column(s) in \`${an}\` with ${b.length} in \`${bn}\`. ` +

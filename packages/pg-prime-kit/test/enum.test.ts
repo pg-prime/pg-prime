@@ -79,13 +79,7 @@ describe("regression #1: ALTER TYPE … ADD VALUE is ordered before every use of
       // its own fact (`05` §7.2). The `evaluates` edge is carried on BOTH the column and
       // its default, deliberately: a folded-in default has to reach the commit boundary
       // through the column, and a standalone one through itself.
-      expect(consumers.map((s) => s.kind).sort()).toEqual([
-        "column",
-        "constraint",
-        "constraint",
-        "default",
-        "index",
-      ]);
+      expect(consumers.map((s) => s.kind).sort()).toEqual(["column", "constraint", "constraint", "default", "index"]);
       for (const c of consumers) expect(statements.indexOf(c)).toBeGreaterThan(addValue);
 
       // ...and lands in a LATER segment, because a new label is unusable until
@@ -110,9 +104,7 @@ describe("regression #1: ALTER TYPE … ADD VALUE is ordered before every use of
       expect(result.plan.proof.driftDeltas).toBe(0);
 
       // And for real, against the current database.
-      const report = await withClient(target, (c) =>
-        applySegments(c, result.plan.statements, result.plan.segments),
-      );
+      const report = await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
       expect(report.error).toBeUndefined();
       expect(report.status).toBe("applied");
 

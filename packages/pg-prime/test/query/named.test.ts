@@ -68,7 +68,10 @@ describe('{ statement: "named" } (07 §2.4)', () => {
     const db = pgPrime({ driver, schema, statement: 'named' })
     driver.rows.push([['7']], [['x']])
     await select(db).execute()
-    await db.from(schema.h.posts).select(({ posts: p }) => ({ title: p.title })).execute()
+    await db
+      .from(schema.h.posts)
+      .select(({ posts: p }) => ({ title: p.title }))
+      .execute()
     expect(driver.statementNames).toHaveLength(2)
   })
 
@@ -184,7 +187,10 @@ describe('LRU eviction uses the protocol Close, never SQL DEALLOCATE (07 §2.4)'
     driver.rows.push([['7']], [['x']])
     await select(db).execute()
     const first = driver.statementNames[0]
-    await db.from(schema.h.posts).select(({ posts: p }) => ({ title: p.title })).execute()
+    await db
+      .from(schema.h.posts)
+      .select(({ posts: p }) => ({ title: p.title }))
+      .execute()
 
     expect(driver.closed).toStrictEqual([first])
     // `DEALLOCATE <our name>` is exactly what breaks PHP/PDO through PgBouncer, because the name
@@ -256,7 +262,8 @@ describe('the description cache (03 §1.4c) — decode PLANS, not Parse messages
     expect(describeCacheStats().builds).toBe(1)
 
     // A migration ran. PostgreSQL says the cached plan must not change result type.
-    driver.failOn = (query) => (query.text.startsWith('select "users"') ? serverError('0A000') : undefined)
+    driver.failOn = (query) =>
+      query.text.startsWith('select "users"') ? serverError('0A000') : undefined
     await expect(select(db).execute()).rejects.toThrow(/0A000/)
     driver.failOn = undefined
 
@@ -275,7 +282,8 @@ describe('the description cache (03 §1.4c) — decode PLANS, not Parse messages
     driver.fields.push([field('v', 23)])
     await db.sql`select v from t`.execute()
 
-    driver.failOn = (query) => (query.text.startsWith('select "users"') ? serverError('23505') : undefined)
+    driver.failOn = (query) =>
+      query.text.startsWith('select "users"') ? serverError('23505') : undefined
     await expect(select(db).execute()).rejects.toThrow(/23505/)
     driver.failOn = undefined
 

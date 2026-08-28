@@ -78,7 +78,19 @@ describe("the JSON envelope, through the binary", () => {
     "apply --dry-run prints the exact statement stream and writes nothing",
     async () => {
       const url = await fresh("dry_run");
-      const r = await runCli(["migrate", "apply", "--url", url, "--migrations", dir, "--applied-from", "k1-golden", "--dry-run", "--output", "json"]);
+      const r = await runCli([
+        "migrate",
+        "apply",
+        "--url",
+        url,
+        "--migrations",
+        dir,
+        "--applied-from",
+        "k1-golden",
+        "--dry-run",
+        "--output",
+        "json",
+      ]);
       expect(r.code, r.stdout + r.stderr).toBe(EXIT.ok);
       const envelope = envelopeOf(r);
       expect(envelope["status"]).toBe("dry_run");
@@ -107,7 +119,18 @@ describe("the JSON envelope, through the binary", () => {
     "apply, then status, then apply again",
     async () => {
       const url = await fresh("apply");
-      const applied = await runCli(["migrate", "apply", "--url", url, "--migrations", dir, "--applied-from", "k1-golden", "--output", "json"]);
+      const applied = await runCli([
+        "migrate",
+        "apply",
+        "--url",
+        url,
+        "--migrations",
+        dir,
+        "--applied-from",
+        "k1-golden",
+        "--output",
+        "json",
+      ]);
       expect(applied.code, applied.stdout + applied.stderr).toBe(EXIT.ok);
       const first = envelopeOf(applied);
       expect(first["status"]).toBe("applied");
@@ -117,7 +140,18 @@ describe("the JSON envelope, through the binary", () => {
       expect(status.code).toBe(EXIT.ok);
       await expectGolden("status.applied", envelopeOf(status));
 
-      const again = await runCli(["migrate", "apply", "--url", url, "--migrations", dir, "--applied-from", "k1-golden", "--output", "json"]);
+      const again = await runCli([
+        "migrate",
+        "apply",
+        "--url",
+        url,
+        "--migrations",
+        dir,
+        "--applied-from",
+        "k1-golden",
+        "--output",
+        "json",
+      ]);
       expect(again.code).toBe(EXIT.ok);
       const second = envelopeOf(again);
       expect(second["status"]).toBe("up_to_date");
@@ -175,7 +209,18 @@ describe("the JSON envelope, through the binary", () => {
         c.query("CREATE TABLE public.adopted (id bigint PRIMARY KEY, tag text NOT NULL DEFAULT 'x')"),
       );
 
-      const r = await runCli(["migrate", "baseline", "--url", url, "--migrations", outDir, "--by", "k1", "--output", "json"]);
+      const r = await runCli([
+        "migrate",
+        "baseline",
+        "--url",
+        url,
+        "--migrations",
+        outDir,
+        "--by",
+        "k1",
+        "--output",
+        "json",
+      ]);
       expect(r.code, r.stdout + r.stderr).toBe(EXIT.ok);
       const envelope = envelopeOf(r);
       expect(envelope["status"]).toBe("baselined");

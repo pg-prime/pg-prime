@@ -112,10 +112,17 @@ export const presets = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** `07` §1.2's defaults, with the two `pg-pool` overrides that §1.2 argues for. */
-export const POOL_DEFAULTS: Required<Pick<
-  PoolOptions,
-  'max' | 'min' | 'idleTimeoutMillis' | 'connectionTimeoutMillis' | 'maxLifetimeSeconds' | 'allowExitOnIdle'
->> = Object.freeze({
+export const POOL_DEFAULTS: Required<
+  Pick<
+    PoolOptions,
+    | 'max'
+    | 'min'
+    | 'idleTimeoutMillis'
+    | 'connectionTimeoutMillis'
+    | 'maxLifetimeSeconds'
+    | 'allowExitOnIdle'
+  >
+> = Object.freeze({
   max: 10,
   min: 0,
   idleTimeoutMillis: 10_000,
@@ -124,7 +131,9 @@ export const POOL_DEFAULTS: Required<Pick<
   allowExitOnIdle: false,
 })
 
-export function assertOneConnectionSource(config: DbConfig<AnySchema>): 'connection' | 'pool' | 'driver' {
+export function assertOneConnectionSource(
+  config: DbConfig<AnySchema>,
+): 'connection' | 'pool' | 'driver' {
   const given: string[] = []
   if (config.connection !== undefined) given.push('connection')
   if (config.pool !== undefined) given.push('pool')
@@ -166,7 +175,10 @@ export function assertStatementModeAllowed(
 }
 
 /** `07` §1.2's multiplication warning, as a dev-mode startup check. */
-export function poolSizeWarning(max: number, maxConnections: number | undefined): string | undefined {
+export function poolSizeWarning(
+  max: number,
+  maxConnections: number | undefined,
+): string | undefined {
   if (max > 20) {
     return (
       `pg-prime: poolOptions.max is ${max}. Node is single-threaded — past roughly 10 in-flight ` +

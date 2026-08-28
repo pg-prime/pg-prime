@@ -153,9 +153,7 @@ describe('Appendix A — archive and move, in one statement', () => {
     // The oracle: raw counts, sharing no code with the statement above.
     expect(await live.raw(`select count(*) from ${NS}.staging`)).toStrictEqual([['1']])
     expect(await live.raw(`select ready from ${NS}.staging`)).toStrictEqual([['f']])
-    expect(
-      await live.raw(`select payload, at from ${NS}.live order by at`),
-    ).toStrictEqual([
+    expect(await live.raw(`select payload, at from ${NS}.live order by at`)).toStrictEqual([
       ['{"n": 1}', '2026-05-01 00:00:00+00'],
       ['{"n": 2}', '2026-05-02 00:00:00+00'],
     ])
@@ -170,7 +168,10 @@ describe('Appendix A — archive and move, in one statement', () => {
     expect(await live.raw(`select count(*) from ${NS}.live`)).toStrictEqual([['2']])
     await db
       .with('unused', (d) =>
-        d.deleteFrom(moveSchema.h.live).allRows().returning(({ live: l }) => ({ id: l.id })),
+        d
+          .deleteFrom(moveSchema.h.live)
+          .allRows()
+          .returning(({ live: l }) => ({ id: l.id })),
       )
       .from(moveSchema.h.live)
       .select(({ live: l }) => ({ id: l.id }))
@@ -222,7 +223,6 @@ describe('§2.7 — a chained .with() does not nest the earlier CTEs', () => {
   })
 })
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // withRecursive / fromRaw against the server (12 B; decision 17, `03` §5)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -236,7 +236,10 @@ describe('§2.7 — withRecursive (12 B)', () => {
   const counter = (limit: number) =>
     live.db.withRecursive(
       'n',
-      (d) => d.fromRaw(q.sql`(select 1)`, { i: int4Codec }, { alias: 'seed' }).select(({ seed }) => ({ i: seed.i })),
+      (d) =>
+        d
+          .fromRaw(q.sql`(select 1)`, { i: int4Codec }, { alias: 'seed' })
+          .select(({ seed }) => ({ i: seed.i })),
       (d, self) =>
         d
           .from(self)
@@ -265,7 +268,11 @@ describe('§2.7 — withRecursive (12 B)', () => {
         'big',
         (d) =>
           d
-            .fromRaw(q.sql`(select ${q.val(FIRST_POST_ID, int8Codec)}::int8)`, { v: int8Codec }, { alias: 's' })
+            .fromRaw(
+              q.sql`(select ${q.val(FIRST_POST_ID, int8Codec)}::int8)`,
+              { v: int8Codec },
+              { alias: 's' },
+            )
             .select(({ s }) => ({ v: s.v })),
         (d, self) =>
           d
@@ -291,7 +298,10 @@ describe('§2.7 — withRecursive (12 B)', () => {
       live.db
         .withRecursive(
           'n',
-          (d) => d.fromRaw(q.sql`(select 1)`, { i: int4Codec }, { alias: 's' }).select(({ s }) => ({ i: s.i })),
+          (d) =>
+            d
+              .fromRaw(q.sql`(select 1)`, { i: int4Codec }, { alias: 's' })
+              .select(({ s }) => ({ i: s.i })),
           (d, self) =>
             d
               .from(self)
@@ -352,7 +362,10 @@ describe('§5 — fromRaw (12 B)', () => {
     // `record` must be told its column types, which is the whole reason the option exists.
     await expect(
       live.db
-        .fromRaw(q.sql`jsonb_to_recordset(${q.val(doc, jsonbCodec)})`, { id: int8Codec, name: textCodec })
+        .fromRaw(q.sql`jsonb_to_recordset(${q.val(doc, jsonbCodec)})`, {
+          id: int8Codec,
+          name: textCodec,
+        })
         .select(({ raw }) => ({ id: raw.id }))
         .execute(),
     ).rejects.toSatisfy((e: unknown) => sqlState(e) === '42601')

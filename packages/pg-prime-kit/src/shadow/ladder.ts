@@ -21,25 +21,13 @@
 import { randomBytes } from "node:crypto";
 import pg from "pg";
 import type { Diagnostic } from "../catalog/extract.js";
-import {
-  dropDatabase,
-  isObjectInUse,
-  withClient,
-  withDatabase,
-  SHADOW_PREFIX,
-  type ConnInfo,
-} from "../db/pg.js";
+import { dropDatabase, isObjectInUse, withClient, withDatabase, SHADOW_PREFIX, type ConnInfo } from "../db/pg.js";
 import { quoteIdent } from "../sql/ident.js";
 
 /** `NAMEDATALEN - 1`: a shadow schema name that PostgreSQL would truncate is not reversible. */
 const MAX_IDENT_BYTES = 63;
 
-export type ShadowStrategy =
-  | "auto"
-  | "temp-schema"
-  | "createdb"
-  | "offline"
-  | { readonly url: string };
+export type ShadowStrategy = "auto" | "temp-schema" | "createdb" | "offline" | { readonly url: string };
 
 export interface ProvisionShadowOptions {
   /** Default `'auto'`. */
@@ -124,9 +112,7 @@ export function parseShadowUrl(url: string): ConnInfo {
 /** Does the connected role get to `CREATE DATABASE`? Superusers do, whatever `rolcreatedb` says. */
 async function canCreateDatabase(conn: ConnInfo): Promise<boolean> {
   return withClient(conn, async (client) => {
-    const r = await client.query(
-      "SELECT rolcreatedb OR rolsuper AS ok FROM pg_roles WHERE rolname = current_user",
-    );
+    const r = await client.query("SELECT rolcreatedb OR rolsuper AS ok FROM pg_roles WHERE rolname = current_user");
     return r.rows[0]?.["ok"] === true;
   });
 }
@@ -237,12 +223,7 @@ export async function provisionShadow(
 
 /* ---- tier 1 ---- */
 
-async function tier1(
-  conn: ConnInfo,
-  target: ConnInfo,
-  schemas: readonly string[],
-  reason: string,
-): Promise<Shadow> {
+async function tier1(conn: ConnInfo, target: ConnInfo, schemas: readonly string[], reason: string): Promise<Shadow> {
   const diagnostics: Diagnostic[] = [
     {
       code: "shadow_url_reset",
@@ -364,10 +345,9 @@ async function tier3(
         }
         // Asserted, not assumed: a temp schema left behind in the USER's database is the one
         // failure mode this tier can cause that the other two cannot.
-        const left = await client.query(
-          "SELECT nspname FROM pg_namespace WHERE nspname = ANY($1) ORDER BY nspname",
-          [shadowNames],
-        );
+        const left = await client.query("SELECT nspname FROM pg_namespace WHERE nspname = ANY($1) ORDER BY nspname", [
+          shadowNames,
+        ]);
         if (left.rows.length > 0) {
           throw new Error(
             `provisionShadow(tier 3): ${left.rows

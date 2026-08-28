@@ -27,7 +27,13 @@ import type { PgConnection, PgResultChunk } from '../driver/index.js'
 import type { Fragment } from '../sql/index.js'
 import { sql as sqlTag, toNode } from '../sql/index.js'
 import type { BuilderCtx } from './builder-state.js'
-import type { ExecEnv, ExplainOptions, ExplainResult, RunOptions, StreamOptions } from './executor.js'
+import type {
+  ExecEnv,
+  ExplainOptions,
+  ExplainResult,
+  RunOptions,
+  StreamOptions,
+} from './executor.js'
 import type { StatementDescriptor } from '../session/runner.js'
 import { dynamicRowDecoder } from './executor.js'
 import { explainWith, runnerOf, takeFirst, toSQLOf } from './terminals.js'

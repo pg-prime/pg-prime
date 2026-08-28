@@ -44,8 +44,9 @@ const orgs = pgTable('orgs', (t) => ({
   slug: t.text().unique(),
 }))
 
-const extrasOf = (t: { readonly $: { readonly extras: readonly TableExtra[] } }): readonly TableExtra[] =>
-  t.$.extras
+const extrasOf = (t: {
+  readonly $: { readonly extras: readonly TableExtra[] }
+}): readonly TableExtra[] => t.$.extras
 
 describe('.references() — a thunk, resolved lazily (design/11 §1.7)', () => {
   it('stores the thunk, the actions and the deferral flags', () => {
@@ -179,7 +180,9 @@ describe('.check() — a `sql` fragment, no bind parameters', () => {
   })
 
   it('accumulates: two `.check()` calls are two constraints, not one overwrite', () => {
-    const col = integer().check(sql`n > 0`, 'a').check(sql`n < 10`, 'b')
+    const col = integer()
+      .check(sql`n > 0`, 'a')
+      .check(sql`n < 10`, 'b')
     expect(col.$.ddl.checks.map((c) => c.name)).toEqual(['a', 'b'])
   })
 
@@ -238,7 +241,11 @@ describe('the type did not move (design/11 §3 K2a hard rule)', () => {
     const decorated = pgTable('t_decorated', (t) => ({
       id: t.uuid().primaryKey().comment('pk'),
       orgId: t.uuid().references(() => orgs.cols.id, { onDelete: 'cascade' }),
-      n: t.integer().check(sql`n > 0`).unique('u_n').renamedFrom('num'),
+      n: t
+        .integer()
+        .check(sql`n > 0`)
+        .unique('u_n')
+        .renamedFrom('num'),
     }))
     expectTypeOf<Selectable<typeof decorated>>().toEqualTypeOf<Selectable<typeof plain>>()
     expectTypeOf<Insertable<typeof decorated>>().toEqualTypeOf<Insertable<typeof plain>>()
@@ -314,7 +321,9 @@ describe('table extras', () => {
     expect(fk.deferrable).toBe(true)
     expect(fk.initiallyDeferred).toBe(false)
     expect(fk.references().map((r) => r.$.dbName)).toEqual(['id'])
-    expect(() => foreignKey({ columns: [], references: () => [orgs.cols.id] })).toThrow(/no columns/)
+    expect(() => foreignKey({ columns: [], references: () => [orgs.cols.id] })).toThrow(
+      /no columns/,
+    )
   })
 
   it('renamedFrom() is the table-level spelling of the same annotation', () => {

@@ -260,9 +260,11 @@ function leadingKeyword(text: string): string {
  * Buffer — it would be written as if it were a string. pg's own path hides this behind
  * `utils.prepareValue`, which we cannot reach from a Submittable, so we do the same conversion.
  */
-const bufferFrom = (globalThis as unknown as {
-  Buffer?: { from(b: ArrayBufferLike, byteOffset?: number, length?: number): Uint8Array }
-}).Buffer
+const bufferFrom = (
+  globalThis as unknown as {
+    Buffer?: { from(b: ArrayBufferLike, byteOffset?: number, length?: number): Uint8Array }
+  }
+).Buffer
 
 /**
  * Parse + Bind + Describe(portal) + **Execute(rows = n)** + Close(portal) + Sync, in ONE write.

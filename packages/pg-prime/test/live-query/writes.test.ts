@@ -119,27 +119,33 @@ describe('§2.5 — upsert, both branches of the partial-index predicate', () =>
   it('the insert branch inserts', async () => {
     const rows = await upsert('up1@example.com', 'First').execute()
     expect(rows).toHaveLength(1)
-    expect(await live.raw(`select name from ${ns()}.users where email = 'up1@example.com'`)).toStrictEqual([
-      ['First'],
-    ])
+    expect(
+      await live.raw(`select name from ${ns()}.users where email = 'up1@example.com'`),
+    ).toStrictEqual([['First']])
   })
 
   it('the update branch updates, and DO UPDATE … WHERE decides whether it fires', async () => {
     await upsert('up2@example.com', 'First').execute()
-    const firstId = (await live.raw(`select id from ${ns()}.users where email = 'up2@example.com'`))[0]![0]
+    const firstId = (
+      await live.raw(`select id from ${ns()}.users where email = 'up2@example.com'`)
+    )[0]![0]
 
     // `created_at` is 2026-07-01 for both, so `t.created_at < excluded.created_at` is FALSE:
     // the row is left untouched and RETURNING yields nothing at all.
     const noop = await upsert('up2@example.com', 'Second').execute()
     expect(noop).toStrictEqual([])
-    expect(await live.raw(`select name from ${ns()}.users where email = 'up2@example.com'`)).toStrictEqual([
-      ['First'],
-    ])
+    expect(
+      await live.raw(`select name from ${ns()}.users where email = 'up2@example.com'`),
+    ).toStrictEqual([['First']])
 
     // Make the incoming row strictly newer, and the same statement writes.
     const rows = await live.db
       .insertInto(h().users)
-      .values({ ...newUser('up2@example.com'), name: 'Third', createdAt: new Date('2026-08-01T00:00:00Z') })
+      .values({
+        ...newUser('up2@example.com'),
+        name: 'Third',
+        createdAt: new Date('2026-08-01T00:00:00Z'),
+      })
       .onConflict((c) =>
         c
           .columns((t) => [t.email])
@@ -151,26 +157,31 @@ describe('§2.5 — upsert, both branches of the partial-index predicate', () =>
       .execute()
     expect(rows).toHaveLength(1)
     expect(String(rows[0]!.id)).toBe(firstId)
-    expect(await live.raw(`select name from ${ns()}.users where email = 'up2@example.com'`)).toStrictEqual([
-      ['Third'],
-    ])
+    expect(
+      await live.raw(`select name from ${ns()}.users where email = 'up2@example.com'`),
+    ).toStrictEqual([['Third']])
   })
 
   it('`excluded` really is the proposed row, not the target row', async () => {
-    await live.db.insertInto(h().users).values({ ...newUser('up3@example.com'), tags: ['old'] }).execute()
+    await live.db
+      .insertInto(h().users)
+      .values({ ...newUser('up3@example.com'), tags: ['old'] })
+      .execute()
     await live.db
       .insertInto(h().users)
       .values({ ...newUser('up3@example.com'), tags: ['new'] })
       .onConflict((c) =>
-        c.columns((t) => [t.email]).doUpdate((set, excluded) => ({
-          tags: q.arrayConcat(set.tags, excluded.tags),
-        })),
+        c
+          .columns((t) => [t.email])
+          .doUpdate((set, excluded) => ({
+            tags: q.arrayConcat(set.tags, excluded.tags),
+          })),
       )
       .execute()
     // `set.tags || excluded.tags` — the stored row first, the proposed row second.
-    expect(await live.raw(`select tags from ${ns()}.users where email = 'up3@example.com'`)).toStrictEqual([
-      ['{old,new}'],
-    ])
+    expect(
+      await live.raw(`select tags from ${ns()}.users where email = 'up3@example.com'`),
+    ).toStrictEqual([['{old,new}']])
   })
 
   it('doNothing swallows the conflict and returns nothing', async () => {
@@ -182,9 +193,9 @@ describe('§2.5 — upsert, both branches of the partial-index predicate', () =>
       .returning(({ users: u }) => ({ id: u.id }))
       .execute()
     expect(rows).toStrictEqual([])
-    expect(await live.raw(`select name from ${ns()}.users where email = 'up4@example.com'`)).toStrictEqual([
-      ['New'],
-    ])
+    expect(
+      await live.raw(`select name from ${ns()}.users where email = 'up4@example.com'`),
+    ).toStrictEqual([['New']])
   })
 })
 
@@ -232,10 +243,9 @@ describe('§2.5 — update and delete', () => {
     await built.execute()
 
     expect(
-      await live.raw(
-        `select email, balance from ${ns()}.users where id = any($1) order by email`,
-        [`{${ids.join(',')}}`],
-      ),
+      await live.raw(`select email, balance from ${ns()}.users where id = any($1) order by email`, [
+        `{${ids.join(',')}}`,
+      ]),
     ).toStrictEqual([
       ['bulk1@example.com', '11.11'],
       ['bulk2@example.com', '22.22'],
@@ -245,7 +255,11 @@ describe('§2.5 — update and delete', () => {
   it('delete with `= any($1)` removes exactly the named rows', async () => {
     await live.db
       .insertInto(h().users)
-      .valuesMany([newUser('del1@example.com'), newUser('del2@example.com'), newUser('del3@example.com')])
+      .valuesMany([
+        newUser('del1@example.com'),
+        newUser('del2@example.com'),
+        newUser('del3@example.com'),
+      ])
       .execute()
     const ids = (
       await live.raw(
@@ -267,7 +281,10 @@ describe('§2.5 — update and delete', () => {
 
   it('an empty in-list deletes nothing — `where false`, not `where true`', async () => {
     const before = await live.raw(`select count(*) from ${ns()}.users`)
-    await live.db.deleteFrom(h().users).where(({ users: u }) => q.inList(u.id, [])).execute()
+    await live.db
+      .deleteFrom(h().users)
+      .where(({ users: u }) => q.inList(u.id, []))
+      .execute()
     expect(await live.raw(`select count(*) from ${ns()}.users`)).toStrictEqual(before)
   })
 })
@@ -280,9 +297,9 @@ describe('transactions', () => {
         throw new Error('nope')
       }),
     ).rejects.toThrowError('nope')
-    expect(await live.raw(`select count(*) from ${ns()}.users where email = 'tx1@example.com'`)).toStrictEqual([
-      ['0'],
-    ])
+    expect(
+      await live.raw(`select count(*) from ${ns()}.users where email = 'tx1@example.com'`),
+    ).toStrictEqual([['0']])
   })
 
   it('a resolved callback commits', async () => {
@@ -294,9 +311,9 @@ describe('transactions', () => {
         .execute()
       return row!.id
     })
-    expect(await live.raw(`select id from ${ns()}.users where email = 'tx2@example.com'`)).toStrictEqual([
-      [String(out)],
-    ])
+    expect(
+      await live.raw(`select id from ${ns()}.users where email = 'tx2@example.com'`),
+    ).toStrictEqual([[String(out)]])
   })
 })
 
@@ -311,20 +328,23 @@ describe('§2.7 — insert … select writes each value into the column the proj
       .values({ ...newUser('src@example.com'), name: 'Ada', role: 'admin' })
       .execute()
 
-    await live.db.insertInto(h().users).fromSelect((d) =>
-      d
-        .from(h().users, 'src')
-        .select(({ src }) => ({
-          role: src.role,
-          balance: src.balance,
-          createdAt: src.createdAt,
-          meta: src.meta,
-          tags: src.tags,
-          name: q.concat(src.name, ' copy'),
-          email: q.concat(src.email, '.copy'),
-        }))
-        .where(({ src }) => q.eq(src.email, 'src@example.com')),
-    ).execute()
+    await live.db
+      .insertInto(h().users)
+      .fromSelect((d) =>
+        d
+          .from(h().users, 'src')
+          .select(({ src }) => ({
+            role: src.role,
+            balance: src.balance,
+            createdAt: src.createdAt,
+            meta: src.meta,
+            tags: src.tags,
+            name: q.concat(src.name, ' copy'),
+            email: q.concat(src.email, '.copy'),
+          }))
+          .where(({ src }) => q.eq(src.email, 'src@example.com')),
+      )
+      .execute()
 
     expect(
       await live.raw(
@@ -358,4 +378,3 @@ describe('§2.6 — an array column and the two bulk strategies', () => {
     ])
   })
 })
-

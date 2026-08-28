@@ -170,10 +170,7 @@ function leafIndexes(fields: readonly FieldPlan[], into: number[] = []): number[
  * delegates straight to {@link fieldDecoder} with its own index, so the shape of the hot path is
  * unchanged — and `buildDecoder` skips this wrapper entirely when no group is present.
  */
-function rowFieldDecoder(
-  f: FieldPlan,
-  parent: CodecContext,
-): (row: readonly unknown[]) => unknown {
+function rowFieldDecoder(f: FieldPlan, parent: CodecContext): (row: readonly unknown[]) => unknown {
   if (f.k === 'col') {
     // Fused, not `fieldDecoder` behind an index closure. A plain column is the overwhelmingly
     // common field and it is the one the decode budget is measured on; going through two closures
@@ -290,7 +287,9 @@ export function assertCodegenAvailable(): void {
  * {@link assertPlanKey} before they get here.
  */
 function jsString(key: string): string {
-  return JSON.stringify(key).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')
+  return JSON.stringify(key)
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
 }
 
 /** A column index is written into generated source as a number, so it has to be one. */
@@ -396,7 +395,8 @@ function closureRowDecoder<Row>(fields: readonly FieldPlan[], ctx: CodecContext)
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i] as readonly unknown[]
       const obj: Record<string, unknown> = { ...template }
-      for (let j = 0; j < n; j++) obj[keys[j] as string] = (decoders[j] as (r: readonly unknown[]) => unknown)(row)
+      for (let j = 0; j < n; j++)
+        obj[keys[j] as string] = (decoders[j] as (r: readonly unknown[]) => unknown)(row)
       out[i] = obj as Row
     }
     return out
@@ -417,11 +417,13 @@ export function buildDecoder<Row = unknown>(
       return (rows) =>
         rows.map((r) => {
           const raw = r[idx]
-          return (raw === null || raw === undefined
-            ? null
-            : typeof raw === 'string'
-              ? codec.decodeText(raw, ctx)
-              : raw) as Row
+          return (
+            raw === null || raw === undefined
+              ? null
+              : typeof raw === 'string'
+                ? codec.decodeText(raw, ctx)
+                : raw
+          ) as Row
         })
     }
 

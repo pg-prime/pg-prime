@@ -28,7 +28,13 @@ const ops = api
 /** The heavy case of `cases.mjs`, one step at a time. Each entry is a *complete* thunk. */
 const heavySteps = [
   ['from', () => db.from(h.posts)],
-  ['+ innerJoin', () => db.from(h.posts).innerJoin(h.users, 'author', ({ posts: p, author: a }) => ops.eq(p.authorId, a.id))],
+  [
+    '+ innerJoin',
+    () =>
+      db
+        .from(h.posts)
+        .innerJoin(h.users, 'author', ({ posts: p, author: a }) => ops.eq(p.authorId, a.id)),
+  ],
   [
     '+ leftJoin',
     () =>
@@ -44,7 +50,9 @@ const heavySteps = [
         .from(h.posts)
         .innerJoin(h.users, 'author', ({ posts: p, author: a }) => ops.eq(p.authorId, a.id))
         .leftJoin(h.comments, 'c', ({ posts: p, c }) => ops.eq(c.postId, p.id))
-        .where(({ posts: p, author: a }) => ops.and(ops.isTrue(p.published), ops.isNull(a.deletedAt))),
+        .where(({ posts: p, author: a }) =>
+          ops.and(ops.isTrue(p.published), ops.isNull(a.deletedAt)),
+        ),
   ],
   [
     '+ orderBy + limit',
@@ -53,7 +61,9 @@ const heavySteps = [
         .from(h.posts)
         .innerJoin(h.users, 'author', ({ posts: p, author: a }) => ops.eq(p.authorId, a.id))
         .leftJoin(h.comments, 'c', ({ posts: p, c }) => ops.eq(c.postId, p.id))
-        .where(({ posts: p, author: a }) => ops.and(ops.isTrue(p.published), ops.isNull(a.deletedAt)))
+        .where(({ posts: p, author: a }) =>
+          ops.and(ops.isTrue(p.published), ops.isNull(a.deletedAt)),
+        )
         .orderBy(({ posts: p }) => [ops.desc(p.createdAt), ops.asc(p.id)])
         .limit(50),
   ],
@@ -64,7 +74,9 @@ const heavySteps = [
         .from(h.posts)
         .innerJoin(h.users, 'author', ({ posts: p, author: a }) => ops.eq(p.authorId, a.id))
         .leftJoin(h.comments, 'c', ({ posts: p, c }) => ops.eq(c.postId, p.id))
-        .where(({ posts: p, author: a }) => ops.and(ops.isTrue(p.published), ops.isNull(a.deletedAt)))
+        .where(({ posts: p, author: a }) =>
+          ops.and(ops.isTrue(p.published), ops.isNull(a.deletedAt)),
+        )
         .orderBy(({ posts: p }) => [ops.desc(p.createdAt), ops.asc(p.id)])
         .limit(50)
         .select(({ posts: p, author: a, c }) => ({
@@ -94,7 +106,10 @@ const simpleSteps = [
   ['from', () => db.from(h.users)],
   [
     '+ select (4 cols)',
-    () => db.from(h.users).select(({ users: u }) => ({ id: u.id, email: u.email, name: u.name, role: u.role })),
+    () =>
+      db
+        .from(h.users)
+        .select(({ users: u }) => ({ id: u.id, email: u.email, name: u.name, role: u.role })),
   ],
   [
     '+ where + limit',
@@ -126,7 +141,9 @@ const keep = (fn) => () => {
 
 function table(title, steps) {
   console.log(`\n── ${title} ──────────────────────────────────────────────`)
-  console.log(`  ${'stage'.padEnd(34)} ${'B/op'.padStart(8)} ${'ΔB'.padStart(8)} ${'µs'.padStart(9)} ${'Δµs'.padStart(9)}`)
+  console.log(
+    `  ${'stage'.padEnd(34)} ${'B/op'.padStart(8)} ${'ΔB'.padStart(8)} ${'µs'.padStart(9)} ${'Δµs'.padStart(9)}`,
+  )
   let prevB = 0
   let prevUs = 0
   const rows = []
@@ -157,7 +174,9 @@ table('simple: 4 cols, one where', simpleSteps)
 globalThis.gc?.()
 const emitB = bytesPerOp(keep(emitOnce), { warmup: 20000 }).median
 const emitUs = sample(keep(emitOnce), S).p50
-console.log(`\n  ${'emitter alone (pre-built AST)'.padEnd(34)} ${String(emitB).padStart(8)} ${''.padStart(8)} ${emitUs.toFixed(3).padStart(9)}`)
+console.log(
+  `\n  ${'emitter alone (pre-built AST)'.padEnd(34)} ${String(emitB).padStart(8)} ${''.padStart(8)} ${emitUs.toFixed(3).padStart(9)}`,
+)
 
 if (CPU) {
   // Enough iterations that the sampler has something to say; the profile is written on exit.

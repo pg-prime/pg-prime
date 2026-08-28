@@ -39,7 +39,14 @@ import type {
 import type { Compiled } from '../compile/contract.js'
 import { codecOf } from '../compile/hoist.js'
 import { compile as compileAst } from '../compile/compiler.js'
-import { and as andNode, join as joinNode, param, scalarSubquery, select, setop } from '../compile/nodes.js'
+import {
+  and as andNode,
+  join as joinNode,
+  param,
+  scalarSubquery,
+  select,
+  setop,
+} from '../compile/nodes.js'
 import { NAME } from '../schema/index.js'
 import type { TableRuntime } from '../schema/index.js'
 import { BuilderError } from '../sql/errors.js'
@@ -227,7 +234,9 @@ export class SelectBuilder {
   // ── predicates and clauses ────────────────────────────────────────────────
 
   where(f: Lambda<unknown>): SelectBuilder {
-    return this.#next({ where: conjoin(this.s.where, toExprNode(call(f, this.s.scope), 'where()')) })
+    return this.#next({
+      where: conjoin(this.s.where, toExprNode(call(f, this.s.scope), 'where()')),
+    })
   }
 
   having(f: Lambda<unknown>): SelectBuilder {
@@ -447,7 +456,11 @@ export class SelectBuilder {
 
   #setop(op: SetOpNode['op'], q: unknown): SetOpBuilder {
     const left = this.toAst()
-    return makeSetOp(this.s.ctx, setop({ op, left, right: queryAstOf(q, `.${opMethod(op)}()`) }), left)
+    return makeSetOp(
+      this.s.ctx,
+      setop({ op, left, right: queryAstOf(q, `.${opMethod(op)}()`) }),
+      left,
+    )
   }
 
   // ── terminals ─────────────────────────────────────────────────────────────
@@ -517,7 +530,6 @@ export class SelectBuilder {
     this.#compiled ??= compileAst(this.toAst())
     return this.#compiled
   }
-
 
   async execute(): Promise<unknown[]> {
     if (this.s.projection === undefined) throw needsSelect()
@@ -697,7 +709,6 @@ export class SetOpBuilder {
     this.#compiled ??= compileAst(this.toAst())
     return this.#compiled
   }
-
 
   async execute(): Promise<unknown[]> {
     return runnerOf(this.s.ctx).run(this.compile())

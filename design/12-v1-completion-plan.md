@@ -1237,6 +1237,23 @@ says record, do not raise: the number is recorded here and **the ceiling stands 
 round B** (candidates, in order: vitest's transform cache, `isolate: false` for the pure-function
 files, moving S's 136-case session unit file to tier 1).
 
+**What the runner said about `d0ffa77`** (ci 33215060762, nightly 33215061332): lint, every tier,
+PG 15–18 + PgBouncer, the 1M fuzz and `package` green. Two budget breaches, one of each kind.
+`bench:types`'s **package `.d.ts` bytes** — 533 563 B against S's 524 288 — is the sum of three
+branches' declaration growth, each of which had passed its own raised number; set at the merged
+measurement (534 528 B) with the account in `bench/types/budget.json`. And `bench:runtime`'s
+**point select by PK p50 = 1.603×** against a 1.45 budget is a **regression, not noise**: the same
+runner class measured, before → after the session layer, point select 1.286 → 1.603, insert one
+1.241 → 1.446, update by PK 1.167 → 1.330, delete by PK 1.162 → 1.356, the 5-statement transaction
+1.211 → 1.373, and the two relation loads unchanged at 1.00–1.04 — a constant per-statement cost
+that only the cheapest statements can see. It is **not** re-budgeted; it is the first item of §4 P's
+brief, with these numbers, and the nightly stays red on that one gate until P lands.
+
+**The one-time format** (decision 19) landed as the commit after this record: `oxfmt` over 313
+files (+6 781 / −3 969), `format:check` in the `lint` job, and the exclusions `08` §3.4 AS BUILT
+lists — the first pass broke 10 tier-0 typecheck tests and 20 kit envelope goldens, which is exactly
+why decision 19 wanted it alone on a quiet tree.
+
 Nothing published: `release.yml` runs on every push to `main` and fails at "Version PR or publish"
 until the repository setting *Allow GitHub Actions to create and approve pull requests* is on
 (decision 20's operator step; the API change was outside this session's permissions).

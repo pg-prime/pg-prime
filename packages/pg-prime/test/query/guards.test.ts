@@ -17,7 +17,13 @@
 
 import { describe, expect, it } from 'vitest'
 import { int8Codec } from '../../src/codec/index.js'
-import { col, projection, select as selectNode, table as tableFrom, tableMeta } from '../../src/compile/nodes.js'
+import {
+  col,
+  projection,
+  select as selectNode,
+  table as tableFrom,
+  tableMeta,
+} from '../../src/compile/nodes.js'
 import { BuilderError, NullOperandError } from '../../src/sql/errors.js'
 import { refsOf } from '../../src/query/ref.js'
 import { compileOnly } from '../../src/query/run.js'
@@ -42,9 +48,9 @@ describe('SQL keywords that reach the text verbatim', () => {
   const users = () => db.from(schema.h.users).select(({ users: u }) => ({ id: u.id }))
 
   it('forUpdate refuses a wait mode it does not know, and keeps the three it does', () => {
-    expect(() => users().forUpdate(fromJson('{"wait":"nowait; drop table users --"}'))).toThrowError(
-      BuilderError,
-    )
+    expect(() =>
+      users().forUpdate(fromJson('{"wait":"nowait; drop table users --"}')),
+    ).toThrowError(BuilderError)
     expect(() => users().forUpdate(fromJson('{"strength":"update of pg_authid"}'))).toThrowError(
       BuilderError,
     )
@@ -59,9 +65,9 @@ describe('SQL keywords that reach the text verbatim', () => {
 
   it('asc/desc refuse a NULLS position they do not know', () => {
     const evil = fromJson('"last limit 1 offset 3"')
-    expect(() =>
-      db.from(schema.h.users).orderBy(({ users: u }) => q.asc(u.id, evil)),
-    ).toThrowError(BuilderError)
+    expect(() => db.from(schema.h.users).orderBy(({ users: u }) => q.asc(u.id, evil))).toThrowError(
+      BuilderError,
+    )
     expect(() =>
       db.from(schema.h.users).orderBy(({ users: u }) => q.desc(u.id, evil)),
     ).toThrowError(BuilderError)
@@ -101,11 +107,9 @@ describe('SQL keywords that reach the text verbatim', () => {
 
   it('a frame offset must be a SAFE integer — 1e21 is an integer and is not one', () => {
     const frame = (n: number) =>
-      db
-        .from(schema.h.posts)
-        .select(({ posts: pp }) => ({
-          v: q.over(q.fn.sum(pp.amount), (w) => w.rows({ from: { preceding: n } })),
-        }))
+      db.from(schema.h.posts).select(({ posts: pp }) => ({
+        v: q.over(q.fn.sum(pp.amount), (w) => w.rows({ from: { preceding: n } })),
+      }))
     expect(() => frame(1e21)).toThrowError(BuilderError)
     expect(() => frame(Number.NaN)).toThrowError(BuilderError)
     expect(sqlOf(frame(3))).toBe(
@@ -134,9 +138,9 @@ describe('operands', () => {
   })
 
   it('fn.count() is count(*); fn.count(undefined) is a typo and says so', () => {
-    expect(
-      sqlOf(db.from(schema.h.users).select(() => ({ n: q.fn.count() }))),
-    ).toBe(['select count(*) as "n"', 'from "public"."users" as "users"'].join('\n'))
+    expect(sqlOf(db.from(schema.h.users).select(() => ({ n: q.fn.count() })))).toBe(
+      ['select count(*) as "n"', 'from "public"."users" as "users"'].join('\n'),
+    )
     expect(() => q.fn.count(fromJson('null'))).toThrowError(BuilderError)
   })
 
@@ -244,7 +248,9 @@ describe('a query is a query nominally, not structurally', () => {
 describe('a write with no WHERE says so out loud', () => {
   it('deleteFrom without .where() is refused; .allRows() is the opt-in', () => {
     expect(() => db.deleteFrom(schema.h.posts).toAst()).toThrowError(BuilderError)
-    expect(sqlOf(db.deleteFrom(schema.h.posts).allRows())).toBe('delete from "public"."posts" as "posts"')
+    expect(sqlOf(db.deleteFrom(schema.h.posts).allRows())).toBe(
+      'delete from "public"."posts" as "posts"',
+    )
   })
 
   it('update without .where() is refused; .allRows() is the opt-in', () => {
@@ -264,7 +270,9 @@ describe('a projection is required, and asScalar needs one column', () => {
   it('.compile() without .select() is an error, not `select *`', () => {
     expect(() => db.from(schema.h.users).toAst()).toThrowError(BuilderError)
     expect(() =>
-      db.from(schema.h.users).union(db.from(schema.h.posts).select(({ posts: p }) => ({ id: p.id }))),
+      db
+        .from(schema.h.users)
+        .union(db.from(schema.h.posts).select(({ posts: p }) => ({ id: p.id }))),
     ).toThrowError(BuilderError)
   })
 
@@ -310,9 +318,7 @@ describe('alias collisions', () => {
 
   it('fromValues() will not shadow an alias already in scope', () => {
     expect(() =>
-      db
-        .update(schema.h.posts)
-        .fromValues([{ id: 1n }], { id: int8Codec }, { alias: 'posts' }),
+      db.update(schema.h.posts).fromValues([{ id: 1n }], { id: int8Codec }, { alias: 'posts' }),
     ).toThrowError(BuilderError)
   })
 
@@ -332,9 +338,7 @@ describe('alias collisions', () => {
           .set(() => ({ published: true }))
           .allRows(),
       ),
-    ).toBe(
-      ['update "public"."posts" as "posts"', 'set "title" = $1, "published" = $2'].join('\n'),
-    )
+    ).toBe(['update "public"."posts" as "posts"', 'set "title" = $1, "published" = $2'].join('\n'))
   })
 
   it('a user alias may not look like a compiler-generated one (_r1, _r2, …)', () => {
@@ -374,9 +378,7 @@ describe('keys that Object.prototype already has', () => {
 
   it('a bulk row setting "toString" is a wrong-column error, not a silent accept', () => {
     expect(() =>
-      db
-        .insertInto(schema.h.comments)
-        .valuesMany(fromJson('[{"body":"a"},{"toString":"b"}]')),
+      db.insertInto(schema.h.comments).valuesMany(fromJson('[{"body":"a"},{"toString":"b"}]')),
     ).toThrowError(BuilderError)
   })
 
@@ -414,16 +416,20 @@ describe('bulk options are checked at the boundary', () => {
   it('chunkSize must be a positive integer — 0 used to hang the process', () => {
     const rows = [{ body: 'a' }, { body: 'b' }]
     for (const size of [0, -1, 1.5, Number.NaN]) {
-      expect(() => db.insertInto(schema.h.comments).valuesMany(rows, { chunkSize: size })).toThrowError(
-        BuilderError,
-      )
+      expect(() =>
+        db.insertInto(schema.h.comments).valuesMany(rows, { chunkSize: size }),
+      ).toThrowError(BuilderError)
     }
-    expect(db.insertInto(schema.h.comments).valuesMany(rows, { chunkSize: 1 }).compileAll()).toHaveLength(2)
+    expect(
+      db.insertInto(schema.h.comments).valuesMany(rows, { chunkSize: 1 }).compileAll(),
+    ).toHaveLength(2)
   })
 
   it('an unknown strategy is named rather than silently treated as `values`', () => {
     expect(() =>
-      db.insertInto(schema.h.comments).valuesMany([{ body: 'a' }], fromJson('{"strategy":"bogus"}')),
+      db
+        .insertInto(schema.h.comments)
+        .valuesMany([{ body: 'a' }], fromJson('{"strategy":"bogus"}')),
     ).toThrowError(BuilderError)
   })
 

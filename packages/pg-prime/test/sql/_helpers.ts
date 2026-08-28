@@ -8,7 +8,15 @@
 import { compileExpr } from '../../src/compile/compiler.js'
 import type { Bind } from '../../src/compile/contract.js'
 import { columnMeta, tableMeta, col, table } from '../../src/compile/nodes.js'
-import { boolCodec, int8Codec, jsonbCodec, numericCodec, textCodec, timestamptzCodec, varcharCodec } from '../../src/codec/index.js'
+import {
+  boolCodec,
+  int8Codec,
+  jsonbCodec,
+  numericCodec,
+  textCodec,
+  timestamptzCodec,
+  varcharCodec,
+} from '../../src/codec/index.js'
 import type { Fragment } from '../../src/sql/fragment.js'
 import { toNode } from '../../src/sql/fragment.js'
 

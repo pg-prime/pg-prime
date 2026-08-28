@@ -22,13 +22,7 @@ import { orderStatements } from "../../src/diff/order.js";
 import { runSqlScript, withClient } from "../../src/db/pg.js";
 import type { PlanStatement } from "../../src/plan/plan.js";
 import { applySegments } from "../../src/runner/apply.js";
-import {
-  ADMIN,
-  catalogsNotNullConstraints,
-  destroyDatabase,
-  makeDatabase,
-  serverAvailable,
-} from "../support/db.js";
+import { ADMIN, catalogsNotNullConstraints, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
 
 const CUR = "pgprime_k3_nnv_cur";
 const DES = "pgprime_k3_nnv_des";
@@ -71,9 +65,7 @@ describe("NOT NULL validity (PG >= 18, catalog-gated)", () => {
       expect(desired.ir.get(col)?.payload["notNullValidated"]).toBe(true);
 
       const diff = diffIR(current.ir, desired.ir);
-      expect(diff.deltas.map((d) => `${d.op} ${d.op === "rename" ? d.to.kind : d.id.kind}`)).toEqual([
-        "alter column",
-      ]);
+      expect(diff.deltas.map((d) => `${d.op} ${d.op === "rename" ? d.to.kind : d.id.kind}`)).toEqual(["alter column"]);
 
       // 2. The delta is a VALIDATE — catalog-only ADD, SHARE UPDATE EXCLUSIVE scan — and
       //    NOT a drop-and-re-add, which would pay the ACCESS EXCLUSIVE scan again.

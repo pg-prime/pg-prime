@@ -89,13 +89,7 @@ export type TextPg = 'text' | 'varchar' | 'citext' | 'bpchar' | 'name'
 export type NumPg = 'int2' | 'int4' | 'int8' | 'float4' | 'float8' | 'numeric' | 'money'
 export type JsonPg = 'json' | 'jsonb'
 export type NetPg = 'inet' | 'cidr'
-export type RangePg =
-  | 'int4range'
-  | 'int8range'
-  | 'numrange'
-  | 'tsrange'
-  | 'tstzrange'
-  | 'daterange'
+export type RangePg = 'int4range' | 'int8range' | 'numrange' | 'tsrange' | 'tstzrange' | 'daterange'
 
 /** A `bool` column or a `bool`-typed expression — the operand of `isTrue` and friends. */
 export type BoolOperand = ClassOperand<boolean | null, 'bool'>

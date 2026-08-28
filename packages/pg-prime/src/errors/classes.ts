@@ -252,7 +252,10 @@ export class UnknownQueryError extends QueryError {}
 
 export class ConnectionError extends PgPrimeError {
   declare readonly context: ErrorContext
-  constructor(message: string, init: ErrorInit & { readonly context: ErrorContext; readonly code?: string }) {
+  constructor(
+    message: string,
+    init: ErrorInit & { readonly context: ErrorContext; readonly code?: string },
+  ) {
     super(init.code ?? '08000', message, init)
   }
 }

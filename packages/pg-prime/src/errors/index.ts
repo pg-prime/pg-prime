@@ -1,7 +1,13 @@
 /** The error layer's internal barrel (design/07 §4). The public one is `src/index.ts`. */
 
 export { ConfigError, PgPrimeError, UsageError } from './base.js'
-export type { ErrorContext, ErrorInit, HandleKind, PgPrimeErrorCode, UsageErrorInit } from './base.js'
+export type {
+  ErrorContext,
+  ErrorInit,
+  HandleKind,
+  PgPrimeErrorCode,
+  UsageErrorInit,
+} from './base.js'
 
 export {
   AbortError,
@@ -81,5 +87,11 @@ export {
   isUniqueViolation,
 } from './predicates.js'
 
-export { captureCallSite, parseDetail, redactDetail, redactSql, resolveErrorOptions } from './redact.js'
+export {
+  captureCallSite,
+  parseDetail,
+  redactDetail,
+  redactSql,
+  resolveErrorOptions,
+} from './redact.js'
 export type { ErrorOptions, ParsedDetail, ResolvedErrorOptions } from './redact.js'

@@ -38,5 +38,7 @@ export async function setup(vitest: Vitest): Promise<void> {
   })
   const plan: LivePlan = { kind: 'pg', url, versionNum, version }
   vitest.provide('pgPrimeLivePlan', plan)
-  console.info(`[live] target: ${version.split(',')[0]} (server_version_num ${versionNum}) — ${url}`)
+  console.info(
+    `[live] target: ${version.split(',')[0]} (server_version_num ${versionNum}) — ${url}`,
+  )
 }

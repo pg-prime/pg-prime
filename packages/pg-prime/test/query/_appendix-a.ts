@@ -98,7 +98,9 @@ export function makeAppendixA(ns?: string) {
         db
           .from(h.users)
           .select(({ users: u }) => ({ id: u.id, email: u.email, joined: u.createdAt }))
-          .where(({ users: u }) => q.and(q.isNull(u.deletedAt), q.inList(u.role, ['admin', 'owner'])))
+          .where(({ users: u }) =>
+            q.and(q.isNull(u.deletedAt), q.inList(u.role, ['admin', 'owner'])),
+          )
           .orderBy(({ users: u }) => [q.desc(u.createdAt), q.asc(u.id)])
           .limit(20),
     },
@@ -131,10 +133,16 @@ export function makeAppendixA(ns?: string) {
       build: (db) =>
         db
           .update(h.products)
-          .fromValues([{ id: 1n, price: '9.99' }, { id: 2n, price: '4.50' }], {
-            id: int8Codec,
-            price: numericCodec,
-          })
+          .fromValues(
+            [
+              { id: 1n, price: '9.99' },
+              { id: 2n, price: '4.50' },
+            ],
+            {
+              id: int8Codec,
+              price: numericCodec,
+            },
+          )
           .set((_t, v) => ({ price: v.price, updatedAt: q.fn.now() }))
           .where(({ products: p }, v) => q.eq(p.id, v.id)),
     },
@@ -188,7 +196,7 @@ export function makeAppendixA(ns?: string) {
           .select(({ users: u, recent }) => ({ email: u.email, kind: recent.kind })),
     },
     {
-      label: '§2.7 withRecursive — the row type is the base term\'s (12 B)',
+      label: "§2.7 withRecursive — the row type is the base term's (12 B)",
       build: (db) =>
         db
           .withRecursive(
@@ -269,5 +277,10 @@ create table ${name}.live (
 );
 `
 
-  return { schema, statements, ddl, drop: (name: string) => `drop schema if exists ${name} cascade` }
+  return {
+    schema,
+    statements,
+    ddl,
+    drop: (name: string) => `drop schema if exists ${name} cascade`,
+  }
 }

@@ -33,14 +33,7 @@ export type {
 export type { AnyRef, Projectable, Ref, RefRuntime, RefsOfCols } from './ref.js'
 
 export { fragmentDdlText } from './ddl.js'
-export type {
-  CheckSpec,
-  FkAction,
-  ForeignKeyOptions,
-  RefLike,
-  RefSpec,
-  UniqueSpec,
-} from './ddl.js'
+export type { CheckSpec, FkAction, ForeignKeyOptions, RefLike, RefSpec, UniqueSpec } from './ddl.js'
 
 export {
   bigint,

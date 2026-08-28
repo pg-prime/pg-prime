@@ -151,58 +151,70 @@ describe('LISTEN owns a dedicated connection (07 §6.5)', () => {
 })
 
 describe('notify is pg_notify($1,$2) and works everywhere (07 §6.5)', () => {
-  requiresConcurrency()('the payload is a bind parameter, so a quote in it is just a quote', async () => {
-    const listener = await client()
-    try {
-      await listener.query(`listen "chan_quote"`)
-      const arrived: string[] = []
-      listener.on('notification', (n) => arrived.push(n.payload ?? ''))
-      const evil = `'); drop table x; --`
-      await db.notify('chan_quote', evil)
-      const deadline = Date.now() + 5_000
-      while (arrived.length === 0 && Date.now() < deadline) await sleep(50)
-      expect(arrived).toStrictEqual([evil])
-    } finally {
-      await listener.end()
-    }
-  }, 60_000)
+  requiresConcurrency()(
+    'the payload is a bind parameter, so a quote in it is just a quote',
+    async () => {
+      const listener = await client()
+      try {
+        await listener.query(`listen "chan_quote"`)
+        const arrived: string[] = []
+        listener.on('notification', (n) => arrived.push(n.payload ?? ''))
+        const evil = `'); drop table x; --`
+        await db.notify('chan_quote', evil)
+        const deadline = Date.now() + 5_000
+        while (arrived.length === 0 && Date.now() < deadline) await sleep(50)
+        expect(arrived).toStrictEqual([evil])
+      } finally {
+        await listener.end()
+      }
+    },
+    60_000,
+  )
 
-  requiresConcurrency()('the 8000-byte payload limit is enforced client-side, at the REAL boundary', async () => {
-    await expect(db.notify('chan_big', 'x'.repeat(8000))).rejects.toBeInstanceOf(UsageError)
-    await expect(db.notify('chan_big', 'x'.repeat(8000))).rejects.toThrow(/8000 bytes/)
-    // 7999 is the largest PostgreSQL accepts — its own check is `>= 8000` (async.c), which is why
-    // `07` §6.5's "at most 8000" is off by one and this test is the measurement that says so.
-    await expect(db.notify('chan_big', 'x'.repeat(7999))).resolves.toBeUndefined()
-  }, 60_000)
+  requiresConcurrency()(
+    'the 8000-byte payload limit is enforced client-side, at the REAL boundary',
+    async () => {
+      await expect(db.notify('chan_big', 'x'.repeat(8000))).rejects.toBeInstanceOf(UsageError)
+      await expect(db.notify('chan_big', 'x'.repeat(8000))).rejects.toThrow(/8000 bytes/)
+      // 7999 is the largest PostgreSQL accepts — its own check is `>= 8000` (async.c), which is why
+      // `07` §6.5's "at most 8000" is off by one and this test is the measurement that says so.
+      await expect(db.notify('chan_big', 'x'.repeat(7999))).resolves.toBeUndefined()
+    },
+    60_000,
+  )
 
-  requiresConcurrency()('notify works inside a transaction and delivers on COMMIT, not before', async () => {
-    const listener = await client()
-    try {
-      await listener.query(`listen "chan_tx"`)
-      const arrived: string[] = []
-      listener.on('notification', (n) => arrived.push(n.payload ?? ''))
+  requiresConcurrency()(
+    'notify works inside a transaction and delivers on COMMIT, not before',
+    async () => {
+      const listener = await client()
+      try {
+        await listener.query(`listen "chan_tx"`)
+        const arrived: string[] = []
+        listener.on('notification', (n) => arrived.push(n.payload ?? ''))
 
-      await db.transaction(async (tx) => {
-        await tx.notify('chan_tx', 'committed')
-        await sleep(200)
-        // Still nothing: PostgreSQL queues NOTIFY until commit.
-        expect(arrived).toStrictEqual([])
-      })
-      const deadline = Date.now() + 5_000
-      while (arrived.length === 0 && Date.now() < deadline) await sleep(50)
-      expect(arrived).toStrictEqual(['committed'])
+        await db.transaction(async (tx) => {
+          await tx.notify('chan_tx', 'committed')
+          await sleep(200)
+          // Still nothing: PostgreSQL queues NOTIFY until commit.
+          expect(arrived).toStrictEqual([])
+        })
+        const deadline = Date.now() + 5_000
+        while (arrived.length === 0 && Date.now() < deadline) await sleep(50)
+        expect(arrived).toStrictEqual(['committed'])
 
-      // And a rolled-back NOTIFY never arrives at all.
-      await db.transaction(async (tx) => {
-        await tx.notify('chan_tx', 'rolled-back')
-        return tx.rollbackWith(null)
-      })
-      await sleep(300)
-      expect(arrived).toStrictEqual(['committed'])
-    } finally {
-      await listener.end()
-    }
-  }, 60_000)
+        // And a rolled-back NOTIFY never arrives at all.
+        await db.transaction(async (tx) => {
+          await tx.notify('chan_tx', 'rolled-back')
+          return tx.rollbackWith(null)
+        })
+        await sleep(300)
+        expect(arrived).toStrictEqual(['committed'])
+      } finally {
+        await listener.end()
+      }
+    },
+    60_000,
+  )
 })
 
 describe('LISTEN under a transaction pooler profile (07 §5.3)', () => {
@@ -228,24 +240,28 @@ describe('LISTEN under a transaction pooler profile (07 §5.3)', () => {
     60_000,
   )
 
-  requiresConcurrency()('with directConnection it is routed there automatically', async () => {
-    const pooled = pgPrime({
-      schema,
-      connection: liveTarget().url,
-      directConnection: liveTarget().url,
-      poolerMode: 'transaction',
-      poolOptions: { max: 1 },
-    })
-    try {
-      const got: string[] = []
-      const sub = await pooled.listen('chan_direct', (p) => got.push(p))
-      await pooled.notify('chan_direct', 'routed')
-      const deadline = Date.now() + 5_000
-      while (got.length === 0 && Date.now() < deadline) await sleep(50)
-      expect(got).toStrictEqual(['routed'])
-      await sub.close()
-    } finally {
-      await pooled.end().catch(() => {})
-    }
-  }, 60_000)
+  requiresConcurrency()(
+    'with directConnection it is routed there automatically',
+    async () => {
+      const pooled = pgPrime({
+        schema,
+        connection: liveTarget().url,
+        directConnection: liveTarget().url,
+        poolerMode: 'transaction',
+        poolOptions: { max: 1 },
+      })
+      try {
+        const got: string[] = []
+        const sub = await pooled.listen('chan_direct', (p) => got.push(p))
+        await pooled.notify('chan_direct', 'routed')
+        const deadline = Date.now() + 5_000
+        while (got.length === 0 && Date.now() < deadline) await sleep(50)
+        expect(got).toStrictEqual(['routed'])
+        await sub.close()
+      } finally {
+        await pooled.end().catch(() => {})
+      }
+    },
+    60_000,
+  )
 })

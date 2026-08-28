@@ -116,7 +116,10 @@ export interface PgLikeSubmittable {
   submit(connection: PgLikeConnection): Error | null | undefined | void
   handleRowDescription(msg: { fields: readonly PgLikeField[] }): void
   handleDataRow(msg: { fields: readonly (string | null)[] }): void
-  handleCommandComplete(msg: { text?: string; command?: string }, connection: PgLikeConnection): void
+  handleCommandComplete(
+    msg: { text?: string; command?: string },
+    connection: PgLikeConnection,
+  ): void
   handleEmptyQuery(connection: PgLikeConnection): void
   handlePortalSuspended(connection: PgLikeConnection): void
   handleCopyInResponse(connection: PgLikeConnection): void

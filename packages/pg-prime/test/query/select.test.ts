@@ -54,8 +54,11 @@ describe('§2.1 — the shape of a select', () => {
   })
 
   it('the limit bind is int4, not text', () => {
-    const binds = db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })).limit(20).compile()
-      .binds
+    const binds = db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .limit(20)
+      .compile().binds
     expect(binds).toStrictEqual([{ k: 'value', encoded: '20', oid: 23 }])
   })
 
@@ -69,7 +72,10 @@ describe('§2.1 — the shape of a select', () => {
 
   it('.execute() without an executor names the fix rather than crashing', async () => {
     await expect(
-      db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })).execute(),
+      db
+        .from(schema.h.users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .execute(),
     ).rejects.toThrowError(/no executor/)
   })
 
@@ -87,20 +93,18 @@ describe('§2.1 — the shape of a select', () => {
 
   it('an alias already in scope is a named error, not a silent overwrite', () => {
     expect(() =>
-      db
-        .from(schema.h.users)
-        .innerJoin(schema.h.users, ({ users: u }) => q.eq(u.id, u.id)),
+      db.from(schema.h.users).innerJoin(schema.h.users, ({ users: u }) => q.eq(u.id, u.id)),
     ).toThrowError(/alias "users" is already in scope/)
   })
 
   it('a bare value in a projection is refused: sql<T> must carry a codec (03 §3.2)', () => {
-    expect(() =>
-      db.from(schema.h.users).select(() => ({ x: 'user' } as never)),
-    ).toThrowError(/has no PostgreSQL type and pg-prime will not guess one/)
-    // …and the two supported spellings both work.
-    expect(sqlOf(db.from(schema.h.users).select(() => ({ x: q.val('user', textCodec) })))).toContain(
-      '$1 as "x"',
+    expect(() => db.from(schema.h.users).select(() => ({ x: 'user' }) as never)).toThrowError(
+      /has no PostgreSQL type and pg-prime will not guess one/,
     )
+    // …and the two supported spellings both work.
+    expect(
+      sqlOf(db.from(schema.h.users).select(() => ({ x: q.val('user', textCodec) }))),
+    ).toContain('$1 as "x"')
   })
 })
 
@@ -176,7 +180,10 @@ describe('§2.2 — joins and nest()', () => {
     const compiled = db
       .from(schema.h.posts)
       .leftJoin(schema.h.users, 'u', ({ posts: p, u }) => q.eq(p.authorId, u.id))
-      .select(({ posts: p, u }) => ({ id: p.id, author: q.nestNullable({ id: u.id, name: u.name }) }))
+      .select(({ posts: p, u }) => ({
+        id: p.id,
+        author: q.nestNullable({ id: u.id, name: u.name }),
+      }))
       .compile()
 
     // `sentinel` is `users.id`, declared NOT NULL — a null there can only mean "no joined row".
@@ -184,7 +191,12 @@ describe('§2.2 — joins and nest()', () => {
       k: 'row',
       fields: [{ key: 'id' }, { key: 'author', k: 'group', nullable: true, sentinel: 1 }],
     })
-    expect(buildDecoder(compiled.shape)([['1', '7', 'Ada'], ['2', null, null]])).toStrictEqual([
+    expect(
+      buildDecoder(compiled.shape)([
+        ['1', '7', 'Ada'],
+        ['2', null, null],
+      ]),
+    ).toStrictEqual([
       { id: 1n, author: { id: 7n, name: 'Ada' } },
       { id: 2n, author: null },
     ])
@@ -250,20 +262,14 @@ describe('§2.2 — joins and nest()', () => {
         ['1', 'ada@example.com'],
         ['2', null],
       ]),
-    ).toStrictEqual([
-      { grp: { pid: 1n, email: 'ada@example.com' } },
-      { grp: null },
-    ])
+    ).toStrictEqual([{ grp: { pid: 1n, email: 'ada@example.com' } }, { grp: null }])
     // Reversed keys: same verdict per row, only the field order in the row differs.
     expect(
       buildDecoder(build(true).shape)([
         ['ada@example.com', '1'],
         [null, '2'],
       ]),
-    ).toStrictEqual([
-      { grp: { email: 'ada@example.com', pid: 1n } },
-      { grp: null },
-    ])
+    ).toStrictEqual([{ grp: { email: 'ada@example.com', pid: 1n } }, { grp: null }])
   })
 
   it('T2 — with nothing left-joined the group is never null, not "all fields null"', () => {
@@ -379,9 +385,9 @@ describe('§2.1 — `$all` (12 B)', () => {
     )
     // The scope object is cached per (registry, handle, alias), so a mutating `omit` would have
     // deleted `body` from every later query too. The next query is the negative control.
-    expect(sqlOf(db.from(schema.h.comments).select(({ comments: c }) => ({ ...c.$all })))).toContain(
-      '"comments"."body" as "body"',
-    )
+    expect(
+      sqlOf(db.from(schema.h.comments).select(({ comments: c }) => ({ ...c.$all }))),
+    ).toContain('"comments"."body" as "body"')
   })
 
   it('a relation accessor is not a column, so `$all` carries columns only', () => {
@@ -456,7 +462,10 @@ describe('§2.2 — right / full / cross joins (12 B)', () => {
   it('cross join takes no ON, in both the aliased and the bare spelling', () => {
     expect(
       sqlOf(
-        db.from(schema.h.posts, 'p').crossJoin(schema.h.users, 'u').select(({ u }) => ({ id: u.id })),
+        db
+          .from(schema.h.posts, 'p')
+          .crossJoin(schema.h.users, 'u')
+          .select(({ u }) => ({ id: u.id })),
       ),
     ).toBe(
       [
@@ -467,7 +476,10 @@ describe('§2.2 — right / full / cross joins (12 B)', () => {
     )
     expect(
       sqlOf(
-        db.from(schema.h.posts, 'p').crossJoin(schema.h.users).select(({ users: u }) => ({ id: u.id })),
+        db
+          .from(schema.h.posts, 'p')
+          .crossJoin(schema.h.users)
+          .select(({ users: u }) => ({ id: u.id })),
       ),
     ).toContain('cross join "public"."users" as "users"')
   })
@@ -476,14 +488,22 @@ describe('§2.2 — right / full / cross joins (12 B)', () => {
     const compiled = db
       .from(schema.h.posts, 'p')
       .rightJoin(schema.h.users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
-      .select(({ p, u }) => ({ email: u.email, post: q.nestNullable({ id: p.id, title: p.title }) }))
+      .select(({ p, u }) => ({
+        email: u.email,
+        post: q.nestNullable({ id: p.id, title: p.title }),
+      }))
       .compile()
     // `p.id` is NOT NULL *and* on the nulled side, so it is the sentinel (index 1 of the row:
     // `u.email` is 0) — the mirror of the left-join case, where it would have been one of `u`'s.
     expect(compiled.shape).toMatchObject({
       fields: [{ key: 'email' }, { key: 'post', k: 'group', nullable: true, sentinel: 1 }],
     })
-    expect(buildDecoder(compiled.shape)([['a@b', '1', 'x'], ['c@d', null, null]])).toStrictEqual([
+    expect(
+      buildDecoder(compiled.shape)([
+        ['a@b', '1', 'x'],
+        ['c@d', null, null],
+      ]),
+    ).toStrictEqual([
       { email: 'a@b', post: { id: 1n, title: 'x' } },
       { email: 'c@d', post: null },
     ])
@@ -493,7 +513,10 @@ describe('§2.2 — right / full / cross joins (12 B)', () => {
     const compiled = db
       .from(schema.h.posts, 'p')
       .innerJoin(schema.h.users, 'u', ({ p, u }) => q.eq(p.authorId, u.id))
-      .select(({ p, u }) => ({ email: u.email, post: q.nestNullable({ id: p.id, title: p.title }) }))
+      .select(({ p, u }) => ({
+        email: u.email,
+        post: q.nestNullable({ id: p.id, title: p.title }),
+      }))
       .compile()
     expect(compiled.shape).toMatchObject({ fields: [{ key: 'email' }, { witnesses: [] }] })
   })
@@ -842,7 +865,8 @@ describe('§2.8 — distinct on, locking, composition', () => {
   })
 
   it('$call composes and $if is type-preserving at runtime too', () => {
-    const paginate = (page: number, size: number) => (x: typeof base) => x.limit(size).offset(page * size)
+    const paginate = (page: number, size: number) => (x: typeof base) =>
+      x.limit(size).offset(page * size)
     const base = from()
     expect(sqlOf(base.$call(paginate(2, 20)))).toContain('limit $1\noffset $2')
     expect(vals(base.$call(paginate(2, 20)))).toStrictEqual(['20', '40'])
@@ -895,7 +919,10 @@ describe('§2.8 — distinct on, locking, composition', () => {
 
   it('asScalar refuses a projection that is not exactly one column', () => {
     expect(() =>
-      db.from(schema.h.users).select(({ users: u }) => ({ a: u.id, b: u.email })).asScalar(),
+      db
+        .from(schema.h.users)
+        .select(({ users: u }) => ({ a: u.id, b: u.email }))
+        .asScalar(),
     ).toThrowError(/exactly one column \(got 2\)/)
   })
 })

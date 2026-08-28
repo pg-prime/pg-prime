@@ -42,8 +42,15 @@ describe("canonicalization (I2 — provenance never enters a hash)", () => {
   });
   it("gives byte-identical hashes for a TS-declared and a catalog-read fact", () => {
     const payload = { kind: "column", type: "text", notNull: true, default: null };
-    const fromTs: Fact = { id: { kind: "column", schema: "public", table: "u", name: "e" }, payload, provenance: { origin: "ts", ownership: "managed" } };
-    const fromDb: Fact = { ...fromTs, provenance: { origin: "catalog", ownership: "observed", sourceRef: { file: "x", line: 1 } } };
+    const fromTs: Fact = {
+      id: { kind: "column", schema: "public", table: "u", name: "e" },
+      payload,
+      provenance: { origin: "ts", ownership: "managed" },
+    };
+    const fromDb: Fact = {
+      ...fromTs,
+      provenance: { origin: "catalog", ownership: "observed", sourceRef: { file: "x", line: 1 } },
+    };
     expect(contentHash(fromTs.payload)).toBe(contentHash(fromDb.payload));
   });
 });
@@ -56,8 +63,19 @@ describe("SchemaIR rollups and fingerprint", () => {
     return SchemaIR.build(
       [
         { id: schema, payload: { kind: "schema" }, provenance: prov },
-        { id: table, parent: schema, payload: { kind: "table", relkind: "r", persistence: "p", rowSecurity: false }, provenance: prov },
-        { id: col, parent: table, payload: { kind: "column", type: "text", notNull: true, default: null }, ordinal: 1, provenance: prov },
+        {
+          id: table,
+          parent: schema,
+          payload: { kind: "table", relkind: "r", persistence: "p", rowSecurity: false },
+          provenance: prov,
+        },
+        {
+          id: col,
+          parent: table,
+          payload: { kind: "column", type: "text", notNull: true, default: null },
+          ordinal: 1,
+          provenance: prov,
+        },
       ],
       [{ from: col, to: table, kind: "owner" }],
     );
@@ -107,7 +125,10 @@ describe("evaluates-edge synthesis (the fix for the pg-delta enum bug)", () => {
   });
 
   it("finds labels inside an index predicate", () => {
-    const edges = evaluatedEnumLabels("(status <> 'shipped'::public.order_status)", new Map([["public.order_status", ["pending", "shipped"]]]));
+    const edges = evaluatedEnumLabels(
+      "(status <> 'shipped'::public.order_status)",
+      new Map([["public.order_status", ["pending", "shipped"]]]),
+    );
     expect(edges.map(idName)).toEqual(["shipped"]);
   });
 

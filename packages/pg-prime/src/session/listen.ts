@@ -233,7 +233,11 @@ export class ListenHub {
           this.#conn = conn
           this.#attach(conn)
           for (const channel of this.#channels.keys()) {
-            await conn.execute({ text: `listen ${quoteChannel(channel)}`, params: [], mode: 'simple' })
+            await conn.execute({
+              text: `listen ${quoteChannel(channel)}`,
+              params: [],
+              mode: 'simple',
+            })
           }
           const downMs = Date.now() - downFrom
           this.#host.internal(

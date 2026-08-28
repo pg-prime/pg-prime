@@ -57,11 +57,15 @@ export interface PgDomain {
 export function pgDomain(name: string, baseType: string, options?: PgDomainOptions): PgDomain {
   checkName(name, `pgDomain("${name}") type name`)
   if (typeof baseType !== 'string' || baseType.trim() === '') {
-    throw new SchemaError(`pg-prime: pgDomain("${name}") needs a base type, e.g. pgDomain('email', 'text').`)
+    throw new SchemaError(
+      `pg-prime: pgDomain("${name}") needs a base type, e.g. pgDomain('email', 'text').`,
+    )
   }
   if (options?.schema !== undefined) checkName(options.schema, `pgDomain("${name}") schema name`)
-  if (options?.renamedFrom !== undefined) checkName(options.renamedFrom, `pgDomain("${name}", { renamedFrom })`)
-  for (const c of options?.checks ?? []) checkName(c.name, `pgDomain("${name}") check name "${c.name}"`)
+  if (options?.renamedFrom !== undefined)
+    checkName(options.renamedFrom, `pgDomain("${name}", { renamedFrom })`)
+  for (const c of options?.checks ?? [])
+    checkName(c.name, `pgDomain("${name}") check name "${c.name}"`)
   return Object.freeze({
     kind: 'domain' as const,
     name,
@@ -106,14 +110,17 @@ export interface PgSequence {
   readonly maxValue: string | undefined
   readonly cache: string | undefined
   readonly cycle: boolean
-  readonly ownedBy: { readonly schema?: string; readonly table: string; readonly column: string } | undefined
+  readonly ownedBy:
+    | { readonly schema?: string; readonly table: string; readonly column: string }
+    | undefined
   readonly renamedFrom: string | undefined
 }
 
 export function pgSequence(name: string, options?: PgSequenceOptions): PgSequence {
   checkName(name, `pgSequence("${name}") sequence name`)
   if (options?.schema !== undefined) checkName(options.schema, `pgSequence("${name}") schema name`)
-  if (options?.renamedFrom !== undefined) checkName(options.renamedFrom, `pgSequence("${name}", { renamedFrom })`)
+  if (options?.renamedFrom !== undefined)
+    checkName(options.renamedFrom, `pgSequence("${name}", { renamedFrom })`)
   if (options?.ownedBy !== undefined) {
     checkName(options.ownedBy.table, `pgSequence("${name}", { ownedBy.table })`)
     checkName(options.ownedBy.column, `pgSequence("${name}", { ownedBy.column })`)

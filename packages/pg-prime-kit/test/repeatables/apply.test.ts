@@ -74,10 +74,7 @@ $$;`,
         });
 
         const files = await scanRepeatables(dir);
-        expect(files.map((f) => f.path)).toEqual([
-          "sql/020_functions/bump.sql",
-          "sql/030_views/active_users.sql",
-        ]);
+        expect(files.map((f) => f.path)).toEqual(["sql/020_functions/bump.sql", "sql/030_views/active_users.sql"]);
 
         const applied = await withClient(conn, (c) => applyRepeatables(c, files));
         // exactly the rows the caller writes into pgprime.repeatables
@@ -87,10 +84,7 @@ $$;`,
 
         expect(await count(conn, "SELECT count(*)::int AS n FROM pg_proc WHERE proname = 'bump'")).toBe(1);
         expect(
-          await count(
-            conn,
-            "SELECT count(*)::int AS n FROM pg_class WHERE relname = 'active_users' AND relkind = 'v'",
-          ),
+          await count(conn, "SELECT count(*)::int AS n FROM pg_class WHERE relname = 'active_users' AND relkind = 'v'"),
         ).toBe(1);
         // the view depends on the function: it only exists because the order was respected
       } finally {
@@ -122,9 +116,7 @@ CREATE OR REPLACE VIEW public.broken AS SELECT * FROM public.no_such_table;`,
           }
           // Asked on the SAME connection on purpose: had the pass left the aborted
           // transaction open, this would raise 25P02 instead of answering.
-          const r = await c.query(
-            "SELECT count(*)::int AS n FROM pg_proc WHERE proname IN ('first_fn', 'second_fn')",
-          );
+          const r = await c.query("SELECT count(*)::int AS n FROM pg_proc WHERE proname IN ('first_fn', 'second_fn')");
           return { caught, functions: Number(r.rows[0]?.["n"] ?? -1) };
         });
 

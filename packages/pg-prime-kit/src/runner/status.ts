@@ -71,7 +71,11 @@ export interface StatusReport {
   readonly missingFiles: readonly string[];
   readonly checksumDrift: readonly string[];
   readonly lock: LeaseInspection;
-  readonly repeatables: { readonly drift: readonly string[]; readonly tracked: number; readonly passImplemented: boolean };
+  readonly repeatables: {
+    readonly drift: readonly string[];
+    readonly tracked: number;
+    readonly passImplemented: boolean;
+  };
   /**
    * design/06 §7: "`status` shows a running backfill's `rows_done`."
    *
@@ -98,7 +102,11 @@ export interface StatusOptions {
   readonly repeatablesDir?: string;
 }
 
-export async function migrationStatus(conn: ConnInfo, migrationsDir: string, options: StatusOptions = {}): Promise<StatusReport> {
+export async function migrationStatus(
+  conn: ConnInfo,
+  migrationsDir: string,
+  options: StatusOptions = {},
+): Promise<StatusReport> {
   return withClient(conn, (client) => migrationStatusOn(client, migrationsDir, options));
 }
 
@@ -126,9 +134,14 @@ export async function migrationStatusOn(
     if (!fileIds.has(row.id)) {
       missingFiles.push(row.id);
       migrations.push({
-        id: row.id, state: "orphaned", txmode: row.txmode,
-        statementsTotal: row.statementsTotal, statementsApplied: row.statementsApplied,
-        statementUncertain: row.statementUncertain, appliedAt: row.finishedAt, appliedBy: row.appliedBy,
+        id: row.id,
+        state: "orphaned",
+        txmode: row.txmode,
+        statementsTotal: row.statementsTotal,
+        statementsApplied: row.statementsApplied,
+        statementUncertain: row.statementUncertain,
+        appliedAt: row.finishedAt,
+        appliedBy: row.appliedBy,
         checksumOk: null,
       });
     }
@@ -153,7 +166,9 @@ export async function migrationStatusOn(
   }
   migrations.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
-  const pending = migrations.filter((m) => m.state === "pending" || m.state === "running" || m.state === "failed").map((m) => m.id);
+  const pending = migrations
+    .filter((m) => m.state === "pending" || m.state === "running" || m.state === "failed")
+    .map((m) => m.id);
   const partial = migrations.filter((m) => m.state === "running" || (m.state === "failed" && m.statementsApplied > 0));
 
   const recorded = currentFingerprint(rows);

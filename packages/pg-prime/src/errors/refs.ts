@@ -35,7 +35,13 @@ export interface ColumnRef {
   readonly $: RefRuntime
 }
 
-export type ConstraintKind = 'unique' | 'primaryKey' | 'foreignKey' | 'check' | 'exclusion' | 'notNull'
+export type ConstraintKind =
+  | 'unique'
+  | 'primaryKey'
+  | 'foreignKey'
+  | 'check'
+  | 'exclusion'
+  | 'notNull'
 
 /** `07` §4.4's resolved constraint — schema objects, never strings. */
 export interface ConstraintRef {
@@ -188,9 +194,10 @@ function indexTable(handle: TableRef, out: Map<string, ConstraintRef>): void {
  * schema file with a circular import can make it throw, and an error path that throws while
  * building a nicer message is strictly worse than the original error.
  */
-function resolveTarget(
-  target: (() => readonly unknown[]) | undefined,
-): { referencedTable?: TableRef; referencedColumns?: readonly ColumnRef[] } {
+function resolveTarget(target: (() => readonly unknown[]) | undefined): {
+  referencedTable?: TableRef
+  referencedColumns?: readonly ColumnRef[]
+} {
   if (typeof target !== 'function') return {}
   let refs: readonly unknown[]
   try {

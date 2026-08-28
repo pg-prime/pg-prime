@@ -51,7 +51,10 @@ export interface TableCodecMeta {
   readonly byKey: Readonly<Record<string, ColumnMeta>>
 }
 
-const CACHE = new WeakMap<CodecRegistry, { gen: number; tables: WeakMap<TableLike, TableCodecMeta> }>()
+const CACHE = new WeakMap<
+  CodecRegistry,
+  { gen: number; tables: WeakMap<TableLike, TableCodecMeta> }
+>()
 
 /**
  * Schema table → compiler metadata, memoised per (registry, table).

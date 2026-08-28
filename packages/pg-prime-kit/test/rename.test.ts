@@ -15,13 +15,7 @@ import { runSqlScript, withClient } from "../src/db/pg.js";
 import { definitionsAgreeUnderRename, tokenizeDefinition } from "../src/diff/rename.js";
 import { generateFromDatabases as generate } from "../src/generate.js";
 import { applySegments } from "../src/runner/apply.js";
-import {
-  ADMIN,
-  catalogsNotNullConstraints,
-  destroyDatabase,
-  makeDatabase,
-  serverAvailable,
-} from "./support/db.js";
+import { ADMIN, catalogsNotNullConstraints, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
 
 const COL_CUR = "pgprime_ren_col_cur";
 const COL_DES = "pgprime_ren_col_des";
@@ -52,11 +46,7 @@ describe("definition agreement is decided on tokens, not on text", () => {
     ).toBe(true);
     // negative control: the LITERAL changing is a real difference
     expect(
-      definitionsAgreeUnderRename(
-        "CHECK ((first_name <> 'first_name'::text))",
-        "CHECK ((name <> 'name'::text))",
-        map,
-      ),
+      definitionsAgreeUnderRename("CHECK ((first_name <> 'first_name'::text))", "CHECK ((name <> 'name'::text))", map),
     ).toBe(false);
   });
 
@@ -69,7 +59,11 @@ describe("definition agreement is decided on tokens, not on text", () => {
       ),
     ).toBe(false);
     expect(
-      definitionsAgreeUnderRename("FOREIGN KEY (a) REFERENCES public.x(id)", "FOREIGN KEY (a) REFERENCES public.y(id)", map),
+      definitionsAgreeUnderRename(
+        "FOREIGN KEY (a) REFERENCES public.x(id)",
+        "FOREIGN KEY (a) REFERENCES public.y(id)",
+        map,
+      ),
     ).toBe(false);
   });
 
@@ -131,9 +125,7 @@ describe("a rename renames its dependents instead of recreating them", () => {
       expect(result.plan.proof.status).toBe("passed");
 
       // apply for real and check the literal survived
-      const report = await withClient(target, (c) =>
-        applySegments(c, result.plan.statements, result.plan.segments),
-      );
+      const report = await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
       expect(report.error).toBeUndefined();
       const after = await withClient(target, (c) => extractCatalog(c, { schemas: ["public"] }));
       expect(after.ir.fingerprint).toBe(result.desiredIR.fingerprint);
@@ -162,17 +154,13 @@ describe("a rename renames its dependents instead of recreating them", () => {
 
       const sql = result.plan.statements.map((s) => s.sql);
       expect(sql).toContain('ALTER TABLE "public"."tenants" RENAME TO "accounts"');
-      expect(sql).toContain(
-        'ALTER TABLE "public"."accounts" RENAME CONSTRAINT "tenants_pkey" TO "accounts_pkey"',
-      );
+      expect(sql).toContain('ALTER TABLE "public"."accounts" RENAME CONSTRAINT "tenants_pkey" TO "accounts_pkey"');
       // the FK in `sites` is not even mentioned: it changed only in the referenced NAME
       expect(sql.filter((s) => /sites_tenant_fkey/.test(s))).toEqual([]);
       expect(sql.filter((s) => /DROP CONSTRAINT|ADD CONSTRAINT|VALIDATE CONSTRAINT|DROP TABLE/.test(s))).toEqual([]);
       expect(result.plan.proof.status).toBe("passed");
 
-      const report = await withClient(target, (c) =>
-        applySegments(c, result.plan.statements, result.plan.segments),
-      );
+      const report = await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
       expect(report.error).toBeUndefined();
       const after = await withClient(target, (c) => extractCatalog(c, { schemas: ["public"] }));
       expect(after.ir.fingerprint).toBe(result.desiredIR.fingerprint);
@@ -268,9 +256,7 @@ describe("PostgreSQL 18 named NOT NULL, so a rename has to carry that name too",
         'ALTER TABLE "public"."accounts" RENAME CONSTRAINT "tenants_id_not_null" TO "accounts_id_not_null"',
       );
       // `sites` was not renamed, so its NOT NULL names are nobody's business
-      expect(
-        result.diff.renames.filter((r) => /sites/.test(r.from) || /sites/.test(r.to)),
-      ).toEqual([]);
+      expect(result.diff.renames.filter((r) => /sites/.test(r.from) || /sites/.test(r.to))).toEqual([]);
       expect(result.plan.proof.status).toBe("passed");
 
       await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
@@ -329,10 +315,7 @@ describe("PostgreSQL 18 named NOT NULL, so a rename has to carry that name too",
         target,
         `CREATE TABLE public.users (first_name text CONSTRAINT first_name_required NOT NULL);`,
       );
-      await runSqlScript(
-        desired,
-        `CREATE TABLE public.users (name text CONSTRAINT first_name_required NOT NULL);`,
-      );
+      await runSqlScript(desired, `CREATE TABLE public.users (name text CONSTRAINT first_name_required NOT NULL);`);
 
       const result = await generate({
         admin: ADMIN,

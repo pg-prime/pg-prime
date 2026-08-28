@@ -9,57 +9,57 @@
  */
 
 export const MASKED: readonly string[] = [
-  "at",                       // wall clock
-  "durationMs",               // wall clock
-  "database",                 // the scratch database's name is per-run
-  "migrationsDir",            // an absolute path under os.tmpdir()
-  "fingerprint",              // depends on the server version and on the fixture's oids
-  "lock.runId",               // a uuid
-  "lock.waitedMs",            // wall clock
-  "lock.holder",              // hostname:pid
-  "holder",                   // hostname:pid (migrate unlock)
-  "applied[].durationMs",     // wall clock
-  "migrations[].appliedAt",   // wall clock
-  "migrations[].appliedBy",   // the connecting role
-  "written.sql",              // an absolute path
-  "written.plan",             // an absolute path
-  "migration.planId",         // a hash over server-dependent payloads
+  "at", // wall clock
+  "durationMs", // wall clock
+  "database", // the scratch database's name is per-run
+  "migrationsDir", // an absolute path under os.tmpdir()
+  "fingerprint", // depends on the server version and on the fixture's oids
+  "lock.runId", // a uuid
+  "lock.waitedMs", // wall clock
+  "lock.holder", // hostname:pid
+  "holder", // hostname:pid (migrate unlock)
+  "applied[].durationMs", // wall clock
+  "migrations[].appliedAt", // wall clock
+  "migrations[].appliedBy", // the connecting role
+  "written.sql", // an absolute path
+  "written.plan", // an absolute path
+  "migration.planId", // a hash over server-dependent payloads
   "migration.fingerprint",
   "migration.proof.at",
-  "error.message",            // embeds paths and fingerprints; asserted with toContain instead
+  "error.message", // embeds paths and fingerprints; asserted with toContain instead
 
   /* ---- K2b: the author-side commands ---- */
-  "files[].written",          // an absolute path under the scratch project
-  "files[].plan",             // ditto
-  "files[].planId",           // a hash over server-dependent payloads
-  "files[].from",             // fingerprints
+  "files[].written", // an absolute path under the scratch project
+  "files[].plan", // ditto
+  "files[].planId", // a hash over server-dependent payloads
+  "files[].from", // fingerprints
   "files[].to",
-  "files[].sql",              // embeds both fingerprints in its header
-  "shadow.reason",            // names the role, and differs between tier 2 and tier 3
-  "proof.at",                 // wall clock
+  "files[].sql", // embeds both fingerprints in its header
+  "shadow.reason", // names the role, and differs between tier 2 and tier 3
+  "proof.at", // wall clock
   "proof.durationMs",
-  "proof.cloneName",          // a random shadow name
+  "proof.cloneName", // a random shadow name
   "proof.stageFingerprints",
-  "proof.dumpOracle.pgDumpVersion",   // the machine's client version
-  "proof.dumpOracle.statementCount",  // moves with the server version's dump dialect
-  "ephemeral.database",       // a random shadow name
+  "proof.dumpOracle.pgDumpVersion", // the machine's client version
+  "proof.dumpOracle.statementCount", // moves with the server version's dump dialect
+  "ephemeral.database", // a random shadow name
   "fingerprint.replayed",
   "fingerprint.desired",
   "recordedFingerprint",
   "history.recordedFingerprint",
   "history.liveFingerprint",
-  "schemaDrift",              // the generated SQL; asserted with toContain instead
-  "hazards[].message",        // quotes the statement, which embeds identifiers
+  "schemaDrift", // the generated SQL; asserted with toContain instead
+  "hazards[].message", // quotes the statement, which embeds identifiers
   "findings[].message",
 
   /* ---- K4: checkpoints, seeds, pull. Paths only — every count stays evidence. ---- */
-  "seedsDir",                 // an absolute path under the scratch project
-  "written.ir",               // ditto — `migrate checkpoint`'s third artifact
-  "written.schema",           // ditto — `pull`'s output
+  "seedsDir", // an absolute path under the scratch project
+  "written.ir", // ditto — `migrate checkpoint`'s third artifact
+  "written.schema", // ditto — `pull`'s output
   "written.report",
-  "out",                      // pull's --out, an absolute path
-  "sqlDir",                   // pull's --sql-dir, an absolute path
-  "report",                   // pull's report path
+  "out", // pull's --out, an absolute path
+  "sqlDir", // pull's --sql-dir, an absolute path
+  "report", // pull's report path
 ];
 
 /**

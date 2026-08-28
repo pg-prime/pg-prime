@@ -17,7 +17,13 @@ import { nowIso, pairs, type CommandOutput } from "../output.js";
 
 export const UNLOCK_OPTIONS: readonly OptionSpec[] = [
   { name: "force", type: "boolean", describe: "delete the lease row" },
-  { name: "stale-lock-after", type: "duration", placeholder: "duration", describe: "a lease whose heartbeat is older than this is stale", defaultText: "60s" },
+  {
+    name: "stale-lock-after",
+    type: "duration",
+    placeholder: "duration",
+    describe: "a lease whose heartbeat is older than this is stale",
+    defaultText: "60s",
+  },
 ];
 
 export async function runUnlock(config: ResolvedConfig, argv: ParseResult): Promise<CommandOutput> {
@@ -67,7 +73,10 @@ export async function runUnlock(config: ResolvedConfig, argv: ParseResult): Prom
                 ["acquired", before.lease.acquiredAt],
                 ["heartbeat", `${before.lease.heartbeatAt} (${String(before.lease.heartbeatAgeMs)} ms ago)`],
                 ["stale", before.stale ? `yes (> ${String(before.staleAfterMs)} ms)` : "no"],
-                ["action", released ? "lease row deleted" : force ? "nothing to delete" : "none — pass --force to break it"],
+                [
+                  "action",
+                  released ? "lease row deleted" : force ? "nothing to delete" : "none — pass --force to break it",
+                ],
               ]),
             ].join("\n"),
     };

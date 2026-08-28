@@ -129,9 +129,7 @@ export async function historyPresent(client: CatalogClient): Promise<boolean> {
 
 /** The `history_version` row, or null when the schema has not been created yet. */
 export async function historyVersion(client: CatalogClient): Promise<string | null> {
-  const r = await client.query(
-    `SELECT value FROM ${HISTORY_SCHEMA}.meta WHERE key = 'history_version'`,
-  );
+  const r = await client.query(`SELECT value FROM ${HISTORY_SCHEMA}.meta WHERE key = 'history_version'`);
   const value = r.rows[0]?.["value"];
   return typeof value === "string" ? value : null;
 }

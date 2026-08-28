@@ -15,7 +15,13 @@ import { EXIT, type ExitCode } from "../exit.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
 
 export const PULL_OPTIONS: readonly OptionSpec[] = [
-  { name: "out", type: "string", placeholder: "file", describe: "where the TypeScript schema is written", defaultText: "./db/schema.ts" },
+  {
+    name: "out",
+    type: "string",
+    placeholder: "file",
+    describe: "where the TypeScript schema is written",
+    defaultText: "./db/schema.ts",
+  },
   {
     name: "sql-dir",
     type: "string",
@@ -23,7 +29,11 @@ export const PULL_OPTIONS: readonly OptionSpec[] = [
     describe: "where Tier-R objects (views, functions, triggers, policies) are written as repeatables",
     defaultText: "the config's `repeatables`, ./sql",
   },
-  { name: "no-sql-dir", type: "boolean", describe: "do not write repeatables; report every Tier-R object as unsupported instead" },
+  {
+    name: "no-sql-dir",
+    type: "boolean",
+    describe: "do not write repeatables; report every Tier-R object as unsupported instead",
+  },
   { name: "dry-run", type: "boolean", describe: "print the TypeScript that would be written; write nothing" },
 ];
 
@@ -33,7 +43,12 @@ export async function runPull(config: ResolvedConfig, argv: ParseResult): Promis
   const noSqlDir = bool(argv.values, "no-sql-dir");
   const sqlDir = noSqlDir ? undefined : (str(argv.values, "sql-dir") ?? config.repeatablesDir);
 
-  const envelope = (status: string, exitCode: ExitCode, extra: Readonly<Record<string, unknown>>, text: string): CommandOutput => ({
+  const envelope = (
+    status: string,
+    exitCode: ExitCode,
+    extra: Readonly<Record<string, unknown>>,
+    text: string,
+  ): CommandOutput => ({
     exitCode,
     envelope: {
       command: "pull",
@@ -71,7 +86,12 @@ export async function runPull(config: ResolvedConfig, argv: ParseResult): Promis
     return envelope(
       "error",
       EXIT.error,
-      { counts: {}, repeatables: [], unsupported: [], error: { code: "pull_failed", message: err instanceof Error ? err.message : String(err) } },
+      {
+        counts: {},
+        repeatables: [],
+        unsupported: [],
+        error: { code: "pull_failed", message: err instanceof Error ? err.message : String(err) },
+      },
       `pull\n\nERROR: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
@@ -114,12 +134,17 @@ export async function runPull(config: ResolvedConfig, argv: ParseResult): Promis
       pairs([
         ["wrote", written.out],
         ["report", written.report],
-        ...(sqlDir === undefined ? [] : [["repeatables", `${plural(written.repeatables.length, "file")} under ${sqlDir}`] as const]),
-        ["objects", Object.entries(result.counts).map(([k, v]) => `${String(v)} ${k}`).join(", ") || "none"],
+        ...(sqlDir === undefined
+          ? []
+          : [["repeatables", `${plural(written.repeatables.length, "file")} under ${sqlDir}`] as const]),
+        [
+          "objects",
+          Object.entries(result.counts)
+            .map(([k, v]) => `${String(v)} ${k}`)
+            .join(", ") || "none",
+        ],
       ]),
-      result.unsupported.length === 0
-        ? "\nNothing was left behind: the `-- pull: unsupported` block is empty."
-        : "",
+      result.unsupported.length === 0 ? "\nNothing was left behind: the `-- pull: unsupported` block is empty." : "",
       bullets(
         `${plural(result.unsupported.length, "object")} the DSL cannot express (also in pull.report.json):`,
         result.unsupported.slice(0, 20).map((u) => `${u.kind}  ${u.name}  — ${u.reason}`),

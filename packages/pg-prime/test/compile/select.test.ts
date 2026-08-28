@@ -26,7 +26,15 @@ import {
   select,
   table,
 } from '../../src/compile/nodes.js'
-import { arrayCodecOf, int4Codec, int8Codec, numericCodec, textCodec, timestamptzCodec, unknownCodec } from '../../src/codec/index.js'
+import {
+  arrayCodecOf,
+  int4Codec,
+  int8Codec,
+  numericCodec,
+  textCodec,
+  timestamptzCodec,
+  unknownCodec,
+} from '../../src/codec/index.js'
 import { sql, toNode } from '../../src/sql/fragment.js'
 import {
   p,
@@ -105,9 +113,7 @@ describe('predicates', () => {
     compile(select({ projection: [projection('id', p('id'))], from: postsFrom, where }))
 
   it('eq / gt / gte against a parameter', () => {
-    expect(q(eq(p('id'), param(1n, int8Codec))).sql).toContain(
-      'where "posts"."id" = $1',
-    )
+    expect(q(eq(p('id'), param(1n, int8Codec))).sql).toContain('where "posts"."id" = $1')
     expect(q(gt(p('amount'), param('100.00', numericCodec))).sql).toContain(
       'where "posts"."amount" > $1',
     )
@@ -117,21 +123,21 @@ describe('predicates', () => {
   })
 
   it('eq against another column needs no whereRef', () => {
-    expect(q(eq(p('authorId'), u('id'))).sql).toContain(
-      'where "posts"."author_id" = "users"."id"',
-    )
+    expect(q(eq(p('authorId'), u('id'))).sql).toContain('where "posts"."author_id" = "users"."id"')
   })
 
   it('and / or nest with one paren pair each, n-ary not right-leaning', () => {
-    expect(q(and(isTrue(p('published')), isNull(p('title')), eq(p('id'), p('authorId')))).sql)
-      .toContain(
-        'where ("posts"."published" is true and "posts"."title" is null and ' +
-          '"posts"."id" = "posts"."author_id")',
-      )
-    expect(q(or(isTrue(p('published')), and(isNull(p('title')), isNull(p('amount'))))).sql)
-      .toContain(
-        'where ("posts"."published" is true or ("posts"."title" is null and "posts"."amount" is null))',
-      )
+    expect(
+      q(and(isTrue(p('published')), isNull(p('title')), eq(p('id'), p('authorId')))).sql,
+    ).toContain(
+      'where ("posts"."published" is true and "posts"."title" is null and ' +
+        '"posts"."id" = "posts"."author_id")',
+    )
+    expect(
+      q(or(isTrue(p('published')), and(isNull(p('title')), isNull(p('amount'))))).sql,
+    ).toContain(
+      'where ("posts"."published" is true or ("posts"."title" is null and "posts"."amount" is null))',
+    )
   })
 
   it('and() / or() have defined identities', () => {
@@ -148,9 +154,7 @@ describe('predicates', () => {
   })
 
   it('in (list) emits one parameter per item', () => {
-    const c = q(
-      inList(p('id'), [param(1n, int8Codec), param(2n, int8Codec), param(3n, int8Codec)]),
-    )
+    const c = q(inList(p('id'), [param(1n, int8Codec), param(2n, int8Codec), param(3n, int8Codec)]))
     expect(c.sql).toContain('where "posts"."id" in ($1, $2, $3)')
     expect(vals(c)).toEqual(['1', '2', '3'])
   })
@@ -287,9 +291,7 @@ describe('sql fragments inside the projection', () => {
   it('result aliases go through the same fuzzed identifier sanitizer', () => {
     const c = compile(select({ projection: [projection('a"b', u('id'))], from: usersFrom }))
     expect(c.sql.startsWith('select "users"."id" as "a""b"')).toBe(true)
-    expect(() => compile(select({ projection: [projection('', u('id'))] }))).toThrowError(
-      /empty/,
-    )
+    expect(() => compile(select({ projection: [projection('', u('id'))] }))).toThrowError(/empty/)
   })
 })
 

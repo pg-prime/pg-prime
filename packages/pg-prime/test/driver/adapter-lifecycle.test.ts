@@ -238,7 +238,9 @@ describe('§5.4 — a client-side timeout leaves the statement running on that s
     const pool = new FakePool()
     const { conn, client } = await acquired(pool)
     client.respond = (q) =>
-      q.text === 'select 1' ? Promise.reject(new Error('Connection terminated unexpectedly')) : undefined
+      q.text === 'select 1'
+        ? Promise.reject(new Error('Connection terminated unexpectedly'))
+        : undefined
 
     const d = await seamError(conn.execute({ text: 'select 1', params: [], timeoutMs: 5000 }))
     expect(d.kind).toBe('connection')
@@ -336,7 +338,9 @@ describe('notices belong to the statement that produced them (§7)', () => {
     const pool = new FakePool()
     const { conn, client } = await acquired(pool)
     client.respond = (q) =>
-      q.text === ' ' ? Promise.resolve({ rows: [], fields: [], rowCount: null, command: null }) : undefined
+      q.text === ' '
+        ? Promise.resolve({ rows: [], fields: [], rowCount: null, command: null })
+        : undefined
     const r = await conn.execute({ text: ' ', params: [] })
     expect(r.command).toBe('')
     expect(r.rowCount).toBe(null)
@@ -352,7 +356,9 @@ describe('stream() cannot manage a transaction it cannot see (§2.2, amendment �
     expect(d.kind).toBe('adapter')
     expect(d.message).toMatch(/getTransactionStatus/)
     // the caller's session was NOT touched
-    expect(client.queries.map((q) => q.text).filter((t) => t === 'begin' || t === 'commit')).toEqual([])
+    expect(
+      client.queries.map((q) => q.text).filter((t) => t === 'begin' || t === 'commit'),
+    ).toEqual([])
   })
 
   it('refuses a second overlapping stream on the same connection', async () => {
@@ -375,10 +381,7 @@ describe('stream() cannot manage a transaction it cannot see (§2.2, amendment �
   it('forwards signal and timeoutMs to the DECLARE and every FETCH', async () => {
     const pool = new FakePool()
     const { conn, client } = await acquired(pool)
-    for await (const _chunk of conn.stream(
-      { text: 'select 1', params: [], timeoutMs: 1234 },
-      2,
-    )) {
+    for await (const _chunk of conn.stream({ text: 'select 1', params: [], timeoutMs: 1234 }, 2)) {
       break
     }
     const declare = client.queries.find((q) => q.text.startsWith('declare'))!

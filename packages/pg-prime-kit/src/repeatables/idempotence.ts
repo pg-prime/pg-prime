@@ -115,13 +115,11 @@ function violationOf(n: string, all: readonly string[], index: number): string |
     if (/^CREATE\s+OR\s+REPLACE\b/i.test(n)) return null;
     if (/\bIF\s+NOT\s+EXISTS\b/i.test(n)) return null;
     if (droppedEarlier(n, all, index)) return null;
-    return "bare CREATE: the second apply raises \"already exists\" — use OR REPLACE, IF NOT EXISTS, or DROP … IF EXISTS the same object first";
+    return 'bare CREATE: the second apply raises "already exists" — use OR REPLACE, IF NOT EXISTS, or DROP … IF EXISTS the same object first';
   }
 
   if (/^DROP\b/i.test(n)) {
-    return /\bIF\s+EXISTS\b/i.test(n)
-      ? null
-      : "bare DROP: the second apply raises \"does not exist\" — add IF EXISTS";
+    return /\bIF\s+EXISTS\b/i.test(n) ? null : 'bare DROP: the second apply raises "does not exist" — add IF EXISTS';
   }
 
   if (/^ALTER\b/i.test(n)) {

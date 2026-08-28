@@ -66,10 +66,12 @@ const CREATE_TRIGGER = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER
 const DROP_MATVIEW = /\bDROP\s+MATERIALIZED\s+VIEW\b/i;
 const SERIAL = /\b(?:small|big)?serial\b/i;
 const CHAR_N = /\bchar(?:acter)?\s*\(\s*\d+\s*\)/i;
-const BARE_TIMESTAMP = /\btimestamp\b(?!\s+with\s+time\s+zone)(?!\s*\()|\btimestamp\s*\(\s*\d+\s*\)(?!\s+with\s+time\s+zone)/i;
+const BARE_TIMESTAMP =
+  /\btimestamp\b(?!\s+with\s+time\s+zone)(?!\s*\()|\btimestamp\s*\(\s*\d+\s*\)(?!\s+with\s+time\s+zone)/i;
 const INT4_PK = /\b(?:int|int4|integer)\b[^,)]*\bPRIMARY\s+KEY\b/i;
 /** `ALTER TABLE users` / `ON users` — a relation named with no schema in front of it. */
-const UNQUALIFIED = /\b(?:ALTER\s+TABLE(?:\s+ONLY)?|CREATE\s+TABLE|DROP\s+TABLE(?:\s+IF\s+EXISTS)?|ON)\s+(?!ONLY\b)("?[A-Za-z_][A-Za-z0-9_$]*"?)(?!\s*\.)/gi;
+const UNQUALIFIED =
+  /\b(?:ALTER\s+TABLE(?:\s+ONLY)?|CREATE\s+TABLE|DROP\s+TABLE(?:\s+IF\s+EXISTS)?|ON)\s+(?!ONLY\b)("?[A-Za-z_][A-Za-z0-9_$]*"?)(?!\s*\.)/gi;
 
 /**
  * `06` §3.4's file-level rules over one plan.
@@ -80,8 +82,7 @@ const UNQUALIFIED = /\b(?:ALTER\s+TABLE(?:\s+ONLY)?|CREATE\s+TABLE|DROP\s+TABLE(
  */
 export function planRules(plan: Plan, options: { readonly style: boolean }): RuleHit[] {
   const hits: RuleHit[] = [];
-  const subjectOf = (s: PlanStatement): string =>
-    s.destroys[0] ?? s.produces[0] ?? s.consumes[0] ?? "";
+  const subjectOf = (s: PlanStatement): string => s.destroys[0] ?? s.produces[0] ?? s.consumes[0] ?? "";
 
   /* ---- transaction framing ---- */
   const segmentOf = new Map<number, (typeof plan.segments)[number]>();
@@ -147,13 +148,28 @@ export function planRules(plan: Plan, options: { readonly style: boolean }): Rul
       hits.push({ code: "ST101", statement: s.index, subject, message: "prefer GENERATED … AS IDENTITY over serial" });
     }
     if (CHAR_N.test(bare)) {
-      hits.push({ code: "ST102", statement: s.index, subject, message: "prefer text over char(n): PostgreSQL pads and there is no performance gain" });
+      hits.push({
+        code: "ST102",
+        statement: s.index,
+        subject,
+        message: "prefer text over char(n): PostgreSQL pads and there is no performance gain",
+      });
     }
     if (BARE_TIMESTAMP.test(bare)) {
-      hits.push({ code: "ST103", statement: s.index, subject, message: "prefer timestamptz over timestamp without time zone" });
+      hits.push({
+        code: "ST103",
+        statement: s.index,
+        subject,
+        message: "prefer timestamptz over timestamp without time zone",
+      });
     }
     if (INT4_PK.test(bare)) {
-      hits.push({ code: "ST104", statement: s.index, subject, message: "prefer bigint for a primary key: an int4 sequence runs out at 2.1 billion" });
+      hits.push({
+        code: "ST104",
+        statement: s.index,
+        subject,
+        message: "prefer bigint for a primary key: an int4 sequence runs out at 2.1 billion",
+      });
     }
     for (const ident of quotedIdents(s.sql)) {
       if (utf8ByteLength(ident) > MAX_IDENT_BYTES) {

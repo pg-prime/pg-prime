@@ -172,7 +172,15 @@ async function waitForLag(
       // fifty times and the operator would stop reading.
       if (!seenNoReplica.value) {
         seenNoReplica.value = true;
-        emit({ kind: "lag", migration: options.migrationId, statement, state: "absent", lagMs: null, ceilingMs: ceiling, reading });
+        emit({
+          kind: "lag",
+          migration: options.migrationId,
+          statement,
+          state: "absent",
+          lagMs: null,
+          ceilingMs: ceiling,
+          reading,
+        });
         options.onInfo?.(
           `max-replica-lag=${String(ceiling)}ms is set and pg_stat_replication reports no replica: the check ` +
             `is a no-op for this run. A non-superuser sees only its own rows there — grant pg_monitor, or ` +
@@ -184,12 +192,28 @@ async function waitForLag(
     }
     if (reading.lagMs <= ceiling) {
       if (waited) {
-        emit({ kind: "lag", migration: options.migrationId, statement, state: "resumed", lagMs: reading.lagMs, ceilingMs: ceiling, reading });
+        emit({
+          kind: "lag",
+          migration: options.migrationId,
+          statement,
+          state: "resumed",
+          lagMs: reading.lagMs,
+          ceilingMs: ceiling,
+          reading,
+        });
       }
       return;
     }
     waited = true;
-    emit({ kind: "lag", migration: options.migrationId, statement, state: "waiting", lagMs: reading.lagMs, ceilingMs: ceiling, reading });
+    emit({
+      kind: "lag",
+      migration: options.migrationId,
+      statement,
+      state: "waiting",
+      lagMs: reading.lagMs,
+      ceilingMs: ceiling,
+      reading,
+    });
     await sleep(poll);
   }
 }

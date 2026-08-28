@@ -110,9 +110,7 @@ describe("the server's own auto-naming rule", () => {
 
   it("shortens the LONGER piece, not the concatenation, when it does not fit", () => {
     // observed on PostgreSQL 18.6: CREATE TABLE p.<30×a> (<30×b> int NOT NULL)
-    expect(defaultNotNullName("a".repeat(30), "b".repeat(30))).toBe(
-      `${"a".repeat(27)}_${"b".repeat(26)}_not_null`,
-    );
+    expect(defaultNotNullName("a".repeat(30), "b".repeat(30))).toBe(`${"a".repeat(27)}_${"b".repeat(26)}_not_null`);
     // a right-truncation of `<30×a>_<30×b>_not_null` would have kept 30 a's and lost
     // the `_not_null` suffix entirely, which is the mutation this case exists to catch
     expect(defaultNotNullName("a".repeat(30), "b".repeat(30)).endsWith("_not_null")).toBe(true);

@@ -186,7 +186,11 @@ describe('builder fuzz', () => {
         refusals.add(factsEager.refused)
       }
       if (factsEager.binds.length > 0) withBinds++
-      if (factsEager.binds.some((b) => b.k === 'value' && typeof b.encoded === 'string' && b.encoded.includes('«bf'))) {
+      if (
+        factsEager.binds.some(
+          (b) => b.k === 'value' && typeof b.encoded === 'string' && b.encoded.includes('«bf'),
+        )
+      ) {
         withMarkedBinds++
       }
       const where = `seed ${seed} (${eager.shape}: ${eager.labels.join(' → ')})`
@@ -209,16 +213,18 @@ describe('builder fuzz', () => {
           const before = eager.prefixes[k]?.eager
           const after = late.prefixes[k]?.probe()
           expect(before, `${where} — prefix ${k} was not compiled eagerly`).toBeDefined()
-          expect(after?.sql, `${where} — (f) immutability at prefix ${k} (${late.prefixes[k]?.label})`).toBe(
-            before?.sql,
-          )
+          expect(
+            after?.sql,
+            `${where} — (f) immutability at prefix ${k} (${late.prefixes[k]?.label})`,
+          ).toBe(before?.sql)
           expect(
             after?.refused,
             `${where} — (f) immutability, refusal at prefix ${k} (${late.prefixes[k]?.label})`,
           ).toBe(before?.refused)
-          expect(bindKey(after?.binds ?? []), `${where} — (f) immutability, binds at prefix ${k}`).toBe(
-            bindKey(before?.binds ?? []),
-          )
+          expect(
+            bindKey(after?.binds ?? []),
+            `${where} — (f) immutability, binds at prefix ${k}`,
+          ).toBe(bindKey(before?.binds ?? []))
           prefixesChecked++
         }
       } catch (e) {
@@ -284,7 +290,13 @@ describe('builder fuzz', () => {
     let planned = 0
     let executed = 0
     let refused = 0
-    const failures: { stage: 'plan' | 'execute'; seed: number; sql: string; code?: string | undefined; message: string }[] = []
+    const failures: {
+      stage: 'plan' | 'execute'
+      seed: number
+      sql: string
+      code?: string | undefined
+      message: string
+    }[] = []
 
     for (const seed of stream) {
       const chain = makeChain(db, h_(), seed)
@@ -299,8 +311,19 @@ describe('builder fuzz', () => {
         for (const stmt of planProbe(facts.sql)) await client.query(stmt)
         planned++
       } catch (e) {
-        failures.push({ stage: 'plan', seed, sql: facts.sql, code: sqlState(e), message: (e as Error).message })
-        recordFinding('builder', { seed, invariant: 'd', note: `plan failed: ${sqlState(e) ?? '?'}`, kind: 'found' })
+        failures.push({
+          stage: 'plan',
+          seed,
+          sql: facts.sql,
+          code: sqlState(e),
+          message: (e as Error).message,
+        })
+        recordFinding('builder', {
+          seed,
+          invariant: 'd',
+          note: `plan failed: ${sqlState(e) ?? '?'}`,
+          kind: 'found',
+        })
       }
       try {
         await conn.execute({
@@ -310,8 +333,19 @@ describe('builder fuzz', () => {
         })
         executed++
       } catch (e) {
-        failures.push({ stage: 'execute', seed, sql: facts.sql, code: sqlState(e), message: (e as Error).message })
-        recordFinding('builder', { seed, invariant: 'e', note: `execute failed: ${sqlState(e) ?? '?'}`, kind: 'found' })
+        failures.push({
+          stage: 'execute',
+          seed,
+          sql: facts.sql,
+          code: sqlState(e),
+          message: (e as Error).message,
+        })
+        recordFinding('builder', {
+          seed,
+          invariant: 'e',
+          note: `execute failed: ${sqlState(e) ?? '?'}`,
+          kind: 'found',
+        })
       }
     }
 

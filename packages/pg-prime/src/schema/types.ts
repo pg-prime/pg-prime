@@ -93,9 +93,13 @@ export type SelectRow<C extends Cols> = Simplify<{ [K in keyof C]: C[K]['t'] }>
 /** `$inferInsert`. Required keys and optional keys split by two `as` filters. */
 export type InsertRow<C extends Cols> = Simplify<
   {
-    [K in keyof C as C[K]['ro'] extends true ? never : C[K]['opt'] extends true ? never : K]: C[K]['t']
+    [
+      K in keyof C as C[K]['ro'] extends true ? never : C[K]['opt'] extends true ? never : K
+    ]: C[K]['t']
   } & {
-    [K in keyof C as C[K]['ro'] extends true ? never : C[K]['opt'] extends true ? K : never]?: C[K]['t']
+    [
+      K in keyof C as C[K]['ro'] extends true ? never : C[K]['opt'] extends true ? K : never
+    ]?: C[K]['t']
   }
 >
 

@@ -41,9 +41,7 @@ beforeAll(async () => {
   await withAdmin(async (admin) => {
     await admin.query(`DROP ROLE IF EXISTS ${q(ROLE)}`);
     // NOCREATEDB is the whole point: this role cannot reach tier 2, so `auto` must land on tier 3.
-    await admin.query(
-      `CREATE ROLE ${q(ROLE)} WITH LOGIN NOCREATEDB NOSUPERUSER PASSWORD '${ROLE_PASSWORD}'`,
-    );
+    await admin.query(`CREATE ROLE ${q(ROLE)} WITH LOGIN NOCREATEDB NOSUPERUSER PASSWORD '${ROLE_PASSWORD}'`);
     await admin.query(`GRANT CREATE, CONNECT ON DATABASE ${q(TARGET)} TO ${q(ROLE)}`);
   });
   // The restricted role needs to own what it creates inside the target.
@@ -65,9 +63,7 @@ const q = (s: string): string => `"${s.replace(/"/g, '""')}"`;
 /** Schemas of a database, filtered to ours. */
 async function shadowSchemas(conn: ConnInfo): Promise<string[]> {
   return withClient(conn, async (c) => {
-    const r = await c.query(
-      "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'pgprime_shadow_%' ORDER BY nspname",
-    );
+    const r = await c.query("SELECT nspname FROM pg_namespace WHERE nspname LIKE 'pgprime_shadow_%' ORDER BY nspname");
     return r.rows.map((row) => String(row["nspname"]));
   });
 }
@@ -104,40 +100,46 @@ describe("tier selection", () => {
     T,
   );
 
-  it("tier 2 copies the target's encoding and collation", async () => {
-    const shadow = await provisionShadow(ADMIN, target, { schemas: SCHEMAS, shadow: "createdb" });
-    try {
-      const [want, got] = await Promise.all([localeOf(target.database), localeOf(shadow.conn.database)]);
-      expect(got).toEqual(want);
-    } finally {
-      await shadow.dispose();
-    }
-  }, T);
+  it(
+    "tier 2 copies the target's encoding and collation",
+    async () => {
+      const shadow = await provisionShadow(ADMIN, target, { schemas: SCHEMAS, shadow: "createdb" });
+      try {
+        const [want, got] = await Promise.all([localeOf(target.database), localeOf(shadow.conn.database)]);
+        expect(got).toEqual(want);
+      } finally {
+        await shadow.dispose();
+      }
+    },
+    T,
+  );
 
-  it("an explicit url is tier 1, and its managed schemas are reset", async () => {
-    const url = connectionString(dbConn(URL_SHADOW));
-    // seed something the reset has to remove
-    await withClient(dbConn(URL_SHADOW), async (c) => {
-      await c.query("CREATE TABLE IF NOT EXISTS public.leftover (id int)");
-    });
-    const shadow = await provisionShadow(ADMIN, target, { schemas: SCHEMAS, shadow: { url } });
-    try {
-      expect(shadow.tier).toBe(1);
-      expect(shadow.conn.database).toBe(URL_SHADOW);
-      expect(shadow.diagnostics.map((d) => d.code)).toContain("shadow_url_reset");
-      const left = await withClient(shadow.conn, async (c) =>
-        c.query("SELECT to_regclass('public.leftover') AS t"),
-      );
-      expect(left.rows[0]?.["t"]).toBeNull();
-    } finally {
-      await shadow.dispose();
-    }
-  }, T);
+  it(
+    "an explicit url is tier 1, and its managed schemas are reset",
+    async () => {
+      const url = connectionString(dbConn(URL_SHADOW));
+      // seed something the reset has to remove
+      await withClient(dbConn(URL_SHADOW), async (c) => {
+        await c.query("CREATE TABLE IF NOT EXISTS public.leftover (id int)");
+      });
+      const shadow = await provisionShadow(ADMIN, target, { schemas: SCHEMAS, shadow: { url } });
+      try {
+        expect(shadow.tier).toBe(1);
+        expect(shadow.conn.database).toBe(URL_SHADOW);
+        expect(shadow.diagnostics.map((d) => d.code)).toContain("shadow_url_reset");
+        const left = await withClient(shadow.conn, async (c) => c.query("SELECT to_regclass('public.leftover') AS t"));
+        expect(left.rows[0]?.["t"]).toBeNull();
+      } finally {
+        await shadow.dispose();
+      }
+    },
+    T,
+  );
 
   it("refuses tier 4 with a typed error naming the alternatives", async () => {
-    await expect(
-      provisionShadow(ADMIN, ADMIN, { schemas: ["public"], shadow: "offline" }),
-    ).rejects.toBeInstanceOf(OfflineShadowError);
+    await expect(provisionShadow(ADMIN, ADMIN, { schemas: ["public"], shadow: "offline" })).rejects.toBeInstanceOf(
+      OfflineShadowError,
+    );
   });
 
   it("parses a shadow url and refuses one that names no database", () => {
@@ -151,23 +153,27 @@ describe("tier selection", () => {
     expect(() => parseShadowUrl("postgres://u@h:5432/")).toThrow(/names no database/);
   });
 
-  it("falls back to a positional shadow name when the readable one would not fit", async () => {
-    const long = "s".repeat(63);
-    const shadow = await provisionShadow(ADMIN, target, {
-      schemas: [long, "public"],
-      shadow: "temp-schema",
-      token: "deadbeef",
-    });
-    try {
-      // Readable where it fits, positional where PostgreSQL would truncate — never truncated,
-      // because a truncated name is a map that cannot be reversed.
-      expect(shadow.schemaMap.get("public")).toBe("pgprime_shadow_deadbeef_public");
-      // `schemas` is sorted before it is mapped, so "public" is index 0 and the long one is 1.
-      expect(shadow.schemaMap.get(long)).toBe("pgprime_shadow_deadbeef_s1");
-    } finally {
-      await shadow.dispose();
-    }
-  }, T);
+  it(
+    "falls back to a positional shadow name when the readable one would not fit",
+    async () => {
+      const long = "s".repeat(63);
+      const shadow = await provisionShadow(ADMIN, target, {
+        schemas: [long, "public"],
+        shadow: "temp-schema",
+        token: "deadbeef",
+      });
+      try {
+        // Readable where it fits, positional where PostgreSQL would truncate — never truncated,
+        // because a truncated name is a map that cannot be reversed.
+        expect(shadow.schemaMap.get("public")).toBe("pgprime_shadow_deadbeef_public");
+        // `schemas` is sorted before it is mapped, so "public" is index 0 and the long one is 1.
+        expect(shadow.schemaMap.get(long)).toBe("pgprime_shadow_deadbeef_s1");
+      } finally {
+        await shadow.dispose();
+      }
+    },
+    T,
+  );
 
   it("refuses outright when even the positional name would be truncated", async () => {
     await expect(
@@ -184,21 +190,23 @@ describe("tier 3 — a role WITHOUT CREATEDB (design/06 §3.2's managed-PostgreS
   /** The target database, connected as the restricted role rather than as postgres. */
   const asRole = (): ConnInfo => ({ ...target, user: ROLE, password: ROLE_PASSWORD });
 
-  it("the role really cannot CREATE DATABASE", async () => {
-    const client = new pg.Client({ ...asRole() });
-    await client.connect();
-    try {
-      const r = await client.query(
-        "SELECT rolcreatedb, rolsuper FROM pg_roles WHERE rolname = current_user",
-      );
-      expect(r.rows[0]).toEqual({ rolcreatedb: false, rolsuper: false });
-      await expect(client.query(`CREATE DATABASE ${q(`${PREFIX}nope`)}`)).rejects.toThrow(
-        /permission denied to create database/i,
-      );
-    } finally {
-      await client.end();
-    }
-  }, T);
+  it(
+    "the role really cannot CREATE DATABASE",
+    async () => {
+      const client = new pg.Client({ ...asRole() });
+      await client.connect();
+      try {
+        const r = await client.query("SELECT rolcreatedb, rolsuper FROM pg_roles WHERE rolname = current_user");
+        expect(r.rows[0]).toEqual({ rolcreatedb: false, rolsuper: false });
+        await expect(client.query(`CREATE DATABASE ${q(`${PREFIX}nope`)}`)).rejects.toThrow(
+          /permission denied to create database/i,
+        );
+      } finally {
+        await client.end();
+      }
+    },
+    T,
+  );
 
   it(
     "auto demotes to tier 3, loads the whole corpus, and reverses the map on the IR",
@@ -214,10 +222,7 @@ describe("tier 3 — a role WITHOUT CREATEDB (design/06 §3.2's managed-PostgreS
           ["audit", "pgprime_shadow_cafe1234_audit"],
           ["public", "pgprime_shadow_cafe1234_public"],
         ]);
-        expect(await shadowSchemas(conn)).toEqual([
-          "pgprime_shadow_cafe1234_audit",
-          "pgprime_shadow_cafe1234_public",
-        ]);
+        expect(await shadowSchemas(conn)).toEqual(["pgprime_shadow_cafe1234_audit", "pgprime_shadow_cafe1234_public"]);
 
         const desired = await loadDesired(corpus, shadow);
 
@@ -252,34 +257,40 @@ describe("tier 3 — a role WITHOUT CREATEDB (design/06 §3.2's managed-PostgreS
       expect(await shadowSchemas(asRole())).toEqual([]);
       // and the user's own `public` was never touched
       const left = await withClient(target, async (c) =>
-        c.query("SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public'"),
+        c.query(
+          "SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public'",
+        ),
       );
       expect(left.rows[0]?.["n"]).toBe(0);
     },
     T,
   );
 
-  it("the IR from tier 3 and the IR from tier 2 have the same fingerprint", async () => {
-    const roleConn = asRole();
-    const three = await provisionShadow(roleConn, roleConn, {
-      schemas: SCHEMAS,
-      shadow: "temp-schema",
-      token: "beef0001",
-    });
-    const two = await provisionShadow(ADMIN, target, { schemas: SCHEMAS, shadow: "createdb" });
-    try {
-      // Sequential: two concurrent loads would leave one client open if the other threw, and the
-      // afterAll drop then reports as an unhandled `Connection terminated unexpectedly`.
-      const a = await loadDesired(corpus, three);
-      const b = await loadDesired(corpus, two);
-      // THE property the schema map exists to preserve: normalizing in a renamed schema produces
-      // the same desired state as normalizing in a database of its own.
-      expect(a.ir.fingerprint).toBe(b.ir.fingerprint);
-    } finally {
-      await three.dispose();
-      await two.dispose();
-    }
-  }, T);
+  it(
+    "the IR from tier 3 and the IR from tier 2 have the same fingerprint",
+    async () => {
+      const roleConn = asRole();
+      const three = await provisionShadow(roleConn, roleConn, {
+        schemas: SCHEMAS,
+        shadow: "temp-schema",
+        token: "beef0001",
+      });
+      const two = await provisionShadow(ADMIN, target, { schemas: SCHEMAS, shadow: "createdb" });
+      try {
+        // Sequential: two concurrent loads would leave one client open if the other threw, and the
+        // afterAll drop then reports as an unhandled `Connection terminated unexpectedly`.
+        const a = await loadDesired(corpus, three);
+        const b = await loadDesired(corpus, two);
+        // THE property the schema map exists to preserve: normalizing in a renamed schema produces
+        // the same desired state as normalizing in a database of its own.
+        expect(a.ir.fingerprint).toBe(b.ir.fingerprint);
+      } finally {
+        await three.dispose();
+        await two.dispose();
+      }
+    },
+    T,
+  );
 });
 
 async function localeOf(database: string): Promise<Record<string, unknown>> {

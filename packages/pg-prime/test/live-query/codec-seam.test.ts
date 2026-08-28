@@ -100,7 +100,9 @@ afterAll(async () => {
 })
 
 /** `select <every column> from <table> limit 0` — a RowDescription and no rows. */
-async function describeColumns(m: TableCodecMeta): Promise<readonly { name: string; oid: number }[]> {
+async function describeColumns(
+  m: TableCodecMeta,
+): Promise<readonly { name: string; oid: number }[]> {
   const list = m.columns.map((c) => c.quoted).join(', ')
   const r = await conn.execute({
     text: `select ${list} from ${m.table.qualified} limit 0`,
@@ -130,7 +132,12 @@ describe('OID confirmation — every column, every table', () => {
       expect(actual.map((f) => f.name)).toEqual(m.columns.map((c) => c.name))
 
       const mismatches = m.columns
-        .map((c, i) => ({ column: c.name, codec: c.codec.name, claims: c.codec.oid, server: actual[i]?.oid }))
+        .map((c, i) => ({
+          column: c.name,
+          codec: c.codec.name,
+          claims: c.codec.oid,
+          server: actual[i]?.oid,
+        }))
         .filter((x) => x.claims !== x.server)
       expect(mismatches).toEqual([])
 
@@ -202,7 +209,16 @@ describe('R3 — the values that come back are the values the types promise', ()
 
   it('the wide row: every scalar type in `users`, encoded and read back', async () => {
     const m = metaOf(fx.users, registry)
-    const keys = ['email', 'name', 'role', 'tags', 'meta', 'balance', 'createdAt', 'birthday'] as const
+    const keys = [
+      'email',
+      'name',
+      'role',
+      'tags',
+      'meta',
+      'balance',
+      'createdAt',
+      'birthday',
+    ] as const
     const values: Record<(typeof keys)[number], unknown> = {
       email: 'seam@example.com',
       name: 'Seam',
@@ -220,7 +236,9 @@ describe('R3 — the values that come back are the values the types promise', ()
         into: table(m.table),
         columns,
         source: { k: 'values', rows: [keys.map((k) => param(values[k], m.byKey[k]!.codec))] },
-        returning: keys.map((k) => projection(k, col('users', m.byKey[k]!.name, m.byKey[k]!.codec))),
+        returning: keys.map((k) =>
+          projection(k, col('users', m.byKey[k]!.name, m.byKey[k]!.codec)),
+        ),
       }),
     )
 
@@ -292,11 +310,14 @@ describe('R4 — the negative control', () => {
     const actual = await describeColumns(m)
 
     const mismatches = m.columns
-      .map((c, i) => ({ column: c.name, codec: c.codec.name, claims: c.codec.oid, server: actual[i]?.oid }))
+      .map((c, i) => ({
+        column: c.name,
+        codec: c.codec.name,
+        claims: c.codec.oid,
+        server: actual[i]?.oid,
+      }))
       .filter((x) => x.claims !== x.server)
 
-    expect(mismatches).toEqual([
-      { column: 'wrong', codec: 'int4', claims: 23, server: 20 },
-    ])
+    expect(mismatches).toEqual([{ column: 'wrong', codec: 'int4', claims: 23, server: 20 }])
   })
 })

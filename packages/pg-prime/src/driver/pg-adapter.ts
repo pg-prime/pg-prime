@@ -261,9 +261,7 @@ class PgConnectionImpl implements PgConnection {
     if (this.#usable) return
     const cause = this.#failure ?? new Error('this connection is no longer usable')
     const opts: NormaliseOptions = { adapter: ADAPTER, connectionUnusable: true }
-    throw new PgDriverError(
-      normaliseError(cause, sql === undefined ? opts : { ...opts, sql }),
-    )
+    throw new PgDriverError(normaliseError(cause, sql === undefined ? opts : { ...opts, sql }))
   }
 
   /**
@@ -618,7 +616,10 @@ class PgConnectionImpl implements PgConnection {
    */
   async #executeCapped(query: PgQuery, maxRows: number): Promise<PgResult> {
     if (!Number.isSafeInteger(maxRows) || maxRows < 0) {
-      throw adapterError(`maxRows must be a non-negative safe integer, got ${String(maxRows)}`, query.text)
+      throw adapterError(
+        `maxRows must be a non-negative safe integer, got ${String(maxRows)}`,
+        query.text,
+      )
     }
     return this.#run(query, async (entry) => {
       // `Execute(rows = 0)` means UNLIMITED on the wire, so a literal `maxRows: 0` asks for one
@@ -659,7 +660,10 @@ class PgConnectionImpl implements PgConnection {
 
   // ── optional capabilities ──────────────────────────────────────────────────
 
-  async describe(sql: string, options?: { readonly signal?: AbortSignal }): Promise<PgDescribeResult> {
+  async describe(
+    sql: string,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<PgDescribeResult> {
     this.#assertUsable(sql)
     return this.#run(
       { text: sql, params: [], ...(options?.signal ? { signal: options.signal } : {}) },
@@ -696,11 +700,13 @@ class PgConnectionImpl implements PgConnection {
     options?: PgCopyOptions,
   ): Promise<PgCopyResult> {
     this.#assertUsable(sql)
-    return this.#run({ text: sql, params: [], ...(options?.signal ? { signal: options.signal } : {}) }, async (entry) =>
-      Promise.race([
-        copyInViaSubmittable(this.#client, sql, source, options?.signal, entry.notices),
-        entry.failed,
-      ]),
+    return this.#run(
+      { text: sql, params: [], ...(options?.signal ? { signal: options.signal } : {}) },
+      async (entry) =>
+        Promise.race([
+          copyInViaSubmittable(this.#client, sql, source, options?.signal, entry.notices),
+          entry.failed,
+        ]),
     )
   }
 
@@ -760,23 +766,23 @@ class PgConnectionImpl implements PgConnection {
   on(event: 'notice' | 'notification' | 'error', listener: (arg: never) => void): () => void {
     const wrapped =
       event === 'notification'
-        ? ((n: { channel?: string; payload?: string; processId?: number }) =>
+        ? (n: { channel?: string; payload?: string; processId?: number }) =>
             (listener as unknown as (x: unknown) => void)({
               channel: n?.channel ?? '',
               payload: n?.payload ?? '',
               processId: n?.processId ?? 0,
-            }))
+            })
         : event === 'notice'
-          ? ((n: unknown) =>
+          ? (n: unknown) =>
               (listener as unknown as (x: unknown) => void)(
                 toServerErrorData((n ?? {}) as Record<string, unknown>),
-              ))
+              )
           : // `usable` is NOT flipped here: `#onClientError` is attached for the whole checkout
             // and already did it, whether or not anybody subscribed.
-            ((e: unknown) =>
+            (e: unknown) =>
               (listener as unknown as (x: unknown) => void)(
                 normaliseError(e, { adapter: ADAPTER, connectionUnusable: true }),
-              ))
+              )
     this.#client.on(event, wrapped as (a: never) => void)
     return () => {
       this.#client.removeListener(event, wrapped as (a: never) => void)
@@ -873,7 +879,9 @@ class PgDriverImpl implements PgDriver {
       )
     }
     const pool =
-      options?.route === 'direct' ? (this.#config.directPool ?? this.#config.pool) : this.#config.pool
+      options?.route === 'direct'
+        ? (this.#config.directPool ?? this.#config.pool)
+        : this.#config.pool
     let client: PgLikePoolClient
     try {
       // The abort path MUST still release the slot: `pool.connect()` keeps running, and a client
@@ -948,10 +956,7 @@ class PgDriverImpl implements PgDriver {
     // cannot tell us, and disposing on "don't know" would recycle every connection.
     const status = connection.transactionStatus
     const dispose =
-      options?.dispose === true ||
-      connection.usable === false ||
-      status === 'T' ||
-      status === 'E'
+      options?.dispose === true || connection.usable === false || status === 'T' || status === 'E'
     if (connection instanceof PgConnectionImpl) connection.detachClientListeners()
     client.release(dispose ? true : undefined)
   }

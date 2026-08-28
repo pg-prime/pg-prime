@@ -211,9 +211,7 @@ describe('R5 — no dehydration tax: identical decoding at depth 0 and depth 2',
     expect(String((JSON.parse('{"id":9007199254740995}') as { id: number }).id)).toBe(
       '9007199254740996',
     )
-    expect((JSON.parse('{"id":"9007199254740995"}') as { id: string }).id).toBe(
-      '9007199254740995',
-    )
+    expect((JSON.parse('{"id":"9007199254740995"}') as { id: string }).id).toBe('9007199254740995')
     expect(BigInt('9007199254740995')).toBe(9007199254740995n)
   })
 })

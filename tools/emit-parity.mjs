@@ -84,7 +84,12 @@ export function compare(aDir, bDir) {
         mapKeysDiffer.push({ file: f, keys: changed })
         continue
       }
-      differ.push({ file: f, aBytes: ta.length, bBytes: tb.length, why: `map keys differ: ${changed.join(', ')}` })
+      differ.push({
+        file: f,
+        aBytes: ta.length,
+        bBytes: tb.length,
+        why: `map keys differ: ${changed.join(', ')}`,
+      })
       continue
     }
     if (f.endsWith('.d.ts') && unifyQuotes(sa) === unifyQuotes(sb)) {
@@ -104,7 +109,11 @@ export function parity(pkgDir, { keep = false } = {}) {
       const dir = join(tmp, version)
       const started = Date.now()
       buildPackage(pkgDir, { out: dir, tsc, quiet: true })
-      out[version] = { dir, ms: Date.now() - started, bytes: listFiles(dir).reduce((n, f) => n + statSync(join(dir, f)).size, 0) }
+      out[version] = {
+        dir,
+        ms: Date.now() - started,
+        bytes: listFiles(dir).reduce((n, f) => n + statSync(join(dir, f)).size, 0),
+      }
     }
     const result = compare(out['7.0.2'].dir, out['5.9.3'].dir)
     return { ...result, timings: out, tmp }
@@ -129,14 +138,18 @@ if (process.argv[1] && process.argv[1].endsWith('emit-parity.mjs')) {
         `(tsgo 7.0.2 ${r.timings['7.0.2'].ms} ms, tsc 5.9.3 ${r.timings['5.9.3'].ms} ms)`,
     )
     for (const f of r.quoteStyleOnly) console.log(`  tolerated (quote style)   ${f}`)
-    for (const m of r.mapKeysDiffer) console.log(`  tolerated (${m.keys.join(', ')})       ${m.file}`)
+    for (const m of r.mapKeysDiffer)
+      console.log(`  tolerated (${m.keys.join(', ')})       ${m.file}`)
     for (const f of r.onlyA) console.error(`  only in the 7.0.2 emit: ${f}`)
     for (const f of r.onlyB) console.error(`  only in the 5.9.3 emit: ${f}`)
-    for (const d of r.differ) console.error(`  DIFFERS ${d.file} — ${d.why} (7.0.2 ${d.aBytes} B, 5.9.3 ${d.bBytes} B)`)
+    for (const d of r.differ)
+      console.error(`  DIFFERS ${d.file} — ${d.why} (7.0.2 ${d.aBytes} B, 5.9.3 ${d.bBytes} B)`)
     bad += r.differ.length + r.onlyA.length + r.onlyB.length
   }
   if (bad) {
-    console.error(`\nemit parity FAILED on ${bad} file(s) — design/08 §3.1's fallback is to build with the older compiler`)
+    console.error(
+      `\nemit parity FAILED on ${bad} file(s) — design/08 §3.1's fallback is to build with the older compiler`,
+    )
     process.exit(1)
   }
   console.log('\nemit parity ok')

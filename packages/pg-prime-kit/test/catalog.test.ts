@@ -20,13 +20,7 @@ import { diffIR } from "../src/diff/diff.js";
 import { runSqlScript, withClient } from "../src/db/pg.js";
 import { SchemaIR } from "../src/ir/fact.js";
 import { encodeId } from "../src/ir/stable-id.js";
-import {
-  ADMIN,
-  catalogsNotNullConstraints,
-  destroyDatabase,
-  makeDatabase,
-  serverAvailable,
-} from "./support/db.js";
+import { ADMIN, catalogsNotNullConstraints, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
 
 const PART = "pgprime_cat_part";
 const INH = "pgprime_cat_inh";
@@ -46,27 +40,17 @@ describe("evaluatedEnumLabels finds the type in every spelling pg_get_expr uses"
       .sort();
 
   it("matches a quoted TYPE name", () => {
-    expect(names(`'refunded'::public."OrderStatus"`)).toEqual([
-      "enumLabel:public.OrderStatus.refunded",
-    ]);
-    expect(names(`'refunded'::"public"."OrderStatus"`)).toEqual([
-      "enumLabel:public.OrderStatus.refunded",
-    ]);
+    expect(names(`'refunded'::public."OrderStatus"`)).toEqual(["enumLabel:public.OrderStatus.refunded"]);
+    expect(names(`'refunded'::"public"."OrderStatus"`)).toEqual(["enumLabel:public.OrderStatus.refunded"]);
   });
 
   it("matches a quoted SCHEMA name", () => {
-    expect(names(`'refunded'::"my schema".order_status`)).toEqual([
-      "enumLabel:my schema.order_status.refunded",
-    ]);
-    expect(names(`'refunded'::"my schema"."order_status"`)).toEqual([
-      "enumLabel:my schema.order_status.refunded",
-    ]);
+    expect(names(`'refunded'::"my schema".order_status`)).toEqual(["enumLabel:my schema.order_status.refunded"]);
+    expect(names(`'refunded'::"my schema"."order_status"`)).toEqual(["enumLabel:my schema.order_status.refunded"]);
   });
 
   it("still matches the all-bare and unqualified forms", () => {
-    expect(names(`'refunded'::public.order_status`)).toEqual([
-      "enumLabel:public.order_status.refunded",
-    ]);
+    expect(names(`'refunded'::public.order_status`)).toEqual(["enumLabel:public.order_status.refunded"]);
     // an UNQUALIFIED cast is genuinely ambiguous; the documented bias is to
     // over-match (a redundant commit boundary) rather than under-match (55P04)
     expect(names(`'refunded'::order_status`)).toEqual([
@@ -76,9 +60,7 @@ describe("evaluatedEnumLabels finds the type in every spelling pg_get_expr uses"
   });
 
   it("negative control: a label the expression does not evaluate earns no edge", () => {
-    expect(names(`'pending'::public."OrderStatus"`)).toEqual([
-      "enumLabel:public.OrderStatus.pending",
-    ]);
+    expect(names(`'pending'::public."OrderStatus"`)).toEqual(["enumLabel:public.OrderStatus.pending"]);
     expect(names(`'refunded'::text`)).toEqual([]);
     expect(names(`nextval('refunded_seq'::regclass)`)).toEqual([]);
   });
@@ -100,10 +82,7 @@ describe("live catalog exclusions", () => {
       const r = await withClient(conn, (c) => extractCatalog(c, { schemas: ["public"] }));
 
       const unsupported = r.diagnostics.filter((d) => d.code === "unsupported_kind");
-      expect(unsupported.map((d) => d.subject).sort()).toEqual([
-        "table:public.animals",
-        "table:public.dogs",
-      ]);
+      expect(unsupported.map((d) => d.subject).sort()).toEqual(["table:public.animals", "table:public.dogs"]);
       expect(unsupported.every((d) => d.severity === "error")).toBe(true);
 
       // no facts at all for the excluded relations - not the table, not its columns,
@@ -210,9 +189,7 @@ describe("live catalog exclusions", () => {
         withClient(conn, (c) => extractCatalog(c, { schemas: ["public"], statementTimeout: "30s'--" })),
       ).rejects.toMatchObject({ code: "22023" }); // invalid_parameter_value, from PostgreSQL
       // a legitimate value still works
-      const ok = await withClient(conn, (c) =>
-        extractCatalog(c, { schemas: ["public"], statementTimeout: "5s" }),
-      );
+      const ok = await withClient(conn, (c) => extractCatalog(c, { schemas: ["public"], statementTimeout: "5s" }));
       expect(ok.pgVersionNum).toBeGreaterThanOrEqual(150000);
     },
     T,

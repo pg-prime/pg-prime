@@ -27,9 +27,11 @@ import type { PgCopyResult, PgNoticeData } from './types.js'
 /** pg's CommandComplete tag grammar, the COPY case: `COPY 12345`. */
 const COPY_TAG = /^COPY (\d+)/
 
-const bufferFrom = (globalThis as unknown as {
-  Buffer?: { from(b: ArrayBufferLike, byteOffset?: number, length?: number): Uint8Array }
-}).Buffer
+const bufferFrom = (
+  globalThis as unknown as {
+    Buffer?: { from(b: ArrayBufferLike, byteOffset?: number, length?: number): Uint8Array }
+  }
+).Buffer
 
 /**
  * pg-protocol's `sendCopyFromChunk` writes the value as-is, and a plain `Uint8Array` that is not a

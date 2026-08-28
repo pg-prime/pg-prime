@@ -158,10 +158,9 @@ describe("db seed", () => {
   it(
     "refuses a production-tagged environment, and --force overrides it",
     async () => {
-      const refused = await runCli(
-        ["db", "seed", "--config", project.config, "--output", "json"],
-        { PG_PRIME_ENV: "production" },
-      );
+      const refused = await runCli(["db", "seed", "--config", project.config, "--output", "json"], {
+        PG_PRIME_ENV: "production",
+      });
       expect(refused.code).toBe(EXIT.error);
       const e = envelopeOf(refused);
       expect(e["status"]).toBe("refused");
@@ -169,10 +168,9 @@ describe("db seed", () => {
       expect((e["error"] as { message: string }).message).toContain("--force");
       await expectGolden("seed.refused", e);
 
-      const forced = await runCli(
-        ["db", "seed", "--config", project.config, "--force", "--output", "json"],
-        { PG_PRIME_ENV: "production" },
-      );
+      const forced = await runCli(["db", "seed", "--config", project.config, "--force", "--output", "json"], {
+        PG_PRIME_ENV: "production",
+      });
       expect(forced.code, forced.stdout + forced.stderr).toBe(EXIT.ok);
       expect(envelopeOf(forced)["status"]).toBe("seeded");
       // …and the `.ts` seed saw the environment it ran in.

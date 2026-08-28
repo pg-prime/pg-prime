@@ -38,7 +38,15 @@ export function runTsc(tscPath, dir) {
   try {
     out = execFileSync(
       process.execPath,
-      [tscPath, '-p', join(dir, 'tsconfig.json'), '--noEmit', '--extendedDiagnostics', '--pretty', 'false'],
+      [
+        tscPath,
+        '-p',
+        join(dir, 'tsconfig.json'),
+        '--noEmit',
+        '--extendedDiagnostics',
+        '--pretty',
+        'false',
+      ],
       { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] },
     )
   } catch (e) {
@@ -62,4 +70,3 @@ export function measure(tscPath, dir, repeats = 1) {
   }
   return best
 }
-

@@ -30,9 +30,27 @@ import { EXIT, type ExitCode } from "../exit.js";
 import { nowIso, plural, type CommandOutput } from "../output.js";
 
 export const LINT_OPTIONS: readonly OptionSpec[] = [
-  { name: "fail-on", type: "string", placeholder: "error|warn|off", describe: "the severity that makes this command exit 3", defaultText: "error" },
-  { name: "rules", type: "string", placeholder: "codes", repeatable: true, describe: "only these hazard codes; repeatable or comma-separated" },
-  { name: "format", type: "string", placeholder: "text|json", describe: "output format for the findings", defaultText: "text" },
+  {
+    name: "fail-on",
+    type: "string",
+    placeholder: "error|warn|off",
+    describe: "the severity that makes this command exit 3",
+    defaultText: "error",
+  },
+  {
+    name: "rules",
+    type: "string",
+    placeholder: "codes",
+    repeatable: true,
+    describe: "only these hazard codes; repeatable or comma-separated",
+  },
+  {
+    name: "format",
+    type: "string",
+    placeholder: "text|json",
+    describe: "output format for the findings",
+    defaultText: "text",
+  },
   { name: "style", type: "boolean", describe: "run the ST101–ST106 style family, whose default is off" },
   { name: "all", type: "boolean", describe: "lint every migration on disk, not only the unapplied ones" },
 ];
@@ -92,7 +110,10 @@ export async function runLint(config: ResolvedConfig, argv: ParseResult): Promis
   if (failOnRaw !== "error" && failOnRaw !== "warn" && failOnRaw !== "off") {
     return refusal(config, started, `--fail-on ${JSON.stringify(failOnRaw)} is not one of error, warn, off`);
   }
-  const rules = (list(argv.values, "rules") ?? []).flatMap((r) => r.split(",")).map((r) => r.trim()).filter(Boolean);
+  const rules = (list(argv.values, "rules") ?? [])
+    .flatMap((r) => r.split(","))
+    .map((r) => r.trim())
+    .filter(Boolean);
 
   const { files } = await readMigrationsDir(config.migrationsDir);
 
@@ -102,7 +123,9 @@ export async function runLint(config: ResolvedConfig, argv: ParseResult): Promis
   const positionals = argv.positionals;
   if (positionals.length > 0) {
     const wanted = new Set(positionals.map((p) => resolve(process.cwd(), p)));
-    targets = files.filter((f) => wanted.has(resolve(f.path)) || wanted.has(resolve(config.migrationsDir, `${f.id}.sql`)));
+    targets = files.filter(
+      (f) => wanted.has(resolve(f.path)) || wanted.has(resolve(config.migrationsDir, `${f.id}.sql`)),
+    );
     const missing = [...wanted].filter((w) => !targets.some((t) => resolve(t.path) === w));
     if (missing.length > 0) {
       return refusal(config, started, `not a migration in ${config.migrationsDir}: ${missing.join(", ")}`);
@@ -148,7 +171,12 @@ export async function runLint(config: ResolvedConfig, argv: ParseResult): Promis
       : perFile
           .map(({ file, result }) => {
             const text = formatFindings(result, "text");
-            return text === "" ? `${file.id}: clean` : `${file.id}:\n${text.split("\n").map((l) => `  ${l}`).join("\n")}`;
+            return text === ""
+              ? `${file.id}: clean`
+              : `${file.id}:\n${text
+                  .split("\n")
+                  .map((l) => `  ${l}`)
+                  .join("\n")}`;
           })
           .join("\n");
 
@@ -171,11 +199,7 @@ export async function runLint(config: ResolvedConfig, argv: ParseResult): Promis
       unusedDirectives: unused,
       error: null,
     },
-    text: [
-      `migrate lint — ${plural(targets.length, "migration")}, ${plural(findings.length, "finding")}`,
-      "",
-      body,
-    ]
+    text: [`migrate lint — ${plural(targets.length, "migration")}, ${plural(findings.length, "finding")}`, "", body]
       .filter((l) => l !== "")
       .join("\n"),
   };

@@ -76,7 +76,12 @@ describe('index options (design/05 §2.4, built by design/12 K4)', () => {
   })
 
   it('takes per-column desc / nulls / opclass as item objects', () => {
-    const node = index('i').on(t.cols.id, { column: t.cols.tag, desc: true, nulls: 'last', opclass: 'text_pattern_ops' })
+    const node = index('i').on(t.cols.id, {
+      column: t.cols.tag,
+      desc: true,
+      nulls: 'last',
+      opclass: 'text_pattern_ops',
+    })
     expect(node).toMatchObject({
       columns: ['id', 'tag'],
       items: [
@@ -87,7 +92,9 @@ describe('index options (design/05 §2.4, built by design/12 K4)', () => {
   })
 
   it('refuses a nulls value PostgreSQL does not have, at declaration time', () => {
-    expect(() => index('i').on({ column: t.cols.id, nulls: 'middle' as 'first' })).toThrow(SchemaError)
+    expect(() => index('i').on({ column: t.cols.id, nulls: 'middle' as 'first' })).toThrow(
+      SchemaError,
+    )
     expect(() => index('i').on()).toThrow(SchemaError)
   })
 })
@@ -120,7 +127,10 @@ describe('the standalone declarations (design/05 §3.3 / §3.5 / §3.10)', () =>
     expect(email.checks).toEqual([{ name: 'email_shape', expression: "VALUE ~ '@'" }])
     expect(Object.isFrozen(email)).toBe(true)
 
-    const seq = pgSequence('docs_id_seq', { dataType: 'integer', ownedBy: { table: 'docs', column: 'id' } })
+    const seq = pgSequence('docs_id_seq', {
+      dataType: 'integer',
+      ownedBy: { table: 'docs', column: 'id' },
+    })
     expect(seq).toMatchObject({ kind: 'sequence', name: 'docs_id_seq', cycle: false })
     expect(seq.ownedBy).toEqual({ table: 'docs', column: 'id' })
 
@@ -149,7 +159,11 @@ describe('the table nodes an adopted database needs', () => {
 
   it('clusterOn, partitionBy and partitionOf are plain nodes', () => {
     expect(clusterOn('docs_pkey')).toEqual({ node: 'clusterOn', index: 'docs_pkey' })
-    expect(partitionBy('range', 'created_at')).toEqual({ node: 'partitionBy', strategy: 'range', key: 'created_at' })
+    expect(partitionBy('range', 'created_at')).toEqual({
+      node: 'partitionBy',
+      strategy: 'range',
+      key: 'created_at',
+    })
     expect(partitionOf('payment', 'FOR VALUES FROM (1) TO (10)', { schema: 'archive' })).toEqual({
       node: 'partitionOf',
       parent: 'payment',
@@ -173,7 +187,11 @@ describe('t.raw — design/05 §5.3 at column grain', () => {
       'character varying(40)',
       true,
     ])
-    expect([doc?.dbName, doc?.column.ddl.pgType, doc?.column.ddl.notNull]).toEqual(['the_doc', 'xml', false])
+    expect([doc?.dbName, doc?.column.ddl.pgType, doc?.column.ddl.notNull]).toEqual([
+      'the_doc',
+      'xml',
+      false,
+    ])
   })
 
   it('refuses an empty type name rather than emitting a column with none', () => {

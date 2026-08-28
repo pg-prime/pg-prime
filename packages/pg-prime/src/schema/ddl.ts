@@ -17,7 +17,13 @@ import { toNode, type AnyFragment } from '../sql/fragment.js'
 /** `ON DELETE` / `ON UPDATE` — design/05 §2.3's exact five spellings, lower-case as written there. */
 export type FkAction = 'cascade' | 'restrict' | 'no action' | 'set null' | 'set default'
 
-const FK_ACTIONS: readonly FkAction[] = ['cascade', 'restrict', 'no action', 'set null', 'set default']
+const FK_ACTIONS: readonly FkAction[] = [
+  'cascade',
+  'restrict',
+  'no action',
+  'set null',
+  'set default',
+]
 
 export function checkFkAction(value: unknown, what: string): FkAction | undefined {
   if (value === undefined) return undefined

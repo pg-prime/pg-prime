@@ -660,9 +660,7 @@ function rowMapper(
     rows.map((row) => {
       const out: Record<string, unknown> = {}
       for (let i = 0; i < names.length; i++) {
-        out[names[i] as string] = (decode[i] as (raw: PgRawValue) => unknown)(
-          row[i] ?? null,
-        )
+        out[names[i] as string] = (decode[i] as (raw: PgRawValue) => unknown)(row[i] ?? null)
       }
       return out
     })
@@ -1009,14 +1007,7 @@ export async function explainOn(
     'Execution Time'?: number
   }[]
   const top = parsed[0]
-  return makeResult(
-    top?.Plan,
-    raw,
-    analyze,
-    false,
-    top?.['Planning Time'],
-    top?.['Execution Time'],
-  )
+  return makeResult(top?.Plan, raw, analyze, false, top?.['Planning Time'], top?.['Execution Time'])
 }
 
 export function makeResult(
@@ -1039,6 +1030,9 @@ export function makeResult(
 }
 
 /** `EXPLAIN ANALYZE UPDATE …` performs the update. This is the rail nobody else ships (`07` §7.5). */
-export function needsRollbackRail(compiled: Compiled<unknown>, o: ExplainOptions | undefined): boolean {
+export function needsRollbackRail(
+  compiled: Compiled<unknown>,
+  o: ExplainOptions | undefined,
+): boolean {
   return o?.analyze === true && o?.rollback !== false && isMutating(compiled)
 }

@@ -347,10 +347,12 @@ describe('a child that would shadow its own parent', () => {
       .orderBy((t) => q.asc(t.users.title))
       .execute()
 
-    expect(live.db
-      .from(h().posts, 'users')
-      .select((t) => ({ a: t.users.author.all() }))
-      .compile().sql).toContain('as "users2"')
+    expect(
+      live.db
+        .from(h().posts, 'users')
+        .select((t) => ({ a: t.users.author.all() }))
+        .compile().sql,
+    ).toContain('as "users2"')
 
     const oracle = await live.raw(`
       select p.title, u.email from ${ns()}.posts p
@@ -364,7 +366,12 @@ describe('a child that would shadow its own parent', () => {
 
 describe('some / none / every against the server', () => {
   const emails = async (f: Parameters<ReturnType<typeof base>['where']>[0]) =>
-    (await base().where(f).orderBy((t) => q.asc(t.u.email)).execute()).map((r) => r.email)
+    (
+      await base()
+        .where(f)
+        .orderBy((t) => q.asc(t.u.email))
+        .execute()
+    ).map((r) => r.email)
   const base = () => live.db.from(h().users, 'u').select((t) => ({ email: t.u.email }))
 
   it('some(published) selects only users who have a published post', async () => {
@@ -426,9 +433,9 @@ describe('some / none / every against the server', () => {
   it('none(published) is the complement of some(published)', async () => {
     const some = await emails((t) => t.u.posts.some((p) => q.isTrue(p.published)))
     const none = await emails((t) => t.u.posts.none((p) => q.isTrue(p.published)))
-    const all = (
-      await live.raw(`select email from ${ns()}.users order by email asc`)
-    ).map((r) => r[0] as string)
+    const all = (await live.raw(`select email from ${ns()}.users order by email asc`)).map(
+      (r) => r[0] as string,
+    )
     expect([...some, ...none].sort()).toStrictEqual([...all].sort())
   })
 
@@ -465,7 +472,11 @@ describe('count / sum', () => {
       from ${ns()}.users u order by u.email asc
     `)
     expect(rows).toStrictEqual(
-      oracle.map((r) => ({ email: r[0] as string, n: BigInt(r[1] as string), revenue: r[2] as string })),
+      oracle.map((r) => ({
+        email: r[0] as string,
+        n: BigInt(r[1] as string),
+        revenue: r[2] as string,
+      })),
     )
     // A user with no posts sums to zero rather than to null — which is why the type has no `| null`.
     expect(rows.find((r) => r.email === 'cyd@example.com')).toStrictEqual({
@@ -496,7 +507,11 @@ describe('count / sum', () => {
       order by u.email asc
     `)
     expect(rows).toStrictEqual(
-      oracle.map((r) => ({ email: r[0] as string, revenue: r[1] as string, rank: BigInt(r[2] as string) })),
+      oracle.map((r) => ({
+        email: r[0] as string,
+        revenue: r[1] as string,
+        rank: BigInt(r[2] as string),
+      })),
     )
   })
 })
@@ -511,7 +526,9 @@ describe('m2m through a junction', () => {
       .from(h().posts, 'p')
       .select((t) => ({
         title: t.p.title,
-        tags: t.p.tags.many((s) => s.select((g) => ({ name: g.name })).orderBy((g) => q.asc(g.name))),
+        tags: t.p.tags.many((s) =>
+          s.select((g) => ({ name: g.name })).orderBy((g) => q.asc(g.name)),
+        ),
       }))
       .orderBy((t) => q.asc(t.p.title))
       .execute()
@@ -654,10 +671,14 @@ describe('every shape plans', () => {
       .compile()
     await assertPlans(live, feed.sql, [23], pgMajor())
     // …and it runs.
-    expect((await live.db
-      .from(h().users, 'u')
-      .select((t) => ({ id: t.u.id, n: t.u.posts.count() }))
-      .execute()).length).toBe(6)
+    expect(
+      (
+        await live.db
+          .from(h().users, 'u')
+          .select((t) => ({ id: t.u.id, n: t.u.posts.count() }))
+          .execute()
+      ).length,
+    ).toBe(6)
   })
 })
 
@@ -763,7 +784,10 @@ describe('select distinct over a relation column', () => {
           title: t.p.title,
           everything: t.p.comments.all(),
           deep: t.p.comments.many((sub) =>
-            sub.select((c) => ({ id: c.id, post: c.post.one((s) => s.select((x) => ({ amount: x.amount }))) })),
+            sub.select((c) => ({
+              id: c.id,
+              post: c.post.one((s) => s.select((x) => ({ amount: x.amount }))),
+            })),
           ),
         }))
         .orderBy((t) => q.asc(t.p.title))
@@ -809,7 +833,9 @@ describe('select distinct over a relation column', () => {
     // collapse. `union` of a query with itself is the cheapest way to make an exact duplicate.
     const one = () =>
       live.db.from(h().users, 'u').select((t) => ({
-        posts: t.u.posts.many((sub) => sub.select((p) => ({ id: p.id })).orderBy((p) => q.asc(p.id))),
+        posts: t.u.posts.many((sub) =>
+          sub.select((p) => ({ id: p.id })).orderBy((p) => q.asc(p.id)),
+        ),
       }))
     const all = await one().execute()
     const deduped = await one().distinct().execute()
@@ -818,7 +844,6 @@ describe('select distinct over a relation column', () => {
     expect(deduped).toHaveLength(3)
   })
 })
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // avg / min / max over a relation, and FK inference (12 B)
@@ -877,13 +902,16 @@ describe('avg / min / max over a relation (12 B)', () => {
   it('R4 — sum on the same empty relation is 0, which is why avg is not coalesced', async () => {
     const rows = await live.db
       .from(h().users, 'u')
-      .select(({ u }) => ({ total: u.posts.sum((p) => p.amount), avg: u.posts.avg((p) => p.amount) }))
+      .select(({ u }) => ({
+        total: u.posts.sum((p) => p.amount),
+        avg: u.posts.avg((p) => p.amount),
+      }))
       .where(({ u }) => q.eq(u.email, 'cyd@example.com'))
       .execute()
     expect(rows).toStrictEqual([{ total: '0', avg: null }])
   })
 
-  it('the OID differential: the server confirms every relation aggregate\'s declared codec', async () => {
+  it("the OID differential: the server confirms every relation aggregate's declared codec", async () => {
     const built = live.db.from(h().users, 'u').select(({ u }) => ({
       c: u.posts.count(),
       s: u.posts.sum((p) => p.amount),
@@ -893,8 +921,11 @@ describe('avg / min / max over a relation (12 B)', () => {
       mi: u.posts.min((p) => p.id),
     }))
     const compiled = built.compile()
-    const declared = (compiled.shape as { fields: readonly { key: string; codec: { name: string; oid?: number } }[] })
-      .fields
+    const declared = (
+      compiled.shape as {
+        fields: readonly { key: string; codec: { name: string; oid?: number } }[]
+      }
+    ).fields
     const r = await live.conn.execute({
       text: `${compiled.sql}\nlimit 0`,
       params: compiled.binds.map((b) => (b.k === 'value' ? b.encoded : null)),

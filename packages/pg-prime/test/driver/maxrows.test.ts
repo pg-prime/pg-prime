@@ -44,7 +44,11 @@ afterAll(async () => {
 
 describe('maxRows caps the portal', () => {
   it('returns exactly n rows and the real fields', async () => {
-    const r = await conn.execute({ text: 'select id, s from cap_t order by id', params: [], maxRows: 5 })
+    const r = await conn.execute({
+      text: 'select id, s from cap_t order by id',
+      params: [],
+      maxRows: 5,
+    })
     expect(r.rows.map((row) => row[0])).toEqual(['1', '2', '3', '4', '5'])
     expect(r.fields.map((f) => f.name)).toEqual(['id', 's'])
     expect(r.rowCount).toBe(5)
@@ -67,7 +71,11 @@ describe('maxRows caps the portal', () => {
   it('works INSIDE a caller’s transaction and leaves it open', async () => {
     await conn.execute({ text: 'begin', params: [] })
     try {
-      const r = await conn.execute({ text: 'select id from cap_t order by id', params: [], maxRows: 2 })
+      const r = await conn.execute({
+        text: 'select id from cap_t order by id',
+        params: [],
+        maxRows: 2,
+      })
       expect(r.rows).toHaveLength(2)
       expect(conn.transactionStatus).toBe('T')
     } finally {
@@ -119,9 +127,9 @@ describe('maxRows caps the portal', () => {
   })
 
   it('a bad cap is an adapter error, and the connection stays usable', async () => {
-    await expect(
-      conn.execute({ text: 'select 1', params: [], maxRows: -1 }),
-    ).rejects.toMatchObject({ pgPrime: { kind: 'adapter' } })
+    await expect(conn.execute({ text: 'select 1', params: [], maxRows: -1 })).rejects.toMatchObject(
+      { pgPrime: { kind: 'adapter' } },
+    )
     await expect(
       conn.execute({ text: 'select 1', params: [], maxRows: 1.5 }),
     ).rejects.toMatchObject({ pgPrime: { kind: 'adapter' } })

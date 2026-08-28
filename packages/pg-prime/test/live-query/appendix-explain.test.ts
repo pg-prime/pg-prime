@@ -70,7 +70,9 @@ describe('every `03` §2 example plans on a real server', () => {
       .catch((e: unknown) => e)
     expect(sqlState(missingRelation)).toBe('42P01')
 
-    const missingColumn = await db.sql`select nonexistent_column_zz`.explain().catch((e: unknown) => e)
+    const missingColumn = await db.sql`select nonexistent_column_zz`
+      .explain()
+      .catch((e: unknown) => e)
     expect(sqlState(missingColumn)).toBe('42703')
   })
 })

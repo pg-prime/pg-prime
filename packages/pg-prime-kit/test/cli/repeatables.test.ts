@@ -57,7 +57,7 @@ describe("Tier R: the repeatables pass, through the binary", () => {
       const before = await cli("status");
       const s = envelopeOf(before);
       // Before any apply, every `sql/` file is drift: nothing is recorded for it.
-      expect((s["repeatables"] as { drift: string[]; passImplemented: boolean })).toMatchObject({
+      expect(s["repeatables"] as { drift: string[]; passImplemented: boolean }).toMatchObject({
         drift: ["sql/030_widget_names.sql"],
         passImplemented: true,
       });
@@ -93,9 +93,7 @@ describe("Tier R: the repeatables pass, through the binary", () => {
       await p.writeRepeatable("030_widget_names.sql", VIEW_V2);
       const status = await cli("status");
       expect(status.code).toBe(EXIT.ok);
-      expect((envelopeOf(status)["repeatables"] as { drift: string[] }).drift).toEqual([
-        "sql/030_widget_names.sql",
-      ]);
+      expect((envelopeOf(status)["repeatables"] as { drift: string[] }).drift).toEqual(["sql/030_widget_names.sql"]);
 
       const applied = await cli("apply");
       expect(applied.code, applied.stdout + applied.stderr).toBe(EXIT.ok);

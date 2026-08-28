@@ -130,9 +130,9 @@ describe('an UNQUALIFIED request resolves the way PostgreSQL itself would', () =
   it('a type on NO schema of the search_path is not found, even though it exists', async () => {
     await setSearchPath('public')
     const registry = createRegistry()
-    await expect(
-      registry.resolveDynamic(conn, [{ name: 'mood', kind: 'enum' }]),
-    ).rejects.toThrow(/"mood" declared in the schema does not exist/)
+    await expect(registry.resolveDynamic(conn, [{ name: 'mood', kind: 'enum' }])).rejects.toThrow(
+      /"mood" declared in the schema does not exist/,
+    )
     await setSearchPath('sa, sb, public')
   })
 
@@ -227,7 +227,13 @@ describe('one registry per database — the guard rails', () => {
  * under test — it stands in for PostgreSQL, and only for the one query `resolveDynamic` issues.
  */
 function fakeCatalogue(rows: readonly (readonly string[])[]): PgConnection {
-  const result: PgResult = { rows, fields: [], rowCount: rows.length, command: 'SELECT', notices: [] }
+  const result: PgResult = {
+    rows,
+    fields: [],
+    rowCount: rows.length,
+    command: 'SELECT',
+    notices: [],
+  }
   return {
     execute: () => Promise.resolve(result),
     stream: () => {

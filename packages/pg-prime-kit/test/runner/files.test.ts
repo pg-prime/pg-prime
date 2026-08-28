@@ -20,7 +20,10 @@ const stmt = (index: number, sql: string, over: Partial<PlanStatement> = {}): Pl
   sql,
   verb: "create",
   kind: "table",
-  produces: [], consumes: [], destroys: [], releases: [],
+  produces: [],
+  consumes: [],
+  destroys: [],
+  releases: [],
   transactionality: "transactional",
   lockClass: "accessExclusive",
   idempotent: false,
@@ -62,8 +65,17 @@ describe("directives", () => {
 
   it("round-trip: what renderSql writes, parseMigrationSql reads back", () => {
     const statements = [
-      stmt(0, "DROP INDEX CONCURRENTLY IF EXISTS public.t_idx", { lockClass: "shareUpdateExclusive", idempotent: true, hazards: ["LK101"], timeouts: { lock: "3s", statement: null } }),
-      stmt(1, "CREATE INDEX CONCURRENTLY t_idx ON public.t USING btree (a)", { lockClass: "shareUpdateExclusive", idempotent: true, timeouts: { lock: "3s", statement: null } }),
+      stmt(0, "DROP INDEX CONCURRENTLY IF EXISTS public.t_idx", {
+        lockClass: "shareUpdateExclusive",
+        idempotent: true,
+        hazards: ["LK101"],
+        timeouts: { lock: "3s", statement: null },
+      }),
+      stmt(1, "CREATE INDEX CONCURRENTLY t_idx ON public.t USING btree (a)", {
+        lockClass: "shareUpdateExclusive",
+        idempotent: true,
+        timeouts: { lock: "3s", statement: null },
+      }),
       stmt(2, "ALTER TABLE public.t ADD COLUMN b text"),
     ];
     const sql = renderSql({
@@ -104,7 +116,14 @@ describe("directives", () => {
 
   it("reports a marker whose index is out of order and one with nothing under it", () => {
     const parsed = parseMigrationSql(
-      ["-- pg-prime:stmt 0 lock=none", "SELECT 1;", "-- pg-prime:stmt 5 lock=none", "SELECT 2;", "-- pg-prime:stmt 2 lock=none", ""].join("\n"),
+      [
+        "-- pg-prime:stmt 0 lock=none",
+        "SELECT 1;",
+        "-- pg-prime:stmt 5 lock=none",
+        "SELECT 2;",
+        "-- pg-prime:stmt 2 lock=none",
+        "",
+      ].join("\n"),
       "bad.sql",
     );
     expect(parsed.diagnostics.map((d) => d.code)).toEqual(["stmt_marker_out_of_order", "stmt_marker_empty"]);
@@ -153,10 +172,19 @@ describe("executionPlan", () => {
       "x.sql",
     );
     const exec = executionPlan({
-      id: "0001_x", seq: 1, name: "x", path: "x", planPath: null,
-      checksum: "sha256:0", text: "", directives: parsed.directives,
-      statements: parsed.statements, statementSource: parsed.statementSource,
-      plan: null, txmode: "none", diagnostics: [],
+      id: "0001_x",
+      seq: 1,
+      name: "x",
+      path: "x",
+      planPath: null,
+      checksum: "sha256:0",
+      text: "",
+      directives: parsed.directives,
+      statements: parsed.statements,
+      statementSource: parsed.statementSource,
+      plan: null,
+      txmode: "none",
+      diagnostics: [],
     });
     expect(exec.segments).toEqual([{ index: 0, transactional: false, statements: [0] }]);
     expect(exec.statements[0]!.timeouts).toEqual({ lock: "5s", statement: "0" });

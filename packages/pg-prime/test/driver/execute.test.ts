@@ -156,7 +156,9 @@ describe('§4.4 — binary results are refused, loudly, at the seam', () => {
 
 describe('D12 — errors cross the seam as plain data', () => {
   it('a unique violation carries constraint, detail, table and a NUMERIC position', async () => {
-    const d = await seamError(conn.execute({ text: `insert into ex_a values (1,'dup')`, params: [] }))
+    const d = await seamError(
+      conn.execute({ text: `insert into ex_a values (1,'dup')`, params: [] }),
+    )
     expect(d.kind).toBe('server')
     expect(d.connectionUnusable).toBe(false)
     expect(d.adapter).toBe('pg')
@@ -209,41 +211,44 @@ describe('§5.4 — timeoutMs is a client deadline, not a cancellation', () => {
   // Both of these watch one session from another. On PGlite they would pass for the wrong reason:
   // `pg_stat_activity` there reports the one backend's last statement, so the "the server is still
   // running it" assertion holds even if the timeout had cancelled the query. design/08 §4.2.
-  requiresConcurrency()('rejects with kind "timeout", RETIRES the connection, and the query KEEPS RUNNING', async () => {
-    const victim = await h.driver.acquire()
-    const observer = await h.driver.acquire()
-    try {
-      const pid = victim.backendPid!
-      expect(pid).toBeGreaterThan(0)
+  requiresConcurrency()(
+    'rejects with kind "timeout", RETIRES the connection, and the query KEEPS RUNNING',
+    async () => {
+      const victim = await h.driver.acquire()
+      const observer = await h.driver.acquire()
+      try {
+        const pid = victim.backendPid!
+        expect(pid).toBeGreaterThan(0)
 
-      // `connectionUnusable` is TRUE, and that is the whole point: pg gave up client-side while
-      // the statement stayed on the socket. Handing that client back to the pool makes the next
-      // borrower wait behind our `pg_sleep(3)` for reasons they can never diagnose. This test used
-      // to paper over it with `release(victim, { dispose: true })` in its own teardown.
-      await expect(
-        victim.execute({ text: 'select pg_sleep(3)', params: [], timeoutMs: 250 }),
-      ).rejects.toMatchObject({ pgPrime: { kind: 'timeout', connectionUnusable: true } })
+        // `connectionUnusable` is TRUE, and that is the whole point: pg gave up client-side while
+        // the statement stayed on the socket. Handing that client back to the pool makes the next
+        // borrower wait behind our `pg_sleep(3)` for reasons they can never diagnose. This test used
+        // to paper over it with `release(victim, { dispose: true })` in its own teardown.
+        await expect(
+          victim.execute({ text: 'select pg_sleep(3)', params: [], timeoutMs: 250 }),
+        ).rejects.toMatchObject({ pgPrime: { kind: 'timeout', connectionUnusable: true } })
 
-      // the client gave up; the SERVER did not — this is why `signal` exists separately
-      const still = await observer.execute({
-        text: `select count(*)::int4 from pg_stat_activity
+        // the client gave up; the SERVER did not — this is why `signal` exists separately
+        const still = await observer.execute({
+          text: `select count(*)::int4 from pg_stat_activity
                 where pid = $1::int4 and state = 'active' and query like '%pg_sleep%'`,
-        params: [String(pid)],
-        paramTypes: [23],
-      })
-      expect(still.rows[0]![0]).toBe('1')
+          params: [String(pid)],
+          paramTypes: [23],
+        })
+        expect(still.rows[0]![0]).toBe('1')
 
-      expect(victim.usable).toBe(false)
-      // and nothing else may be put on that socket behind the statement still running on it
-      await expect(victim.execute({ text: 'select 1', params: [] })).rejects.toMatchObject({
-        pgPrime: { connectionUnusable: true },
-      })
-    } finally {
-      await h.driver.release(observer)
-      // a plain release: the adapter itself knows this one must not go back into rotation
-      await h.driver.release(victim)
-    }
-  })
+        expect(victim.usable).toBe(false)
+        // and nothing else may be put on that socket behind the statement still running on it
+        await expect(victim.execute({ text: 'select 1', params: [] })).rejects.toMatchObject({
+          pgPrime: { connectionUnusable: true },
+        })
+      } finally {
+        await h.driver.release(observer)
+        // a plain release: the adapter itself knows this one must not go back into rotation
+        await h.driver.release(victim)
+      }
+    },
+  )
 
   // `pglite-socket` answers a CancelRequest with `handleData: CancelRequest received, ignoring
   // (not supported)` — there is no second backend to signal — so the query simply completes.

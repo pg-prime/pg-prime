@@ -23,7 +23,13 @@ import {
 import { pgPrime } from '../../src/query/run.js'
 import type { Db } from '../../src/query/types.js'
 import { defineSchema, pgTable } from '../../src/schema/index.js'
-import { liveTarget, makeHarness, makePool, requiresRealPostgres, type Harness } from './_harness.js'
+import {
+  liveTarget,
+  makeHarness,
+  makePool,
+  requiresRealPostgres,
+  type Harness,
+} from './_harness.js'
 
 const NS = 'pgprime_live_session'
 
@@ -284,7 +290,13 @@ describe('streamBatches is one FETCH per batch (07 §6.3, decision 10)', () => {
 
 describe('hooks report real timings (07 §7.1)', () => {
   it('serverMs, decodeMs and waitedForConnectionMs are all measured, and add up', async () => {
-    const ends: { durationMs: number; serverMs: number; decodeMs: number; waited: number; rows: number }[] = []
+    const ends: {
+      durationMs: number
+      serverMs: number
+      decodeMs: number
+      waited: number
+      rows: number
+    }[] = []
     const off = db.observe({
       onQueryEnd: (e) =>
         ends.push({
@@ -296,7 +308,10 @@ describe('hooks report real timings (07 §7.1)', () => {
         }),
     })
     try {
-      await db.from(schema.h.widgets).select(({ widgets: w }) => ({ id: w.id })).execute()
+      await db
+        .from(schema.h.widgets)
+        .select(({ widgets: w }) => ({ id: w.id }))
+        .execute()
     } finally {
       off()
     }
@@ -333,7 +348,12 @@ describe('hooks report real timings (07 §7.1)', () => {
     } finally {
       off()
     }
-    expect(seen).toStrictEqual(['start repeatable read', 'end commit', 'start default', 'end error'])
+    expect(seen).toStrictEqual([
+      'start repeatable read',
+      'end commit',
+      'start default',
+      'end error',
+    ])
   })
 })
 
@@ -349,7 +369,9 @@ describe('COPY round trip (07 §6.6)', () => {
    * test here does not merely fail, it poisons every test after it in the file. The claim moves to
    * tier 2, where design/12 §3 S already puts the 100k crossover measurement.
    */
-  const copyWorks = requiresRealPostgres("PGlite's socket bridge exits the backend on a COPY message")
+  const copyWorks = requiresRealPostgres(
+    "PGlite's socket bridge exits the backend on a COPY message",
+  )
 
   copyWorks('copyFrom encodes through the codecs and copyTo reads it back', async () => {
     const rows = [
@@ -426,9 +448,9 @@ describe('db.diagnose() (07 §5.4)', () => {
       expect(names).toContain('named-statement-survives')
       // The session-state probe writes, so it is off unless asked for.
       expect(names).not.toContain('application-name-sticky')
-      expect((await db.diagnosePooler({ probeSessionState: true })).signals.map((s) => s.name)).toContain(
-        'application-name-sticky',
-      )
+      expect(
+        (await db.diagnosePooler({ probeSessionState: true })).signals.map((s) => s.name),
+      ).toContain('application-name-sticky')
     },
   )
 })

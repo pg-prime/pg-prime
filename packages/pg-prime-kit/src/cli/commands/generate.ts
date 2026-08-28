@@ -40,11 +40,31 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const GENERATE_OPTIONS: readonly OptionSpec[] = [
-  { name: "name", type: "string", placeholder: "slug", describe: "the migration's name; [a-z0-9_]+", defaultText: "auto" },
-  { name: "seq", type: "string", placeholder: "n", describe: "the migration number", defaultText: "one past the highest on disk" },
-  { name: "interactive", type: "boolean", describe: "TTY only: show rename candidates and print the annotation to add" },
+  {
+    name: "name",
+    type: "string",
+    placeholder: "slug",
+    describe: "the migration's name; [a-z0-9_]+",
+    defaultText: "auto",
+  },
+  {
+    name: "seq",
+    type: "string",
+    placeholder: "n",
+    describe: "the migration number",
+    defaultText: "one past the highest on disk",
+  },
+  {
+    name: "interactive",
+    type: "boolean",
+    describe: "TTY only: show rename candidates and print the annotation to add",
+  },
   { name: "hints-file", type: "string", placeholder: "path", describe: "JSON array of { from, to } rename hints" },
-  { name: "allow-data-loss", type: "boolean", describe: "acknowledge every destructive change in this plan (design/06 §3.6)" },
+  {
+    name: "allow-data-loss",
+    type: "boolean",
+    describe: "acknowledge every destructive change in this plan (design/06 §3.6)",
+  },
   { name: "reason", type: "string", placeholder: "text", describe: "recorded beside the acknowledgement in the plan" },
   { name: "by", type: "string", placeholder: "name", describe: "recorded as the plan's author", defaultText: "$USER" },
   {
@@ -55,10 +75,24 @@ export const GENERATE_OPTIONS: readonly OptionSpec[] = [
     defaultText: "auto",
   },
   { name: "offline", type: "boolean", describe: "shadow tier 4; refused with a sentence in this release" },
-  { name: "no-safe-rewrite", type: "boolean", describe: "emit the literal diff instead of design/06 §3.5's lock-safe forms" },
+  {
+    name: "no-safe-rewrite",
+    type: "boolean",
+    describe: "emit the literal diff instead of design/06 §3.5's lock-safe forms",
+  },
   { name: "no-prove", type: "boolean", describe: "dev only: stamp proof.status = skipped and write anyway" },
-  { name: "strict-unmodeled", type: "boolean", describe: "a non-empty Tier-U census becomes an error (design/06 §2.2)" },
-  { name: "dump-oracle", type: "string", placeholder: "off|warn|strict", describe: "the D10 pg_dump witness", defaultText: "warn" },
+  {
+    name: "strict-unmodeled",
+    type: "boolean",
+    describe: "a non-empty Tier-U census becomes an error (design/06 §2.2)",
+  },
+  {
+    name: "dump-oracle",
+    type: "string",
+    placeholder: "off|warn|strict",
+    describe: "the D10 pg_dump witness",
+    defaultText: "warn",
+  },
   { name: "dry-run", type: "boolean", describe: "print the SQL that would be written; write nothing" },
   { name: "empty", type: "boolean", describe: "write a blank hand-written migration and touch no database" },
   { name: "data", type: "boolean", describe: "write a data-migration template (design/06 §7 lane 2)" },
@@ -122,7 +156,13 @@ export async function runGenerate(config: ResolvedConfig, argv: ParseResult): Pr
     const id = `${String(seq).padStart(4, "0")}_${name}`;
     const sql = data ? dataMigrationSql({ seq, name }) : emptyMigrationSql(seq, name);
     if (bool(argv.values, "dry-run")) {
-      return envelope(started, "dry_run", EXIT.ok, { files: [{ id, stage: data ? "data" : "main", written: null, sql }] }, sql);
+      return envelope(
+        started,
+        "dry_run",
+        EXIT.ok,
+        { files: [{ id, stage: data ? "data" : "main", written: null, sql }] },
+        sql,
+      );
     }
     const path = join(config.migrationsDir, `${id}.sql`);
     await mkdir(config.migrationsDir, { recursive: true });
@@ -280,7 +320,12 @@ export async function runGenerate(config: ResolvedConfig, argv: ParseResult): Pr
       unresolved: result.unresolved,
       repeatables: result.repeatables.map((r) => ({ path: r.path, sha256: r.sha256 })),
       hazards: result.files.flatMap((f) => f.plan?.hazards ?? []),
-      diagnostics: result.diagnostics.map((d) => ({ code: d.code, severity: d.severity, subject: d.subject ?? null, message: d.message })),
+      diagnostics: result.diagnostics.map((d) => ({
+        code: d.code,
+        severity: d.severity,
+        subject: d.subject ?? null,
+        message: d.message,
+      })),
       writeRefusal: result.writeRefusal ?? null,
     },
     text(result, config),
@@ -359,7 +404,10 @@ function text(result: GenerateResult, config: ResolvedConfig): string {
       "",
       pairs([
         ["proof", `${result.proof.status}${result.proof.error ? ` — ${result.proof.error}` : ""}`],
-        ["witness", `${result.proof.dumpOracle?.status ?? "n/a"}${result.proof.dumpOracle?.reason ? ` (${result.proof.dumpOracle.reason})` : ""}`],
+        [
+          "witness",
+          `${result.proof.dumpOracle?.status ?? "n/a"}${result.proof.dumpOracle?.reason ? ` (${result.proof.dumpOracle.reason})` : ""}`,
+        ],
       ]),
     );
   }

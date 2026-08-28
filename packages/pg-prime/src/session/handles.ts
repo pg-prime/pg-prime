@@ -106,7 +106,12 @@ function runOptions(o: RunCallOptions | undefined): RunOptions {
 
 /** Define a method that does not show up in `Object.keys(db)` — handles stay printable. */
 function install(target: object, name: string, value: unknown): void {
-  Object.defineProperty(target, name, { value, enumerable: false, configurable: true, writable: false })
+  Object.defineProperty(target, name, {
+    value,
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  })
 }
 
 function installGetter(target: object, name: string, get: () => unknown): void {
@@ -117,7 +122,12 @@ function installGetter(target: object, name: string, get: () => unknown): void {
  * The `Queryable` half every handle shares (`07` §1.3): `run`, `explain`, `stream`,
  * `streamBatches`, `notify`, `withOptions`, plus the `schema` back-reference.
  */
-function installQueryable(handle: object, state: SessionState, runner: AnyRunner, kind: 'db' | 'tx' | 'session'): void {
+function installQueryable(
+  handle: object,
+  state: SessionState,
+  runner: AnyRunner,
+  kind: 'db' | 'tx' | 'session',
+): void {
   installGetter(handle, 'kind', () => kind)
   installGetter(handle, 'schema', () => state.schema)
 
@@ -135,11 +145,15 @@ function installQueryable(handle: object, state: SessionState, runner: AnyRunner
     return scoped.scope((conn) => streamOn(conn, compiled, state.env, streamOpts(opts)))
   })
 
-  install(handle, 'streamBatches', <O>(q: Runnable<O>, opts?: StreamCallOptions): AsyncIterable<O[]> => {
-    const compiled = compiledOf(q)
-    const scoped = withStreamOptions(runner, opts)
-    return scoped.scope((conn) => streamBatchesOn(conn, compiled, state.env, streamOpts(opts)))
-  })
+  install(
+    handle,
+    'streamBatches',
+    <O>(q: Runnable<O>, opts?: StreamCallOptions): AsyncIterable<O[]> => {
+      const compiled = compiledOf(q)
+      const scoped = withStreamOptions(runner, opts)
+      return scoped.scope((conn) => streamBatchesOn(conn, compiled, state.env, streamOpts(opts)))
+    },
+  )
 
   /**
    * `pg_notify($1, $2)`, never `NOTIFY chan, 'literal'` — the SQL form needs identifier quoting for
@@ -207,7 +221,12 @@ function ctxOf(handle: object): BuilderCtx {
  * `db.withOptions({ signal }).from(users)…execute()` is the same statement with the same signal,
  * and `run(q, { signal })` is the other spelling and needs no scope at all.
  */
-function makeScoped(state: SessionState, runner: AnyRunner, kind: 'db' | 'tx' | 'session', opts: CallOptions): object {
+function makeScoped(
+  state: SessionState,
+  runner: AnyRunner,
+  kind: 'db' | 'tx' | 'session',
+  opts: CallOptions,
+): object {
   const deps = depsOf(runner)
   const next = runner.with(opts as StatementOptions) as AnyRunner
   attachDeps(next, deps)
@@ -226,7 +245,9 @@ function attachDeps(runner: AnyRunner, deps: TxDeps): void {
 function depsOf(runner: AnyRunner): TxDeps {
   const deps = (runner as unknown as Record<symbol, TxDeps | undefined>)[DEPS]
   if (deps === undefined) {
-    throw new UsageError('pg-prime: this handle was built without session deps. This is a bug in pg-prime.')
+    throw new UsageError(
+      'pg-prime: this handle was built without session deps. This is a bug in pg-prime.',
+    )
   }
   return deps
 }
@@ -361,7 +382,13 @@ export async function runTransaction<T>(
         )
       }
       const info = { err: e, attempt, delayMs, ...(label === undefined ? {} : { label }) }
-      state.hooks.retry({ err: e as PgPrimeError, attempt, delayMs, txId, ...(label === undefined ? {} : { label }) })
+      state.hooks.retry({
+        err: e as PgPrimeError,
+        attempt,
+        delayMs,
+        txId,
+        ...(label === undefined ? {} : { label }),
+      })
       retry.onRetry?.(info)
       await sleep(delayMs)
     } finally {
@@ -397,7 +424,10 @@ interface OnceArgs<T> {
   readonly fn: Callback<T>
 }
 
-async function once<T>(deps: TxDeps, a: OnceArgs<T>): Promise<{ result: unknown; rolledBack: boolean }> {
+async function once<T>(
+  deps: TxDeps,
+  a: OnceArgs<T>,
+): Promise<{ result: unknown; rolledBack: boolean }> {
   const state = deps.state
   const lease = await acquire(state, a.signal ?? state.signal)
   const tx: TxRuntime = {
@@ -460,7 +490,13 @@ async function once<T>(deps: TxDeps, a: OnceArgs<T>): Promise<{ result: unknown;
     return { result, rolledBack: false }
   } catch (raw) {
     const mapped = mapError(raw, {
-      context: { handle: 'tx', attempt: a.attempt, depth: a.depth, txId: a.txId, ...(a.label === undefined ? {} : { label: a.label }) },
+      context: {
+        handle: 'tx',
+        attempt: a.attempt,
+        depth: a.depth,
+        txId: a.txId,
+        ...(a.label === undefined ? {} : { label: a.label }),
+      },
       errors: state.errors,
       schema: state.schema,
     })
@@ -474,7 +510,13 @@ async function once<T>(deps: TxDeps, a: OnceArgs<T>): Promise<{ result: unknown;
           `act (07 §3.4, §4.2).`,
         {
           cause: mapped,
-          context: { handle: 'tx', attempt: a.attempt, depth: a.depth, txId: a.txId, ...(a.label === undefined ? {} : { label: a.label }) },
+          context: {
+            handle: 'tx',
+            attempt: a.attempt,
+            depth: a.depth,
+            txId: a.txId,
+            ...(a.label === undefined ? {} : { label: a.label }),
+          },
         },
       )
     }
@@ -512,7 +554,11 @@ async function once<T>(deps: TxDeps, a: OnceArgs<T>): Promise<{ result: unknown;
  * reason no database produced. `shouldRetry` is the *last word on a retryable error*, not a
  * licence.
  */
-function shouldRetry(e: unknown, retry: ReturnType<typeof resolveRetry>, attempt: number): string | undefined {
+function shouldRetry(
+  e: unknown,
+  retry: ReturnType<typeof resolveRetry>,
+  attempt: number,
+): string | undefined {
   if (attempt >= retry.maxAttempts) return undefined
 
   // Exclusion 1: the transaction MAY HAVE COMMITTED. Retrying is how you double-charge a card.
@@ -534,9 +580,12 @@ function shouldRetry(e: unknown, retry: ReturnType<typeof resolveRetry>, attempt
 }
 
 function lostConnection(e: unknown): boolean {
-  const data = (e as { pgPrime?: { kind?: string; connectionUnusable?: boolean } } | null | undefined)?.pgPrime
+  const data = (
+    e as { pgPrime?: { kind?: string; connectionUnusable?: boolean } } | null | undefined
+  )?.pgPrime
   if (data !== undefined) {
-    if (data.kind === 'connection' || data.kind === 'protocol' || data.kind === 'timeout') return true
+    if (data.kind === 'connection' || data.kind === 'protocol' || data.kind === 'timeout')
+      return true
     if (data.connectionUnusable === true) return true
   }
   const state = sqlStateOfError(e)
@@ -597,17 +646,25 @@ export function makeTxHandle(
 
   install(handle, 'setLocal', (a: unknown, b?: unknown) => setLocalOn(runner, a, b, true))
 
-  install(handle, 'advisoryLock', async (key: bigint | string, o?: AdvisoryLockOptions): Promise<boolean> => {
-    const shared = o?.shared === true
-    const tryLock = o?.try === true
-    const fn = advisoryFn('xact', tryLock, shared)
-    const rows = await runner.use(async (c) =>
-      c.execute({ text: `select ${fn}($1)`, params: [advisoryKey(key).toString()], paramTypes: [20] }),
-    )
-    if (!tryLock) return true
-    const cell = rows.rows[0]?.[0]
-    return cell === 't' || cell === 'true'
-  })
+  install(
+    handle,
+    'advisoryLock',
+    async (key: bigint | string, o?: AdvisoryLockOptions): Promise<boolean> => {
+      const shared = o?.shared === true
+      const tryLock = o?.try === true
+      const fn = advisoryFn('xact', tryLock, shared)
+      const rows = await runner.use(async (c) =>
+        c.execute({
+          text: `select ${fn}($1)`,
+          params: [advisoryKey(key).toString()],
+          paramTypes: [20],
+        }),
+      )
+      if (!tryLock) return true
+      const cell = rows.rows[0]?.[0]
+      return cell === 't' || cell === 'true'
+    },
+  )
 
   install(handle, 'rollback', (): never => {
     throw new TransactionRollback(
@@ -692,10 +749,14 @@ async function runSavepoint<T>(
       await conn.execute({ text: releaseSavepointSql(depth), params: [], mode: 'simple' })
       return e.value as T
     }
-    await conn.execute({ text: rollbackToSavepointSql(depth), params: [], mode: 'simple' }).catch(() => {})
+    await conn
+      .execute({ text: rollbackToSavepointSql(depth), params: [], mode: 'simple' })
+      .catch(() => {})
     // The rollback un-poisoned the enclosing transaction; a later 25P02 would now be a lie.
     parent.poison.error = undefined
-    await conn.execute({ text: releaseSavepointSql(depth), params: [], mode: 'simple' }).catch(() => {})
+    await conn
+      .execute({ text: releaseSavepointSql(depth), params: [], mode: 'simple' })
+      .catch(() => {})
     throw e
   } finally {
     child.closed = true
@@ -703,9 +764,16 @@ async function runSavepoint<T>(
 }
 
 /** `setLocal(name, value)` and `setLocal({ … })`, both through `set_config` (§3.5). */
-async function setLocalOn(runner: AnyRunner, a: unknown, b: unknown, local: boolean): Promise<void> {
+async function setLocalOn(
+  runner: AnyRunner,
+  a: unknown,
+  b: unknown,
+  local: boolean,
+): Promise<void> {
   const settings: Record<string, string | number | boolean> =
-    typeof a === 'string' ? { [a]: b as string | number | boolean } : (a as Record<string, string | number | boolean>)
+    typeof a === 'string'
+      ? { [a]: b as string | number | boolean }
+      : (a as Record<string, string | number | boolean>)
   if (typeof a === 'string') assertGucName(a)
   const names = Object.keys(settings)
   if (names.length === 0) return
@@ -750,7 +818,11 @@ function sqlTextOf(q: string | { readonly sql: string }): string {
 }
 
 function makeCopyFrom(state: SessionState, runner: AnyRunner): CopyFromApi {
-  const api = (async (table: TableLike, rows: CopyRows, opts?: CopyOptions): Promise<CopyResult> => {
+  const api = (async (
+    table: TableLike,
+    rows: CopyRows,
+    opts?: CopyOptions,
+  ): Promise<CopyResult> => {
     const meta = metaOf(table, state.env.registry)
     const columns = copyColumns(meta, opts?.columns)
     const keys = opts?.columns ?? meta.keys
@@ -780,7 +852,10 @@ function makeCopyFrom(state: SessionState, runner: AnyRunner): CopyFromApi {
 }
 
 function makeCopyTo(state: SessionState, runner: AnyRunner): CopyToApi {
-  const bytes = (q: string | { readonly sql: string }, opts?: CopyOptions): AsyncIterable<Uint8Array> => {
+  const bytes = (
+    q: string | { readonly sql: string },
+    opts?: CopyOptions,
+  ): AsyncIterable<Uint8Array> => {
     const text = sqlTextOf(q)
     return runner.scope((conn) => {
       assertCopyOut(conn, state.driver.capabilities.adapter)
@@ -795,7 +870,9 @@ function makeCopyTo(state: SessionState, runner: AnyRunner): CopyToApi {
   return api
 }
 
-async function* toAsync(it: AsyncIterable<Uint8Array> | Iterable<Uint8Array>): AsyncIterable<Uint8Array> {
+async function* toAsync(
+  it: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+): AsyncIterable<Uint8Array> {
   for await (const chunk of it as AsyncIterable<Uint8Array>) yield chunk
 }
 
@@ -848,7 +925,9 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
         sessionAdvisoryLock(state, scopedRunner, key, o),
     )
     install(h, 'withOptions', (opts: CallOptions) => makeSessionHandle({ ...extra, ...opts }))
-    install(h, 'outsideTransaction', () => makeSessionHandle({ ...extra, outsideTransaction: true }))
+    install(h, 'outsideTransaction', () =>
+      makeSessionHandle({ ...extra, outsideTransaction: true }),
+    )
     return h
   }
   const handle = makeSessionHandle({})
@@ -859,7 +938,11 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
     return await withoutFrames(() => fn(handle))
   } catch (e) {
     dispose = true
-    throw mapError(e, { context: { handle: 'session' }, errors: state.errors, schema: state.schema })
+    throw mapError(e, {
+      context: { handle: 'session' },
+      errors: state.errors,
+      schema: state.schema,
+    })
   } finally {
     tx.closed = true
     const status = lease.conn.transactionStatus
@@ -887,7 +970,14 @@ async function runNestedOnConnection<T>(
       ? {}
       : { deferrable: (opts as { deferrable?: boolean }).deferrable }),
   })
-  const tx: TxRuntime = { ...parent, txId: nextTxId(), depth: 0, inFlight: 0, warned: false, doomed: false }
+  const tx: TxRuntime = {
+    ...parent,
+    txId: nextTxId(),
+    depth: 0,
+    inFlight: 0,
+    warned: false,
+    doomed: false,
+  }
   await conn.execute({ text: begin, params: [], mode: 'simple' })
   const handle = makeTxHandle(deps, conn, tx, {
     ...(isolation === undefined ? {} : { isolation }),
@@ -895,8 +985,9 @@ async function runNestedOnConnection<T>(
     ...(opts.label === undefined ? {} : { label: opts.label }),
   })
   try {
-    const result = await withFrame({ txId: tx.txId, label: opts.label, openedAt: undefined, depth: 0 }, () =>
-      fn(handle),
+    const result = await withFrame(
+      { txId: tx.txId, label: opts.label, openedAt: undefined, depth: 0 },
+      () => fn(handle),
     )
     if (tx.doomed) {
       await conn.execute({ text: 'rollback', params: [], mode: 'simple' })
@@ -949,7 +1040,11 @@ async function sessionAdvisoryLock(
   }
   const unlock = async (): Promise<boolean> => {
     const r = await runner.use(async (c) =>
-      c.execute({ text: `select ${advisoryUnlockFn(shared)}($1)`, params: [k.toString()], paramTypes: [20] }),
+      c.execute({
+        text: `select ${advisoryUnlockFn(shared)}($1)`,
+        params: [k.toString()],
+        paramTypes: [20],
+      }),
     )
     const cell = r.rows[0]?.[0]
     return cell === 't' || cell === 'true'

@@ -258,7 +258,9 @@ export class Registry implements CodecRegistry {
         throw new Error(
           `pg-prime: type "${req.name}" is ambiguous on this search_path — it exists in [${candidates
             .map((c) => c.nspname)
-            .join(', ')}]. Qualify it in the schema, e.g. { schema: '${candidates[0]!.nspname}', name: '${req.name}' }.`,
+            .join(
+              ', ',
+            )}]. Qualify it in the schema, e.g. { schema: '${candidates[0]!.nspname}', name: '${req.name}' }.`,
         )
       }
       resolvedRows.set(req, hit)
@@ -332,7 +334,13 @@ export class Registry implements CodecRegistry {
         // `int4[]`, which is the one OID `assertShape` would then compare a live `dataTypeID`
         // against and reject.
         const { arrayOid: _baseArrayOid, ...withoutArrayOid } = base
-        const derived = { ...withoutArrayOid, name: req.name, oid: cat.oid, paramOid: 705, sqlName: sqlNameOf(req) }
+        const derived = {
+          ...withoutArrayOid,
+          name: req.name,
+          oid: cat.oid,
+          paramOid: 705,
+          sqlName: sqlNameOf(req),
+        }
         codec = cat.typarray ? { ...derived, arrayOid: cat.typarray } : derived
       } else {
         throw new Error(

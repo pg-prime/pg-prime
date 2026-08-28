@@ -15,7 +15,13 @@
  * subset of the root's, so `pg-prime/driver` can never say something `pg-prime` does not.
  */
 
-export { PgDriverError, isServerErrorShape, normaliseError, pgDriver, toServerErrorData } from '../driver/index.js'
+export {
+  PgDriverError,
+  isServerErrorShape,
+  normaliseError,
+  pgDriver,
+  toServerErrorData,
+} from '../driver/index.js'
 
 export type {
   PgAcquireOptions,

@@ -209,7 +209,9 @@ export function renameCandidates(diff: DiffResult, desired: SchemaIR): RenameCan
       // Symmetry, the same rule `cascadeRenames` uses: the partner must not be an equally
       // good match for somebody else, or "the only match" is an artifact of the direction
       // the loop happens to run in.
-      const back = drops.filter((d) => eligible(d) && d.id.kind === to.id.kind && d.container === to.container && d.hash === to.hash);
+      const back = drops.filter(
+        (d) => eligible(d) && d.id.kind === to.id.kind && d.container === to.container && d.hash === to.hash,
+      );
       out.push({
         kind: from.id.kind,
         from: from.key,

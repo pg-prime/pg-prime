@@ -165,9 +165,7 @@ describe("migrate checkpoint", () => {
     async () => {
       await makeDatabase(FRESH);
       const url = urlOf(dbConn(FRESH));
-      const r = await runCli([
-        "migrate", "apply", "--config", project.config, "--url", url, "--output", "json",
-      ]);
+      const r = await runCli(["migrate", "apply", "--config", project.config, "--url", url, "--output", "json"]);
       expect(r.code, r.stdout + r.stderr).toBe(EXIT.ok);
       const e = envelopeOf(r);
       expect((e["applied"] as { id: string }[]).map((a) => a.id)).toEqual(["0002_checkpoint", "0003_after"]);
@@ -213,9 +211,7 @@ describe("migrate checkpoint", () => {
       // in for would fail its own gate. "Replay every migration" therefore means every
       // migration of the linear history, which is the one a checkpoint is an alternative
       // to rather than a member of.
-      expect((f["replay"] as { applied: string[] }).applied).toEqual([
-        "0000_init", "0001_evolve", "0003_after",
-      ]);
+      expect((f["replay"] as { applied: string[] }).applied).toEqual(["0000_init", "0001_evolve", "0003_after"]);
 
       const jumped = await cli("migrate", "verify", "--from-checkpoint");
       expect(jumped.code, jumped.stdout + jumped.stderr).toBe(EXIT.ok);

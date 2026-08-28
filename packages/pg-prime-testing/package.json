@@ -1,20 +1,20 @@
 {
   "name": "@pg-prime/testing",
   "version": "0.0.0",
-  "description": "Test helpers for pg-prime: PGlite fast tier and real-Postgres container matrix. Pre-alpha \u2014 not yet usable.",
+  "description": "Test helpers for pg-prime: PGlite fast tier and real-Postgres container matrix. Pre-alpha — not yet usable.",
   "license": "MPL-2.0",
-  "publishConfig": {
-    "access": "public"
-  },
-  "type": "module",
-  "engines": {
-    "node": ">=22"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-prime/pg-prime.git"
   },
   "files": [
     "dist"
   ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/pg-prime/pg-prime.git"
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

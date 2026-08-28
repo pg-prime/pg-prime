@@ -144,8 +144,7 @@ async function provisionShadow(input: ProveInput, clone: string): Promise<Shadow
 /** Replay the CURRENT state into an empty shadow, from the IR we already hold. */
 async function materializeCurrent(input: ProveInput, cloneConn: ConnInfo): Promise<void> {
   const current =
-    input.current ??
-    (await withClient(input.source, (c) => extractCatalog(c, { schemas: input.schemas }))).ir;
+    input.current ?? (await withClient(input.source, (c) => extractCatalog(c, { schemas: input.schemas }))).ir;
   const bootstrap = diffIR(SchemaIR.build([], []), current);
   const ordered = orderStatements(buildStatements(bootstrap, current).statements);
   const statements: PlanStatement[] = ordered.statements.map((s, index) => ({
@@ -153,9 +152,7 @@ async function materializeCurrent(input: ProveInput, cloneConn: ConnInfo): Promi
     index,
     timeouts: { lock: null, statement: null },
   }));
-  const report = await withClient(cloneConn, (client) =>
-    applySegments(client, statements, ordered.segments),
-  );
+  const report = await withClient(cloneConn, (client) => applySegments(client, statements, ordered.segments));
   if (report.status === "failed") {
     throw new Error(
       `shadow materialisation failed at statement ${report.error?.statementIndex}: ` +
@@ -183,8 +180,7 @@ export async function proveOnShadowClone(input: ProveInput): Promise<ProofResult
 
   try {
     if (provisioning === "materialized") await materializeCurrent(input, cloneConn);
-    const stages: readonly ProveStage[] =
-      input.stages ?? [{ statements: input.statements, segments: input.segments }];
+    const stages: readonly ProveStage[] = input.stages ?? [{ statements: input.statements, segments: input.segments }];
     const stageFingerprints: string[] = [];
     let after: Awaited<ReturnType<typeof extractCatalog>> | undefined;
     for (const [index, stage] of stages.entries()) {
@@ -254,8 +250,7 @@ export async function proveOnShadowClone(input: ProveInput): Promise<ProofResult
     // either: silence is exactly what the witness exists to prevent. Opt out
     // with `allowSkippedOracle` when the environment genuinely has no pg_dump.
     const blockedByFailure = dumpOracle.mode === "strict" && dumpOracle.status === "failed";
-    const blockedBySkip =
-      dumpOracle.mode === "strict" && dumpOracle.status === "skipped" && !input.allowSkippedOracle;
+    const blockedBySkip = dumpOracle.mode === "strict" && dumpOracle.status === "skipped" && !input.allowSkippedOracle;
     const blocked = blockedByFailure || blockedBySkip;
     return await fail({
       status: blocked ? "failed" : "passed",
@@ -308,11 +303,7 @@ async function cleanup(adminConn: ConnInfo, clone: string): Promise<void> {
  * wrong schema pattern, permission denied, connection refused, timeout — is `failed`,
  * because those say something about this run and used to be silently swallowed.
  */
-async function runDumpOracle(
-  input: ProveInput,
-  clone: string,
-  serverVersionNum: number,
-): Promise<DumpOracleVerdict> {
+async function runDumpOracle(input: ProveInput, clone: string, serverVersionNum: number): Promise<DumpOracleVerdict> {
   const mode: DumpOracleMode = input.dumpOracle ?? "warn";
   if (mode === "off") return { status: "skipped", mode, reason: "disabled" };
   if (!input.desiredConn) {

@@ -184,7 +184,11 @@ describe("the v1 loop, through the binary, as a role without CREATEDB", () => {
       // The rename came from `.renamedFrom('full_name')`, not from a guess.
       const renames = g["renames"] as { from: string; to: string; source: string }[];
       expect(renames).toContainEqual(
-        expect.objectContaining({ from: "column:public.users.full_name", to: "column:public.users.display_name", source: "annotation" }),
+        expect.objectContaining({
+          from: "column:public.users.full_name",
+          to: "column:public.users.display_name",
+          source: "annotation",
+        }),
       );
       // Exactly one ANNOTATION. On PostgreSQL 18 there is a second entry with
       // `source: "cascade"` — the auto-named NOT NULL constraint `RENAME COLUMN` does not
@@ -222,7 +226,14 @@ describe("the v1 loop, through the binary, as a role without CREATEDB", () => {
       // `verify` needs an ephemeral DATABASE, which the loop role cannot create; the
       // superuser url is what a CI job would use for this step (design/06 §10.2).
       const verify = await runCli([
-        "migrate", "verify", "--config", join(project, "pg-prime.config.ts"), "--url", superUrl, "--output", "json",
+        "migrate",
+        "verify",
+        "--config",
+        join(project, "pg-prime.config.ts"),
+        "--url",
+        superUrl,
+        "--output",
+        "json",
       ]);
       expect(verify.code, verify.stdout + verify.stderr).toBe(EXIT.ok);
       const v = envelopeOf(verify);
@@ -268,7 +279,14 @@ describe("the v1 loop, through the binary, as a role without CREATEDB", () => {
     "apply through a transaction pooler refuses with exit 1 and names the direct port",
     async () => {
       const r = await runCli([
-        "migrate", "apply", "--config", join(project, "pg-prime.config.ts"), "--url", pooler!, "--output", "json",
+        "migrate",
+        "apply",
+        "--config",
+        join(project, "pg-prime.config.ts"),
+        "--url",
+        pooler!,
+        "--output",
+        "json",
       ]);
       expect(r.code, r.stdout + r.stderr).toBe(EXIT.error);
       const e = envelopeOf(r);

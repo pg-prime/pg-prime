@@ -127,13 +127,39 @@ export interface AcknowledgeInput {
  * a destructive change reported as an advisory.
  */
 const HAZARD_SEVERITY: Record<string, "error" | "warn"> = {
-  DS101: "error", DS102: "error", DS103: "error", DS104: "error", DS105: "error", DS106: "error",
-  MF101: "error", MF102: "error", MF103: "error", MF104: "error", MF105: "error", MF106: "error",
-  BC101: "warn", BC102: "warn", BC103: "warn", BC104: "warn",
-  LK101: "warn", LK102: "warn", LK103: "warn", LK104: "warn", LK105: "warn", LK106: "warn",
-  LK107: "warn", LK108: "warn", LK109: "warn", LK110: "warn", LK111: "warn", LK112: "warn",
-  TX101: "error", TX102: "error", TX201: "error",
-  EN101: "error", EN102: "error",
+  DS101: "error",
+  DS102: "error",
+  DS103: "error",
+  DS104: "error",
+  DS105: "error",
+  DS106: "error",
+  MF101: "error",
+  MF102: "error",
+  MF103: "error",
+  MF104: "error",
+  MF105: "error",
+  MF106: "error",
+  BC101: "warn",
+  BC102: "warn",
+  BC103: "warn",
+  BC104: "warn",
+  LK101: "warn",
+  LK102: "warn",
+  LK103: "warn",
+  LK104: "warn",
+  LK105: "warn",
+  LK106: "warn",
+  LK107: "warn",
+  LK108: "warn",
+  LK109: "warn",
+  LK110: "warn",
+  LK111: "warn",
+  LK112: "warn",
+  TX101: "error",
+  TX102: "error",
+  TX201: "error",
+  EN101: "error",
+  EN102: "error",
 };
 
 /** An unknown code is a bug in the emitter, not an advisory — it must not be silent. */
@@ -186,9 +212,7 @@ export function migrationId(seq: number, name: string): string {
     throw new InvalidMigrationIdError(`migration seq must be a non-negative integer, received ${String(seq)}`);
   }
   if (!MIGRATION_NAME.test(name)) {
-    throw new InvalidMigrationIdError(
-      `migration name ${JSON.stringify(name)} must match ${String(MIGRATION_NAME)}`,
-    );
+    throw new InvalidMigrationIdError(`migration name ${JSON.stringify(name)} must match ${String(MIGRATION_NAME)}`);
   }
   return `${String(seq).padStart(4, "0")}_${name}`;
 }
@@ -264,12 +288,11 @@ export function buildPlan(input: BuildPlanInput): Plan {
           blanket,
         };
 
-  const txmode: Plan["txmode"] =
-    input.segments.every((s) => s.transactional)
-      ? input.segments.length > 1
-        ? "segmented"
-        : "transactional"
-      : "none";
+  const txmode: Plan["txmode"] = input.segments.every((s) => s.transactional)
+    ? input.segments.length > 1
+      ? "segmented"
+      : "transactional"
+    : "none";
 
   const id = migrationId(input.seq, input.name);
   const file = `${id}.sql`;

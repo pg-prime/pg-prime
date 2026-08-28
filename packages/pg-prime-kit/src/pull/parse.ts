@@ -301,9 +301,7 @@ export function parseIndexDef(definition: string, _name: string): ParsedIndex | 
   let using: string | null = null;
   const usingMatch = /^USING\s+([A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")*")\s*/.exec(tail);
   if (usingMatch !== null) {
-    using = usingMatch[1]!.startsWith('"')
-      ? usingMatch[1]!.slice(1, -1).replace(/""/g, '"')
-      : usingMatch[1]!;
+    using = usingMatch[1]!.startsWith('"') ? usingMatch[1]!.slice(1, -1).replace(/""/g, '"') : usingMatch[1]!;
     tail = tail.slice(usingMatch[0].length);
   }
 

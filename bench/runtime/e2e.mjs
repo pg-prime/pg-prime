@@ -44,7 +44,8 @@ export function sameValue(a, b) {
 
 function assertSamePair(name, ormOut, rawOut) {
   if (sameValue(ormOut, rawOut)) return
-  const show = (v) => JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? `${x}n` : x)).slice(0, 400)
+  const show = (v) =>
+    JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? `${x}n` : x)).slice(0, 400)
   throw new Error(
     `bench/runtime: the "${name}" pair does not return the same answer, so the ratio would be ` +
       `meaningless.\n  orm: ${show(ormOut)}\n  raw: ${show(rawOut)}`,
@@ -99,8 +100,12 @@ export async function buildCases({ db, api, pool, rawQuery, rawTypes, ns, h }) {
     from generate_series(1, 1200) g
   `)
 
-  const pointUserId = BigInt((await rawQuery(`select id from ${ns}.users order by id limit 1`, []))[0][0])
-  const firstPostId = BigInt((await rawQuery(`select id from ${ns}.posts order by id limit 1`, []))[0][0])
+  const pointUserId = BigInt(
+    (await rawQuery(`select id from ${ns}.users order by id limit 1`, []))[0][0],
+  )
+  const firstPostId = BigInt(
+    (await rawQuery(`select id from ${ns}.posts order by id limit 1`, []))[0][0],
+  )
 
   const disposable = await seedDisposable(pool, ns, 2500)
   let delCursor = 0
@@ -225,7 +230,9 @@ export async function buildCases({ db, api, pool, rawQuery, rawTypes, ns, h }) {
           .executeTakeFirst(),
       raw: async () =>
         handMapUsers(
-          await rawQuery(`select id, email, name from ${ns}.users where id = $1`, [String(pointUserId)]),
+          await rawQuery(`select id, email, name from ${ns}.users where id = $1`, [
+            String(pointUserId),
+          ]),
         )[0],
     },
     {
@@ -307,8 +314,12 @@ export async function buildCases({ db, api, pool, rawQuery, rawTypes, ns, h }) {
           .execute()
           .then((rows) => rows.length),
       raw: async () =>
-        (await rawQuery(`update ${ns}.users set name = $1 where id = $2 returning id`, ['Renamed', String(pointUserId)]))
-          .length,
+        (
+          await rawQuery(`update ${ns}.users set name = $1 where id = $2 returning id`, [
+            'Renamed',
+            String(pointUserId),
+          ])
+        ).length,
     },
     {
       name: 'delete by PK',
@@ -325,7 +336,11 @@ export async function buildCases({ db, api, pool, rawQuery, rawTypes, ns, h }) {
           .execute()
           .then((rows) => rows.length),
       raw: async () =>
-        (await rawQuery(`delete from ${ns}.comments where id = $1 returning id`, [String(nextDisposable())])).length,
+        (
+          await rawQuery(`delete from ${ns}.comments where id = $1 returning id`, [
+            String(nextDisposable()),
+          ])
+        ).length,
       /** Both sides consume a different id, so only the row COUNT is comparable. */
       compare: 'count',
     },

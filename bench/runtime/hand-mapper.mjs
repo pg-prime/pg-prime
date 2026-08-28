@@ -111,13 +111,22 @@ const INT8_TEXT = /^-?\d+$/
  * field by field, never handed to `Date`'s parser, and truncated to millisecond resolution because
  * that is all a JavaScript `Date` has.
  */
-const TSTZ = /^(\d{4,})-(\d\d)-(\d\d)[ T](\d\d):(\d\d):(\d\d)(?:\.(\d+))?(?:(Z)|([+-])(\d\d)(?::?(\d\d))?)?$/
+const TSTZ =
+  /^(\d{4,})-(\d\d)-(\d\d)[ T](\d\d):(\d\d):(\d\d)(?:\.(\d+))?(?:(Z)|([+-])(\d\d)(?::?(\d\d))?)?$/
 
 function parseTstz(raw) {
   const m = TSTZ.exec(raw)
   if (m === null) throw new Error(`not a timestamptz: ${raw}`)
   const ms = m[7] ? Number(m[7].padEnd(6, '0').slice(0, 3)) : 0
-  let t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]), ms)
+  let t = Date.UTC(
+    Number(m[1]),
+    Number(m[2]) - 1,
+    Number(m[3]),
+    Number(m[4]),
+    Number(m[5]),
+    Number(m[6]),
+    ms,
+  )
   if (m[8] === undefined && m[9] !== undefined) {
     const off = (Number(m[10]) * 3600 + Number(m[11] ?? 0) * 60) * (m[9] === '-' ? -1 : 1)
     t -= off * 1000
@@ -133,7 +142,8 @@ export function handMapRowsChecked(rows) {
     if (!INT8_TEXT.test(r[0])) throw new Error(`not an int8: ${r[0]}`)
     if (!INT8_TEXT.test(r[1])) throw new Error(`not an int8: ${r[1]}`)
     const commentId = r[10]
-    if (commentId !== null && !INT8_TEXT.test(commentId)) throw new Error(`not an int8: ${commentId}`)
+    if (commentId !== null && !INT8_TEXT.test(commentId))
+      throw new Error(`not an int8: ${commentId}`)
     out[i] = {
       id: BigInt(r[0]),
       authorId: BigInt(r[1]),

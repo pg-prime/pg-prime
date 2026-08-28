@@ -50,17 +50,11 @@ describe("multi-schema lifecycle", () => {
       const at = (re: RegExp): number => sql.findIndex((s) => re.test(s));
       expect(at(/CREATE SCHEMA IF NOT EXISTS "app"/)).toBeLessThan(at(/CREATE TYPE "app"\."plan_tier"/));
       expect(at(/CREATE TYPE "app"\."plan_tier"/)).toBeLessThan(at(/CREATE TABLE "app"\."tenants"/));
-      expect(at(/CREATE SCHEMA IF NOT EXISTS "billing"/)).toBeLessThan(
-        at(/CREATE TABLE "billing"\."invoices"/),
-      );
+      expect(at(/CREATE SCHEMA IF NOT EXISTS "billing"/)).toBeLessThan(at(/CREATE TABLE "billing"\."invoices"/));
       // the cross-schema FK lands after the uniqueness guarantee it references
-      expect(at(/ADD CONSTRAINT "tenants_pkey"/)).toBeLessThan(
-        at(/ADD CONSTRAINT "invoices_tenant_id_fkey"/),
-      );
+      expect(at(/ADD CONSTRAINT "tenants_pkey"/)).toBeLessThan(at(/ADD CONSTRAINT "invoices_tenant_id_fkey"/));
 
-      const report = await withClient(target, (c) =>
-        applySegments(c, result.plan.statements, result.plan.segments),
-      );
+      const report = await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
       expect(report.error).toBeUndefined();
       const after = await withClient(target, (c) => extractCatalog(c, { schemas: SCHEMAS }));
       expect(diffIR(after.ir, result.desiredIR).deltas).toEqual([]);
@@ -90,21 +84,13 @@ describe("multi-schema lifecycle", () => {
       expect(at(/DROP TABLE IF EXISTS "billing"\."invoices"/)).toBeLessThan(
         at(/DROP TABLE IF EXISTS "app"\."tenants"/),
       );
-      expect(at(/DROP TABLE IF EXISTS "app"\."tenants"/)).toBeLessThan(
-        at(/DROP TYPE IF EXISTS "app"\."plan_tier"/),
-      );
-      expect(at(/DROP TYPE IF EXISTS "app"\."plan_tier"/)).toBeLessThan(
-        at(/DROP SCHEMA IF EXISTS "app"/),
-      );
-      expect(at(/DROP TABLE IF EXISTS "billing"\."invoices"/)).toBeLessThan(
-        at(/DROP SCHEMA IF EXISTS "billing"/),
-      );
+      expect(at(/DROP TABLE IF EXISTS "app"\."tenants"/)).toBeLessThan(at(/DROP TYPE IF EXISTS "app"\."plan_tier"/));
+      expect(at(/DROP TYPE IF EXISTS "app"\."plan_tier"/)).toBeLessThan(at(/DROP SCHEMA IF EXISTS "app"/));
+      expect(at(/DROP TABLE IF EXISTS "billing"\."invoices"/)).toBeLessThan(at(/DROP SCHEMA IF EXISTS "billing"/));
       expect(result.plan.hazards.some((h) => h.code === "DS101")).toBe(true);
       expect(result.plan.hazards.some((h) => h.code === "DS102")).toBe(true);
 
-      const report = await withClient(target, (c) =>
-        applySegments(c, result.plan.statements, result.plan.segments),
-      );
+      const report = await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
       expect(report.error).toBeUndefined();
       const after = await withClient(target, (c) => extractCatalog(c, { schemas: SCHEMAS }));
       expect(after.ir.fingerprint).toBe(result.desiredIR.fingerprint);

@@ -141,9 +141,7 @@ export async function proveInTempSchemas(input: TempSchemaProveInput): Promise<P
     const bootstrap = diffIR(SchemaIR.build([], []), current2);
     const boot = splitStages(buildStatements(bootstrap, current2).statements);
     for (const file of boot.files) {
-      const report = await withClient(input.target, (c) =>
-        applySegments(c, indexed(file.statements), file.segments),
-      );
+      const report = await withClient(input.target, (c) => applySegments(c, indexed(file.statements), file.segments));
       if (report.status === "failed") {
         return done({
           status: "failed",
@@ -168,9 +166,7 @@ export async function proveInTempSchemas(input: TempSchemaProveInput): Promise<P
       ...(input.strictUnmodeled === undefined ? {} : { strictUnmodeled: input.strictUnmodeled }),
       ...(input.diagnostics === undefined ? {} : { diagnostics: input.diagnostics }),
     });
-    const shadowPlan = splitStages(
-      buildStatements(shadowDiff, desired2, input.buildOptions ?? {}).statements,
-    );
+    const shadowPlan = splitStages(buildStatements(shadowDiff, desired2, input.buildOptions ?? {}).statements);
     if (input.expectedStages !== undefined) {
       const got = shadowPlan.files.map((f) => f.statements.length);
       const want = [...input.expectedStages];
@@ -189,9 +185,7 @@ export async function proveInTempSchemas(input: TempSchemaProveInput): Promise<P
 
     const stageFingerprints: string[] = [];
     for (const [i, file] of shadowPlan.files.entries()) {
-      const report = await withClient(input.target, (c) =>
-        applySegments(c, indexed(file.statements), file.segments),
-      );
+      const report = await withClient(input.target, (c) => applySegments(c, indexed(file.statements), file.segments));
       if (report.status === "failed") {
         return done({
           status: "failed",
@@ -203,7 +197,9 @@ export async function proveInTempSchemas(input: TempSchemaProveInput): Promise<P
             `statement ${report.error?.statementIndex}: ${report.error?.message} — ${report.error?.sql}`,
         });
       }
-      const extracted = await withClient(input.target, (c) => extractCatalog(c, { schemas: shadowSchemas, observe: false }));
+      const extracted = await withClient(input.target, (c) =>
+        extractCatalog(c, { schemas: shadowSchemas, observe: false }),
+      );
       stageFingerprints.push(remapIr(extracted.ir, reverse).fingerprint);
     }
 
@@ -332,7 +328,13 @@ async function runDumpOracle(
     const cmp = compareDumps(unshadow(proofDump, proofMap), unshadow(desiredDump, desiredMap));
     const reordered = cmp.reordered.length > 0 ? { reordered: cmp.reordered } : {};
     if (cmp.equal) {
-      return { status: "passed", mode, pgDumpVersion: pgDump.version, statementCount: cmp.statementCount, ...reordered };
+      return {
+        status: "passed",
+        mode,
+        pgDumpVersion: pgDump.version,
+        statementCount: cmp.statementCount,
+        ...reordered,
+      };
     }
     return {
       status: "failed",

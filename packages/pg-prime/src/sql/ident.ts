@@ -201,9 +201,7 @@ export function quoteStringLiteral(s: string): string {
   // The package's own hierarchy, with a `code`, rather than TypeError/RangeError: a consumer
   // catching `PgPrimeError` should not have to know that one quoter throws host errors.
   if (typeof s !== 'string') {
-    throw new UnsafeLiteralError(
-      `quoteStringLiteral: expected a string, received ${typeof s}`,
-    )
+    throw new UnsafeLiteralError(`quoteStringLiteral: expected a string, received ${typeof s}`)
   }
   if (hasNul(s)) {
     throw new UnsafeLiteralError(

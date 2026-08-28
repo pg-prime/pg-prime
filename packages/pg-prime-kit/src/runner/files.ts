@@ -134,7 +134,13 @@ export function findDirectives(text: string): Hit[] {
       if (m) {
         // `line` is derived rather than counted alongside: the lexer walks bytes, not lines.
         const line = text.slice(0, offset).split("\n").length;
-        hits.push({ name: m[1]!.toLowerCase(), args: (m[2] ?? "").trim(), start: offset, end: offset + seg.text.length, line });
+        hits.push({
+          name: m[1]!.toLowerCase(),
+          args: (m[2] ?? "").trim(),
+          start: offset,
+          end: offset + seg.text.length,
+          line,
+        });
       }
     }
     offset += seg.text.length;
@@ -207,7 +213,12 @@ function parseBatch(args: string, subject: string, line: number, diagnostics: Di
 }
 
 const LOCK_CLASSES = new Set<string>([
-  "accessExclusive", "shareRowExclusive", "share", "shareUpdateExclusive", "rowExclusive", "none",
+  "accessExclusive",
+  "shareRowExclusive",
+  "share",
+  "shareUpdateExclusive",
+  "rowExclusive",
+  "none",
 ]);
 
 function parseStmtFlags(args: string): { index: number; lockClass: LockClass; idempotent: boolean; hazards: string[] } {
@@ -467,7 +478,11 @@ export async function readMigrationsDir(dir: string): Promise<ReadMigrationsResu
 
     const txmode: TxMode = plan?.txmode ?? parsed.directives.txmode ?? "transactional";
     files.push({
-      id, seq, name, path, planPath,
+      id,
+      seq,
+      name,
+      path,
+      planPath,
       checksum: checksumOf(bytes),
       text,
       directives: parsed.directives,
@@ -479,7 +494,7 @@ export async function readMigrationsDir(dir: string): Promise<ReadMigrationsResu
     });
   }
 
-  files.sort((a, b) => (a.seq - b.seq) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  files.sort((a, b) => a.seq - b.seq || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return { files, diagnostics };
 }
 
@@ -517,7 +532,10 @@ export function executionPlan(file: MigrationFile): ExecutionPlan {
       sql: s.sql,
       verb: "alter",
       kind: "unknown",
-      produces: [], consumes: [], destroys: [], releases: [],
+      produces: [],
+      consumes: [],
+      destroys: [],
+      releases: [],
       transactionality: file.txmode === "none" ? "nonTransactional" : "transactional",
       lockClass: s.lockClass,
       idempotent: s.idempotent,

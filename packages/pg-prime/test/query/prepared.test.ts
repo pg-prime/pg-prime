@@ -13,10 +13,9 @@ import { describe, expect, it, vi } from 'vitest'
 const spies = vi.hoisted(() => ({ compiles: 0, decoders: 0 }))
 
 vi.mock('../../src/compile/compiler.js', async () => {
-  const actual =
-    await vi.importActual<typeof import('../../src/compile/compiler.js')>(
-      '../../src/compile/compiler.js',
-    )
+  const actual = await vi.importActual<typeof import('../../src/compile/compiler.js')>(
+    '../../src/compile/compiler.js',
+  )
   return {
     ...actual,
     compile: (...args: Parameters<typeof actual.compile>) => {
@@ -27,10 +26,9 @@ vi.mock('../../src/compile/compiler.js', async () => {
 })
 
 vi.mock('../../src/compile/decode.js', async () => {
-  const actual =
-    await vi.importActual<typeof import('../../src/compile/decode.js')>(
-      '../../src/compile/decode.js',
-    )
+  const actual = await vi.importActual<typeof import('../../src/compile/decode.js')>(
+    '../../src/compile/decode.js',
+  )
   return {
     ...actual,
     buildDecoder: (...args: Parameters<typeof actual.buildDecoder>) => {
@@ -40,7 +38,8 @@ vi.mock('../../src/compile/decode.js', async () => {
   }
 })
 
-const { int8Codec, numericCodec, textCodec, varcharCodec } = await import('../../src/codec/index.js')
+const { int8Codec, numericCodec, textCodec, varcharCodec } =
+  await import('../../src/codec/index.js')
 const type = await import('../../src/codec/types.js')
 const { pgPrime } = await import('../../src/query/run.js')
 const q = await import('../../src/query/types.js')
@@ -96,7 +95,10 @@ describe('.prepare() compiles once and re-encodes per execution', () => {
 
   it('the artifact is frozen: `compile()` is the same object every time', () => {
     const db = pgPrime({ driver: mockDriver(), schema })
-    const p = db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })).prepare()
+    const p = db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .prepare()
     expect(p.compile()).toBe(p.compile())
   })
 })
@@ -135,7 +137,11 @@ describe('placeholders and `$n`', () => {
     const driver = mockDriver()
     const p = build(pgPrime({ driver, schema }))
     await expect(
-      p.execute({ min: '1', author: 1n } as never as { min: string; author: bigint; title: string }),
+      p.execute({ min: '1', author: 1n } as never as {
+        min: string
+        author: bigint
+        title: string
+      }),
     ).rejects.toThrow(/placeholder "title"/)
     expect(driver.log).toStrictEqual([])
   })

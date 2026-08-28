@@ -203,20 +203,18 @@ const CASES: Readonly<Record<string, Case>> = {
 
   // ── net: THE SAME TOKENS as range, read the other way round ──────────────
   containsNet: c(() => q.containsNet(net, '10.0.0.0/8'), '("u"."name") >> $1', ['10.0.0.0/8']),
-  containedByNet: c(() => q.containedByNet(net, '10.0.0.0/8'), '("u"."name") << $1', ['10.0.0.0/8']),
+  containedByNet: c(() => q.containedByNet(net, '10.0.0.0/8'), '("u"."name") << $1', [
+    '10.0.0.0/8',
+  ]),
   overlapsNet: c(() => q.overlapsNet(net, '10.0.0.0/8'), '("u"."name") && $1', ['10.0.0.0/8']),
 
   // ── boolean / ordering ───────────────────────────────────────────────────
-  and: c(
-    () => q.and(q.eq(u.name, 'a'), q.isNull(u.at)),
-    '("u"."name" = $1 and "u"."at" is null)',
-    ['a'],
-  ),
-  or: c(
-    () => q.or(q.eq(u.name, 'a'), q.isNull(u.at)),
-    '("u"."name" = $1 or "u"."at" is null)',
-    ['a'],
-  ),
+  and: c(() => q.and(q.eq(u.name, 'a'), q.isNull(u.at)), '("u"."name" = $1 and "u"."at" is null)', [
+    'a',
+  ]),
+  or: c(() => q.or(q.eq(u.name, 'a'), q.isNull(u.at)), '("u"."name" = $1 or "u"."at" is null)', [
+    'a',
+  ]),
   not: c(() => q.not(q.isNull(u.at)), 'not ("u"."at" is null)'),
   isTrue: c(() => q.isTrue(u.ok), '"u"."ok" is true'),
   isNotTrue: c(() => q.isNotTrue(u.ok), '"u"."ok" is not true'),

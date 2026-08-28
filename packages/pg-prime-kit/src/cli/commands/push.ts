@@ -29,10 +29,25 @@ import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js
 
 export const PUSH_OPTIONS: readonly OptionSpec[] = [
   { name: "dev", type: "boolean", describe: "REQUIRED. There is no config key and no default for this." },
-  { name: "allow-data-loss", type: "boolean", describe: "acknowledge destructive changes; never remembered between runs" },
-  { name: "prod-pattern", type: "string", placeholder: "regex", describe: "refuse when the connection matches", defaultText: "prod|production|live" },
+  {
+    name: "allow-data-loss",
+    type: "boolean",
+    describe: "acknowledge destructive changes; never remembered between runs",
+  },
+  {
+    name: "prod-pattern",
+    type: "string",
+    placeholder: "regex",
+    describe: "refuse when the connection matches",
+    defaultText: "prod|production|live",
+  },
   { name: "dry-run", type: "boolean", describe: "print the statements that would be applied; apply nothing" },
-  { name: "shadow", type: "string", placeholder: "url|temp-schema|createdb", describe: "how the desired state is normalized" },
+  {
+    name: "shadow",
+    type: "string",
+    placeholder: "url|temp-schema|createdb",
+    describe: "how the desired state is normalized",
+  },
 ];
 
 const DEFAULT_PROD = "prod|production|live";
@@ -157,7 +172,9 @@ export async function runPush(config: ResolvedConfig, argv: ParseResult): Promis
     }
     const plan = result.files[0]?.plan;
     if (!plan) return refuse("the diff produced no plan");
-    hazards = plan.hazards.filter((h) => h.severity === "error" && !h.acknowledged).map((h) => ({ code: h.code, subject: h.subject }));
+    hazards = plan.hazards
+      .filter((h) => h.severity === "error" && !h.acknowledged)
+      .map((h) => ({ code: h.code, subject: h.subject }));
     statements = plan.statements;
     if (hazards.length > 0) {
       return refuse(
@@ -181,11 +198,7 @@ export async function runPush(config: ResolvedConfig, argv: ParseResult): Promis
           statements: statements.map((s) => s.sql),
           error: null,
         },
-        text: [
-          banner(`push --dev → ${subject}  (DRY RUN)`),
-          "",
-          ...statements.map((s) => `${s.sql};`),
-        ].join("\n"),
+        text: [banner(`push --dev → ${subject}  (DRY RUN)`), "", ...statements.map((s) => `${s.sql};`)].join("\n"),
       };
     }
 
@@ -234,7 +247,10 @@ export async function runPush(config: ResolvedConfig, argv: ParseResult): Promis
         "and no history row was recorded — this database is now ahead of your repository.",
         "",
         pairs([["schemas", config.schemas.join(", ")]]),
-        bullets("statements:", statements.slice(0, 20).map((s) => s.sql)),
+        bullets(
+          "statements:",
+          statements.slice(0, 20).map((s) => s.sql),
+        ),
       ]
         .filter((l) => l !== "")
         .join("\n"),

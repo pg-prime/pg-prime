@@ -75,7 +75,7 @@ describe("concurrent deploys", () => {
         expect(envelope["status"]).toBe("locked");
         expect(envelope["exitCode"]).toBe(EXIT.locked);
         expect((envelope["error"] as { code: string }).code).toBe("lock_unavailable");
-        expect((envelope["pending"] as string[])).toEqual(["0001_sleeper"]);
+        expect(envelope["pending"] as string[]).toEqual(["0001_sleeper"]);
         const lock = envelope["lock"] as { acquired: boolean; holder: { holder: string } | null };
         expect(lock.acquired).toBe(false);
         expect(lock.holder?.holder).toMatch(/:\d+$/);
@@ -101,7 +101,18 @@ describe("concurrent deploys", () => {
       const database = "pgprime_k1_lock_c";
       await makeDatabase(database);
       const conn = dbConn(database);
-      const winner = spawnCli(["migrate", "apply", "--url", urlOf(conn), "--migrations", dir, "--heartbeat", "200ms", "--output", "json"]);
+      const winner = spawnCli([
+        "migrate",
+        "apply",
+        "--url",
+        urlOf(conn),
+        "--migrations",
+        dir,
+        "--heartbeat",
+        "200ms",
+        "--output",
+        "json",
+      ]);
       try {
         await waitFor("the winner's lease row", () => leaseHeld(conn), 30_000);
         const beats = new Set<string>();
@@ -113,7 +124,9 @@ describe("concurrent deploys", () => {
         }
         // The one bare statement is `pg_sleep(3)`, so every beat above happened while the
         // migration connection was busy.
-        expect(beats.size, `heartbeat_at values seen while pg_sleep(3) ran: ${[...beats].join(", ")}`).toBeGreaterThan(3);
+        expect(beats.size, `heartbeat_at values seen while pg_sleep(3) ran: ${[...beats].join(", ")}`).toBeGreaterThan(
+          3,
+        );
       } finally {
         expect(await winner.done, winner.output()).toBe(EXIT.ok);
         await destroyDatabase(database).catch(() => undefined);

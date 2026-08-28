@@ -162,7 +162,12 @@ function buildGroupPlan(
   // `witnesses` and its plan is byte-identical to what it was before.
   return Object.freeze(
     nullable
-      ? { items: Object.freeze(items), nullable, sentinel, witnesses: groupWitnesses(refs, leftJoined) }
+      ? {
+          items: Object.freeze(items),
+          nullable,
+          sentinel,
+          witnesses: groupWitnesses(refs, leftJoined),
+        }
       : { items: Object.freeze(items), nullable, sentinel },
   )
 }
@@ -288,8 +293,7 @@ export function projectionItem(
   if (isGroup(v)) {
     // With nothing left-joined, the eagerly-built plan already assumed exactly that, at every
     // depth — so the common case rebuilds nothing.
-    const plan =
-      leftJoined.size === 0 ? v.plan : buildGroupPlan(v.source, v.nullable, leftJoined)
+    const plan = leftJoined.size === 0 ? v.plan : buildGroupPlan(v.source, v.nullable, leftJoined)
     return groupItem(key, plan)
   }
   if (isNested(v)) return nestedItem(key, v.plan)

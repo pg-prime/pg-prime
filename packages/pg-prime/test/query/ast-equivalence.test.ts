@@ -30,7 +30,14 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { arrayCodecOf, int4Codec, int8Codec, numericCodec, textCodec, varcharCodec } from '../../src/codec/index.js'
+import {
+  arrayCodecOf,
+  int4Codec,
+  int8Codec,
+  numericCodec,
+  textCodec,
+  varcharCodec,
+} from '../../src/codec/index.js'
 import type { Statement } from '../../src/compile/ast.js'
 import { compile } from '../../src/compile/compiler.js'
 import {
@@ -55,14 +62,7 @@ import {
 import { sql, toNode } from '../../src/sql/fragment.js'
 import * as q from '../../src/query/types.js'
 import { compileOnly } from '../../src/query/run.js'
-import {
-  p,
-  postsFrom,
-  u,
-  usersCols,
-  usersFrom,
-  usersTable,
-} from '../sql/_helpers.js'
+import { p, postsFrom, u, usersCols, usersFrom, usersTable } from '../sql/_helpers.js'
 import { schema } from './_schema.js'
 
 const db = compileOnly(schema)
@@ -232,7 +232,10 @@ describe('select.test.ts — every hand-built tree, from the builder', () => {
   it('in (subquery)', () => {
     assertSame(
       from().where(({ posts: t }) =>
-        q.inQuery(t.authorId, db.from(schema.h.users).select(({ users: x }) => ({ id: x.id }))),
+        q.inQuery(
+          t.authorId,
+          db.from(schema.h.users).select(({ users: x }) => ({ id: x.id })),
+        ),
       ) as unknown as Built,
       pred(
         (() => {
@@ -245,7 +248,9 @@ describe('select.test.ts — every hand-built tree, from the builder', () => {
 
   it('a sql fragment is a first-class predicate', () => {
     assertSame(
-      from().where(({ posts: t }) => q.and(q.isTrue(t.published), sql`a or b`.asUnsafe<boolean>())) as unknown as Built,
+      from().where(({ posts: t }) =>
+        q.and(q.isTrue(t.published), sql`a or b`.asUnsafe<boolean>()),
+      ) as unknown as Built,
       pred(and(isTrueNode(p('published')), toNode(sql`a or b`))),
     )
   })
@@ -307,7 +312,12 @@ describe('select.test.ts — every hand-built tree, from the builder', () => {
         projection: [projection('a', u('id')), projection('b', u('id', 'u2'))],
         from: usersFrom,
         joins: [
-          { k: 'join', type: 'inner', item: table(usersTable, 'u2'), on: eqNode(u('id'), u('id', 'u2')) },
+          {
+            k: 'join',
+            type: 'inner',
+            item: table(usersTable, 'u2'),
+            on: eqNode(u('id'), u('id', 'u2')),
+          },
         ],
       }),
     )
@@ -425,7 +435,9 @@ describe('insert.test.ts — every hand-built tree, from the builder', () => {
 
   it('no RETURNING => a void shape', () => {
     assertSame(
-      db.insertInto(schema.h.users).values({ email: 'a@b.c', name: 'A', role: 'r' }) as unknown as Built,
+      db
+        .insertInto(schema.h.users)
+        .values({ email: 'a@b.c', name: 'A', role: 'r' }) as unknown as Built,
       insert({ into, columns: cols, source: { k: 'values', rows: [row('a@b.c', 'A', 'r')] } }),
     )
   })

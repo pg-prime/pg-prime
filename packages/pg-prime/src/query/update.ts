@@ -176,7 +176,12 @@ export class UpdateBuilder {
         ? unnestValues(alias, keys, codecs, rows, this.s.ctx)
         : literalValues(alias, keys, codecs, rows)
     const handle = { [NAME]: alias, $: derivedRuntime(alias) }
-    registerDerived(handle, alias, EMPTY_QUERY, keys.map((k) => ({ key: k, codec: codecs[k] as AnyCodec })))
+    registerDerived(
+      handle,
+      alias,
+      EMPTY_QUERY,
+      keys.map((k) => ({ key: k, codec: codecs[k] as AnyCodec })),
+    )
     const sources = Object.freeze({ ...this.s.sources, [alias]: handle })
     return this.#next({
       from: [...this.s.from, item],
@@ -192,7 +197,10 @@ export class UpdateBuilder {
 
   returningAll(): UpdateBuilder {
     return this.#next({
-      returning: compileProjection(allOf(this.s.scope[this.s.target.alias] as RefScope), NO_LEFT_JOINS),
+      returning: compileProjection(
+        allOf(this.s.scope[this.s.target.alias] as RefScope),
+        NO_LEFT_JOINS,
+      ),
     })
   }
 
@@ -264,7 +272,8 @@ function literalValues(
     casts: keys.map((k) => (codecs[k] as AnyCodec).sqlName),
     rows: rows.map((row, r) =>
       keys.map((k) => {
-        if (!(k in row)) throw new BuilderError(`pg-prime: row ${r} of fromValues() does not set "${k}".`)
+        if (!(k in row))
+          throw new BuilderError(`pg-prime: row ${r} of fromValues() does not set "${k}".`)
         return param(row[k], codecs[k] as AnyCodec) as Node
       }),
     ),
@@ -288,7 +297,8 @@ function unnestValues(
       const codec = codecs[k] as AnyCodec
       const arrayCodec = arrayCodecOf(codec, ctx.registry)
       const values = rows.map((row, r) => {
-        if (!(k in row)) throw new BuilderError(`pg-prime: row ${r} of fromValues() does not set "${k}".`)
+        if (!(k in row))
+          throw new BuilderError(`pg-prime: row ${r} of fromValues() does not set "${k}".`)
         return row[k]
       })
       return cast(param(values, arrayCodec), `${codec.sqlName}[]`, arrayCodec)

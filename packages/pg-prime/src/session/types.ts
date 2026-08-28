@@ -8,7 +8,12 @@
  */
 
 import type { Compiled } from '../compile/contract.js'
-import type { ExplainOptions, ExplainResult, StatementMode, StreamOptions } from '../query/executor.js'
+import type {
+  ExplainOptions,
+  ExplainResult,
+  StatementMode,
+  StreamOptions,
+} from '../query/executor.js'
 
 /**
  * `Symbol.asyncDispose`, declared so that a consumer **without** `lib: esnext.disposable` still
@@ -25,7 +30,9 @@ import type { ExplainOptions, ExplainResult, StatementMode, StreamOptions } from
  * to `never`, the mapped type contributes no member, and the declaration still compiles. The
  * runtime is unaffected either way — `end()` is always there and is the same function.
  */
-export type AsyncDisposeKey = typeof Symbol extends { readonly asyncDispose: infer S extends symbol }
+export type AsyncDisposeKey = typeof Symbol extends {
+  readonly asyncDispose: infer S extends symbol
+}
   ? S
   : never
 

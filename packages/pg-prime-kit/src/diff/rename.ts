@@ -173,7 +173,11 @@ function payloadAgrees(a: Payload, b: Payload, renames: RenameMap): boolean {
  * on the CURRENT side and the new id does not (the `renamedFrom` firing rule
  * from design/05); anything else is rejected with a reason rather than guessed.
  */
-export function applyRenameHints(current: SchemaIR, desired: SchemaIR, hints: readonly RenameHint[]): RenameApplication {
+export function applyRenameHints(
+  current: SchemaIR,
+  desired: SchemaIR,
+  hints: readonly RenameHint[],
+): RenameApplication {
   const accepted: RenameRecord[] = [];
   const rejected: { hint: RenameHint; reason: string }[] = [];
   let facts = current.facts();
@@ -225,9 +229,7 @@ export function applyRenameHints(current: SchemaIR, desired: SchemaIR, hints: re
       return { ...f, id, ...(parent ? { parent } : {}) };
     });
     originOf = nextOrigin;
-    edges = edges.map(
-      (e): DependencyEdge => ({ ...e, from: remapId(e.from, from, to), to: remapId(e.to, from, to) }),
-    );
+    edges = edges.map((e): DependencyEdge => ({ ...e, from: remapId(e.from, from, to), to: remapId(e.to, from, to) }));
 
     accepted.push({
       kind: from.kind,
@@ -318,8 +320,7 @@ function cascadeRenames(
 ): CascadeRename[] {
   const onAffectedTable = (f: Fact): boolean =>
     f.parent?.kind === "table" && affectedTables.has(`${f.parent.schema}.${f.parent.name}`);
-  const eligible = (f: Fact): boolean =>
-    (f.id.kind === "constraint" || f.id.kind === "index") && onAffectedTable(f);
+  const eligible = (f: Fact): boolean => (f.id.kind === "constraint" || f.id.kind === "index") && onAffectedTable(f);
 
   const currentKeys = new Set(facts.map((f) => encodeId(f.id)));
   const currentOnly = facts.filter((f) => eligible(f) && !desired.has(f.id));

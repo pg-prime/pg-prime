@@ -72,12 +72,67 @@ export interface EmitTsOptions {
 /* ------------------------------ identifiers ------------------------------- */
 
 const RESERVED = new Set([
-  "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do",
-  "else", "enum", "export", "extends", "false", "finally", "for", "function", "if", "import",
-  "in", "instanceof", "new", "null", "return", "super", "switch", "this", "throw", "true", "try",
-  "typeof", "var", "void", "while", "with", "let", "static", "yield", "await", "implements",
-  "interface", "package", "private", "protected", "public", "as", "any", "boolean", "constructor",
-  "declare", "get", "module", "require", "number", "set", "string", "symbol", "type", "from", "of",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "enum",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "new",
+  "null",
+  "return",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "var",
+  "void",
+  "while",
+  "with",
+  "let",
+  "static",
+  "yield",
+  "await",
+  "implements",
+  "interface",
+  "package",
+  "private",
+  "protected",
+  "public",
+  "as",
+  "any",
+  "boolean",
+  "constructor",
+  "declare",
+  "get",
+  "module",
+  "require",
+  "number",
+  "set",
+  "string",
+  "symbol",
+  "type",
+  "from",
+  "of",
 ]);
 
 /** `film_actor` → `filmActor`, `"Order Details"` → `orderDetails`, `2fast` → `_2fast`. */
@@ -88,7 +143,9 @@ export function camel(name: string): string {
   // An already-camelCased or PascalCased source is left alone apart from its first letter:
   // `BusinessEntityID` must not become `businessentityid`.
   const first = /[a-z]/.test(head) ? `${head.charAt(0).toLowerCase()}${head.slice(1)}` : head.toLowerCase();
-  const rest = parts.slice(1).map((p) => `${p.charAt(0).toUpperCase()}${/[a-z]/.test(p) ? p.slice(1) : p.slice(1).toLowerCase()}`);
+  const rest = parts
+    .slice(1)
+    .map((p) => `${p.charAt(0).toUpperCase()}${/[a-z]/.test(p) ? p.slice(1) : p.slice(1).toLowerCase()}`);
   const out = [first, ...rest].join("");
   return /^[0-9]/.test(out) ? `_${out}` : out;
 }
@@ -259,7 +316,9 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       .map((c) => lit(idName(c.id)));
     const schema = (f.id as { schema: string }).schema;
     const opts = schema === "public" ? "" : `, { schema: ${lit(schema)} }`;
-    body.push(`export const ${enumConst.get(qualified(f.id))!} = pgEnum(${lit(idName(f.id))}, [${labels.join(", ")}]${opts})`);
+    body.push(
+      `export const ${enumConst.get(qualified(f.id))!} = pgEnum(${lit(idName(f.id))}, [${labels.join(", ")}]${opts})`,
+    );
     bump("enum");
   }
   if (enumFacts.length > 0) body.push("");
@@ -284,13 +343,19 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       const rest = space === -1 ? "" : c.slice(space + 1);
       const parsed = parseConstraintDef("c", rest);
       if (parsed === null || parsed.kind !== "check") {
-        drop("domain check", `${qualified(f.id)}.${name}`, `pg_get_constraintdef could not be mapped to the DSL: ${rest}`);
+        drop(
+          "domain check",
+          `${qualified(f.id)}.${name}`,
+          `pg_get_constraintdef could not be mapped to the DSL: ${rest}`,
+        );
         continue;
       }
       checks.push({ name, expression: parsed.expression });
     }
     if (checks.length > 0) {
-      opts.push(`checks: [${checks.map((c) => `{ name: ${lit(c.name)}, expression: ${lit(c.expression)} }`).join(", ")}]`);
+      opts.push(
+        `checks: [${checks.map((c) => `{ name: ${lit(c.name)}, expression: ${lit(c.expression)} }`).join(", ")}]`,
+      );
     }
     body.push(
       `export const ${domainConst.get(qualified(f.id))!} = pgDomain(${lit(idName(f.id))}, ${lit(p.baseType ?? "text")}` +
@@ -321,7 +386,9 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
         opts.push(`ownedBy: { ${bits.join(", ")} }`);
       }
     }
-    body.push(`export const ${sequenceConst.get(qualified(f.id))!} = pgSequence(${lit(idName(f.id))}, { ${opts.join(", ")} })`);
+    body.push(
+      `export const ${sequenceConst.get(qualified(f.id))!} = pgSequence(${lit(idName(f.id))}, { ${opts.join(", ")} })`,
+    );
     bump("sequence");
   }
   if (sequenceFacts.length > 0) body.push("");
@@ -363,7 +430,10 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
   if (needsSql) imports.push("import { sql } from 'pg-prime/sql'");
 
   return {
-    ts: [...header, ...unsupportedBlock, ...imports, "", ...body].join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "\n"),
+    ts: [...header, ...unsupportedBlock, ...imports, "", ...body]
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/\n+$/, "\n"),
     unsupported,
     counts,
   };
@@ -438,8 +508,7 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       extras.unshift(`comment(${lit(comment)})`);
     }
 
-    const extrasArg =
-      extras.length === 0 ? "" : `, (t) => [\n${extras.map((e) => `  ${e},`).join("\n")}\n]`;
+    const extrasArg = extras.length === 0 ? "" : `, (t) => [\n${extras.map((e) => `  ${e},`).join("\n")}\n]`;
     return `export const ${constName} = ${factory}(${lit(table)}, (t) => ({\n${columnLines.join("\n")}\n})${extrasArg})`;
   }
 
@@ -474,16 +543,25 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
     }
 
     if (p.generated !== null) {
-      drop("generated column", `${ctx.schema}.${ctx.name}.${dbName}`,
-        "the DSL has no `.generatedAlwaysAs()` (design/05 §2.3 row is not built)");
+      drop(
+        "generated column",
+        `${ctx.schema}.${ctx.name}.${dbName}`,
+        "the DSL has no `.generatedAlwaysAs()` (design/05 §2.3 row is not built)",
+      );
     }
     if (p.collation !== null) {
-      drop("column collation", `${ctx.schema}.${ctx.name}.${dbName}`,
-        `COLLATE ${p.collation} — the DSL has no \`.collate()\``);
+      drop(
+        "column collation",
+        `${ctx.schema}.${ctx.name}.${dbName}`,
+        `COLLATE ${p.collation} — the DSL has no \`.collate()\``,
+      );
     }
     if (p.notNullValidated === false) {
-      drop("NOT NULL NOT VALID", `${ctx.schema}.${ctx.name}.${dbName}`,
-        "the DSL has no `.notValid()` on NOT NULL (PG 18)");
+      drop(
+        "NOT NULL NOT VALID",
+        `${ctx.schema}.${ctx.name}.${dbName}`,
+        "the DSL has no `.notValid()` on NOT NULL (PG 18)",
+      );
     }
 
     const comment = comments.get(encodeId(fact.id));
@@ -515,7 +593,11 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       }
       const parsed = parseConstraintDef(p.contype, p.definition);
       if (parsed === null) {
-        drop(`${p.contype} constraint`, subject, `pg_get_constraintdef could not be mapped to the DSL: ${p.definition}`);
+        drop(
+          `${p.contype} constraint`,
+          subject,
+          `pg_get_constraintdef could not be mapped to the DSL: ${p.definition}`,
+        );
         continue;
       }
       switch (parsed.kind) {
@@ -540,9 +622,12 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
           needs.add("foreignKey");
           const target = tableConst.get(`${parsed.targetSchema}.${parsed.targetTable}`);
           if (target === undefined) {
-            drop("foreign key", subject,
+            drop(
+              "foreign key",
+              subject,
               `it references ${parsed.targetSchema}.${parsed.targetTable}, which is not in the managed schema set ` +
-                `(or is a shape pull could not emit)`);
+                `(or is a shape pull could not emit)`,
+            );
             break;
           }
           // A SELF-reference is written against the extras callback's own parameter, not
@@ -584,17 +669,28 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       const parsed = parseIndexDef(p.definition, idName(f.id));
       if (parsed === null || parsed.table !== ctx.name || parsed.schema !== ctx.schema) {
         if (parsed === null && indexBelongsHere(p.definition, ctx)) {
-          drop("index", `${ctx.schema}.${idName(f.id)}`, `pg_get_indexdef could not be mapped to the DSL: ${p.definition}`);
+          drop(
+            "index",
+            `${ctx.schema}.${idName(f.id)}`,
+            `pg_get_indexdef could not be mapped to the DSL: ${p.definition}`,
+          );
         }
         continue;
       }
       if (!p.valid) {
-        drop("index", `${ctx.schema}.${idName(f.id)}`, "the index is INVALID in the catalog; fix or drop it before pulling");
+        drop(
+          "index",
+          `${ctx.schema}.${idName(f.id)}`,
+          "the index is INVALID in the catalog; fix or drop it before pulling",
+        );
         continue;
       }
       if (parsed.expression !== null) {
-        drop("expression index", `${ctx.schema}.${idName(f.id)}`,
-          `the DSL has no expression-index spelling: ${parsed.expression}`);
+        drop(
+          "expression index",
+          `${ctx.schema}.${idName(f.id)}`,
+          `the DSL has no expression-index spelling: ${parsed.expression}`,
+        );
         continue;
       }
       needs.add(p.unique ? "uniqueIndex" : "index");

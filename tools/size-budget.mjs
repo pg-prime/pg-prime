@@ -91,8 +91,12 @@ export function run({ json = false } = {}) {
   for (const [dir, spec] of Object.entries(budgets.packages)) {
     const m = measure(join(ROOT, dir))
     report[m.name] = m
-    console.log(`\n${m.name}  —  ${kb(m.unpackedBytes)} unpacked in ${m.fileCount} files (tarball ${kb(m.tarballBytes)})`)
-    console.log(`  ${'metric'.padEnd(30)} ${'design'.padStart(12)} ${'measured'.padStart(12)} ${'budget'.padStart(12)}`)
+    console.log(
+      `\n${m.name}  —  ${kb(m.unpackedBytes)} unpacked in ${m.fileCount} files (tarball ${kb(m.tarballBytes)})`,
+    )
+    console.log(
+      `  ${'metric'.padEnd(30)} ${'design'.padStart(12)} ${'measured'.padStart(12)} ${'budget'.padStart(12)}`,
+    )
 
     const line = (label, key, actual, format = kb) => {
       const limit = spec[key]
@@ -101,7 +105,11 @@ export function run({ json = false } = {}) {
       const ok = actual <= limit
       const flagKey = `${dir}.${key}`
       if (designed !== undefined && limit > designed && !over[flagKey]) {
-        checks.push({ label: `${m.name} ${label}`, ok: false, why: `budget ${format(limit)} is looser than design's ${format(designed)} and is not named in budgets.json._overDesign` })
+        checks.push({
+          label: `${m.name} ${label}`,
+          ok: false,
+          why: `budget ${format(limit)} is looser than design's ${format(designed)} and is not named in budgets.json._overDesign`,
+        })
       }
       checks.push({ label: `${m.name} ${label}`, ok, actual, limit, format })
       console.log(
@@ -118,13 +126,18 @@ export function run({ json = false } = {}) {
     line('total .js bytes', 'jsBytes', m.jsBytes)
 
     if (spec.dtsWarnBytes !== undefined && m.dtsBytes > spec.dtsWarnBytes) {
-      console.log(`  WARN total .d.ts ${kb(m.dtsBytes)} is past the ${kb(spec.dtsWarnBytes)} warn line (design/08 §1.2)`)
+      console.log(
+        `  WARN total .d.ts ${kb(m.dtsBytes)} is past the ${kb(spec.dtsWarnBytes)} warn line (design/08 §1.2)`,
+      )
     }
     if (spec.zeroDependencies) {
       const allowed = spec.optionalPeers ?? []
-      const requiredPeers = m.peerDependencies.filter((d) => !m.optionalPeerDependencies.includes(d))
+      const requiredPeers = m.peerDependencies.filter(
+        (d) => !m.optionalPeerDependencies.includes(d),
+      )
       const unlistedOptional = m.optionalPeerDependencies.filter((d) => !allowed.includes(d))
-      const ok = m.dependencies.length === 0 && requiredPeers.length === 0 && unlistedOptional.length === 0
+      const ok =
+        m.dependencies.length === 0 && requiredPeers.length === 0 && unlistedOptional.length === 0
       checks.push({
         label: `${m.name} zero runtime deps / zero REQUIRED peer deps`,
         ok,
@@ -133,7 +146,9 @@ export function run({ json = false } = {}) {
           : `dependencies=[${m.dependencies}] requiredPeers=[${requiredPeers}] unlistedOptionalPeers=[${unlistedOptional}]`,
       })
       const shown = `${m.dependencies.length} / ${requiredPeers.length}${m.optionalPeerDependencies.length > 0 ? ` (+${m.optionalPeerDependencies.length} opt)` : ''}`
-      console.log(`  ${'deps / required peerDeps'.padEnd(30)} ${'0 / 0'.padStart(12)} ${shown.padStart(12)} ${'0 / 0'.padStart(12)}  ${ok ? 'ok' : 'FAIL'}`)
+      console.log(
+        `  ${'deps / required peerDeps'.padEnd(30)} ${'0 / 0'.padStart(12)} ${shown.padStart(12)} ${'0 / 0'.padStart(12)}  ${ok ? 'ok' : 'FAIL'}`,
+      )
     }
     const failedDts = checks.some((c) => !c.ok && c.label.includes('.d.ts'))
     if (failedDts) {
@@ -146,7 +161,9 @@ export function run({ json = false } = {}) {
   if (json) console.log(JSON.stringify(report, null, 2))
   console.log('')
   for (const f of failed) {
-    console.error(`FAIL ${f.label}${f.why ? `: ${f.why}` : `: ${f.format ? f.format(f.actual) : f.actual} > ${f.format ? f.format(f.limit) : f.limit}`}`)
+    console.error(
+      `FAIL ${f.label}${f.why ? `: ${f.why}` : `: ${f.format ? f.format(f.actual) : f.actual} > ${f.format ? f.format(f.limit) : f.limit}`}`,
+    )
   }
   console.log(`${checks.length - failed.length}/${checks.length} size gates ok`)
   return { report, failed }

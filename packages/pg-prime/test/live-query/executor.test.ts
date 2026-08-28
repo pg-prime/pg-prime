@@ -50,10 +50,14 @@ describe('a lying codec is caught by the server s own RowDescription', () => {
     db.from(h().posts).select(({ posts: p }) => ({ total: sql`sum(${p.amount})`.as(int4Codec) }))
 
   it('throws CodecMismatchError with the exact message and the .as() call site', async () => {
-    const err = await lying(live.db).execute().catch((e: unknown) => e)
+    const err = await lying(live.db)
+      .execute()
+      .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CodecMismatchError)
     const text = `${(err as Error).name}: ${(err as Error).message}`
-    expect(text).toContain('CodecMismatchError: column "total" was declared as codec `int4` (oid 23)')
+    expect(text).toContain(
+      'CodecMismatchError: column "total" was declared as codec `int4` (oid 23)',
+    )
     // 1700 is PostgreSQL's, not ours: `sum(numeric)` is `numeric`, whatever we declared.
     expect(text).toContain('but Postgres returned `numeric` (oid 1700).')
     expect(text).toContain('Fix: use codecs.numeric, or cast in SQL.')
@@ -251,9 +255,7 @@ describe('.prepare() round-trips typed parameters', () => {
       .where(({ tags: t }) => q.eq(t.id, 999n))
       .returning(({ tags: t }) => ({ id: t.id }))
       .prepare()
-    expect(p.meta.writes.map((w) => `${w.schema}.${w.name}`)).toStrictEqual([
-      `${live.fx.ns}.tags`,
-    ])
+    expect(p.meta.writes.map((w) => `${w.schema}.${w.name}`)).toStrictEqual([`${live.fx.ns}.tags`])
   })
 })
 
@@ -313,23 +315,28 @@ describe('stream()', () => {
     }
     // If the cursor's transaction or its connection had leaked, this would hang or fail.
     expect(
-      await live.db.from(h().users).select(({ users: u }) => ({ id: u.id })).execute(),
+      await live.db
+        .from(h().users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .execute(),
     ).toHaveLength(6)
   })
 
   it('inside db.transaction() it joins, and sees the transaction s own uncommitted writes', async () => {
     const seen: string[] = []
-    await live.db.transaction(async (tx) => {
-      await tx.insertInto(h().tags).values({ id: 900n, name: 'streamed' }).execute()
-      for await (const row of tx
-        .from(h().tags)
-        .select(({ tags: t }) => ({ name: t.name }))
-        .where(({ tags: t }) => q.eq(t.id, 900n))
-        .stream()) {
-        seen.push(row.name)
-      }
-      throw new Error('rollback please')
-    }).catch(() => {})
+    await live.db
+      .transaction(async (tx) => {
+        await tx.insertInto(h().tags).values({ id: 900n, name: 'streamed' }).execute()
+        for await (const row of tx
+          .from(h().tags)
+          .select(({ tags: t }) => ({ name: t.name }))
+          .where(({ tags: t }) => q.eq(t.id, 900n))
+          .stream()) {
+          seen.push(row.name)
+        }
+        throw new Error('rollback please')
+      })
+      .catch(() => {})
     // The cursor read the uncommitted row, which is only possible if it joined the transaction…
     expect(seen).toStrictEqual(['streamed'])
     // …and the rollback took it away again, which is only possible if the cursor did not commit.
@@ -385,9 +392,9 @@ describe('explain()', () => {
     expect(r.executed).toBe(true)
     expect(r.rolledBack).toBe(true)
     // The oracle is the row itself, read back on a different path.
-    expect(
-      await live.raw(`select name from ${live.fx.ns}.tags where id = 800`),
-    ).toStrictEqual([['before']])
+    expect(await live.raw(`select name from ${live.fx.ns}.tags where id = 800`)).toStrictEqual([
+      ['before'],
+    ])
 
     // …and `rollback: false` really writes, which is what makes the default worth having.
     const kept = await live.db
@@ -419,7 +426,8 @@ describe('explain()', () => {
 
 describe('the fragment-only statement and its decode-plan cache', () => {
   it('rows are keyed by field name and decoded by OID', async () => {
-    const rows = await live.db.sql`select 9007199254740993::int8 as big, 10.50::numeric as amt`.execute()
+    const rows = await live.db
+      .sql`select 9007199254740993::int8 as big, 10.50::numeric as amt`.execute()
     // The claim is about VALUES: `int8` past 2^53 is a bigint, `numeric` keeps its scale. A
     // name-keyed row of raw strings would fail both.
     expect(rows).toStrictEqual([{ big: 9007199254740993n, amt: '10.50' }])
@@ -455,7 +463,10 @@ describe('the fragment-only statement and its decode-plan cache', () => {
 
   it('a builder query never touches the cache — its codecs are static', async () => {
     clearDescribeCache(true)
-    await live.db.from(h().users).select(({ users: u }) => ({ id: u.id })).execute()
+    await live.db
+      .from(h().users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .execute()
     expect(describeCacheStats().builds).toBe(0)
   })
 
@@ -470,4 +481,3 @@ describe('the fragment-only statement and its decode-plan cache', () => {
     expect((await live.db.sql`select 1`.explain()).plan).toBeDefined()
   })
 })
-

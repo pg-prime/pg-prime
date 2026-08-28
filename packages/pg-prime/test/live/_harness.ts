@@ -40,7 +40,9 @@ export interface LiveTarget {
  * target; with PGlite only the kind, because each file gets its own instance on its own port
  * (`_pglite.ts`).
  */
-export type LivePlan = { readonly kind: 'pglite' } | ({ readonly kind: 'pg' } & Omit<LiveTarget, 'kind'>)
+export type LivePlan =
+  | { readonly kind: 'pglite' }
+  | ({ readonly kind: 'pg' } & Omit<LiveTarget, 'kind'>)
 
 declare module 'vitest' {
   interface ProvidedContext {
@@ -217,7 +219,9 @@ export function requiresRealPostgres(reason: string): TestDecl {
  *   requiresConcurrency()('skip locked leaves the other rows visible', async () => { … })
  */
 export function requiresConcurrency(): TestDecl {
-  return requiresRealPostgres('needs a second backend session; PGlite is one backend (design/08 §4.2)')
+  return requiresRealPostgres(
+    'needs a second backend session; PGlite is one backend (design/08 §4.2)',
+  )
 }
 
 /**

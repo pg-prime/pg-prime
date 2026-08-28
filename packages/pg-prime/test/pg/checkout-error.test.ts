@@ -24,35 +24,38 @@ afterAll(async () => {
 })
 
 describe('a terminated backend is an error we own, not an uncaught event', () => {
-  requiresConcurrency()('pg_terminate_backend during a checkout flips usable and disposes', async () => {
-    const victim = await h.driver.acquire()
-    const killer = await h.driver.acquire()
-    const pid = victim.backendPid!
-    expect(pid).toBeGreaterThan(0)
-    expect(victim.usable).toBe(true)
+  requiresConcurrency()(
+    'pg_terminate_backend during a checkout flips usable and disposes',
+    async () => {
+      const victim = await h.driver.acquire()
+      const killer = await h.driver.acquire()
+      const pid = victim.backendPid!
+      expect(pid).toBeGreaterThan(0)
+      expect(victim.usable).toBe(true)
 
-    try {
-      await killer.execute({
-        text: 'select pg_catalog.pg_terminate_backend($1::int4)',
-        params: [String(pid)],
-        paramTypes: [23],
-      })
-      // the ErrorResponse + socket close reach us asynchronously
-      for (let i = 0; i < 50 && victim.usable; i++) await new Promise((r) => setTimeout(r, 20))
+      try {
+        await killer.execute({
+          text: 'select pg_catalog.pg_terminate_backend($1::int4)',
+          params: [String(pid)],
+          paramTypes: [23],
+        })
+        // the ErrorResponse + socket close reach us asynchronously
+        for (let i = 0; i < 50 && victim.usable; i++) await new Promise((r) => setTimeout(r, 20))
 
-      expect(victim.usable).toBe(false)
-      await expect(victim.execute({ text: 'select 1', params: [] })).rejects.toMatchObject({
-        pgPrime: { connectionUnusable: true },
-      })
-    } finally {
-      // a plain release: `usable === false` is enough for the adapter to throw it away
-      await h.driver.release(victim)
-      await h.driver.release(killer)
-    }
+        expect(victim.usable).toBe(false)
+        await expect(victim.execute({ text: 'select 1', params: [] })).rejects.toMatchObject({
+          pgPrime: { connectionUnusable: true },
+        })
+      } finally {
+        // a plain release: `usable === false` is enough for the adapter to throw it away
+        await h.driver.release(victim)
+        await h.driver.release(killer)
+      }
 
-    // the pool is still usable afterwards — one dead backend is not a dead driver
-    const fresh = await h.driver.acquire()
-    expect((await fresh.execute({ text: 'select 1', params: [] })).rows).toEqual([['1']])
-    await h.driver.release(fresh)
-  })
+      // the pool is still usable afterwards — one dead backend is not a dead driver
+      const fresh = await h.driver.acquire()
+      expect((await fresh.execute({ text: 'select 1', params: [] })).rows).toEqual([['1']])
+      await h.driver.release(fresh)
+    },
+  )
 })

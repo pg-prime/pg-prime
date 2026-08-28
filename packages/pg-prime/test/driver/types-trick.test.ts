@@ -178,7 +178,11 @@ describe('D4/§5.3 — the extended protocol is forced, even with zero parameter
   })
 
   it("mode 'simple' is the ONLY way to run a multi-statement body (migrations need it)", async () => {
-    const r = await conn.execute({ text: 'select 1 as a; select 2 as b', params: [], mode: 'simple' })
+    const r = await conn.execute({
+      text: 'select 1 as a; select 2 as b',
+      params: [],
+      mode: 'simple',
+    })
     expect(r.rows).toEqual([['2']]) // last statement's result
   })
 

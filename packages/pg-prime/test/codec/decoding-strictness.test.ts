@@ -180,15 +180,36 @@ describe('an array element that IS an array: only the element codec can tell', (
     // A multi-dimensional array is outside the TS element type (`int4[]` is `number[]`), so the
     // structural case is exercised where it actually lives — the literal writer, whose `isLeaf`
     // predicate defaults to "every array nests".
-    const twoDim = writeArrayLiteral([[1, 2], [3, 4]], ',', (v) => String(v))
+    const twoDim = writeArrayLiteral(
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      ',',
+      (v) => String(v),
+    )
     expect(twoDim).toBe('{{1,2},{3,4}}')
     // …and the SAME input with a leaf-classed element is one row of two documents instead
-    expect(writeArrayLiteral([[1, 2], [3, 4]], ',', (v) => JSON.stringify(v), () => true)).toBe(
-      '{"[1,2]","[3,4]"}',
-    )
+    expect(
+      writeArrayLiteral(
+        [
+          [1, 2],
+          [3, 4],
+        ],
+        ',',
+        (v) => JSON.stringify(v),
+        () => true,
+      ),
+    ).toBe('{"[1,2]","[3,4]"}')
     const r = await conn.execute({
       text: `select array_ndims($1::int4[]), array_ndims($2::jsonb[])`,
-      params: [twoDim, jsonbArray.encode([[1, 2], [3, 4]])],
+      params: [
+        twoDim,
+        jsonbArray.encode([
+          [1, 2],
+          [3, 4],
+        ]),
+      ],
       paramTypes: [1007, 3807],
     })
     expect(r.rows[0]).toEqual(['2', '1'])

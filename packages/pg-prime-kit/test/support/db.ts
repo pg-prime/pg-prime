@@ -40,9 +40,7 @@ function fromUrl(url: string): Omit<ConnInfo, "database"> {
 const TEST_URL = process.env["PG_PRIME_TEST_URL"];
 
 export const ADMIN: ConnInfo = {
-  ...(TEST_URL
-    ? fromUrl(TEST_URL)
-    : { host: "127.0.0.1", port: 54329, user: "postgres", password: "postgres" }),
+  ...(TEST_URL ? fromUrl(TEST_URL) : { host: "127.0.0.1", port: 54329, user: "postgres", password: "postgres" }),
   database: "postgres",
 };
 

@@ -98,7 +98,8 @@ export function makeFixture(schema: string) {
     pr: refsOf(posts, 'posts'),
     u: (k: UserCol, alias = 'users') => col(alias, usersCols[k]!.name, usersCols[k]!.codec),
     p: (k: PostCol, alias = 'posts') => col(alias, postsCols[k]!.name, postsCols[k]!.codec),
-    c: (k: CommentCol, alias = 'comments') => col(alias, commentsCols[k]!.name, commentsCols[k]!.codec),
+    c: (k: CommentCol, alias = 'comments') =>
+      col(alias, commentsCols[k]!.name, commentsCols[k]!.codec),
 
     ddl: `
 drop schema if exists ${schema} cascade;

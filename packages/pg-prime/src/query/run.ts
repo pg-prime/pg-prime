@@ -28,7 +28,12 @@ import type { PoolStats, ResolvedErrorOptions } from '../errors/index.js'
 import { HookBus, resolveLogOptions } from '../observe/index.js'
 import type { QueryHooks, ResolvedLogOptions, SpanContext } from '../observe/index.js'
 import { POOLER_PROFILES, alterRoleHint, diagnose, diagnosePooler } from '../pooler/index.js'
-import type { DbDiagnosis, DiagnosePoolerOptions, PoolerDiagnosis, PoolerMode } from '../pooler/index.js'
+import type {
+  DbDiagnosis,
+  DiagnosePoolerOptions,
+  PoolerDiagnosis,
+  PoolerMode,
+} from '../pooler/index.js'
 import type { AnySchema, RelsRecord, Tables } from '../schema/index.js'
 import { BuilderError } from '../sql/errors.js'
 import {
@@ -253,7 +258,12 @@ export function pgPrime<Sc extends AnySchema>(config: PgPrimeOptions<Sc>): Db<Sc
     const direct =
       config.directConnection === undefined
         ? undefined
-        : await buildPool(config.directConnection as string, config.poolOptions, settings, config.session)
+        : await buildPool(
+            config.directConnection as string,
+            config.poolOptions,
+            settings,
+            config.session,
+          )
     if (direct !== undefined) lazy.setPool(built.pool)
     return pgDriver({
       pool: built.pool,
@@ -507,7 +517,9 @@ export interface StatementStats {
   readonly assertShape: boolean
 }
 
-export function statementStats(db: Executor | Db<AnySchema> | Queryable<AnySchema>): StatementStats {
+export function statementStats(
+  db: Executor | Db<AnySchema> | Queryable<AnySchema>,
+): StatementStats {
   const env = (db as unknown as ExecutorImpl).ctx?.runner?.env
   if (env === undefined) {
     throw new BuilderError(
@@ -529,7 +541,10 @@ export function statementStats(db: Executor | Db<AnySchema> | Queryable<AnySchem
  * This is what the tier-0 suites use, and it is a real product surface — `.toSQL()` for a
  * migration tool, a lint rule, or a test that wants the SQL and nothing else.
  */
-export function compileOnly<Sc extends AnySchema>(schema: Sc, registry?: CodecRegistry): Queryable<Sc> {
+export function compileOnly<Sc extends AnySchema>(
+  schema: Sc,
+  registry?: CodecRegistry,
+): Queryable<Sc> {
   const executor = makeExecutor(
     {
       registry: registry ?? defaultRegistry(),
@@ -545,7 +560,15 @@ export function compileOnly<Sc extends AnySchema>(schema: Sc, registry?: CodecRe
   // compile-only executor has no connection to honour them with. They are installed anyway, each
   // raising the sentence `runnerOf` raises for `.execute()` — `TypeError: db.run is not a function`
   // would be a worse answer to the same mistake.
-  for (const name of ['run', 'explain', 'stream', 'streamBatches', 'notify', 'copyFrom', 'copyTo']) {
+  for (const name of [
+    'run',
+    'explain',
+    'stream',
+    'streamBatches',
+    'notify',
+    'copyFrom',
+    'copyTo',
+  ]) {
     install(executor, name, noExecutor)
   }
   install(executor, 'withOptions', () => executor as unknown as Queryable<Sc>)

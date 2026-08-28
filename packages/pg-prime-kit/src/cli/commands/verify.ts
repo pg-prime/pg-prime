@@ -38,7 +38,13 @@ import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js
 
 export const VERIFY_OPTIONS: readonly OptionSpec[] = [
   { name: "to", type: "string", placeholder: "id", describe: "replay only up to this migration (bisecting)" },
-  { name: "shadow", type: "string", placeholder: "url", describe: "the ephemeral database to replay into", defaultText: "CREATE DATABASE" },
+  {
+    name: "shadow",
+    type: "string",
+    placeholder: "url",
+    describe: "the ephemeral database to replay into",
+    defaultText: "CREATE DATABASE",
+  },
   {
     name: "from-checkpoint",
     type: "boolean",
@@ -56,7 +62,12 @@ export const VERIFY_OPTIONS: readonly OptionSpec[] = [
 
 export async function runVerify(config: ResolvedConfig, argv: ParseResult): Promise<CommandOutput> {
   const started = Date.now();
-  const fail = (code: ExitCode, status: string, message: string, extra: Readonly<Record<string, unknown>> = {}): CommandOutput => ({
+  const fail = (
+    code: ExitCode,
+    status: string,
+    message: string,
+    extra: Readonly<Record<string, unknown>> = {},
+  ): CommandOutput => ({
     exitCode: code,
     envelope: {
       command: "migrate verify",

@@ -44,13 +44,13 @@ describe("connection strings", () => {
     expect(connectionString({ host: "::1", port: 5432, user: "u", password: "p", database: "d" })).toBe(
       "postgresql://u:p@[::1]:5432/d",
     );
-    expect(
-      connectionString({ host: "2001:db8::1", port: 6543, user: "u", password: "p", database: "d" }),
-    ).toBe("postgresql://u:p@[2001:db8::1]:6543/d");
+    expect(connectionString({ host: "2001:db8::1", port: 6543, user: "u", password: "p", database: "d" })).toBe(
+      "postgresql://u:p@[2001:db8::1]:6543/d",
+    );
     // an ordinary host is untouched, and every user-controlled part is encoded
-    expect(
-      connectionString({ host: "db.local", port: 5432, user: "a b", password: "p@ss", database: "x/y" }),
-    ).toBe("postgresql://a%20b:p%40ss@db.local:5432/x%2Fy");
+    expect(connectionString({ host: "db.local", port: 5432, user: "a b", password: "p@ss", database: "x/y" })).toBe(
+      "postgresql://a%20b:p%40ss@db.local:5432/x%2Fy",
+    );
   });
 });
 
@@ -76,20 +76,24 @@ describe("PG_PRIME_PG_DUMP_URI", () => {
 });
 
 describe("the IR checkpoint is not JSON.stringify's protocol", () => {
-  it("does not fire on JSON.stringify, and stamps the major it is given", async () => {
-    expect(await serverAvailable()).toBe(true);
-    const conn = await makeDatabase(DB);
-    try {
-      const { ir } = await withClient(conn, (c) => extractCatalog(c, { schemas: ["public"] }));
-      const checkpoint = ir.toCheckpoint(17) as { pgMajor: unknown; formatVersion: unknown };
-      expect(checkpoint.pgMajor).toBe(17);
-      expect(checkpoint.formatVersion).toBe(1);
-      // the exact failure: a stray stringify used to emit a checkpoint keyed "ir"
-      expect(JSON.parse(JSON.stringify({ ir })) as unknown).toEqual({ ir: {} });
-    } finally {
-      await destroyDatabase(DB).catch(() => undefined);
-    }
-  }, T);
+  it(
+    "does not fire on JSON.stringify, and stamps the major it is given",
+    async () => {
+      expect(await serverAvailable()).toBe(true);
+      const conn = await makeDatabase(DB);
+      try {
+        const { ir } = await withClient(conn, (c) => extractCatalog(c, { schemas: ["public"] }));
+        const checkpoint = ir.toCheckpoint(17) as { pgMajor: unknown; formatVersion: unknown };
+        expect(checkpoint.pgMajor).toBe(17);
+        expect(checkpoint.formatVersion).toBe(1);
+        // the exact failure: a stray stringify used to emit a checkpoint keyed "ir"
+        expect(JSON.parse(JSON.stringify({ ir })) as unknown).toEqual({ ir: {} });
+      } finally {
+        await destroyDatabase(DB).catch(() => undefined);
+      }
+    },
+    T,
+  );
 });
 
 describe("the runner pins the session it runs in", () => {

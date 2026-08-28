@@ -1,12 +1,10 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-
   "printWidth": 100,
   "tabWidth": 2,
   "useTabs": false,
   "endOfLine": "lf",
   "insertFinalNewline": true,
-
   "semi": false,
   "singleQuote": true,
   "quoteProps": "as-needed",
@@ -14,15 +12,23 @@
   "arrowParens": "always",
   "bracketSpacing": true,
   "objectWrap": "preserve",
-
   "ignorePatterns": [
     "**/dist/**",
     "**/node_modules/**",
     "fixtures/**",
     "tools/api-snapshot/**",
-    "**/*.md"
+    "**/*.md",
+    "**/*.probe.ts",
+    "packages/pg-prime/test/query/types/**",
+    "tools/type-errors/**",
+    "packages/pg-prime/test/schema/audit.test.ts",
+    "packages/pg-prime/test/sql/kysely-cve.test.ts",
+    "packages/pg-prime/test/fuzz/builder-generator.ts",
+    "packages/*/test/**/*.json",
+    "**/__snapshots__/**",
+    "**/*.snap",
+    "bench/**/report.json"
   ],
-
   "overrides": [
     {
       "files": ["packages/pg-prime-kit/**"],

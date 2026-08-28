@@ -242,7 +242,11 @@ const DISABLED: ResolvedRetry = Object.freeze({
  *
  * `random` is a parameter so a tier-0 test can pin the schedule exactly rather than assert a range.
  */
-export function retryDelayMs(p: ResolvedRetry, attempt: number, random: () => number = Math.random): number {
+export function retryDelayMs(
+  p: ResolvedRetry,
+  attempt: number,
+  random: () => number = Math.random,
+): number {
   const ceiling = Math.min(p.maxDelayMs, p.baseDelayMs * 2 ** Math.max(0, attempt - 1))
   switch (p.jitter) {
     case 'none':
