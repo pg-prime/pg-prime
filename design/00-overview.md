@@ -1,6 +1,6 @@
 # pg-prime — Design Overview & Decision Record
 
-**Living document.** Last reconciled **2026-08-25**. Design round completed 2026-08-14; this file
+**Living document.** Last reconciled **2026-08-29**. Design round completed 2026-08-14; this file
 is the entry point, the decision record, and the honest status of what is actually built.
 Research basis: [`../research/SUMMARY.md`](../research/SUMMARY.md).
 
@@ -26,16 +26,17 @@ different `Codec` types coexist (`sql/codec.ts` carries a self-described spike-l
 
 | Area | State |
 |---|---|
-| Schema DSL | 11 column types, 8 modifiers, table extras, relations. Type budget gated |
+| Schema DSL | 11 column types + `t.raw(pgType)` for the rest of PostgreSQL, 8 modifiers, table extras incl. the full index options / `clusterOn` / partitions, `pgDomain` · `pgSequence` · `pgExtension`, relations. Type budget gated, and K4's seven additions moved not one per-declaration number |
 | Codecs | 29 built-ins, `decodeJson` required and golden-tested at depth 0 and 3 |
 | Driver | `execute` · `stream` (real cursors) · `describe` · `cancel` · error taxonomy. No transactions, no COPY |
 | SQL + compiler | `sql` tag with `ident`/`lit`/`join`/`unsafeRaw`; SELECT and INSERT compile. **UPDATE and DELETE do not** — the AST nodes exist, the compiler throws |
-| Migration engine | **The v1 loop is closed (2026-08-28).** `pg-prime migrate generate → apply → status → check → verify` runs from a `pg-prime.config.ts` with no `desired` database and no `CREATEDB`, and `apply` refuses a transaction-mode pooler. Ten of [06 §6.2](./06-migrations.md)'s twelve commands ship (`checkpoint` and `db seed` are K4); Tier M is complete, Tier R applies repeatables, Tier O is observed, Tier U is counted; all 35 hazard codes and all 7 lock-safe rewrites are built, three of them by emitting a `txmode none` companion file at the same `seq`. Nothing reaches disk unproven (D6) and `pg_dump` witnesses every plan (D10). **375 kit tests** on PG 17 and 18 |
-| Migration engine — the 1.0 gate | [01 §11.6 #5](./01-features.md) is **met**: `baseline` → `verify` is green on Pagila, Northwind, AdventureWorks and Chinook, committed under `fixtures/corpus/` from pinned upstreams. Empty IR diff on all four; `pg_dump` byte-equal on two and differing only by Tier-R objects on the other two, asserted rather than skipped. The corpus found three Tier-M bugs, all fixed ([06 §2.2](./06-migrations.md)) |
+| Migration engine | **[06](./06-migrations.md)'s whole v1 cut line is built (2026-08-29).** `pg-prime migrate generate → apply → status → check → verify` runs from a `pg-prime.config.ts` with no `desired` database and no `CREATEDB`, and `apply` refuses a transaction-mode pooler. **All twelve** of [06 §6.2](./06-migrations.md)'s commands ship; Tier M is complete, Tier R applies repeatables, Tier O is observed, Tier U is counted; all 35 hazard codes and all 7 lock-safe rewrites are built, three of them by emitting a `txmode none` companion file at the same `seq`. Nothing reaches disk unproven (D6) and `pg_dump` witnesses every plan (D10). **405 kit tests** on PG 17 and 18 |
+| Migration engine — data, seeds, checkpoints, pull | **Done (2026-08-29, [12 §3 K4](./12-v1-completion-plan.md)).** `-- pg-prime:batch` is a runner feature, not a template: one transaction per iteration, the `{ rows_done, watermark }` committed *with* the batch, replica-lag aware, so a SIGKILLed 50 000-row backfill resumes at the row it reached and touches none twice — asserted with `max(touched) = 1` over every row. `db seed` runs `.sql` and typed `.ts` seeds and records nothing. `migrate checkpoint` gives a fresh database the jump and `apply`/`status` the ability to **name** the drifted objects, which [11](./11-kit-v1-loop-plan.md) K1 could not |
+| Migration engine — the 1.0 gate | [01 §11.6 #5](./01-features.md) is **met twice over**: `baseline` → `verify` is green on Pagila, Northwind, AdventureWorks and Chinook, committed under `fixtures/corpus/` from pinned upstreams (empty IR diff on all four; `pg_dump` byte-equal on two and differing only by Tier-R objects on the other two). And `pull` now round-trips **all four** the other way — introspect → TypeScript → `generate` reports `up_to_date`, a second `pull` is byte-identical, and the `-- pull: unsupported` block is **empty** on every one. The corpus found four Tier-M bugs, all fixed ([06 §2.2](./06-migrations.md), [06 §4.5](./06-migrations.md)) |
 | Packaging | **Done (2026-08-28).** Both packages build (`tsc` → unbundled ESM + `.d.ts` + maps), ship an `exports` map with the `types@<5.9` gate first on every subpath, and install from a `pnpm pack` tarball into a throwaway project — proved on every PR by the `package` CI job. `@pg-prime/testing` and `@pg-prime/create` are still README-only |
 
-**2 660 tests green** (778 runtime offline, 1 507 runtime live, 375 kit on PostgreSQL 17 and 18);
-workspace typecheck clean.
+**2 714 tests green** (790 runtime offline in 4.7 s, 1 519 runtime live, 405 kit on PostgreSQL 17
+*and* 18); workspace typecheck clean.
 **Type budget, measured on the real implementation:** 137,778 instantiations, 1.11 s on TS 5.9 /
 0.231 s on TS 7, schema-size-independence ratio **1.00** against a 1.15 gate.
 **Dependencies:** `pg-prime` has zero runtime deps and zero peer deps — verified, `src/` contains no
@@ -111,8 +112,16 @@ non-relative imports at all. `@pg-prime/kit` depends on `pg` + `@types/pg`, and 
    [08 §2.1, §2.4, §3.1, §3.2, §4.6 AS BUILT](./08-architecture.md).
 5. CI. There is none: every gate in these documents is currently run by hand.
 6. Claim `@pg-prime/kit`, `@pg-prime/testing`, `@pg-prime/create` on npm.
-7. **K4, the migration engine's last workstream** ([11 §4](./11-kit-v1-loop-plan.md)): data
-   migrations (the `-- pg-prime:batch` runner behind the backfill stub `generate` now writes),
-   seeding, `migrate checkpoint`, and `pull` (introspect → a TypeScript schema file whose
-   `generate` is empty against the same database). Everything else in [06](./06-migrations.md)'s
-   v1 cut line ships.
+7. ~~**K4, the migration engine's last workstream**: data migrations, seeding,
+   `migrate checkpoint`, `pull`.~~ **Done 2026-08-29** ([12 §3 K4](./12-v1-completion-plan.md)).
+   All twelve of [06 §6.2](./06-migrations.md)'s commands ship, so **the whole of 06's v1 cut
+   line is built**: the `-- pg-prime:batch` runner (one transaction per iteration, the watermark
+   committed with the batch, so a SIGKILLed 50 000-row backfill resumes at the row it reached and
+   touches none twice), `db seed` with `.sql` and typed `.ts` seeds, `migrate checkpoint` with the
+   fresh-database jump and `verify --from-checkpoint`, and `pull` — which round-trips **all four**
+   third-party corpus schemas to an empty `generate` with an empty unsupported block. Seven DSL
+   additions came with it (`05` §2.3/§2.4/§5.1 AS BUILT), all runtime metadata: not one
+   per-declaration or per-query `bench:types` number moved.
+8. **The rest of [12](./12-v1-completion-plan.md)**: the session layer (`07`, which has never had
+   a workstream), the builder gaps `09` deferred, release engineering, the docs site, and the perf
+   residue. K4 was one of round A's four.

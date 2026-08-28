@@ -398,6 +398,33 @@ normalize differently.
 > was customised does not get a phantom `COMMENT ON SCHEMA` reset. When `pgSchema(...).comment()`
 > lands, the emitter's value wins by running after this mirror.
 
+> **AS BUILT 2026-08-29 (design/12 K4) — tier 4 stays refused, and why.**
+>
+> `--offline` / `--shadow none` reaches the ladder and gets `OfflineShadowError`'s sentence
+> (exit 1). This is the release's answer, not an omission, and design/12 decision 14 records
+> it: **without a database there is no desired IR to diff a checkpoint against.**
+>
+> The reasoning is design/11 §1.5's, followed to its conclusion. `05` §7.2's `schema.$ir()`
+> is deliberately not built — the desired IR is a *function of a database*: emit the DSL as
+> DDL, load it into a shadow, extract. That is the whole point of the shadow ladder (§3.2's
+> opening paragraph: "the desired state is always round-tripped through a real PostgreSQL
+> before it is compared"), and it is what makes the differ immune to phantom diffs. Tier 4
+> would have to obtain IR(desired) some other way, and the only other way is a second model
+> of PostgreSQL's canonicalization — the thing §9's "Parse-only / AST diffing (no shadow DB)"
+> row rejects by name, with the observation that "every tool that tried has phantom diffs".
+>
+> Checkpoints do NOT change this, which is the part worth stating now that they exist. A
+> checkpoint gives us an IR of a *past* state, so `--offline` could diff *current-as-recorded*
+> against *checkpoint*; it still cannot produce IR(**desired**) from TypeScript, and a
+> `generate` that cannot see the desired state is not a `generate`. What the checkpoint IR
+> does buy is the thing K1 could not do — naming the drifted objects on a fingerprint
+> mismatch — and that is built (`apply`, `status --verify-fingerprint`, decision 16).
+>
+> The three tiers that do exist cover the case tier 4 was for: a managed PostgreSQL with no
+> `CREATEDB` is **tier 3**, in the target database, and design/11 §3 K2a's own test runs the
+> whole path as a `NOCREATEDB NOSUPERUSER` role. Tier 4 is for "no database reachable at
+> all", and every command in §6.2 except `lint` needs one anyway.
+
 ### 3.3 Rename resolution
 
 **Annotation is the only authority.** Three inputs, strictly ordered:
@@ -1125,6 +1152,47 @@ checkpoint and then everything after it; an **existing** database ignores checkp
 continues linearly. Nothing is deleted. This is Atlas's model and it is strictly better than
 destructive squashing — a 400-file directory stops costing CI 400 replays without losing history.
 
+**AS BUILT · 2026-08-29 (design/12 K4).** `src/checkpoint/checkpoint.ts` and
+`src/cli/commands/checkpoint.ts`. Everything above is built, plus a third artifact and four
+decisions the section leaves open.
+
+`migrate checkpoint` writes **three** files: `NNNN_checkpoint.sql` (the `-- pg-prime:checkpoint`
+directive in its header, so the RUNNER sees it — the directive is a property of the file, not of
+the plan), `NNNN_checkpoint.plan.json`, and `checkpoints/NNNN.ir.json`. All three with `wx`: a
+checkpoint is history like any other migration, and silently overwriting one rewrites a file
+another developer's fresh database may already have jumped to.
+
+The DDL comes from **`baseline`'s emitter path** — `diffIR(freshDatabaseIR, current)` →
+`buildStatements` → `orderStatements` — because a checkpoint and a baseline are the same artifact
+asked for at two different times, and one code path means a checkpoint cannot replay differently
+from the baseline of the same schema. The "from" IR is §6.3 AS BUILT's fresh-database IR (the
+schemas whose OID `initdb` assigned, their comments, and the extensions it installed), not the
+null IR, for the same reason: a full-schema file whose `from.fingerprint` was the null hash could
+never pass its own gate on replay. The plan is stamped `proof: { status: "skipped", reason:
+"checkpoint" }` — the DDL describes a database that already exists and this command never
+executes it; `verify --from-checkpoint` is what proves it replays.
+
+`checkpoints/NNNN.ir.json` is `SchemaIR.toCheckpoint()` (§2.3), read back by `irFromCheckpoint`.
+§2.3 deliberately drops provenance, which is right: a checkpoint is a statement about *shape*.
+
+**"Ignores" is recorded, as `superseded`** — see §6.5 for why. **The jump condition is
+`pgprime.migrations` being empty**, which is the only definition of "fresh" available before
+anything has run and the only one that cannot be wrong: a database with one recorded migration
+has a history to continue, whatever its catalog looks like.
+
+**`pgprime.checkpoints` is written by `apply`**, when a fresh database actually jumps to one, and
+holds the fingerprint of record after the jump.
+
+**The drifted objects are now NAMED**, which closes design/11 K1's open item (a) — "a fingerprint
+mismatch cannot name the drifted objects: naming them needs an IR of the expected state, and §4.3
+deliberately rejects a per-migration snapshot". A checkpoint IS that IR, for the position it was
+taken at, so `describeDrift` diffs the live catalog against the newest checkpoint at or before
+the last applied migration. When the checkpoint IS that position the list is exact; when
+migrations were applied after it their changes are in the list too, and the message says so and
+names them rather than presenting a superset as if it were exact. `apply`'s
+`fingerprint_mismatch` and `status --verify-fingerprint` both carry it, and a repository with no
+checkpoint gets a sentence telling it to take one.
+
 ---
 
 ## 5. The runner
@@ -1517,6 +1585,10 @@ fingerprints are equal.
 
 ### 6.4 AS BUILT · 2026-08-28 (design/11 K2b) — the author-side commands
 
+> **Superseded in part on 2026-08-29 by §6.5 (design/12 K4): it is now TWELVE of twelve.**
+> The flag table below is still current for the ten commands it covers, except `verify
+> --from-checkpoint`, which is built.
+
 Ten of §6.2's twelve commands ship. `pg-prime migrate --help` lists all ten; `checkpoint`
 and `db seed` are still under "Not in this release" with K4 named beside them.
 
@@ -1608,6 +1680,60 @@ envelope.
 
 ---
 
+### 6.5 AS BUILT · 2026-08-29 (design/12 K4) — twelve of twelve
+
+`pg-prime --help` lists every command in §6.2 and there is no "Not in this release" section
+left. The three that landed here are:
+
+| Command | Spelling | `status` values | Exit |
+|---|---|---|---|
+| `migrate checkpoint` | `migrate checkpoint [--seq n] [--by name] [--dry-run]` | `written` · `dry_run` · `refused` | 0 · 0 · 1 |
+| `db seed` | `db seed [--set name]… [--force] [--prod-pattern re] [--seeds dir] [--list]` | `seeded` · `nothing_to_do` · `listed` · `refused` · `failed` | 0 · 0 · 0 · 1 · 1 |
+| `pull` | `pull [--out file] [--sql-dir dir] [--no-sql-dir] [--dry-run]` | `written` · `dry_run` · `refused` · `error` | 0 · 0 · 1 · 1 |
+
+**`db seed` and `pull` are their own verbs, not `migrate` ones.** §6.2 already spells the
+first `db seed`; `pull` joins it on the same rule. Neither writes a migration — `db seed`
+records nothing at all and `pull` reads a database and writes TypeScript — so hanging them
+off the `migrate` noun would say something untrue about both. `src/cli/main.ts` grew a noun
+table (`migrate`, `db`, and bare commands) and routes one token deep.
+
+**`verify --from-checkpoint` is built** and replaces the refusal K2b recorded. It defaults
+**off** (`ApplyPendingOptions.checkpoints: "ignore"`), which is a decision rather than a
+detail: §6.2 defines `verify` as "replay every migration from empty", and `verify` always
+replays into a *fresh* ephemeral database — precisely the condition §4.5's jump fires on. On
+`auto` every `verify` in a repository that had ever taken a checkpoint would silently become
+a partial replay reported as a full one, which is the exact failure the old blanket refusal
+existed to prevent. The flag turns the jump on and the envelope carries `fromCheckpoint`.
+`--from-checkpoint` with no `NNNN_checkpoint.sql` on disk is still refused, for the same
+reason: a flag that silently did nothing would report a full replay as a checkpoint one.
+
+**`checkpoints: "ignore"` is the EXISTING-database rule applied unconditionally**, not
+"pretend the files are not there". A checkpoint's `from.fingerprint` is a fresh database's,
+so running one after the history it stands in for has already been applied fails its own
+gate; ignoring a checkpoint therefore means recording it `superseded`, always. A linear
+replay of `0000 → 0001 → 0002_checkpoint → 0003` is `0000 → 0001 → 0003`.
+
+**`superseded` is a SETTLED status.** §4.4 reserves the value and §4.5 says an existing
+database "ignores checkpoints entirely"; ignoring them is *recorded*, because a file left
+"pending" would make `status` exit 5 for ever on a fully-applied repository and `check` — the
+CI gate — fail on every commit after a checkpoint landed, and a file left *absent* would make
+§5.1 step 5's "applied file missing from disk" check unable to tell a jumped file from a
+deleted one. The rows carry `statements_applied = 0`, which is the truth. The same value
+covers both directions: the files a fresh database jumped over, and the checkpoint an
+existing database skipped.
+
+**Two flags beyond §6.2's list**, both because a test needed a deterministic value and both
+useful: `db seed --list` (print what would run, run nothing) and `pull --no-sql-dir` (report
+every Tier-R object as unsupported instead of writing it). `migrate checkpoint --dry-run`
+prints the `.sql` and writes nothing.
+
+**`migrate checkpoint` is read-only against the database.** It introspects, writes three
+files, and records nothing: the `pgprime.checkpoints` row is written by `apply`, when a fresh
+database actually jumps to one. A checkpoint that was written but never applied anywhere has
+no business claiming a row.
+
+---
+
 ## 7. Data migrations and seeding — the v1 story
 
 **Three lanes, deliberately separate.** Bytebase's 2026 verdict, which every source in the research
@@ -1660,6 +1786,107 @@ transactional DDL file.
 be idempotent (`ON CONFLICT DO NOTHING`). Never recorded in `pg_orm.migrations`. Refuses on a
 production-tagged environment without `--force`. `.ts` seeds get the typed query builder, because
 that is the whole point of having one.
+
+---
+
+### 7.1 AS BUILT · 2026-08-29 (design/12 K4)
+
+Both lanes ship. `src/data/{batch,lag}.ts` is the runner; `src/seed/{run,db}.ts` is lane 3.
+
+**Lane 2 — the batch runner.** `-- pg-prime:batch size=<n> pause=<dur> max-replica-lag=<dur>`
+is parsed in `runner/files.ts` and refused outside `txmode none` (a batch is one transaction
+*per iteration*, which `transactional` cannot express and which inverts the "never one long
+UPDATE holding locks for an hour" property the lane exists for). A malformed value is an error
+diagnostic, never a silent default. Every statement of the file is re-executed until it reports
+zero rows; a statement whose command tag carries no row count runs exactly once.
+
+Five things §7 states as behaviour and leaves open as mechanism, decided here.
+
+1. **The batch state reaches the statement as two GUCs, not as bind parameters.** §4.2 says the
+   `.sql` is the executable artifact and "runnable by `psql` if our tooling ever fails", and a
+   file full of `$1`s is not. `current_setting('pgprime.batch_size')` and
+   `current_setting('pgprime.watermark', true)` are ordinary SQL; they are written with
+   `set_config($1,$2,true)` so nothing is interpolated into DDL, and under `psql` they simply
+   default — `current_setting(…, true)` is NULL for an unset name, which the template's
+   `nullif(…, '')` guard reads as "start at the beginning".
+2. **The statement reports its own progress, in its own result.** A batch statement may end
+   `SELECT count(*) AS rows_done, max(id)::text AS watermark FROM updated`, and the runner reads
+   those two columns. When it does not, the **command tag's row count** is used — exactly §7's
+   shape — and the watermark stays null. The runner never parses the SQL to guess a key column:
+   the key is a property of the author's table, and a tool that guessed would guess wrong on the
+   first composite one.
+3. **`pgprime.data_progress` is written INSIDE the batch's transaction.** §7 says "persist …
+   after each batch"; doing it in the same transaction is strictly stronger and, unlike §5.4's
+   DDL, actually available here, because a data migration's work is ordinary DML. A SIGKILL
+   therefore cannot lose a committed batch's watermark and cannot record one whose rows rolled
+   back — which is what makes "resumes from its watermark, never restarts" an invariant rather
+   than a likelihood. The `watermark` jsonb holds `{ formatVersion, statement, iterations,
+   values, done }`, where `values` is keyed by statement index and holds the **text the
+   statement itself reported**: the runner cannot know whether the key is a `bigint`, a `uuid`
+   or a `(tenant, created_at)` pair, so it carries the token opaquely and hands it back through
+   the GUC.
+4. **A statement that reports rows without moving its watermark for three consecutive batches
+   is a FAILURE**, named with the stuck watermark. An unbounded loop is the one way a batch
+   runner can wedge a deploy with nothing to act on, and a watermark that does not move while
+   rows keep coming back is the signature of a predicate that does not narrow.
+   `max-iterations=<n>` on the directive bounds the statements that report no watermark.
+5. **The lag wait is unbounded.** §7 says "pause automatically while lag exceeds the threshold".
+   A ceiling that gave up after N minutes and ran the batch anyway would be a ceiling that does
+   not hold; one that failed the migration would turn a temporary replica hiccup into a failed
+   deploy needing a manual resume — while the resume is already free, because the watermark is
+   committed. An operator who wants it to stop kills the process.
+
+**The lag reading is design/12 decision 13.** Primary-side by default:
+`pg_stat_replication.replay_lag` on the connection the migration already holds — no replica
+URLs, no second credential, and the number an operator already watches. `replicas: [url]` in the
+config is the explicit opt-in that queries `pg_last_wal_replay_lsn()` on each, which is §7's
+literal shape; a replica that cannot be reached contributes infinite lag rather than zero,
+because silently proceeding past a replica we cannot see is the failure the ceiling exists to
+prevent. **No visible replica is a no-op plus exactly one `info` line** — said once per run, not
+once per batch, and it names both `pg_monitor` and the `replicas` key.
+
+**The stub `generate` writes is now a working template.** §3.5 row 7's backfill file carries two
+statements: `stmt 0` is the `RAISE EXCEPTION` guard, marked `non-idempotent` so `migrate lint`
+reports TX201 on it and `apply` stops; `stmt 1` is the real **keyset** batch. Deleting the guard
+and renumbering is the whole edit, and forgetting the renumber is a `stmt_marker_out_of_order`
+error rather than a silent misordering. The template picks keyset over §7's own `WHERE id IN
+(SELECT … LIMIT n)` example deliberately: that form has no watermark, so every iteration
+re-scans from the start of the table, N rows in batches of n cost O(N²/n) row reads, each batch
+is slower than the last, and after a crash there is nothing to resume from. Both forms run; the
+template writes the better one.
+
+**`status` shows a running backfill.** Every `pgprime.data_progress` row is reported with the
+state of the migration it belongs to, and `apply` reports `rowsDone` / `iterations` / `resumed`
+per file.
+
+**Lane 3 — seeding.** `db seed` is a top-level verb. Four decisions §7 leaves open:
+
+- **A set is a subdirectory.** `seeds/*.{sql,ts}` is the base set and runs on every `db seed`;
+  `seeds/<name>/**` runs only when `--set <name>` asks for it, and `--set` is repeatable.
+  Subdirectories rather than a filename suffix, because the walk is then the one
+  `scanRepeatables` already uses — directory-lexicographic, files and directories in ONE sort.
+  A `--set` naming a directory that does not exist is an **error** listing the sets on disk: a
+  typo that silently seeded nothing is the worst possible outcome for a command whose entire job
+  is side effects.
+- **Nothing is recorded, and the history schema is never created.** Stronger than "no row": a
+  seeded dev database that has never been migrated must not acquire a `pgprime` schema as a side
+  effect, or `migrate baseline` refuses it afterwards.
+- **One transaction per FILE**, not one per run. A run that half-applies is bad; a run that
+  rolls back nine good seeds because the tenth has a typo is worse, because seeds are
+  re-runnable by construction. The report names the file that failed and the ones after it.
+- **The production refusal is `push --dev`'s, verbatim** — `PG_PRIME_ENV=production`,
+  `production: true`, or `--prod-pattern` (default `prod|production|live`, matched
+  case-insensitively against `host:port/database`) — evaluated before a statement is issued.
+
+**A `.ts` seed gets a real `Db`** (design/12 decision 12): `export default async ({ db, set, env
+}) => …`, where `db` is the transaction handle, so `db.insertInto(db.h.users)` is the typed
+builder and the file's writes are atomic by the same mechanism the user's own code would use. It
+is built through **one dynamic `import("pg-prime")`** in `src/seed/db.ts` — the only runtime use
+of the peer anywhere in the kit, allowed because it is dynamic (the package still loads with no
+peer installed), on the `db seed` path only, and resolved from the project, so the seed gets the
+user's own copy of the DSL rather than a second one with different `Symbol.for` slots.
+design/11 §1.3's grep guard is amended to budget exactly that site, by file and by form: a
+static import there still fails the test.
 
 ---
 

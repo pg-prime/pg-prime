@@ -519,6 +519,31 @@ async function proveIt(
  */
 export function annotationHints(schema: SchemaLike, defaultSchema = "public"): RenameHint[] {
   const out: RenameHint[] = [];
+
+  /* design/05 §5.1's other two spellings, which design/11 K2b left hints-file-only:
+   * `pgSchema(name, { renamedFrom })` and `pgEnum(name, values, { renamedFrom })`, plus the
+   * same option on `pgDomain` and `pgSequence`. They are reachable now because `loadSchema`
+   * discovers the standalone declarations off the module's exports (design/12 K4). */
+  for (const s of schema.schemas ?? []) {
+    if (s.renamedFrom === undefined) continue;
+    out.push({ from: { kind: "schema", schema: s.renamedFrom }, to: { kind: "schema", schema: s.name } });
+  }
+  // enum and domain share the `type` fact kind — `05` §7.2 gives both `[schema, name]`.
+  for (const t of [...(schema.enums ?? []), ...(schema.domains ?? [])]) {
+    const renamedFrom = (t as { renamedFrom?: string }).renamedFrom;
+    if (renamedFrom === undefined) continue;
+    const ns = t.schema ?? defaultSchema;
+    out.push({ from: { kind: "type", schema: ns, name: renamedFrom }, to: { kind: "type", schema: ns, name: t.name } });
+  }
+  for (const s of schema.sequences ?? []) {
+    if (s.renamedFrom === undefined) continue;
+    const ns = s.schema ?? defaultSchema;
+    out.push({
+      from: { kind: "sequence", schema: ns, name: s.renamedFrom },
+      to: { kind: "sequence", schema: ns, name: s.name },
+    });
+  }
+
   for (const table of Object.values(schema.tables)) {
     const runtime = table.$;
     const ns = runtime.schema ?? defaultSchema;
