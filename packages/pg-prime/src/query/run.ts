@@ -313,6 +313,7 @@ export function pgPrime<Sc extends AnySchema>(config: PgPrimeOptions<Sc>): Db<Sc
     configured: new WeakSet<object>(),
     ended: false,
     warn,
+    startupProbe: undefined,
   }
 
   const runner = new PoolRunner(state, {}, 'db')
@@ -335,7 +336,7 @@ export function pgPrime<Sc extends AnySchema>(config: PgPrimeOptions<Sc>): Db<Sc
       once: true,
     })
   }
-  maybeWarnAtStartup(state, lazy, config)
+  maybeWarnAtStartup(state, lazy, config, source)
   return db
 }
 
@@ -448,12 +449,46 @@ function notesFor(state: SessionState): readonly string[] {
  * So this fires on the next tick after something has already connected, and only says something
  * when the probe and the configuration disagree.
  */
-function maybeWarnAtStartup(state: SessionState, lazy: LazyDriver, config: DbConfig<AnySchema>): void {
+function maybeWarnAtStartup(
+  state: SessionState,
+  lazy: LazyDriver,
+  config: DbConfig<AnySchema>,
+  source: 'connection' | 'pool' | 'driver',
+): void {
   if (!state.devGuard) return
+  // Never for `driver:`. That form is the full seam override — the caller owns the connection
+  // policy, we do not even know the host, and putting six probe statements on somebody else's
+  // driver uninvited is the kind of help nobody asked for. `db.diagnosePooler()` still works.
+  if (source === 'driver') return
   const max = config.poolOptions?.max ?? 10
   const sizeWarning = poolSizeWarning(max, undefined)
   if (sizeWarning !== undefined) state.warn(sizeWarning)
-  void lazy
+
+  // §5.4: one `warn` when the probe and the configuration disagree, never in production, never
+  // blocking, and never a reconfiguration. `acquire()` fires it after the first connection.
+  state.startupProbe = () => {
+    void (async () => {
+      try {
+        const r = await diagnosePooler(state.driver, state.poolerMode, {
+          host: lazy.host ?? hostOfConfig(config),
+        })
+        if (r.agrees) return
+        state.warn(
+          `pg-prime: poolerMode is '${r.configuredPoolerMode}' but this connection looks like ` +
+            `'${r.verdict}' (confidence ${r.confidence}); the profile that matches is ` +
+            `'${r.recommendedPoolerMode}'. A profile only ever RESTRICTS, so the risk of being too ` +
+            `permissive is real and the risk of being too conservative is only performance — run ` +
+            `await db.diagnosePooler() for the signals. This warning is dev-mode only (07 §5.4).`,
+        )
+        state.hooks.internal({
+          kind: 'pooler-mismatch',
+          message: `configured '${r.configuredPoolerMode}', probe says '${r.recommendedPoolerMode}'`,
+        })
+      } catch {
+        // A diagnostic must never be the thing that breaks a process.
+      }
+    })()
+  }
 }
 
 /**

@@ -67,8 +67,16 @@ export interface SessionState {
   /** Physical connections that have already had their session GUCs applied (§3.6). */
   readonly configured: WeakSet<object>
   ended: boolean
-  /** Set once by `pgPrime` after the handle exists, so `diagnose()` can reach it. */
   warn(message: string): void
+  /**
+   * `07` §5.4's dev-mode startup check, run **once, asynchronously, after the first connection**.
+   *
+   * Not at construction: `pgPrime` opens no socket (§1.1) and §8 rejection 25 refuses to spend
+   * startup latency on a heuristic. Not blocking the first query either — this is scheduled on a
+   * macrotask *after* an acquire has already succeeded, so the probe rides a warm pool and its
+   * cost lands on nobody's critical path.
+   */
+  startupProbe: (() => void) | undefined
 }
 
 /** Per-statement options a runner threads down from the handle and from the call. */
@@ -574,6 +582,12 @@ export async function acquire(
   const waitedMs = performance.now() - started
   state.hooks.pool({ kind: 'acquire', waitedMs })
   await applyConnectSettings(state, conn)
+  const probe = state.startupProbe
+  if (probe !== undefined) {
+    state.startupProbe = undefined
+    const t = setTimeout(probe, 0)
+    ;(t as unknown as { unref?: () => void }).unref?.()
+  }
   return { conn, waitedMs }
 }
 

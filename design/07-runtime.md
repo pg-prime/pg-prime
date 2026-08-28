@@ -1218,9 +1218,12 @@ We explicitly do **not** use PgBouncer's `SHOW POOLS` admin console: it needs ad
 > `diagnose()` reports pool stats, the effective GUCs read back with `SHOW`, §1.2's `max_connections`
 > arithmetic, the server version, the exec-mode downgrade state (the old `statementStats` folded in)
 > and a `notes` array that names the `ALTER ROLE` fix when a profile skipped the session GUCs. The
-> dev-mode startup `warn` fires on §1.2's pool arithmetic; the `agrees === false` half is **not**
-> wired to startup — it needs a connection, and §8 rejection 25 refuses to block the first query on a
-> heuristic — so it is `diagnosePooler()`'s `agrees` field and the `doctor` CLI's job instead.
+> dev-mode startup `warn` fires on §1.2's pool arithmetic, and the `agrees === false` half is wired
+> as §5.4 describes: **once, asynchronously, after the first connection has already succeeded**, so
+> it costs no startup latency and blocks no query (§8 rejection 25). It is skipped entirely for the
+> `driver:` form — that is the full seam override, we do not know the host, and putting six probe
+> statements on somebody else's driver uninvited is help nobody asked for; `db.diagnosePooler()`
+> remains available by hand.
 
 ### 5.5 The migration ⇄ running-app interaction
 

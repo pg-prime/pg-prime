@@ -9,7 +9,7 @@
  * on a direct connection and through the pooler.
  */
 
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { ConfigError, UnsupportedInPoolerModeError } from '../../src/errors/index.js'
 import { POOLER_PROFILES } from '../../src/pooler/index.js'
 import { pgPrime } from '../../src/query/run.js'
@@ -97,6 +97,55 @@ describe('diagnosePooler() (07 §5.4, R19)', () => {
     const within = r.signals.find((s) => s.name === 'backend-pid-within-transaction')
     expect(within?.result).toBe('supports-direct')
     expect(r.warnings).toStrictEqual([])
+  }, 60_000)
+
+  requiresPgBouncer()(
+    'the dev-mode startup check warns ONCE, asynchronously, when agrees === false (07 §5.4)',
+    async () => {
+      const lines: string[] = []
+      const warn = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => {
+        lines.push(String(a[0]))
+      })
+      try {
+        // `poolerMode: 'none'` against a real transaction pooler is the dangerous direction, and
+        // the whole point of the check. `pgPrime` must still open no socket…
+        const db = make({ schema, connection: BOUNCER as string, poolOptions: { max: 4 } })
+        expect(lines).toStrictEqual([])
+        // …and the probe rides the FIRST connection rather than blocking it.
+        await db.sql`select 1`.execute()
+        const deadline = Date.now() + 15_000
+        while (!lines.some((l) => l.includes('poolerMode')) && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 100))
+        }
+        const hits = lines.filter((l) => l.includes('poolerMode is'))
+        expect(hits).toHaveLength(1)
+        expect(hits[0]).toMatch(/likely-transaction-pooled/)
+        expect(hits[0]).toMatch(/db\.diagnosePooler\(\)/)
+
+        // Once. A second statement must not re-probe.
+        await db.sql`select 1`.execute()
+        await new Promise((r) => setTimeout(r, 500))
+        expect(lines.filter((l) => l.includes('poolerMode is'))).toHaveLength(1)
+      } finally {
+        warn.mockRestore()
+      }
+    },
+    60_000,
+  )
+
+  requiresConcurrency()('and says nothing at all when the configuration agrees', async () => {
+    const lines: string[] = []
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => {
+      lines.push(String(a[0]))
+    })
+    try {
+      const db = make({ schema, connection: liveTarget().url, poolOptions: { max: 4 } })
+      await db.sql`select 1`.execute()
+      await new Promise((r) => setTimeout(r, 1_000))
+      expect(lines.filter((l) => l.includes('poolerMode is'))).toStrictEqual([])
+    } finally {
+      warn.mockRestore()
+    }
   }, 60_000)
 
   requiresPgBouncer()('reports agrees: false when the configuration is the conservative floor', async () => {

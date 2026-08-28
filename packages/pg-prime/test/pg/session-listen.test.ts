@@ -41,6 +41,11 @@ beforeAll(() => {
     connection: liveTarget().url,
     session: { applicationName: APP },
     poolOptions: { max: 2 },
+    // `devGuard: false` turns off §5.4's dev-mode startup probe, which opens up to three extra
+    // pooled connections once to create the contention it needs. This file COUNTS backends, so a
+    // diagnostic that opens some would make every assertion here a race. Nothing else in this file
+    // depends on the guard.
+    devGuard: false,
   })
 })
 
