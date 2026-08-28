@@ -230,7 +230,6 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
   const ordered = dependencyOrder(ir, emittable, cmp);
 
   /* ---- render ---- */
-  const out: string[] = [];
   const needs = new Set<string>(["defineSchema", "pgTable"]);
   const body: string[] = [];
 

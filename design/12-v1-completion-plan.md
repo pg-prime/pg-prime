@@ -1196,6 +1196,51 @@ touch. What is **not** verified from here:
 
 ---
 
+### Round-A integration — 2026-08-29
+
+**Order taken:** C fast-forwarded (`8bb9b8e`, CI 33207272663 green on re-run — first attempt tripped the
+two noisy decode ratios, 2.816/2.8 and 1.663/1.65, on inert bench changes; P sizes them from runner
+data per R21) → B cherry-picked, seven commits (`ae8e13c`, CI 33210497383 green first attempt) → S merged
+(`fe8c472`) → K4 merged (`2c3363d`) → two integration commits. The §3 ownership lines held:
+`src/query/types.ts` and `src/index.ts` merged **automatically** across B, S and K4; every conflict was
+a generated file (`bench/types/report.json`, `unsupported-typescript.d.ts`, `tools/api-snapshot/*`),
+`tools/budgets.json`, C's one lint directive in `pg-adapter.ts` under S's new `connect()`, and
+`00-overview.md`'s status rows, which were merged by hand.
+
+**Lint over the merged tree** (the three feature branches predate C's rules): `typescript/require-await`
+is now **off for `packages/*/test/**` and `**/*.probe.ts`** — every finding was an `async () => value`
+callback satisfying a Promise-returning signature; it stays on for `src/` (one directive, the adapter's
+`release`). One-file `no-restricted-imports` overrides for `src/session/pg-lazy.ts` (decision 2) and
+`kit/src/seed/db.ts` (decision 12). Two unused imports, one unused variable, one unsafe optional chain
+fixed. `pg` moved from the root's devDependencies to `packages/pg-prime`'s (its tests import it;
+`bench/runtime` already listed it) and knip's `optionalPeerDependencies` rule is off — the referenced
+optional peer is exactly decision 2's shape. Recorded in `08` §3.4 AS BUILT.
+
+**Budgets set at the merged measurement** (each branch had re-baselined its own delta; the sum is what
+ships): `dist/query/types.d.ts` 72 190 B (54 843 before round A: B +9 688, S +7 632); `.js` total
+889 072 → budget 889 856 (S's session layer + K4's DSL); tree-shake `connect-one-select` 71 597 /
+`full-crud-tx` 71 848 / `root-import-all` 78 750 → 71 680 / 72 704 / 78 848 by the file's ceil-to-1 KB
+rule. `pg` is in no fixture's module set (decision 2's gate holds on the merged tree).
+
+**Numbers on the merged tree** (the round-A integration commit, verified here from scratch): `pnpm lint` green (4.9 s);
+tier 0 **970** / 48 files; tier 1 **1 741 + 6**; tier 2 **1 801, zero skips** on PG 17 + PgBouncer
+transaction mode, **1 778 + 11 / 1 779 + 10 / 1 779 + 10** on PG 15 / 16 / 18 (pooler-gated skips);
+kit **405 + 6** on PG 17 and PG 18; `package:check` green (8/8 size, 4/4 tree-shake, emit parity
+0 FAIL, `check:dts`, pack smoke); `bench:types` headline **82 028** on TS 5.9.3 (`fb723f4`: 80 485,
+**+1.9 %** — inside the plan's +2 % band, B +1.5 %, K4 +0.4 %, S 0).
+
+**Tier 0 is over the line.** `pnpm test` measures **5.29–5.57 s** quiet, best of three, for 970 tests
+(778 tests measured 5.05 s at the start of the plan, 4.66 s after C on the same machine). Vitest's own
+split says where it went: `tests` 9.1 s of worker CPU across the pool is unchanged per test, and
+`transform` 4.0–4.4 s + `import` 11.5–12.4 s carry the growth — file count, not test bodies. Decision 11
+says record, do not raise: the number is recorded here and **the ceiling stands as an open item for
+round B** (candidates, in order: vitest's transform cache, `isolate: false` for the pure-function
+files, moving S's 136-case session unit file to tier 1).
+
+Nothing published: `release.yml` runs on every push to `main` and fails at "Version PR or publish"
+until the repository setting *Allow GitHub Actions to create and approve pull requests* is on
+(decision 20's operator step; the API change was outside this session's permissions).
+
 ## 4. Round B (after round A merges and the formatting commit lands)
 
 ### D — Docs (`08` §6.4)

@@ -235,6 +235,27 @@
     // default-export by the runner's contract; and the type-aware program for a file that is in no
     // `tsc` project is a guess, which is most of what `no-unnecessary-condition` reports there.
     {
+      // design/12 §1 decision 12: `db seed` hands a `.ts` seed a real `Db`, built through ONE
+      // dynamic `await import('pg-prime')` in this file and nowhere else — the peer is resolved from
+      // the user's project, on the seed path only. Every other kit file still names `pg-prime` with
+      // `import type`, which the workspace rule above enforces; the kit's own grep guard
+      // (test/schema-emit/no-value-import.test.ts) allows exactly this site too.
+      "files": ["packages/pg-prime-kit/src/seed/db.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "pg-native",
+                "message": "design/08 §2.1: `pg-native` is never a dependency of this workspace."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       // design/12 §1 decision 2: `pgPrime({ connection })` builds its pool through ONE lazy
       // `import('pg')`, in this file and nowhere else — `pg` is an OPTIONAL peer, and the
       // tree-shake goldens (`fixtures/treeshake/*/expected-modules.json`) prove it never enters a
