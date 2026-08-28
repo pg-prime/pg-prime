@@ -142,7 +142,9 @@ export {
   findDirectives,
   parseMigrationSql,
   readMigrationsDir,
+  BATCH_DEFAULTS,
   MIGRATION_FILE,
+  type BatchDirective,
   type ExecutionPlan,
   type FileDirective,
   type FileDirectives,
@@ -155,11 +157,26 @@ export {
 export {
   migrationStatus,
   migrationStatusOn,
+  type DataProgressEntry,
   type EntryState,
   type StatusEntry,
   type StatusOptions,
   type StatusReport,
 } from "./runner/status.js";
+
+/* ---- design/06 §7 lane 2: batched, resumable, lag-aware data migrations ---- */
+export {
+  runBatchStatement,
+  BatchStalledError,
+  GUC_BATCH_SIZE,
+  GUC_WATERMARK,
+  STALL_LIMIT,
+  type BatchEvent,
+  type BatchOptions,
+  type BatchOutcome,
+  type LagEvent,
+} from "./data/batch.js";
+export { readPrimaryLag, readReplicaLag, type LagReading } from "./data/lag.js";
 
 /* --------------------- history tables (design/06 §4.4) --------------------- */
 
@@ -174,8 +191,13 @@ export {
 } from "./history/schema.js";
 export {
   currentFingerprint,
+  dataProgressSql,
+  readAllDataProgress,
+  readDataProgress,
   readMigrationRows,
   readRepeatableRows,
+  EMPTY_WATERMARK,
+  type DataProgress,
   type LockRow,
   type MigrationRow,
   type RepeatableRow,

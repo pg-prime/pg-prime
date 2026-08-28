@@ -11,7 +11,14 @@ import { extractCatalog, type CatalogClient, type Diagnostic } from "../catalog/
 import { EXIT, type ExitCode } from "../cli/exit.js";
 import { withClient, type ConnInfo } from "../db/pg.js";
 import { historyPresent, historyVersion } from "../history/schema.js";
-import { currentFingerprint, readMigrationRows, readRepeatableRows, type MigrationRow } from "../history/store.js";
+import {
+  currentFingerprint,
+  readAllDataProgress,
+  readMigrationRows,
+  readRepeatableRows,
+  type DataProgress,
+  type MigrationRow,
+} from "../history/store.js";
 import { inspectLease, NO_REPEATABLES, type LeaseInspection } from "./run.js";
 import type { RepeatablesPass } from "../repeatables/index.js";
 import { readMigrationsDir } from "./files.js";
@@ -49,8 +56,21 @@ export interface StatusReport {
   readonly checksumDrift: readonly string[];
   readonly lock: LeaseInspection;
   readonly repeatables: { readonly drift: readonly string[]; readonly tracked: number; readonly passImplemented: boolean };
+  /**
+   * design/06 §7: "`status` shows a running backfill's `rows_done`."
+   *
+   * Every `pgprime.data_progress` row, with the state of the migration it belongs to
+   * beside it — a backfill whose migration is still `running` is the one an operator is
+   * asking about, and a finished one's total is the evidence that it did the work.
+   */
+  readonly data: readonly DataProgressEntry[];
   readonly diagnostics: readonly Diagnostic[];
   readonly durationMs: number;
+}
+
+export interface DataProgressEntry extends DataProgress {
+  /** the state of the migration this progress belongs to, or `orphaned` when there is none */
+  readonly migrationState: EntryState;
 }
 
 export interface StatusOptions {
@@ -149,6 +169,12 @@ export async function migrationStatusOn(
       ? []
       : (await pass.plan(options.repeatablesDir, hashes)).toApply.map((f) => f.path);
 
+  const byMigrationId = new Map(migrations.map((m) => [m.id, m]));
+  const data: DataProgressEntry[] = (present ? await readAllDataProgress(client) : []).map((p) => ({
+    ...p,
+    migrationState: byMigrationId.get(p.migrationId)?.state ?? "orphaned",
+  }));
+
   const status: StatusReport["status"] =
     missingFiles.length > 0 || checksumDrift.length > 0 || fingerprintDrift
       ? "drift"
@@ -172,6 +198,7 @@ export async function migrationStatusOn(
     checksumDrift,
     lock,
     repeatables: { drift, tracked: tracked.length, passImplemented: pass !== NO_REPEATABLES },
+    data,
     diagnostics,
     durationMs: Date.now() - started,
   };

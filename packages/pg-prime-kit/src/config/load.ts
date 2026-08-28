@@ -119,7 +119,7 @@ export async function loadConfig(path?: string, cwd: string = process.cwd()): Pr
   return { file, config: validate(value as Record<string, unknown>, file) };
 }
 
-const STRING_KEYS = ["url", "migrations", "repeatables", "shadow", "lockTimeout", "statementTimeout"] as const;
+const STRING_KEYS = ["url", "migrations", "repeatables", "seeds", "shadow", "lockTimeout", "statementTimeout"] as const;
 const NUMBER_KEYS = ["lockWaitMs", "staleLockAfterMs"] as const;
 
 function validate(raw: Record<string, unknown>, file: string): PgPrimeConfig {
@@ -133,8 +133,11 @@ function validate(raw: Record<string, unknown>, file: string): PgPrimeConfig {
       throw new ConfigError(`${file}: \`${key}\` must be a finite number`);
     }
   }
-  if (raw["schemas"] !== undefined && !(Array.isArray(raw["schemas"]) && raw["schemas"].every((s) => typeof s === "string"))) {
-    throw new ConfigError(`${file}: \`schemas\` must be an array of strings`);
+  for (const key of ["schemas", "replicas"] as const) {
+    const v = raw[key];
+    if (v !== undefined && !(Array.isArray(v) && v.every((s) => typeof s === "string"))) {
+      throw new ConfigError(`${file}: \`${key}\` must be an array of strings`);
+    }
   }
   if (raw["production"] !== undefined && typeof raw["production"] !== "boolean") {
     throw new ConfigError(`${file}: \`production\` must be a boolean`);
@@ -297,7 +300,11 @@ export interface ResolvedConfig {
   readonly schemaPaths: readonly string[];
   readonly migrationsDir: string;
   readonly repeatablesDir: string;
+  /** `seeds/` (design/06 §7 lane 3) */
+  readonly seedsDir: string;
   readonly schemas: readonly string[];
+  /** design/12 decision 13 — parsed `config.replicas`, empty when the config names none */
+  readonly replicas: readonly ConnInfo[];
   /** `PG_PRIME_ENV`, verbatim; null when unset */
   readonly env: string | null;
   readonly production: boolean;
@@ -345,7 +352,9 @@ export function resolveConfig(input: ResolveInput): ResolvedConfig {
     schemaPaths,
     migrationsDir: abs(input.migrations ?? config.migrations ?? "migrations"),
     repeatablesDir: abs(config.repeatables ?? "sql"),
+    seedsDir: abs(config.seeds ?? "seeds"),
     schemas: input.schemas ?? config.schemas ?? ["public"],
+    replicas: (config.replicas ?? []).map((url) => parseDatabaseUrl(url).conn),
     env: envTag,
     production: config.production === true || envTag === "production",
     warnings,

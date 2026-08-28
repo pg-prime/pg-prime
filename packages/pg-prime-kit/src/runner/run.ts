@@ -21,6 +21,7 @@ import { hostname } from "node:os";
 import pg from "pg";
 import { extractCatalog, type CatalogClient, type Diagnostic } from "../catalog/extract.js";
 import { RUNNER_EXIT, type ExitCode, type RunnerStatus } from "../cli/exit.js";
+import { runBatchStatement, type BatchEvent, type LagEvent } from "../data/batch.js";
 import type { Segment } from "../diff/order.js";
 import { withClient, type ConnInfo } from "../db/pg.js";
 import { ensureHistory, historyPresent, HISTORY_SCHEMA } from "../history/schema.js";
@@ -28,6 +29,9 @@ import {
   beginRow,
   breakLease,
   currentFingerprint,
+  readDataProgress,
+  EMPTY_WATERMARK,
+  type DataProgress,
   heartbeatLease,
   markApplied,
   markFailed,
@@ -85,6 +89,12 @@ export interface AppliedMigration {
   /** the statement index a resume started at; null for a first run */
   readonly resumedFrom: number | null;
   readonly retries: number;
+  /**
+   * design/06 §7 lane 2: the batched data migration's totals, null for every other file.
+   * `rowsDone` is cumulative across a resume — it is read back out of
+   * `pgprime.data_progress`, not counted from this process's own iterations.
+   */
+  readonly batch: { readonly rowsDone: number; readonly iterations: number; readonly resumed: boolean } | null;
 }
 
 export interface PreflightReport {
@@ -160,6 +170,13 @@ export interface ApplyPendingOptions {
   readonly verifyFingerprint?: boolean;
   readonly repeatables?: RepeatablesPass;
   readonly repeatablesDir?: string;
+  /**
+   * design/12 decision 13 — the explicit opt-in for `-- pg-prime:batch
+   * max-replica-lag=…`. Absent, the ceiling is read primary-side from
+   * `pg_stat_replication`; present, each of these is asked for
+   * `pg_last_wal_replay_lsn()`, which is design/06 §7's literal shape.
+   */
+  readonly replicas?: readonly ConnInfo[];
   /** hostname / CI run id recorded on every row */
   readonly appliedFrom?: string;
   readonly engineVersion?: string;
@@ -194,6 +211,8 @@ export type RunnerEvent =
   | { readonly kind: "lock"; readonly state: "waiting" | "acquired" | "unavailable"; readonly waitedMs: number }
   | { readonly kind: "migration"; readonly id: string; readonly state: "start" | "done" | "retry" | "failed"; readonly detail?: string }
   | { readonly kind: "statement"; readonly id: string; readonly index: number; readonly total: number }
+  | BatchEvent
+  | LagEvent
   | { readonly kind: "warning"; readonly message: string };
 
 /* --------------------------------- defaults ------------------------------- */
@@ -661,12 +680,20 @@ export async function applyPendingOn(
 
       /* 7c. Dispatch on txmode. */
       const target: CatalogClient = dryRun ? capture : client;
+      // design/06 §7: a batched file's position lives in `pgprime.data_progress`, keyed by
+      // migration id, and it is read BEFORE the file runs — that read is the whole of
+      // "a killed backfill continues from its watermark, never restarts" (R15).
+      const progress =
+        file.directives.batch !== null && present && !dryRun ? await readDataProgress(client, file.id) : null;
       const outcome = await runFile(target, file, exec, byId.get(file.id), {
         engineVersion, appliedFrom, sleep, emit,
         lockTimeout: options.lockTimeout ?? DEFAULTS.lockTimeout,
         ...(options.statementTimeout === undefined ? {} : { statementTimeout: options.statementTimeout }),
         retryBaseMs: options.retryBaseMs ?? DEFAULTS.retryBaseMs,
         random: options.random ?? Math.random,
+        dataProgress: progress,
+        ...(options.replicas === undefined ? {} : { replicas: options.replicas }),
+        onInfo: (m: string): void => void warnings.push(m),
       });
       if (outcome.failure) {
         emit({ kind: "migration", id: file.id, state: "failed", detail: outcome.failure.message });
@@ -718,6 +745,10 @@ interface FileContext {
   readonly random: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly emit: (event: RunnerEvent) => void;
+  /** `pgprime.data_progress` as it stood before this file ran; null when there is none */
+  readonly dataProgress?: DataProgress | null;
+  readonly replicas?: readonly ConnInfo[];
+  readonly onInfo?: (message: string) => void;
 }
 
 interface FileOutcome {
@@ -737,15 +768,21 @@ async function runFile(
   const startedAt = Date.now();
   const total = exec.statements.length;
   const record = newRow(file, total, ctx.engineVersion, ctx.appliedFrom);
-  const outcome = (durationMs: number, resumedFrom: number | null, retries: number, failure: RunnerFailure | null): FileOutcome => ({
-    record: { id: file.id, txmode: file.txmode, statements: total, durationMs, resumedFrom, retries },
+  const outcome = (
+    durationMs: number,
+    resumedFrom: number | null,
+    retries: number,
+    failure: RunnerFailure | null,
+    batch: AppliedMigration["batch"] = null,
+  ): FileOutcome => ({
+    record: { id: file.id, txmode: file.txmode, statements: total, durationMs, resumedFrom, retries, batch },
     failure,
   });
 
   if (file.txmode === "none") {
     const from = resumeFrom(row);
     const result = await runBare(client, file, exec, record, from, ctx);
-    return outcome(Date.now() - startedAt, row ? from : null, result.retries, result.failure);
+    return outcome(Date.now() - startedAt, row ? from : null, result.retries, result.failure, result.batch);
   }
 
   // Transactional / segmented. The history INSERT is appended to the LAST transactional
@@ -819,11 +856,29 @@ async function runBare(
   record: NewMigrationRow,
   from: number,
   ctx: FileContext,
-): Promise<{ retries: number; failure: RunnerFailure | null }> {
+): Promise<{ retries: number; failure: RunnerFailure | null; batch: AppliedMigration["batch"] }> {
   const total = exec.statements.length;
   await beginRow(client, { ...record, statementsApplied: from, status: "running" });
   await setConfig(client, "lock_timeout", ctx.lockTimeout, false);
   await setConfig(client, "search_path", "pg_catalog", false);
+
+  /* design/06 §7 lane 2. `batch` is a property of the FILE, so every statement in it is
+   * re-executed until it reports zero rows; a statement whose command tag carries no row
+   * count (a DDL one) reports zero on its first execution and therefore runs exactly once.
+   * The whole file shares one `pgprime.data_progress` row — the table is keyed by
+   * migration id (§4.4) — and the runner threads the state through. */
+  const directive = file.directives.batch;
+  let progress: Omit<DataProgress, "updatedAt" | "migrationId"> =
+    ctx.dataProgress === null || ctx.dataProgress === undefined
+      ? { ...EMPTY_WATERMARK }
+      : {
+          rowsDone: ctx.dataProgress.rowsDone,
+          statement: ctx.dataProgress.statement,
+          iterations: ctx.dataProgress.iterations,
+          values: ctx.dataProgress.values,
+          done: ctx.dataProgress.done,
+        };
+  const resumedBatch = directive !== null && (ctx.dataProgress?.iterations ?? 0) > 0;
 
   let retries = 0;
   for (let i = from; i < total; i++) {
@@ -836,6 +891,30 @@ async function runBare(
     let attempt = 0;
     for (;;) {
       try {
+        if (directive !== null) {
+          const done = await runBatchStatement(client, s.sql, i, progress, {
+            migrationId: file.id,
+            directive,
+            sleep: ctx.sleep,
+            onEvent: ctx.emit,
+            lockTimeout: ctx.lockTimeout,
+            ...(ctx.onInfo === undefined ? {} : { onInfo: ctx.onInfo }),
+            ...(ctx.replicas === undefined ? {} : { replicas: ctx.replicas }),
+            ...(s.timeouts.statement === null
+              ? ctx.statementTimeout === undefined
+                ? {}
+                : { statementTimeout: ctx.statementTimeout }
+              : { statementTimeout: s.timeouts.statement }),
+          });
+          progress = {
+            rowsDone: done.rowsDone,
+            statement: i,
+            iterations: done.iterations,
+            values: { ...progress.values, [String(i)]: done.watermark },
+            done: true,
+          };
+          break;
+        }
         await client.query(s.sql);
         break;
       } catch (err) {
@@ -859,6 +938,7 @@ async function runBare(
         }, i).catch(() => undefined);
         return {
           retries,
+          batch: directive === null ? null : { rowsDone: progress.rowsDone, iterations: progress.iterations, resumed: resumedBatch },
           failure: {
             code: "sql_error",
             message: `${file.id} failed at statement ${i}: ${message(err)}`,
@@ -875,7 +955,11 @@ async function runBare(
   }
   await resetSessionGucs(client);
   await markApplied(client, file.id, total);
-  return { retries, failure: null };
+  return {
+    retries,
+    failure: null,
+    batch: directive === null ? null : { rowsDone: progress.rowsDone, iterations: progress.iterations, resumed: resumedBatch },
+  };
 }
 
 /** Exponential with full jitter, capped. `attempt` is 1-based. */

@@ -321,6 +321,108 @@ export async function breakLease(client: CatalogClient): Promise<boolean> {
   return r.rows.length > 0;
 }
 
+/* -------------------- data migrations (design/06 §4.4, §7) ---------------- */
+
+/**
+ * `pgprime.data_progress.watermark`, as this release writes it.
+ *
+ * The column is `jsonb NOT NULL` and design/06 §7 only says it holds "`{ rows_done,
+ * watermark }`" — `rows_done` is its own column, so this is the `watermark` half, and it
+ * has to answer two questions a resume asks: *which statement of the file was in flight*
+ * and *how far did each statement get*. Both, because a lane-2 file may hold more than
+ * one batched statement and the row is keyed by migration id alone.
+ *
+ * `values` is keyed by statement index and holds the text the statement itself reported
+ * (`SELECT … AS watermark`), never a value the runner invented: the runner cannot know
+ * whether the key is a `bigint`, a `uuid` or a `(tenant, created_at)` pair, so it carries
+ * the token opaquely and hands it back through the `pgprime.watermark` GUC.
+ */
+export interface DataProgress {
+  readonly migrationId: string;
+  /** cumulative across every statement and every iteration of this migration */
+  readonly rowsDone: number;
+  /** the statement index that was in flight when this row was written */
+  readonly statement: number;
+  /** total iterations executed for this migration, across statements */
+  readonly iterations: number;
+  /** statement index (as a decimal string) → the last watermark that statement reported */
+  readonly values: Readonly<Record<string, string | null>>;
+  /** every statement of the file has reported zero rows */
+  readonly done: boolean;
+  readonly updatedAt: string;
+}
+
+export const EMPTY_WATERMARK: Omit<DataProgress, "migrationId" | "updatedAt"> = {
+  rowsDone: 0,
+  statement: 0,
+  iterations: 0,
+  values: {},
+  done: false,
+};
+
+interface WatermarkJson {
+  readonly formatVersion?: number;
+  readonly statement?: number;
+  readonly iterations?: number;
+  readonly values?: Record<string, string | null>;
+  readonly done?: boolean;
+}
+
+function toProgress(r: Record<string, unknown>): DataProgress {
+  const raw = r["watermark"];
+  const json: WatermarkJson =
+    typeof raw === "string" ? (JSON.parse(raw) as WatermarkJson) : ((raw ?? {}) as WatermarkJson);
+  return {
+    migrationId: str(r["migration_id"]),
+    rowsDone: num(r["rows_done"]),
+    statement: typeof json.statement === "number" ? json.statement : 0,
+    iterations: typeof json.iterations === "number" ? json.iterations : 0,
+    values: json.values ?? {},
+    done: json.done === true,
+    updatedAt: str(r["updated_at"]),
+  };
+}
+
+const DATA_COLUMNS = `migration_id, watermark, rows_done, ${TS("updated_at")} AS updated_at`;
+
+export async function readDataProgress(client: CatalogClient, migrationId: string): Promise<DataProgress | null> {
+  const r = await client.query(
+    `SELECT ${DATA_COLUMNS} FROM ${HISTORY_SCHEMA}.data_progress WHERE migration_id = $1`,
+    [migrationId],
+  );
+  const row = r.rows[0];
+  return row === undefined ? null : toProgress(row);
+}
+
+export async function readAllDataProgress(client: CatalogClient): Promise<DataProgress[]> {
+  const r = await client.query(`SELECT ${DATA_COLUMNS} FROM ${HISTORY_SCHEMA}.data_progress ORDER BY migration_id`);
+  return r.rows.map(toProgress);
+}
+
+/**
+ * The progress upsert as one literal statement, for the batch runner.
+ *
+ * Literal rather than parameterised for the same reason `recordAppliedSql` is: it rides
+ * **inside the batch's own transaction**, right behind the `UPDATE` it is bookkeeping for,
+ * so a crash between the two is not possible and a batch can be neither lost nor
+ * double-counted. design/06 §7 says the row is "persisted after each batch"; putting it in
+ * the same transaction is strictly stronger and — unlike the DDL of §5.4 — actually
+ * available here, because a data migration's work is ordinary DML.
+ */
+export function dataProgressSql(p: Omit<DataProgress, "updatedAt">): string {
+  const watermark = JSON.stringify({
+    formatVersion: 1,
+    statement: p.statement,
+    iterations: p.iterations,
+    values: p.values,
+    done: p.done,
+  });
+  return `INSERT INTO ${HISTORY_SCHEMA}.data_progress (migration_id, watermark, rows_done, updated_at)
+     VALUES (${quoteLiteral(p.migrationId)}, ${quoteLiteral(watermark)}::jsonb, ${String(p.rowsDone)}, now())
+     ON CONFLICT (migration_id) DO UPDATE
+       SET watermark = EXCLUDED.watermark, rows_done = EXCLUDED.rows_done, updated_at = now()`;
+}
+
 /* ----------------------------- repeatables ------------------------------- */
 
 export async function readRepeatableRows(client: CatalogClient): Promise<RepeatableRow[]> {

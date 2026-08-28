@@ -34,6 +34,19 @@ export interface PgPrimeConfig {
   readonly shadow?: ShadowStrategy;
   /** Path(s) to the TypeScript schema module. Consumed by K2b's `generate`. */
   readonly schema?: string | readonly string[];
+  /**
+   * Standby URLs, for `-- pg-prime:batch max-replica-lag=…` (design/12 decision 13).
+   *
+   * The **opt-in**. Without it the ceiling is read primary-side from
+   * `pg_stat_replication.replay_lag`, which needs no second credential but is invisible to
+   * a role outside `pg_monitor`; with it each URL is asked for `pg_last_wal_replay_lsn()`,
+   * which is design/06 §7's literal shape. Nothing else in the kit ever connects to these.
+   */
+  readonly replicas?: readonly string[];
+  /**
+   * `seeds/*.sql` and `seeds/*.ts` (design/06 §7 lane 3). Default `./seeds`.
+   */
+  readonly seeds?: string;
   /** design/06 §5.2 defaults, overridable per project. */
   readonly lockTimeout?: string;
   readonly statementTimeout?: string;
