@@ -274,7 +274,11 @@ async function runE2E() {
    */
   const rawTypes = []
   rawTypes.getTypeParser = () => (v) => v
+  // `types: rawTypes` (an array carrying a getTypeParser, which is what pg wants) picks pg's
+  // callback overload in the checker's eyes, so it reads the return as void. At runtime it is a
+  // Promise.
   const rawQuery = async (text, values) =>
+    // oxlint-disable-next-line typescript/await-thenable -- the overload above erased the Promise
     (await rawPool.query({ text, values, rowMode: 'array', types: rawTypes })).rows
 
   const version = (await rawQuery('show server_version', []))[0][0]

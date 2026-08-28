@@ -1,0 +1,268 @@
+// design/08-architecture.md §3.4 — oxlint is the only ESLint-class linter in this repo, and the
+// type-aware half runs through `oxlint-tsgolint` on the same TypeScript 7 install that builds the
+// packages (`pnpm lint` passes `--type-aware`). §3.4's required set is:
+//
+//   no-floating-promises · no-misused-promises · await-thenable · require-await ·
+//   no-unnecessary-condition · no-default-export · a restricted-import rule for §2.1's boundaries
+//
+// All seven are configured below. `no-unnecessary-condition` is the one that warns rather than
+// errors; the reason is on the rule.
+//
+// Formatting is NOT oxlint's job here — see `.prettierrc.json` / `.editorconfig` and `pnpm format`.
+//
+// This file is JSONC: oxlint parses comments. It is not read by anything else.
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise"],
+
+  "categories": {
+    "correctness": "error"
+  },
+
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/.changeset/**",
+    "fixtures/**",
+    "docs/**",
+    "**/*.d.ts"
+  ],
+
+  "rules": {
+    // ── design/08 §3.4's five type-aware rules ────────────────────────────────────────────────
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error",
+    "typescript/require-await": "error",
+
+    // WARN, not error, and the one deliberate divergence from §3.4. On a library whose declared
+    // types are a contract with untyped JavaScript callers and with the `pg` wire, this rule reads
+    // every deliberate runtime guard as dead code: `eq()`'s `b === null` throw (query/ops.ts),
+    // `pgTable`'s "that is not a column" sentence (schema/table.ts), `toPgField`'s `?? -1`
+    // defaults over a structurally-typed field (driver/submittable.ts), `msg?.parameterName` on a
+    // `pg` connection event (driver/pg-adapter.ts). Every one of the 47 findings in
+    // `packages/*/src` is of that shape, so "fixing" them means deleting runtime safety, which
+    // design/12 §3 C forbids — and suppressing them means 47 inline directives in the files three
+    // other round-A branches are editing. It stays on and visible instead of on and lied to.
+    // Recorded in 08 §3.4 AS BUILT. Revisit trigger: a `no-unnecessary-condition` option that
+    // exempts a narrowing whose input crosses an `any`/structural boundary.
+    "typescript/no-unnecessary-condition": "warn",
+
+    // ── design/08 §2.3 ───────────────────────────────────────────────────────────────────────
+    // Named exports only. tools/api-snapshot.mjs asserts the same thing on the BUILT entries;
+    // this catches it in the source, in the editor, before the build.
+    "import/no-default-export": "error",
+
+    // ── design/08 §2.1's boundaries ──────────────────────────────────────────────────────────
+    // The workspace-wide default: nothing names `pg`. The three overrides below carve out the
+    // places where the design says otherwise.
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "pg",
+            "message": "design/08 §2.1: only packages/pg-prime/src/driver may name `pg`, and today not even it does — pg-prime is zero-dependency and duck-types the pool (src/driver/pg-like.ts). @pg-prime/kit depends on `pg` directly and is exempt by an override."
+          },
+          {
+            "name": "pg-native",
+            "message": "design/08 §2.1: `pg-native` is never a dependency of this workspace."
+          }
+        ],
+        "patterns": [
+          {
+            "group": ["pg/*"],
+            "message": "design/08 §2.1: only packages/pg-prime/src/driver may name `pg`. @pg-prime/kit is exempt by an override."
+          }
+        ]
+      }
+    ],
+
+    // ── rules turned off, each because the code it flags is deliberate ───────────────────────
+    // `new Array(n)` is a pre-sized array in the decoder and the diff's ordering pass. The
+    // suggested `Array.from({ length: n })` fills with `undefined` and is measurably slower; the
+    // holes are written before they are read. bench/runtime is the gate that would notice.
+    "unicorn/no-new-array": "off",
+    // A `then` on an object is the point: `Query` is a thenable, which is how `await db.select()`
+    // works without a terminal method (design/03 §2.7). compile/nodes.ts and the emit guards test
+    // both build them on purpose.
+    "unicorn/no-thenable": "off",
+    // `new Function(...)` in compile/decode.ts is the compiled row decoder — design/03 Appendix B
+    // measures it, and it is built from a fixed template over OIDs, never from user input.
+    "typescript/no-implied-eval": "off",
+
+    // The type-aware rules `--type-aware` switches on that design/08 §3.4 did NOT ask for. They
+    // are off rather than silently warning so that `pnpm lint` output is exactly the contract.
+    // Adopting any of them is a separate change with its own fixes; the counts they reported on
+    // fb753409 are in 08 §3.4 AS BUILT.
+    "typescript/no-base-to-string": "off",
+    "typescript/unbound-method": "off",
+    "typescript/require-array-sort-compare": "off",
+    "typescript/restrict-template-expressions": "off",
+    "typescript/no-duplicate-type-constituents": "off",
+    "typescript/no-meaningless-void-operator": "off",
+    "typescript/no-useless-default-assignment": "off",
+    "typescript/no-unnecessary-type-assertion": "off",
+    "typescript/no-confusing-void-expression": "off",
+    "typescript/no-unnecessary-type-parameters": "off",
+    "typescript/prefer-promise-reject-errors": "off",
+    "typescript/switch-exhaustiveness-check": "off",
+    "typescript/no-mixed-enums": "off",
+    "typescript/no-redundant-type-constituents": "off",
+    "typescript/no-unsafe-unary-minus": "off",
+    "typescript/promise-function-async": "off",
+    "typescript/return-await": "off",
+    "typescript/restrict-plus-operands": "off",
+    "typescript/no-array-delete": "off",
+    "typescript/prefer-reduce-type-parameter": "off",
+    "typescript/related-getter-setter-pairs": "off",
+    "typescript/non-nullable-type-assertion-style": "off",
+    "typescript/prefer-return-this-type": "off",
+    "typescript/only-throw-error": "off"
+  },
+
+  "overrides": [
+    // design/08 §2.1 + design/11 §1.3 — the kit imports `pg-prime` for TYPES ONLY. A
+    // peerDependency that is value-imported is a runtime dependency with a friendlier name. The
+    // kit DOES depend on `pg` directly (it is in its `dependencies`), so the global `pg` ban is
+    // lifted here.
+    //
+    // design/12 decision 12: K4 will add exactly one `await import('pg-prime')` under
+    // packages/pg-prime-kit/src/seed/ — a DYNAMIC import on the `db seed` path, resolved from the
+    // user's project. `no-restricted-imports` only sees STATIC import/export declarations, so that
+    // site needs no exception here; the guard that does have to be amended for it is the grep in
+    // packages/pg-prime-kit/test/schema-emit/no-value-import.test.ts, which K4 owns. Any *static*
+    // `import … from 'pg-prime'` under src/seed/ stays an error, including there.
+    {
+      "files": ["packages/pg-prime-kit/src/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "pg-prime",
+                "allowTypeImports": true,
+                "message": "design/11 §1.3: @pg-prime/kit names `pg-prime` with `import type` only — it is a peerDependency, and a value import would make the kit fail to load without it and put a second copy of the DSL's Symbol.for slots in the graph."
+              },
+              {
+                "name": "pg-native",
+                "message": "design/08 §2.1: `pg-native` is never a dependency of this workspace."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["pg-prime/*"],
+                "allowTypeImports": true,
+                "message": "design/11 §1.3: @pg-prime/kit names `pg-prime` and its subpaths with `import type` only."
+              }
+            ]
+          }
+        ]
+      }
+    },
+
+    // design/08 §2.1's boundary rule, scoped to WHAT HOLDS rather than to what §2.1 wrote.
+    // §2.1 says `src/query` and `src/compile` import `../schema` as types only. `src/compile`
+    // does — it names nothing from `../schema` at all. `src/query` does NOT, and the two value
+    // imports it has are load-bearing:
+    //
+    //   · `NAME` (src/schema/symbols.ts) — a `Symbol.for` key read at runtime off handles and
+    //     tables in cte.ts, scope.ts, select.ts and update.ts. A type cannot carry a symbol value.
+    //   · `resolveRelations` (src/schema/relations.ts) — query/relations.ts calls it to turn a
+    //     relation declaration into a join plan; it is the runtime half of the relation feature.
+    //
+    // Both are recorded in design/08 §3.4 AS BUILT. The rule therefore allows exactly those two
+    // names and forbids every other value import across the boundary, which is the enforceable
+    // form of it: a THIRD value import cannot appear without this list changing in review.
+    {
+      "files": ["packages/pg-prime/src/query/**/*.ts", "packages/pg-prime/src/compile/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "pg",
+                "message": "design/08 §2.1: only packages/pg-prime/src/driver may name `pg`."
+              },
+              {
+                "name": "pg-native",
+                "message": "design/08 §2.1: `pg-native` is never a dependency of this workspace."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["pg/*"],
+                "message": "design/08 §2.1: only packages/pg-prime/src/driver may name `pg`."
+              },
+              {
+                "group": ["../schema", "../schema/*", "../../schema", "../../schema/*"],
+                "allowTypeImports": true,
+                "allowImportNames": ["NAME", "resolveRelations"],
+                "message": "design/08 §2.1: src/query and src/compile cross the schema boundary with `import type` only. The two value imports that predate this rule — `NAME` and `resolveRelations` — are allowed by name; a new one needs a design note in 08 §3.4 AS BUILT, not a wider rule."
+              }
+            ]
+          }
+        ]
+      }
+    },
+
+    // design/08 §2.1: the driver is the one place a real `pg` import would be legal. It does not
+    // take the offer — src/driver/pg-like.ts duck-types the pool on purpose, which is what buys
+    // zero deps AND zero peer deps — but the rule is written where the design puts the boundary,
+    // so that the day the driver does need `pg`, moving an import is not also a lint fight.
+    {
+      "files": ["packages/pg-prime/src/driver/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "pg-native",
+                "message": "design/08 §2.1: `pg-native` is never a dependency of this workspace."
+              }
+            ]
+          }
+        ]
+      }
+    },
+
+    // Tests, benches and tools are not the published surface. `pg` is a devDependency and every
+    // tier-1/tier-2 harness legitimately names it; vitest configs and the kit's globalSetup are
+    // default-export by the runner's contract; and the type-aware program for a file that is in no
+    // `tsc` project is a guess, which is most of what `no-unnecessary-condition` reports there.
+    {
+      "files": [
+        "packages/*/test/**",
+        "packages/*/vitest.config.ts",
+        "bench/**",
+        "tools/**"
+      ],
+      "rules": {
+        "no-restricted-imports": "off",
+        "import/no-default-export": "off",
+        "typescript/no-unnecessary-condition": "off"
+      }
+    },
+
+    // `*.probe.ts` (design/04 §4, design/09) and `tools/type-errors/cases/**` are compile-only
+    // files: they are never executed and never imported. A probe's assertions ARE bare expressions
+    // (`expectTypeOf(q).toEqualTypeOf<…>()`, a `// @ts-expect-error` line followed by the call that
+    // must fail) and unused declarations (`const cov: X = y` exists so the assignment is checked);
+    // the `type-errors` cases are files that are SUPPOSED not to compile, and `pnpm
+    // type-errors:check` diffs their diagnostics against a golden. Reporting an unused variable in
+    // a file whose entire purpose is to be type-checked and thrown away is a false positive by
+    // construction, not a finding.
+    {
+      "files": ["**/*.probe.ts", "tools/type-errors/cases/**"],
+      "rules": {
+        "no-unused-vars": "off",
+        "no-unused-expressions": "off",
+        "typescript/no-floating-promises": "off"
+      }
+    }
+  ]
+}

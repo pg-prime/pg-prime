@@ -22,7 +22,6 @@ const DES = "pgprime_k3_empty_des";
 const T = 180_000;
 
 const EMPTY = encodeId({ kind: "table", schema: "public", name: "fresh" });
-const POPULATED = encodeId({ kind: "table", schema: "public", name: "busy" });
 
 describe("MF rules are gated on a probe, not on optimism", () => {
   beforeAll(async () => {

@@ -1,3 +1,5 @@
+/* oxlint-disable typescript/require-await -- `end()` implements `PgLikePool`'s async seam; a
+   synchronous body is what a double with nothing to await looks like. */
 /**
  * A hand-built pg-like pool — design/02 §3's structural seam, taken at its word.
  *

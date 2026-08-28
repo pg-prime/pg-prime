@@ -8,7 +8,6 @@
  * `Ref` instantiates nothing per call; the intersection is paid once per table at declaration.*
  */
 
-import type { OUT } from '../../../packages/pg-prime/src/schema/index.js'
 import type { ColMeta, Projectable, Ref } from '../../../packages/pg-prime/src/schema/index.js'
 import type { AnyQuery, Expr, ExprOf, Operand } from '../../../packages/pg-prime/src/query/types.js'
 

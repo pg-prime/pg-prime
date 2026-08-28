@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { int8Codec, textCodec } from '../../src/codec/index.js'
+import { int8Codec } from '../../src/codec/index.js'
 import { col, projection, select as selectNode, table as tableFrom, tableMeta } from '../../src/compile/nodes.js'
 import { BuilderError, NullOperandError } from '../../src/sql/errors.js'
 import { refsOf } from '../../src/query/ref.js'

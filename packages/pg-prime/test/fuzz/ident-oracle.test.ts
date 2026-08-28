@@ -369,6 +369,7 @@ describe('report', () => {
         const score =
           (a.input.match(/"/g)?.length ?? 0) * 3 +
           (a.input.match(/\\/g)?.length ?? 0) * 2 +
+          // oxlint-disable-next-line no-control-regex -- control characters are what this scores
           (a.input.match(/[;\u0000-\u001f\u200B-\u200F\u202A-\u202E]/gu)?.length ?? 0) * 2 +
           utf8Bytes(a.input) / 32
         return score > best.score ? { score, a } : best

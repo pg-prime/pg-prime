@@ -65,10 +65,13 @@ import type { AppliedRepeatable, RepeatablesPass, RepeatablesPlan } from "../rep
  * runner applies those in one transaction and records them itself. `NO_REPEATABLES` is the
  * binding the CLI uses until K2b wires `createRepeatablesPass(config.repeatables)` in.
  */
+/* oxlint-disable typescript/require-await -- `RepeatablesPass` is an async seam; the null
+   binding has nothing to await, and dropping `async` would change the declared return type. */
 export const NO_REPEATABLES: RepeatablesPass = {
   plan: async (): Promise<RepeatablesPlan> => ({ toApply: [], unchanged: [], orphaned: [] }),
   apply: async (): Promise<AppliedRepeatable[]> => [],
 };
+/* oxlint-enable typescript/require-await */
 
 /* ------------------------------- the report ------------------------------ */
 
@@ -232,6 +235,7 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 
 class CaptureClient implements CatalogClient {
   readonly issued: IssuedQuery[] = [];
+  // oxlint-disable-next-line typescript/require-await -- implements the async `CatalogClient` seam
   async query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }> {
     this.issued.push(values === undefined ? { text } : { text, values });
     return { rows: [] };

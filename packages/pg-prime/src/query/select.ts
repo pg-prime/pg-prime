@@ -25,7 +25,6 @@
  * each in the grammar.
  */
 
-import type { CodecRegistry } from '../codec/index.js'
 import { int4Codec } from '../codec/index.js'
 import type {
   CteNode,
@@ -144,10 +143,6 @@ export class SelectBuilder {
 
   #next(patch: Partial<SelectState>): SelectBuilder {
     return new SelectBuilder({ ...this.s, ...patch })
-  }
-
-  get #registry(): CodecRegistry {
-    return this.s.ctx.registry
   }
 
   // ── projection ────────────────────────────────────────────────────────────

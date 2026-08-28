@@ -28,7 +28,7 @@
 // (1500 / 2000 / 2750) hold at 300 tables on BOTH compilers with a 300t/25t ratio ≤ 1.15. Among
 // admissible arms prefer, in order: schema-size-flat, fewer instantiations, smaller .d.ts, DX.
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ARMS, generate } from './gen.mjs'

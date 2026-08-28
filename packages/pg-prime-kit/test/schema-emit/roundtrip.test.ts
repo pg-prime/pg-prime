@@ -51,6 +51,7 @@ function shadowOf(conn: ConnInfo): Shadow {
     tier: 2,
     reason: "test fixture",
     diagnostics: [],
+    // oxlint-disable-next-line typescript/require-await -- implements the async dispose seam
     dispose: async () => undefined,
   };
 }

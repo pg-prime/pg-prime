@@ -121,7 +121,7 @@ describe("DATE roundtrip: '2026-08-14' in → exactly '2026-08-14' out", () => {
     })
     const plan = registry.planFor(r.fields)[0]!
     expect(r.rows.map((row) => plan(row[0]!))).toEqual(['2025-12-31', '2026-01-01', '2026-08-14'])
-    expect([...['2026-08-14', '2026-01-01', '2025-12-31']].sort()).toEqual([
+    expect(['2026-08-14', '2026-01-01', '2025-12-31'].sort()).toEqual([
       '2025-12-31',
       '2026-01-01',
       '2026-08-14',
@@ -136,6 +136,10 @@ describe('CONTROL — what the drivers do to a DATE when we do NOT neutralise th
 
     const pool = makePool(1)
     try {
+      // The `as never` below is how this file reaches pg's `types`-per-query overload; it also
+      // erases the Promise from the signature, so the checker cannot see that `pool.query` is
+      // thenable. It is.
+      // oxlint-disable-next-line typescript/await-thenable -- `as never` erased the Promise
       const raw = (await pool.query({
         text: `select '2026-08-14'::date as d`,
         rowMode: 'array',

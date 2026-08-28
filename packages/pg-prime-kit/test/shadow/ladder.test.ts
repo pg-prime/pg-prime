@@ -15,7 +15,6 @@ import {
   parseShadowUrl,
   provisionShadow,
   ShadowNameTooLongError,
-  type Shadow,
 } from "../../src/shadow/ladder.js";
 import { connectionString, withClient, type ConnInfo } from "../../src/db/pg.js";
 import { encodeId } from "../../src/ir/stable-id.js";

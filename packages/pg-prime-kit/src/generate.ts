@@ -175,8 +175,10 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
   try {
     /* ---- IR(desired): emit → shadow → (repeatables) → extract ---- */
     let repeatables: readonly RepeatableFile[] = [];
-    const desired = await loadDesired(input.schema, shadow, {
-      ...(input.repeatablesDir === undefined
+    const desired = await loadDesired(
+      input.schema,
+      shadow,
+      input.repeatablesDir === undefined
         ? {}
         : {
             afterLoad: async (client): Promise<void> => {
@@ -185,8 +187,8 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
               // repeatable whose breakage ships (design/06 §3.8).
               repeatables = await loadRepeatables(client, input.repeatablesDir!);
             },
-          }),
-    });
+          },
+    );
 
     /* ---- IR(current) ---- */
     const current = await withClient(input.target, (c) => extractCatalog(c, { schemas, observe: true }));

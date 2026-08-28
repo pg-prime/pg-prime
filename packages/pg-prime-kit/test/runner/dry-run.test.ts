@@ -58,6 +58,7 @@ describe("--dry-run is the stream that runs", () => {
         // The strict pooler probe opens a second connection and its own transactions;
         // that is startup, not the migration, and it would add BEGIN/COMMIT pairs to the
         // recording that the dry run has no reason to contain.
+        // oxlint-disable-next-line typescript/require-await -- implements the async poolerProbe seam
         poolerProbe: async (): Promise<boolean> => false,
       } as const;
 

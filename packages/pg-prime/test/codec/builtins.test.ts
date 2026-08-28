@@ -80,6 +80,9 @@ describe('int8 → bigint (sign-off 00 §6)', () => {
   })
 
   it('rejects a lossy number parameter rather than truncating it', () => {
+    // 2^53+1 cannot be spelled exactly as a JS number — that is the case, and the codec has to
+    // refuse it rather than truncate it.
+    // oxlint-disable-next-line no-loss-of-precision -- the imprecise literal IS the input
     expect(() => int8Codec.encode(9007199254740993)).toThrow(PgEncodeError)
     expect(int8Codec.encode('9007199254740993')).toBe('9007199254740993')
   })

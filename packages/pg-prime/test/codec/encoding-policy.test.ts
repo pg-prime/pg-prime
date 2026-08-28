@@ -258,6 +258,7 @@ describe('integer and numeric encoders validate instead of coercing', () => {
 
   it('int8:number and int8:string were pure `String(v)` — anything at all went out', () => {
     expect(() => int8NumberCodec.encode(1.5)).toThrow(PgEncodeError)
+    // oxlint-disable-next-line no-loss-of-precision -- 2^53+1 is the input the old codec let through
     expect(() => int8NumberCodec.encode(9007199254740993)).toThrow(PgEncodeError)
     expect(() => int8StringCodec.encode('abc')).toThrow(PgEncodeError)
     expect(() => int8StringCodec.encode('')).toThrow(PgEncodeError)

@@ -155,6 +155,7 @@ CREATE OR REPLACE VIEW public.broken AS SELECT * FROM public.no_such_table;`,
       const seen: string[] = [];
       const applied = await applyRepeatables(
         {
+          // oxlint-disable-next-line typescript/require-await -- implements the async CatalogClient seam
           query: async (text: string) => {
             seen.push(text);
             return undefined;

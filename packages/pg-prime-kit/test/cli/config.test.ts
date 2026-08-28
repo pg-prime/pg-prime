@@ -13,7 +13,6 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  ConfigError,
   ENV_VAR,
   findConfigFile,
   loadConfig,

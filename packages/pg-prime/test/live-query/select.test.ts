@@ -462,7 +462,7 @@ describe('plan-ability — PostgreSQL parses, analyses and plans every golden', 
       .orderBy(({ posts: p }) => [q.asc(p.authorId), q.desc(p.createdAt)]),
     live.db
       .from(h().users)
-      .select(({ users: u }) => ({ c: q.val('x', textCodec) }))
+      .select(() => ({ c: q.val('x', textCodec) }))
       .forUpdate({ wait: 'skip locked' }),
   ]
 

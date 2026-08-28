@@ -303,7 +303,7 @@ describe('driver lifecycle and capabilities', () => {
     expect(c.serverVersionNum).toBeGreaterThanOrEqual(150000)
   })
 
-  it('serverParameters are captured and the codec-critical GUCs are asserted, never SET', async () => {
+  it('serverParameters are captured and the codec-critical GUCs are asserted, never SET', () => {
     const p = conn.serverParameters
     expect(p['DateStyle']!.startsWith('ISO')).toBe(true)
     expect(p['client_encoding']).toBe('UTF8')

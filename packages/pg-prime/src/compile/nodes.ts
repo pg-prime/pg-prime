@@ -25,7 +25,6 @@ import {
   arrayCodecOf,
   boolCodec,
   int8Codec,
-  jsonCodecJson,
   jsonbCodec,
   textCodec,
   unknownCodec,

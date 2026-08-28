@@ -107,6 +107,10 @@ describe('typeSource() satisfies both of pg’s readers of `query.types`', () =>
     // to eliminate, and it is why codecs live in ORM core.
     const pool = makePool(1)
     try {
+      // The `as never` below is how this file reaches pg's `types`-per-query overload; it also
+      // erases the Promise from the signature, so the checker cannot see that `pool.query` is
+      // thenable. It is.
+      // oxlint-disable-next-line typescript/await-thenable -- `as never` erased the Promise
       const raw = (await pool.query({
         text: `select 1::int8, 1.10::numeric(10,2), '2026-08-14'::date,
                       '2026-08-14 06:30:00.123456+00'::timestamptz, '{1,2}'::int4[]`,
@@ -128,6 +132,10 @@ describe('typeSource() satisfies both of pg’s readers of `query.types`', () =>
   it('per-query types does NOT pollute the pool: the next query sees pg’s defaults again', async () => {
     const pool = makePool(1)
     try {
+      // The `as never` below is how this file reaches pg's `types`-per-query overload; it also
+      // erases the Promise from the signature, so the checker cannot see that `pool.query` is
+      // thenable. It is.
+      // oxlint-disable-next-line typescript/await-thenable -- `as never` erased the Promise
       const neutral = (await pool.query({
         text: `select '2026-08-14'::date`,
         rowMode: 'array',
@@ -136,6 +144,10 @@ describe('typeSource() satisfies both of pg’s readers of `query.types`', () =>
       } as never)) as unknown as { rows: unknown[][] }
       expect(neutral.rows[0]![0]).toBe('2026-08-14')
 
+      // The `as never` below is how this file reaches pg's `types`-per-query overload; it also
+      // erases the Promise from the signature, so the checker cannot see that `pool.query` is
+      // thenable. It is.
+      // oxlint-disable-next-line typescript/await-thenable -- `as never` erased the Promise
       const polluted = (await pool.query({
         text: `select '2026-08-14'::date`,
         rowMode: 'array',

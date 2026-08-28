@@ -2,7 +2,6 @@ import type { Diagnostic } from "../catalog/extract.js";
 import { GENERATED_NAME } from "../catalog/payloads.js";
 import type {
   ColumnPayload,
-  CommentPayload,
   ConstraintPayload,
   DefaultPayload,
   ExtensionPayload,
@@ -13,7 +12,7 @@ import type {
   TypePayload,
 } from "../catalog/payloads.js";
 import type { Fact, SchemaIR } from "../ir/fact.js";
-import { commentId, encodeId, idSchema, parseId, type StableId } from "../ir/stable-id.js";
+import { encodeId, idSchema, parseId, type StableId } from "../ir/stable-id.js";
 import {
   chooseConstraintName,
   defaultNotNullName,

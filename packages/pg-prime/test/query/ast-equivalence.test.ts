@@ -58,7 +58,6 @@ import { compileOnly } from '../../src/query/run.js'
 import {
   p,
   postsFrom,
-  postsTable,
   u,
   usersCols,
   usersFrom,

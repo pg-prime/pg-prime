@@ -173,15 +173,17 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
         schemas: config.schemas,
       });
       try {
-        const desired = await loadDesired(schema, desiredShadow, {
-          ...(config.repeatablesDir === undefined
+        const desired = await loadDesired(
+          schema,
+          desiredShadow,
+          config.repeatablesDir === undefined
             ? {}
             : {
                 afterLoad: async (client): Promise<void> => {
                   await loadRepeatables(client, config.repeatablesDir);
                 },
-              }),
-        });
+              },
+        );
         desiredFingerprint = desired.ir.fingerprint;
         const diff = diffIR(replayed.ir, desired.ir);
         deltas = diff.deltas.map((d) => `${d.op} ${encodeId(d.op === "rename" ? d.to : d.id)}`);

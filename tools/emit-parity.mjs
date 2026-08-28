@@ -41,7 +41,6 @@
 //      change a byte of what runs or of what the checker reads, and it is the one thing this
 //      guard cannot ask two independent compilers to agree on. It is tolerated with the list
 //      printed, not hidden.
-import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'

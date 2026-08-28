@@ -1,3 +1,6 @@
+/* oxlint-disable typescript/require-await -- every `async` method here implements the async
+   `PgDriver`/`PgConnection` seam; a synchronous body is what a double with nothing to await
+   looks like, and dropping `async` would change the declared return type. */
 /**
  * A recording in-memory driver, for the tier-0 assertions that are about *what reaches the wire*
  * rather than about SQL text (design/09 WS4: "mock pool: chunked insert issues `BEGIN … COMMIT`

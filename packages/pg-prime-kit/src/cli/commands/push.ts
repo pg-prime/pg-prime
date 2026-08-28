@@ -105,7 +105,6 @@ export async function runPush(config: ResolvedConfig, argv: ParseResult): Promis
   }
 
   let statements: readonly { readonly sql: string }[] = [];
-  let segments: readonly { index: number; transactional: boolean; statements: number[] }[] = [];
   let hazards: { code: string; subject: string }[] = [];
   try {
     const schema = (await loadSchema(config.schemaPaths, process.cwd())).schema as SchemaLike;
@@ -160,7 +159,6 @@ export async function runPush(config: ResolvedConfig, argv: ParseResult): Promis
     if (!plan) return refuse("the diff produced no plan");
     hazards = plan.hazards.filter((h) => h.severity === "error" && !h.acknowledged).map((h) => ({ code: h.code, subject: h.subject }));
     statements = plan.statements;
-    segments = plan.segments.map((s) => ({ ...s, statements: [...s.statements] }));
     if (hazards.length > 0) {
       return refuse(
         `${plural(hazards.length, "destructive change")} is unacknowledged (${hazards.map((h) => `${h.code} ${h.subject}`).join(", ")}). ` +

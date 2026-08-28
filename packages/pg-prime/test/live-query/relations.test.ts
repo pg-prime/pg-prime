@@ -244,7 +244,7 @@ describe('depth 3, every codec', () => {
     expect(BigInt((JSON.parse(good![0] as string) as { id: string }).id)).toBe(pid)
   })
 
-  it('the emitted SQL is the reason: ::text on int8 and numeric, nothing on timestamptz', async () => {
+  it('the emitted SQL is the reason: ::text on int8 and numeric, nothing on timestamptz', () => {
     const c = live.db
       .from(h().users, 'u')
       .select((t) => ({
@@ -287,7 +287,7 @@ describe('ordering through the hidden keys', () => {
     expect(rows[0]!.posts.map((p) => p.title)).toStrictEqual(oracle.map((r) => r[0]))
   })
 
-  it('json_agg does not preserve input order by itself — the hidden key is what does', async () => {
+  it('json_agg does not preserve input order by itself — the hidden key is what does', () => {
     // The `order by "x"."k0" desc` inside the aggregate is the mechanism; without it the order
     // would be whatever the executor happened to produce. Pin that it is emitted.
     const c = live.db

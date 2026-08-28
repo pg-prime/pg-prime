@@ -206,7 +206,7 @@ describe('§2.7 — a chained .with() does not nest the earlier CTEs', () => {
     expect(await live.raw(`select count(*) from ${NS}.staging where ready`)).toStrictEqual([['0']])
   })
 
-  it('each CTE body declares only itself', async () => {
+  it('each CTE body declares only itself', () => {
     const db = live.dbFor(moveSchema)
     const sql = db
       .with('a', (d) => d.from(moveSchema.h.live).select(({ live: l }) => ({ id: l.id })))

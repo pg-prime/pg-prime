@@ -24,7 +24,7 @@ describe('undefined in a template hole is a mistake, not a NULL', () => {
     const missing = ({ email: 'a@b' } as { email: string; emial?: string }).emial
     let thrown: unknown
     try {
-      sql`x = ${missing}`
+      void sql`x = ${missing}`
     } catch (e) {
       thrown = e
     }
@@ -44,7 +44,7 @@ describe('a registered node that is not an expression is refused at the tag', ()
   it('an order item names itself, instead of failing later as node kind `undefined`', () => {
     let thrown: unknown
     try {
-      sql`order by ${asc(u('id'))}`
+      void sql`order by ${asc(u('id'))}`
     } catch (e) {
       thrown = e
     }

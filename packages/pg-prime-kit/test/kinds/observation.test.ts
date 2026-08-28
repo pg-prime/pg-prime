@@ -77,7 +77,7 @@ describe("Tier O is observed and Tier U is counted", () => {
 
   it("observation is reportable as counts, sorted and stable", () => {
     const counts = observedCounts(result.observed);
-    expect(counts.map((c) => c.kind)).toEqual([...counts.map((c) => c.kind)].sort());
+    expect(counts.map((c) => c.kind)).toEqual(counts.map((c) => c.kind).sort());
     expect(counts.every((c) => c.count > 0)).toBe(true);
     const diags = observationDiagnostics(result.observed);
     expect(diags.every((d) => d.code === "observed_kind" && d.severity === "info")).toBe(true);

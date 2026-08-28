@@ -118,6 +118,7 @@ const S = { iters: 2000, samples: 25, warmup: 5000 }
  * escape analysis sinks the allocation and the stage appears to cost 550 B when the previous stage
  * cost 870. Every measurement below therefore stores its result.
  */
+// oxlint-disable-next-line no-unused-vars -- write-only on purpose; see the block above
 let SINK = null
 const keep = (fn) => () => {
   SINK = fn()
@@ -150,8 +151,8 @@ const asts = Array.from({ length: 256 }, () => full().toAst())
 let cur = 0
 const emitOnce = () => compiler.compile(asts[cur++ & 255])
 
-const heavy = table('heavy: 12 cols + 2 joins + 1 relation', heavySteps)
-const simple = table('simple: 4 cols, one where', simpleSteps)
+table('heavy: 12 cols + 2 joins + 1 relation', heavySteps)
+table('simple: 4 cols, one where', simpleSteps)
 
 globalThis.gc?.()
 const emitB = bytesPerOp(keep(emitOnce), { warmup: 20000 }).median
