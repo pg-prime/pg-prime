@@ -18,10 +18,13 @@ import { bool, list, parseArgs, renderOptions, str, type OptionSpec, type ParseR
 import { APPLY_OPTIONS, runApply } from "./commands/apply.js";
 import { BASELINE_OPTIONS, runBaseline } from "./commands/baseline.js";
 import { CHECK_OPTIONS, runCheck } from "./commands/check.js";
+import { CHECKPOINT_OPTIONS, runCheckpoint } from "./commands/checkpoint.js";
 import { DOCTOR_OPTIONS, runDoctor } from "./commands/doctor.js";
 import { GENERATE_OPTIONS, runGenerate } from "./commands/generate.js";
 import { LINT_OPTIONS, runLint } from "./commands/lint.js";
+import { PULL_OPTIONS, runPull } from "./commands/pull.js";
 import { PUSH_OPTIONS, runPush } from "./commands/push.js";
+import { SEED_OPTIONS, runSeedCommand } from "./commands/seed.js";
 import { STATUS_OPTIONS, runStatus } from "./commands/status.js";
 import { UNLOCK_OPTIONS, runUnlock } from "./commands/unlock.js";
 import { VERIFY_OPTIONS, runVerify } from "./commands/verify.js";
@@ -53,6 +56,16 @@ interface Command {
   readonly summary: string;
   readonly options: readonly OptionSpec[];
   readonly exits: string;
+  /**
+   * The noun this command hangs off: `migrate <name>`, `db <name>`, or — when it is
+   * `null` — the bare `pg-prime <name>`.
+   *
+   * design/06 §6.2 lists ten commands under `migrate`, `db seed` on its own, and `pull` is
+   * the twelfth. `db seed` is not a migration (nothing is recorded) and `pull` is not one
+   * either (it reads a database and writes TypeScript), so neither belongs under the
+   * `migrate` noun. Defaults to `migrate`.
+   */
+  readonly noun?: "migrate" | "db" | null;
   /**
    * `false` for the one command that is a pure function of files. `resolveConfig` then
    * returns a placeholder connection and `ResolvedConfig.hasConnection` is false, so
@@ -144,13 +157,38 @@ const COMMANDS: readonly Command[] = [
     exits: "0 free, stale or released · 6 a live deploy holds it",
     run: runUnlock,
   },
+  {
+    name: "checkpoint",
+    aliases: [],
+    summary: "write a full-schema checkpoint a fresh database jumps to; existing ones ignore it. Nothing is deleted.",
+    options: CHECKPOINT_OPTIONS,
+    exits: "0 written or nothing to do · 1 error",
+    run: runCheckpoint,
+  },
+  {
+    name: "seed",
+    aliases: [],
+    noun: "db",
+    summary: "run seeds/*.sql and seeds/*.ts. Never recorded in the migration history; refuses on production.",
+    options: SEED_OPTIONS,
+    exits: "0 seeded or nothing to do · 1 refused or failed",
+    run: runSeedCommand,
+  },
+  {
+    name: "pull",
+    aliases: [],
+    noun: null,
+    summary: "introspect the database and write a deterministic TypeScript schema file plus sql/ repeatables.",
+    options: PULL_OPTIONS,
+    exits: "0 written · 1 error",
+    run: runPull,
+  },
 ];
 
-/** Still to come. Named here so `--help` does not pretend they do not exist. */
-const LATER: readonly (readonly [string, string])[] = [
-  ["checkpoint", "K4 — write a full-schema checkpoint"],
-  ["db seed", "K4 — run seeds/*.sql, never recorded in the migration history"],
-];
+const NOUNS: readonly string[] = ["migrate", "db"];
+const bare = (c: Command): boolean => c.noun === null;
+const under = (noun: string): Command[] => COMMANDS.filter((c) => (c.noun ?? "migrate") === noun);
+const spell = (c: Command): string => (c.noun === null ? c.name : `${c.noun ?? "migrate"} ${c.name}`);
 
 function version(): string {
   try {
@@ -164,17 +202,14 @@ function version(): string {
 }
 
 function rootHelp(): string {
-  const width = Math.max(...COMMANDS.map((c) => c.name.length));
+  const width = Math.max(...COMMANDS.map((c) => spell(c).length));
   return [
     "pg-prime — PostgreSQL schema migrations",
     "",
-    "Usage: pg-prime migrate <command> [options]",
+    "Usage: pg-prime <command> [options]",
     "",
     "Commands:",
-    ...COMMANDS.map((c) => `  migrate ${c.name.padEnd(width)}  ${c.summary}`),
-    "",
-    "Not in this release:",
-    ...LATER.map(([n, why]) => `  migrate ${n.padEnd(width)}  ${why}`),
+    ...COMMANDS.map((c) => `  ${spell(c).padEnd(width)}  ${c.summary}`),
     "",
     "Global options:",
     renderOptions(GLOBAL_OPTIONS),
@@ -189,7 +224,7 @@ function rootHelp(): string {
 
 function commandHelp(c: Command): string {
   return [
-    `pg-prime migrate ${c.name}${c.aliases.length ? ` (alias: ${c.aliases.join(", ")})` : ""}`,
+    `pg-prime ${spell(c)}${c.aliases.length ? ` (alias: ${c.aliases.join(", ")})` : ""}`,
     "",
     `  ${c.summary}`,
     "",
@@ -200,14 +235,15 @@ function commandHelp(c: Command): string {
   ].join("\n");
 }
 
-function migrateHelp(): string {
-  const width = Math.max(...COMMANDS.map((c) => c.name.length));
+function nounHelp(noun: string): string {
+  const commands = under(noun);
+  const width = Math.max(...commands.map((c) => c.name.length));
   return [
-    "pg-prime migrate <command> [options]",
+    `pg-prime ${noun} <command> [options]`,
     "",
-    ...COMMANDS.map((c) => `  ${c.name.padEnd(width)}  ${c.summary}`),
+    ...commands.map((c) => `  ${c.name.padEnd(width)}  ${c.summary}`),
     "",
-    "Run `pg-prime migrate <command> --help` for a command's options.",
+    `Run \`pg-prime ${noun} <command> --help\` for a command's options.`,
   ].join("\n");
 }
 
@@ -262,27 +298,52 @@ export async function main(argv: readonly string[], io: Partial<CliIo> = {}): Pr
     }
     return emit(fail("pg-prime", EXIT.error, "usage", `expected a command before ${JSON.stringify(argv[0])}. Try \`pg-prime --help\`.`), earlyFormat);
   }
-  if (noun !== "migrate") {
-    return emit(fail("pg-prime", EXIT.error, "usage", `unknown command ${JSON.stringify(noun)}. Try \`pg-prime --help\`.`), earlyFormat);
-  }
-  if (verb === undefined) {
-    if (wantsHelp) {
-      out(`${migrateHelp()}\n`);
-      return EXIT.ok;
-    }
-    return emit(fail("migrate", EXIT.error, "usage", `pg-prime migrate needs a command: ${COMMANDS.map((c) => c.name).join(", ")}.`), earlyFormat);
-  }
 
-  const command = COMMANDS.find((c) => c.name === verb || c.aliases.includes(verb));
-  if (!command) {
-    return emit(fail("migrate", EXIT.error, "usage", `unknown command \`migrate ${verb}\`: ${COMMANDS.map((c) => c.name).join(", ")}.`), earlyFormat);
+  // Routing is positional and one token deep: `pull` is a command of its own, `migrate`
+  // and `db` are nouns whose next token is the command. A bare command name is checked
+  // FIRST so that a future noun and a command can never both claim one word silently.
+  let command: Command | undefined;
+  let skip = 1;
+  const bareMatch = COMMANDS.find((c) => bare(c) && (c.name === noun || c.aliases.includes(noun)));
+  if (bareMatch) {
+    command = bareMatch;
+  } else {
+    if (!NOUNS.includes(noun)) {
+      return emit(
+        fail(
+          "pg-prime",
+          EXIT.error,
+          "usage",
+          `unknown command ${JSON.stringify(noun)}: ${[...NOUNS, ...COMMANDS.filter(bare).map((c) => c.name)].join(", ")}. Try \`pg-prime --help\`.`,
+        ),
+        earlyFormat,
+      );
+    }
+    if (verb === undefined) {
+      if (wantsHelp) {
+        out(`${nounHelp(noun)}\n`);
+        return EXIT.ok;
+      }
+      return emit(
+        fail(noun, EXIT.error, "usage", `pg-prime ${noun} needs a command: ${under(noun).map((c) => c.name).join(", ")}.`),
+        earlyFormat,
+      );
+    }
+    command = under(noun).find((c) => c.name === verb || c.aliases.includes(verb));
+    if (!command) {
+      return emit(
+        fail(noun, EXIT.error, "usage", `unknown command \`${noun} ${verb}\`: ${under(noun).map((c) => c.name).join(", ")}.`),
+        earlyFormat,
+      );
+    }
+    skip = 2;
   }
 
   const specs = [...command.options, ...GLOBAL_OPTIONS];
-  const parsed = parseArgs(argv.slice(2), specs);
+  const parsed = parseArgs(argv.slice(skip), specs);
   const requested = str(parsed.values, "output");
   const format: OutputFormat = requested === "json" ? "json" : "text";
-  const label = `migrate ${command.name}`;
+  const label = spell(command);
 
   if (bool(parsed.values, "help")) {
     out(`${commandHelp(command)}\n`);

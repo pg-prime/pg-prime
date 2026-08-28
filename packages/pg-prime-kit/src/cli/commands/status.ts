@@ -44,6 +44,7 @@ function envelope(config: ResolvedConfig, r: StatusReport): Readonly<Record<stri
     fingerprint: r.fingerprint,
     fingerprintSource: r.fingerprintSource,
     fingerprintDrift: r.fingerprintDrift,
+    drift: r.drift,
     recordedFingerprint: r.recordedFingerprint,
     migrations: r.migrations.map((m) => ({
       id: m.id,

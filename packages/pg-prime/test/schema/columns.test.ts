@@ -204,7 +204,20 @@ describe('table runtime', () => {
     expect(users.$.name).toBe('users')
     expect(users.$.columns.find((c) => c.key === 'displayName')?.dbName).toBe('display_name')
     expect(users.$.extras).toEqual([
-      { node: 'index', name: 'users_email_idx', unique: true, columns: ['email'] },
+      {
+        node: 'index',
+        name: 'users_email_idx',
+        unique: true,
+        columns: ['email'],
+        // design/12 K4: the per-column and whole-index options. The plain-column form is
+        // unchanged and fills them in with "no option stated", which is what makes the
+        // emitted `CREATE INDEX` byte-identical to what it was before they existed.
+        items: [{ column: 'email', desc: false, nulls: undefined, opclass: undefined }],
+        using: undefined,
+        where: undefined,
+        include: [],
+        nullsNotDistinct: false,
+      },
       { node: 'comment', text: 'Application user accounts.' },
     ])
   })

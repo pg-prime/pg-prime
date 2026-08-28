@@ -234,7 +234,15 @@ describe("design/06 §3.5 — the three rewrites that need a second file", () =>
         expect(stub!.sql).toContain("TODO: backfill public.tickets.token");
         // Applied unedited it must FAIL, not be silently recorded as done.
         expect(stub!.sql).toContain("RAISE EXCEPTION");
-        expect(stub!.sql).toContain("UPDATE public.tickets SET token = DEFAULT");
+        // …and behind the guard, a WORKING keyset batch (design/12 K4 item 1): the batch
+        // directive, the two GUCs the runner publishes, and the two columns it reads back.
+        expect(stub!.sql).toContain("-- pg-prime:batch");
+        expect(stub!.sql).toContain("UPDATE public.tickets AS t");
+        expect(stub!.sql).toContain("SET token = DEFAULT");
+        expect(stub!.sql).toContain("current_setting('pgprime.batch_size')::int");
+        expect(stub!.sql).toContain("nullif(current_setting('pgprime.watermark', true), '')");
+        expect(stub!.sql).toContain("AS rows_done");
+        expect(stub!.sql).toContain("AS watermark");
 
         const applied = await applyPending(dbConn(database), dir, { schemas: ["public"] });
         expect(applied.status).toBe("failed");

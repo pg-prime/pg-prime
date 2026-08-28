@@ -321,6 +321,72 @@ export async function breakLease(client: CatalogClient): Promise<boolean> {
   return r.rows.length > 0;
 }
 
+/* --------------------- checkpoints (design/06 §4.4, §4.5) ----------------- */
+
+/**
+ * A file this database will never execute — design/06 §4.5's "an existing database ignores
+ * checkpoints entirely", and the files a fresh database jumped over.
+ *
+ * Recorded rather than left pending, and recorded with `statements_applied = 0`, because
+ * that is the truth: nothing ran. `status = 'superseded'` is §4.4's own value, reserved
+ * for exactly this by design/11 K1.
+ */
+export async function recordSuperseded(
+  client: CatalogClient,
+  file: {
+    readonly id: string;
+    readonly seq: number;
+    readonly name: string;
+    readonly checksum: string;
+    readonly txmode: string;
+    readonly statements: readonly unknown[];
+    readonly plan: { readonly planId: string; readonly to: { readonly fingerprint: string } } | null;
+  },
+  engineVersion: string,
+  appliedFrom: string | null,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO ${HISTORY_SCHEMA}.migrations (
+       id, seq, name, checksum, plan_id, fingerprint_from, fingerprint_to, txmode,
+       statements_total, statements_applied, statement_uncertain, segment_applied,
+       status, started_at, finished_at, duration_ms, applied_from, error, engine_version
+     ) VALUES ($1,$2,$3,$4,$5,NULL,$6,$7,$8,0,NULL,0,'superseded',now(),now(),0,$9,NULL,$10)
+     ON CONFLICT (id) DO NOTHING`,
+    [
+      file.id, file.seq, file.name, file.checksum,
+      file.plan?.planId ?? null, file.plan?.to.fingerprint ?? null,
+      file.txmode, file.statements.length, appliedFrom, engineVersion,
+    ],
+  );
+}
+
+/** design/06 §4.4's `pgprime.checkpoints`, written when a fresh database jumps to one. */
+export async function recordCheckpoint(client: CatalogClient, id: string, fingerprint: string): Promise<void> {
+  await client.query(
+    `INSERT INTO ${HISTORY_SCHEMA}.checkpoints (id, fingerprint, created_at)
+     VALUES ($1, $2, now())
+     ON CONFLICT (id) DO UPDATE SET fingerprint = EXCLUDED.fingerprint, created_at = now()`,
+    [id, fingerprint],
+  );
+}
+
+export interface CheckpointRow {
+  readonly id: string;
+  readonly fingerprint: string;
+  readonly createdAt: string;
+}
+
+export async function readCheckpointRows(client: CatalogClient): Promise<CheckpointRow[]> {
+  const r = await client.query(
+    `SELECT id, fingerprint, ${TS("created_at")} AS created_at FROM ${HISTORY_SCHEMA}.checkpoints ORDER BY id`,
+  );
+  return r.rows.map((row) => ({
+    id: str(row["id"]),
+    fingerprint: str(row["fingerprint"]),
+    createdAt: str(row["created_at"]),
+  }));
+}
+
 /* -------------------- data migrations (design/06 §4.4, §7) ---------------- */
 
 /**

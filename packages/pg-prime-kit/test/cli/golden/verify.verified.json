@@ -15,6 +15,7 @@
     "kept": false
   },
   "against": "schema",
+  "fromCheckpoint": false,
   "replay": {
     "status": "applied",
     "applied": [

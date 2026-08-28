@@ -21,6 +21,12 @@ import { hostname } from "node:os";
 import pg from "pg";
 import { extractCatalog, type CatalogClient, type Diagnostic } from "../catalog/extract.js";
 import { RUNNER_EXIT, type ExitCode, type RunnerStatus } from "../cli/exit.js";
+import {
+  describeDrift,
+  driftSentence,
+  listCheckpoints,
+  type DriftReport,
+} from "../checkpoint/checkpoint.js";
 import { runBatchStatement, type BatchEvent, type LagEvent } from "../data/batch.js";
 import type { Segment } from "../diff/order.js";
 import { withClient, type ConnInfo } from "../db/pg.js";
@@ -41,6 +47,8 @@ import {
   readMigrationRows,
   readRepeatableRows,
   recordAppliedSql,
+  recordCheckpoint,
+  recordSuperseded,
   releaseLease,
   takeLease,
   upsertRepeatable,
@@ -135,6 +143,8 @@ export interface RunnerFailure {
   readonly sqlState?: string;
   readonly sql?: string;
   readonly attempts?: number;
+  /** design/12 decision 16 — the drifted objects, when a checkpoint IR can name them */
+  readonly drift?: DriftReport;
 }
 
 export interface ApplyPendingResult {
@@ -177,6 +187,18 @@ export interface ApplyPendingOptions {
    * `pg_last_wal_replay_lsn()`, which is design/06 §7's literal shape.
    */
   readonly replicas?: readonly ConnInfo[];
+  /**
+   * design/06 §4.5. `auto` (the default) is the design's rule: a fresh database jumps to
+   * the newest checkpoint, an existing one records the checkpoint files as superseded and
+   * continues linearly.
+   *
+   * `ignore` is what `migrate verify` passes, because §6.2 defines `verify` as "replay
+   * **every** migration from empty" — and `verify` always replays into a fresh ephemeral
+   * database, so `auto` would silently turn every `verify` into a checkpoint jump and
+   * report a partial replay as a full one. `verify --from-checkpoint` is the flag that
+   * asks for the jump, and it selects `auto`.
+   */
+  readonly checkpoints?: "auto" | "ignore";
   /** hostname / CI run id recorded on every row */
   readonly appliedFrom?: string;
   readonly engineVersion?: string;
@@ -565,8 +587,47 @@ export async function applyPendingOn(
       }
     }
 
-    /* 7 (selection). */
+    /* 5-bis. Checkpoints — design/06 §4.5, design/12 decision 16.
+     *
+     * "A FRESH database applies the newest checkpoint and then everything after it; an
+     * EXISTING database ignores checkpoints entirely and continues linearly."
+     *
+     * "Fresh" is `pgprime.migrations` being empty, which is the only definition available
+     * before anything has run and the only one that cannot be wrong: a database with one
+     * recorded migration has a history to continue, whatever its catalog looks like.
+     *
+     * Both branches RECORD what they skipped, as `superseded` (§4.4's own value). Leaving
+     * the jumped files "pending" would make `status` exit 5 for ever on a fully applied
+     * repository and `check` fail on every commit after a checkpoint landed; leaving them
+     * absent would make the reconciler above unable to tell a jumped file from a deleted
+     * one. `superseded` says what happened: never executed here, and never will be.
+     */
     const settled = new Set(rows.filter((r) => r.status === "applied" || r.status === "baselined").map((r) => r.id));
+    const recorded = new Set(rows.map((r) => r.id));
+    const checkpointFiles = options.checkpoints === "ignore" ? [] : await listCheckpoints(migrationsDir);
+    const newest = checkpointFiles.length === 0 ? undefined : checkpointFiles[checkpointFiles.length - 1]!;
+    const jump = newest !== undefined && rows.length === 0 ? newest : undefined;
+    const checkpointIds = new Set(checkpointFiles.map((c) => c.id));
+    const superseded =
+      jump !== undefined
+        ? files.filter((f) => f.seq < jump.seq || (f.seq === jump.seq && f.name < jump.name))
+        : files.filter((f) => checkpointIds.has(f.id) && !recorded.has(f.id));
+    if (superseded.length > 0 && !dryRun) {
+      for (const file of superseded) {
+        await recordSuperseded(client, file, engineVersion, appliedFrom);
+        settled.add(file.id);
+      }
+      warnings.push(
+        jump !== undefined
+          ? `fresh database: jumped to checkpoint ${jump.id} and recorded ${superseded.length} earlier file(s) as superseded`
+          : `existing database: recorded ${superseded.length} checkpoint file(s) as superseded and continued linearly ` +
+            `(${superseded.map((f) => f.id).join(", ")})`,
+      );
+    } else if (superseded.length > 0) {
+      for (const file of superseded) settled.add(file.id);
+    }
+
+    /* 7 (selection). */
     let pending = files.filter((f) => !settled.has(f.id));
     if (options.to !== undefined) {
       const target = pending.concat(files).find((f) => matchesTarget(f, options.to!));
@@ -657,6 +718,17 @@ export async function applyPendingOn(
         const live = needsExtract ? (await extractCatalog(client, { schemas })).ir.fingerprint : fingerprint;
         verified = true;
         if (live !== expected) {
+          // design/12 decision 16 closes design/11 K1's open item (a): a fingerprint is a
+          // hash and a hash names nothing, but a checkpoint's `.ir.json` IS an IR of the
+          // expected state, so the drifted objects can be named by diffing the live
+          // catalog against the newest checkpoint at or before where history says we are.
+          const drift = await describeDrift({
+            client,
+            migrationsDir,
+            schemas,
+            appliedIds: rows.filter((r) => r.status === "applied" || r.status === "baselined").map((r) => r.id),
+          }).catch(() => null);
+          const named = drift === null ? null : driftSentence(drift);
           return await finish(
             done("drift", {
               lock, applied, preflight,
@@ -668,8 +740,12 @@ export async function applyPendingOn(
                   `${file.id} expects the schema to be at ${expected} but ${needsExtract ? "the live catalog is" : "the last applied row records"} ` +
                   `${String(live)} (schemas: ${schemas.join(", ")}). Someone changed the database outside the migration ` +
                   `history, or the runner's --schema set differs from the one the plan was generated with. ` +
-                  `Run \`pg-prime migrate status --verify-fingerprint\` to re-extract.`,
+                  (named === null
+                    ? `No checkpoint is available to name the drifted objects — run \`pg-prime migrate checkpoint\` so the ` +
+                      `next mismatch can. Run \`pg-prime migrate status --verify-fingerprint\` to re-extract.`
+                    : named),
                 migration: file.id,
+                ...(drift === null || drift.checkpoint === null ? {} : { drift }),
               },
             }),
           );
@@ -709,6 +785,12 @@ export async function applyPendingOn(
       emit({ kind: "migration", id: file.id, state: "done" });
       applied.push(outcome.record);
       fingerprint = file.plan?.to.fingerprint ?? file.directives.to ?? fingerprint;
+      // design/06 §4.4's `pgprime.checkpoints`: written when a checkpoint is actually
+      // APPLIED, which only a fresh database ever does. A checkpoint that was written but
+      // never jumped to anywhere has no business claiming a row.
+      if (file.directives.checkpoint && !dryRun) {
+        await recordCheckpoint(client, file.id, fingerprint ?? file.checksum);
+      }
     }
 
     /* 8. Repeatables. */

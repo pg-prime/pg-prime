@@ -11,9 +11,29 @@
  * no benefit: the emitter never looks at a column's TypeScript type, only at its `ColumnDdl`.
  */
 
-import type { ColumnDdl, RefRuntime, TableExtra, TableRuntime } from "pg-prime";
+import type {
+  ColumnDdl,
+  PgDomain,
+  PgEnum,
+  PgExtension,
+  PgSchema,
+  PgSequence,
+  RefRuntime,
+  TableExtra,
+  TableRuntime,
+} from "pg-prime";
 
-export type { ColumnDdl, RefRuntime, TableExtra, TableRuntime };
+export type {
+  ColumnDdl,
+  PgDomain,
+  PgEnum,
+  PgExtension,
+  PgSchema,
+  PgSequence,
+  RefRuntime,
+  TableExtra,
+  TableRuntime,
+};
 
 /** One table, as `defineSchema(...)`'s registry holds it. */
 export interface TableLike {
@@ -29,4 +49,20 @@ export interface TableLike {
  */
 export interface SchemaLike {
   readonly tables: Readonly<Record<string, TableLike>>;
+  /**
+   * The standalone objects `defineSchema` does not carry (design/06 §2.2 Tier M:
+   * `type` — enum, domain, composite — `sequence` and `extension`), plus the `pgSchema`
+   * declarations, collected by `loadConfig`'s `loadSchema` off the module's own exports.
+   *
+   * They are NOT properties of `defineSchema(...)`: adding them there would change a
+   * signature the query layer owns, for objects the query layer never looks at. The kit
+   * already discovers tables by walking a module's exports, and these are discovered the
+   * same way, which is also why they are optional here — a `{ tables }` literal is still
+   * a `SchemaLike`, and every existing emitter test still is one.
+   */
+  readonly enums?: readonly PgEnum<string, readonly string[]>[];
+  readonly domains?: readonly PgDomain[];
+  readonly sequences?: readonly PgSequence[];
+  readonly extensions?: readonly PgExtension[];
+  readonly schemas?: readonly PgSchema[];
 }

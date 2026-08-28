@@ -22,6 +22,7 @@
  */
 
 import { extractCatalog } from "../../catalog/extract.js";
+import { listCheckpoints } from "../../checkpoint/checkpoint.js";
 import { ConfigError, loadSchema, type ResolvedConfig } from "../../config/load.js";
 import { diffIR } from "../../diff/diff.js";
 import { withClient } from "../../db/pg.js";
@@ -38,7 +39,11 @@ import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js
 export const VERIFY_OPTIONS: readonly OptionSpec[] = [
   { name: "to", type: "string", placeholder: "id", describe: "replay only up to this migration (bisecting)" },
   { name: "shadow", type: "string", placeholder: "url", describe: "the ephemeral database to replay into", defaultText: "CREATE DATABASE" },
-  { name: "from-checkpoint", type: "boolean", describe: "reserved: checkpoints are not built in this release" },
+  {
+    name: "from-checkpoint",
+    type: "boolean",
+    describe: "replay from the newest checkpoint instead of from empty (design/06 §4.5)",
+  },
   { name: "keep", type: "boolean", describe: "leave the ephemeral database behind for inspection" },
   {
     name: "against",
@@ -70,14 +75,29 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
     text: `migrate verify\n\n${status.toUpperCase()}: ${message}`,
   });
 
-  if (bool(argv.values, "from-checkpoint")) {
-    return fail(
-      EXIT.error,
-      "refused",
-      "--from-checkpoint is reserved: `migrate checkpoint` does not exist in this release " +
-        "(design/11 §4 puts it in K4), so there is no checkpoint to replay from and a flag that " +
-        "silently ignored its argument would report a partial replay as a full one.",
-    );
+  /**
+   * design/06 §6.2: "replay every migration from empty (**or from the newest checkpoint
+   * with `--from-checkpoint`**)".
+   *
+   * The runner's own §4.5 rule would do the jump by itself — `verify` always replays into
+   * a *fresh* ephemeral database, which is precisely the condition for it. That is why the
+   * default here is `checkpoints: "ignore"`: without it every `verify` in a repository
+   * that has ever taken a checkpoint would silently become a partial replay reported as a
+   * full one, which is the failure the old refusal existed to prevent. The flag turns the
+   * jump back on, and the envelope says which question was asked.
+   */
+  const fromCheckpoint = bool(argv.values, "from-checkpoint");
+  if (fromCheckpoint) {
+    const available = await listCheckpoints(config.migrationsDir);
+    if (available.length === 0) {
+      return fail(
+        EXIT.error,
+        "refused",
+        `--from-checkpoint was asked for and there is no NNNN_checkpoint.sql in ${config.migrationsDir}. ` +
+          "Run `pg-prime migrate checkpoint` first, or drop the flag to replay from empty; a flag that " +
+          "silently did nothing would report a full replay as a checkpoint one.",
+      );
+    }
   }
   /**
    * What is the replay compared to?
@@ -142,6 +162,7 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
       repeatables: createRepeatablesPass(),
       repeatablesDir: config.repeatablesDir,
       appliedFrom: "migrate-verify",
+      checkpoints: fromCheckpoint ? "auto" : "ignore",
       ...(str(argv.values, "to") === undefined ? {} : { to: str(argv.values, "to")! }),
     });
     if (replay.status !== "applied" && replay.status !== "up_to_date") {
@@ -212,6 +233,7 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
         schemas: config.schemas,
         ephemeral: { tier: replayShadow.tier, database: replayShadow.conn.database, kept: bool(argv.values, "keep") },
         against,
+        fromCheckpoint,
         replay: {
           status: replay.status,
           applied: replay.applied.map((a) => a.id),

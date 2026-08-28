@@ -69,6 +69,16 @@ interface IndexDecl {
   readonly name: string;
   readonly unique: boolean;
   readonly columns: readonly string[];
+  readonly items: readonly {
+    readonly column: string;
+    readonly desc: boolean;
+    readonly nulls: "first" | "last" | undefined;
+    readonly opclass: string | undefined;
+  }[];
+  readonly using: string | undefined;
+  readonly where: string | undefined;
+  readonly include: readonly string[];
+  readonly nullsNotDistinct: boolean;
 }
 
 interface CommentDecl {
@@ -233,11 +243,47 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
 
   const sql: string[] = [];
 
+  /* Standalone declarations (design/05 §3.2/§3.3/§3.5/§3.10), collected off the module's
+   * exports by `loadSchema`. A `pgEnum` no column uses is emitted too — which is what makes
+   * a pulled schema round-trip, because the differ would otherwise plan a `DROP TYPE`. */
+  for (const e of schema.enums ?? []) {
+    const ns = e.schema ?? defaultSchema;
+    const key = qualify(ns, e.name);
+    if (!enums.has(key)) enums.set(key, { schema: ns, name: e.name, values: [...e.values] });
+  }
+  const byQualified = <T extends { name: string; schema?: string | undefined }>(a: T, b: T): number =>
+    cmp(qualify(a.schema ?? defaultSchema, a.name), qualify(b.schema ?? defaultSchema, b.name));
+  const domains = [...(schema.domains ?? [])].sort(byQualified);
+  const sequences = [...(schema.sequences ?? [])].sort(byQualified);
+  const extensions = [...(schema.extensions ?? [])].sort((a, b) => cmp(a.name, b.name));
+
+  // An extension is declare-only and its member objects live in a fixed schema, which is
+  // exactly the case design/06 §3.2 says the tier-3 map cannot express — so it is emitted
+  // with the USER's schema name and a diagnostic says so, rather than silently writing a
+  // shadow-qualified `CREATE EXTENSION` that no-ops against the already-installed one.
+  for (const x of extensions) {
+    const where = x.schema === undefined ? "" : ` SCHEMA ${quoteIdent(x.schema)}`;
+    sql.push(`CREATE EXTENSION IF NOT EXISTS ${quoteIdent(x.name)}${where}`);
+    if (map !== undefined && x.schema !== undefined && map.get(x.schema) !== x.schema) {
+      diagnostics.push({
+        code: "shadow_extension_fixed_schema",
+        severity: "warning",
+        subject: `extension:${x.name}`,
+        message:
+          `extension ${JSON.stringify(x.name)} declares SCHEMA ${JSON.stringify(x.schema)}, which a temp-schema ` +
+          `shadow cannot rename (design/06 §3.2). It is emitted into the real schema.`,
+      });
+    }
+  }
+
   // schemas first: a mapped shadow schema may not exist yet, and `public` always does.
   const emitSchemas = [
     ...new Set([
       ...tables.map((t) => mapped(t.schema, `table ${t.key}`)),
       ...[...enums.values()].map((e) => mapped(e.schema, `type ${qualify(e.schema, e.name)}`)),
+      ...domains.map((d) => mapped(d.schema ?? defaultSchema, `domain ${qualify(d.schema ?? defaultSchema, d.name)}`)),
+      ...sequences.map((s) => mapped(s.schema ?? defaultSchema, `sequence ${qualify(s.schema ?? defaultSchema, s.name)}`)),
+      ...(schema.schemas ?? []).map((s) => mapped(s.name, `schema ${s.name}`)),
     ]),
   ].sort(cmp);
   for (const s of emitSchemas) {
@@ -248,6 +294,37 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
   for (const e of [...enums.values()].sort((a, b) => cmp(qualify(a.schema, a.name), qualify(b.schema, b.name)))) {
     const target = quoteQualified(mapped(e.schema, `type ${qualify(e.schema, e.name)}`), e.name);
     sql.push(`CREATE TYPE ${target} AS ENUM (${e.values.map(quoteLiteral).join(", ")})`);
+  }
+
+  for (const d of domains) {
+    const ns = d.schema ?? defaultSchema;
+    const target = quoteQualified(mapped(ns, `domain ${qualify(ns, d.name)}`), d.name);
+    const bits = [`CREATE DOMAIN ${target} AS ${d.baseType}`];
+    if (d.collation !== undefined) bits.push(`COLLATE ${quoteIdent(d.collation)}`);
+    if (d.default !== undefined) bits.push(`DEFAULT ${d.default}`);
+    if (d.notNull) bits.push("NOT NULL");
+    // Sorted by name: a domain's CHECKs are a set, and `pg_get_constraintdef` reads them
+    // back in catalog order, so any declaration order but a sorted one is a phantom diff.
+    for (const c of [...d.checks].sort((a, b) => cmp(a.name, b.name))) {
+      bits.push(`CONSTRAINT ${quoteIdent(c.name)} CHECK (${c.expression})`);
+    }
+    sql.push(bits.join(" "));
+  }
+
+  // Before the tables: a `DEFAULT nextval('s'::regclass)` needs `s` to exist. `OWNED BY`
+  // needs the table and is therefore emitted after them.
+  for (const s of sequences) {
+    const ns = s.schema ?? defaultSchema;
+    const target = quoteQualified(mapped(ns, `sequence ${qualify(ns, s.name)}`), s.name);
+    const bits = [`CREATE SEQUENCE ${target}`];
+    if (s.dataType !== undefined) bits.push(`AS ${s.dataType}`);
+    if (s.increment !== undefined) bits.push(`INCREMENT BY ${s.increment}`);
+    if (s.minValue !== undefined) bits.push(`MINVALUE ${s.minValue}`);
+    if (s.maxValue !== undefined) bits.push(`MAXVALUE ${s.maxValue}`);
+    if (s.start !== undefined) bits.push(`START WITH ${s.start}`);
+    if (s.cache !== undefined) bits.push(`CACHE ${s.cache}`);
+    bits.push(s.cycle ? "CYCLE" : "NO CYCLE");
+    sql.push(bits.join(" "));
   }
 
   const order = topoOrder(tables, byKey);
@@ -267,7 +344,30 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
     body.push(...decl.constraintLines);
     created.add(decl.key);
     const target = quoteQualified(mapped(decl.schema, `table ${decl.key}`), decl.name);
-    sql.push(`CREATE TABLE ${target} (\n  ${body.join(",\n  ")}\n)`);
+
+    /* A partition CHILD has no column list: its columns come from the parent, and
+     * repeating them is a syntax error. Its own constraints are added afterwards. */
+    const child = decl.runtime.extras.find((e) => e.node === "partitionOf");
+    if (child !== undefined && child.node === "partitionOf") {
+      const parentSchema = child.parentSchema ?? decl.schema;
+      const parent = quoteQualified(
+        mapped(parentSchema, `table ${qualify(parentSchema, child.parent)}`),
+        child.parent,
+      );
+      sql.push(`CREATE TABLE ${target} PARTITION OF ${parent} ${child.bound}`);
+      for (const clause of [...decl.constraintLines, ...decl.fks.map((fk) => fkClause(fk, mapped))]) {
+        // A partition child's PRIMARY KEY comes from the parent's; only what the parent
+        // does not already give it is added, and PostgreSQL rejects the rest loudly.
+        if (clause.includes(" PRIMARY KEY ")) continue;
+        sql.push(`ALTER TABLE ${target} ADD ${clause}`);
+      }
+      continue;
+    }
+
+    const by = decl.runtime.extras.find((e) => e.node === "partitionBy");
+    const partitionBy =
+      by !== undefined && by.node === "partitionBy" ? ` PARTITION BY ${by.strategy.toUpperCase()} (${by.key})` : "";
+    sql.push(`CREATE TABLE ${target} (\n  ${body.join(",\n  ")}\n)${partitionBy}`);
   }
 
   // The cycle breaker (design/11 §3 K2a: "deferred FKs for cycles").
@@ -282,10 +382,28 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
 
   for (const ix of indexes.sort((a, b) => cmp(qualify(a.schema, a.name), qualify(b.schema, b.name)))) {
     const target = quoteQualified(mapped(ix.schema, `index ${qualify(ix.schema, ix.name)}`), ix.table);
-    sql.push(
-      `CREATE ${ix.unique ? "UNIQUE " : ""}INDEX ${quoteIdent(ix.name)} ON ${target} ` +
-        `(${ix.columns.map(quoteIdent).join(", ")})`,
-    );
+    sql.push(indexStatement(ix, target));
+  }
+
+  // `CLUSTER ON` after the indexes, because the index it names has to exist — and it is
+  // very often a constraint's backing index, which `CREATE TABLE` already made.
+  for (const decl of tables) {
+    for (const extra of decl.runtime.extras) {
+      if (extra.node !== "clusterOn") continue;
+      const target = quoteQualified(mapped(decl.schema, `table ${decl.key}`), decl.name);
+      sql.push(`ALTER TABLE ${target} CLUSTER ON ${quoteIdent(extra.index)}`);
+    }
+  }
+
+  // `ALTER SEQUENCE … OWNED BY` last of the DDL: the column has to exist, and the ownership
+  // is what makes a `serial`'s sequence die with its table instead of outliving it.
+  for (const s of sequences) {
+    if (s.ownedBy === undefined) continue;
+    const ns = s.schema ?? defaultSchema;
+    const ownerNs = s.ownedBy.schema ?? defaultSchema;
+    const target = quoteQualified(mapped(ns, `sequence ${qualify(ns, s.name)}`), s.name);
+    const owner = quoteQualified(mapped(ownerNs, `table ${qualify(ownerNs, s.ownedBy.table)}`), s.ownedBy.table);
+    sql.push(`ALTER SEQUENCE ${target} OWNED BY ${owner}.${quoteIdent(s.ownedBy.column)}`);
   }
 
   for (const c of comments.sort((a, b) => cmp(a.target, b.target))) sql.push(c.sql);
@@ -294,6 +412,37 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
 }
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * `CREATE [UNIQUE] INDEX n ON t [USING m] (cols) [INCLUDE (…)] [NULLS NOT DISTINCT] [WHERE …]`
+ *
+ * The clause order is PostgreSQL's own grammar, not a preference: `INCLUDE` before
+ * `NULLS NOT DISTINCT` before `WHERE`, and the per-column `opclass ASC|DESC NULLS …`
+ * order inside the parentheses. Getting it wrong is a syntax error on the shadow load,
+ * which is the cheapest possible place to find out — but only if the order is right in
+ * the first place for every combination, and `pg_get_indexdef` is what the round-trip
+ * compares against.
+ */
+function indexStatement(ix: IndexDecl, target: string): string {
+  const columns = ix.items
+    .map((i) => {
+      const bits = [quoteIdent(i.column)];
+      if (i.opclass !== undefined) bits.push(i.opclass);
+      if (i.desc) bits.push("DESC");
+      if (i.nulls !== undefined) bits.push(i.nulls === "first" ? "NULLS FIRST" : "NULLS LAST");
+      return bits.join(" ");
+    })
+    .join(", ");
+  const parts = [
+    `CREATE ${ix.unique ? "UNIQUE " : ""}INDEX ${quoteIdent(ix.name)} ON ${target}`,
+    ...(ix.using === undefined ? [] : [`USING ${quoteIdent(ix.using)}`]),
+    `(${columns})`,
+    ...(ix.include.length === 0 ? [] : [`INCLUDE (${ix.include.map(quoteIdent).join(", ")})`]),
+    ...(ix.nullsNotDistinct ? ["NULLS NOT DISTINCT"] : []),
+    ...(ix.where === undefined ? [] : [`WHERE (${ix.where})`]),
+  ];
+  return parts.join(" ");
+}
 
 function collectEnum(
   ref: RefRuntime,
@@ -476,11 +625,16 @@ function buildTable(decl: TableDecl, ctx: BuildContext): void {
         if (fk) decl.fks.push({ ...fk, name: claim(fk.name, `foreignKey on (${extra.columns.join(", ")})`) });
         break;
       }
-      // `index` / `uniqueIndex` are separate statements; `comment` and `renamedFrom` are not DDL
-      // of the table itself. Both are collected after every table exists.
+      // `index` / `uniqueIndex` / `clusterOn` are separate statements; `comment` and
+      // `renamedFrom` are not DDL of the table itself; `partitionBy` / `partitionOf` are
+      // read directly off the runtime when the CREATE TABLE is assembled. All are handled
+      // after every table exists.
       case "index":
       case "comment":
       case "renamedFrom":
+      case "clusterOn":
+      case "partitionBy":
+      case "partitionOf":
         break;
       default:
         ctx.diagnostics.push({
@@ -493,7 +647,14 @@ function buildTable(decl: TableDecl, ctx: BuildContext): void {
   }
 
   if (pkColumns.length > 0) {
-    const name = claim(makeObjectName(decl.name, null, "pkey"), "primary key");
+    // The declared name when there is one (design/05 §2.4's `{ name, columns }` form),
+    // otherwise the server's own `<table>_pkey`. An adopted database names its primary
+    // keys whatever the tool that created them chose, and `pull` has to be able to say so.
+    const declaredPkName = runtime.extras.find((e) => e.node === "primaryKey" && e.name !== undefined);
+    const name = claim(
+      (declaredPkName as { name?: string } | undefined)?.name ?? makeObjectName(decl.name, null, "pkey"),
+      "primary key",
+    );
     constraints.push({
       sort: `1 ${name}`,
       text: `CONSTRAINT ${quoteIdent(name)} PRIMARY KEY (${pkColumns.map(quoteIdent).join(", ")})`,
@@ -621,6 +782,14 @@ function collectIndexesAndComments(
         name: extra.name,
         unique: extra.unique,
         columns: extra.columns,
+        // `items` is absent on an extras array built before the options landed (a hand-made
+        // `{ node: 'index', … }` in a test, or an older `pg-prime` on the peer range), so
+        // the plain column list is the fallback rather than a crash.
+        items: extra.items ?? extra.columns.map((column) => ({ column, desc: false, nulls: undefined, opclass: undefined })),
+        using: extra.using,
+        where: extra.where,
+        include: extra.include ?? [],
+        nullsNotDistinct: extra.nullsNotDistinct === true,
       });
     } else if (extra.node === "comment") {
       comments.push({
@@ -662,6 +831,13 @@ function topoOrder(
     for (const fk of t.fks) {
       const target = qualify(fk.targetSchema, fk.targetTable);
       if (target !== t.key && byKey.has(target)) out.add(target);
+    }
+    // A partition child depends on its parent absolutely — `CREATE TABLE … PARTITION OF`
+    // is not deferrable the way an FK is, so this edge is not optional.
+    const child = t.runtime.extras.find((e) => e.node === "partitionOf");
+    if (child !== undefined && child.node === "partitionOf") {
+      const parent = qualify(child.parentSchema ?? t.schema, child.parent);
+      if (parent !== t.key && byKey.has(parent)) out.add(parent);
     }
     succ.set(t.key, [...out].sort(cmp));
   }

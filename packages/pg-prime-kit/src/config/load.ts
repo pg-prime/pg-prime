@@ -162,9 +162,34 @@ function validate(raw: Record<string, unknown>, file: string): PgPrimeConfig {
  * TypeScript names for one table must not emit two `CREATE TABLE`s.
  */
 export interface LoadedSchema {
-  readonly schema: { readonly tables: Readonly<Record<string, { readonly $: unknown }>> };
+  readonly schema: {
+    readonly tables: Readonly<Record<string, { readonly $: unknown }>>;
+    /** design/05 §3.2/§3.3/§3.5/§3.10/§3.1, discovered off the module's exports */
+    readonly enums: readonly unknown[];
+    readonly domains: readonly unknown[];
+    readonly sequences: readonly unknown[];
+    readonly extensions: readonly unknown[];
+    readonly schemas: readonly unknown[];
+  };
   readonly files: readonly string[];
 }
+
+/**
+ * A standalone declaration — `pgEnum`, `pgDomain`, `pgSequence`, `pgExtension`, `pgSchema`.
+ *
+ * Each is a frozen plain object carrying a `kind` discriminant and a `name`, so one
+ * structural test covers all five and a sixth costs one string. Discovered off the
+ * module's exports for the same reason tables are: `defineSchema(...)` is the query
+ * layer's registry and these objects are author-time only.
+ */
+const declarationOf = (v: unknown): string | null => {
+  if (typeof v !== "object" || v === null) return null;
+  const r = v as { kind?: unknown; name?: unknown };
+  if (typeof r.name !== "string") return null;
+  return r.kind === "enum" || r.kind === "domain" || r.kind === "sequence" || r.kind === "extension" || r.kind === "schema"
+    ? r.kind
+    : null;
+};
 
 const isTableLike = (v: unknown): v is { $: { name: string; schema?: string; columns: unknown; extras: unknown } } => {
   const runtime = (v as { $?: unknown } | null)?.$;
@@ -186,6 +211,13 @@ export async function loadSchema(
   if (list.length === 0) throw new ConfigError("`schema` names no file");
 
   const tables: Record<string, { $: unknown }> = {};
+  const declared: Record<string, Map<string, unknown>> = {
+    enum: new Map(),
+    domain: new Map(),
+    sequence: new Map(),
+    extension: new Map(),
+    schema: new Map(),
+  };
   for (const file of list) {
     if (!(await exists(file))) throw new ConfigError(`no schema module at ${file}`);
     let mod: Record<string, unknown>;
@@ -213,6 +245,17 @@ export async function loadSchema(
       tables[`${runtime.schema ?? "public"}.${runtime.name}`] = value;
       found += 1;
     }
+    // The standalone declarations always come off the MODULE, never off a registry:
+    // `defineSchema(...)` takes tables and relations only, so a `pgDomain` can be reached
+    // in exactly one way — the export that names it. Keyed by `schema.name` for the same
+    // reason tables are: one object exported twice under two names is one object.
+    for (const [key, value] of Object.entries(mod)) {
+      if (key === "default") continue;
+      const kind = declarationOf(value);
+      if (kind === null) continue;
+      const decl = value as { name: string; schema?: string };
+      declared[kind]!.set(kind === "schema" ? decl.name : `${decl.schema ?? "public"}.${decl.name}`, value);
+    }
     if (found === 0) {
       throw new ConfigError(
         `${file} exports no tables: expected \`export default defineSchema({ … })\`, an export with a ` +
@@ -220,7 +263,17 @@ export async function loadSchema(
       );
     }
   }
-  return { schema: { tables }, files: list };
+  return {
+    schema: {
+      tables,
+      enums: [...declared["enum"]!.values()],
+      domains: [...declared["domain"]!.values()],
+      sequences: [...declared["sequence"]!.values()],
+      extensions: [...declared["extension"]!.values()],
+      schemas: [...declared["schema"]!.values()],
+    },
+    files: list,
+  };
 }
 
 /* ------------------------------ URL → ConnInfo ---------------------------- */

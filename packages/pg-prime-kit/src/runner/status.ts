@@ -8,6 +8,7 @@
  */
 
 import { extractCatalog, type CatalogClient, type Diagnostic } from "../catalog/extract.js";
+import { describeDrift, driftSentence, type DriftReport } from "../checkpoint/checkpoint.js";
 import { EXIT, type ExitCode } from "../cli/exit.js";
 import { withClient, type ConnInfo } from "../db/pg.js";
 import { historyPresent, historyVersion } from "../history/schema.js";
@@ -23,7 +24,16 @@ import { inspectLease, NO_REPEATABLES, type LeaseInspection } from "./run.js";
 import type { RepeatablesPass } from "../repeatables/index.js";
 import { readMigrationsDir } from "./files.js";
 
-export type EntryState = "applied" | "baselined" | "running" | "failed" | "pending" | "orphaned";
+export type EntryState =
+  | "applied"
+  | "baselined"
+  /** design/06 §4.5: recorded, never executed here — a checkpoint an existing database
+   * ignored, or a file a fresh one jumped over. Not pending, and not applied. */
+  | "superseded"
+  | "running"
+  | "failed"
+  | "pending"
+  | "orphaned";
 
 export interface StatusEntry {
   readonly id: string;
@@ -47,6 +57,12 @@ export interface StatusReport {
   readonly fingerprintSource: "history" | "catalog" | null;
   /** the live catalog disagrees with `pgprime.migrations` — only ever set under `--verify-fingerprint` */
   readonly fingerprintDrift: boolean;
+  /**
+   * design/12 decision 16 — WHICH objects drifted, by diffing the live IR against the
+   * newest checkpoint's IR at or before the recorded position. `null` when there is no
+   * drift, when `--verify-fingerprint` was not asked for, or when no checkpoint exists.
+   */
+  readonly drift: DriftReport | null;
   /** `fingerprint_to` of the last applied row, whatever `fingerprint` above was read from */
   readonly recordedFingerprint: string | null;
   readonly migrations: readonly StatusEntry[];
@@ -122,11 +138,7 @@ export async function migrationStatusOn(
     const row = byId.get(file.id);
     const checksumOk = row ? row.checksum === file.checksum : null;
     if (row && !checksumOk && (row.status === "applied" || row.status === "baselined")) checksumDrift.push(file.id);
-    const state: EntryState = row
-      ? row.status === "superseded"
-        ? "applied"
-        : row.status
-      : "pending";
+    const state: EntryState = row ? row.status : "pending";
     migrations.push({
       id: file.id,
       state,
@@ -152,10 +164,28 @@ export async function migrationStatusOn(
   // what the database now contains — so `status` can only report "somebody changed this
   // schema outside the history" when it has actually looked (design/06 §6.2's exit 4).
   let fingerprintDrift = false;
+  // design/12 decision 16 — when the fingerprints disagree, NAME the objects. A hash names
+  // nothing; a checkpoint's `.ir.json` is an IR of the expected state, so the difference is
+  // a diff of the live catalog against the newest checkpoint at or before the recorded
+  // position. Only computed when there is drift and only under `--verify-fingerprint`:
+  // the fast path has not looked at the catalog at all.
+  let driftReport: DriftReport | null = null;
   if (options.verifyFingerprint === true) {
     fingerprint = (await extractCatalog(client, { schemas })).ir.fingerprint;
     fingerprintSource = "catalog";
     fingerprintDrift = recorded !== null && recorded !== fingerprint;
+    if (fingerprintDrift) {
+      driftReport = await describeDrift({
+        client,
+        migrationsDir,
+        schemas,
+        appliedIds: rows.filter((r) => r.status === "applied" || r.status === "baselined").map((r) => r.id),
+      }).catch(() => null);
+      if (driftReport !== null) {
+        const sentence = driftSentence(driftReport);
+        if (sentence !== null) diagnostics.push({ code: "fingerprint_drift", severity: "error", message: sentence });
+      }
+    }
   }
 
   const lock = await inspectLease(client, options.staleLockAfterMs);
@@ -190,6 +220,7 @@ export async function migrationStatusOn(
     fingerprint,
     fingerprintSource,
     fingerprintDrift,
+    drift: driftReport,
     recordedFingerprint: recorded,
     migrations,
     pending,
