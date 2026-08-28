@@ -32,6 +32,16 @@ export type {
 
 export type { AnyRef, Projectable, Ref, RefRuntime, RefsOfCols } from './ref.js'
 
+export { fragmentDdlText } from './ddl.js'
+export type {
+  CheckSpec,
+  FkAction,
+  ForeignKeyOptions,
+  RefLike,
+  RefSpec,
+  UniqueSpec,
+} from './ddl.js'
+
 export {
   bigint,
   boolean,
@@ -59,17 +69,29 @@ export type {
   DefaultSpec,
   Infer,
   PgEnum,
+  PgEnumOptions,
 } from './column.js'
 
-export { comment, index, primaryKey, uniqueIndex } from './extras.js'
-export type { TableExtra } from './extras.js'
+export {
+  check,
+  comment,
+  foreignKey,
+  index,
+  primaryKey,
+  renamedFrom,
+  unique,
+  uniqueIndex,
+} from './extras.js'
+export type { ForeignKeyExtraInput, TableExtra } from './extras.js'
 
-export { pgTable, snakeCase, table } from './table.js'
+export { pgSchema, pgTable, snakeCase, table } from './table.js'
 export type {
   AnyTable,
   ColsOf,
   Insert,
   Insertable,
+  PgSchema,
+  PgSchemaOptions,
   Refs,
   Row,
   Selectable,

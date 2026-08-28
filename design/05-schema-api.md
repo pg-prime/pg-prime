@@ -697,6 +697,36 @@ TS-only (`$` prefix — never in the IR, per D4):
 
 `.codec(c)` is the one non-`$` type-affecting modifier: it swaps the encode/decode pair **and** may change the SQL type, so it belongs in the IR.
 
+> **AS BUILT 2026-08-28 (design/11 §3 K2a).** Eleven of the DDL-affecting rows above exist;
+> the rest are named here so the gap is a row and not an absence.
+>
+> | row | as built |
+> |---|---|
+> | `.nullable()` `.primaryKey()` `.default(v)` `.array()` | built (WS0) |
+> | `.unique(name?, { nullsNotDistinct? })` | **built.** Extends the old no-argument `.unique()`; `nullsNotDistinct` needs PG 15, which is the floor. `ColumnDdl.unique` stays a boolean and `ColumnDdl.uniqueSpec` carries the two options, so nothing that read the old field broke. |
+> | `.references(() => col, opts)` | **built**, single-column, `opts = { name?, onDelete?, onUpdate?, deferrable?, initiallyDeferred? }` with the five actions of the row above, validated at declaration time. `initiallyDeferred` implies `deferrable`, as PostgreSQL's own grammar does. `notValid()` is NOT built (the two-phase add is a `generate`-time rewrite, `06` §3.5, not a declaration). |
+> | `.check(sql\`…\`, name?)` | **built.** The fragment's TEXT is stored; a bind parameter is rejected at declaration with `SchemaError`, because a `pg_constraint` row has nowhere to put a `$n`. A column reference interpolated into the hole (`` sql`${t.price} > 0` ``) renders as a quoted identifier. Multiple `.check()` calls accumulate — two CHECKs are two catalog rows. `.notValid()` as above. |
+> | `.comment('…')` `.renamedFrom('old')` | **built**, as `ColumnDdl.comment` / `ColumnDdl.renamedFrom`. `renamedFrom` is carried, not acted on: it becomes a `RenameHint` in K2b (`11` §1.8). |
+> | `.default(sql\`…\`)` | spelled **`.defaultSql('…')`** (WS0) and unchanged: `.default()`'s parameter is `M['t']`, and widening it to `M['t'] \| Fragment` would put a conditional on the hottest signature in the package. |
+> | `.generatedAlwaysAsIdentity()` / `.generatedByDefaultAsIdentity()` | spelled **`.generatedAlways()` / `.generatedByDefault()`** (WS0). Same DDL. |
+> | `.generatedAlwaysAs(expr)` `.oneOf()` `.collate()` `.storage()` `.compression()` `.deprecated()` | **not built.** None is reachable from `ColumnDdl` yet; each is one field plus one emitter branch. |
+>
+> **Not one of these moved `Col<M>`.** Every addition is a `ColumnDdl` field and every new method
+> returns `Col<M>` unchanged — asserted per method by `expectTypeOf` in
+> `packages/pg-prime/test/schema/ddl.test.ts` and in aggregate by `pnpm bench:types`
+> (instantiations/column 3.08 → 3.08 on TS 7.0.2, instantiations/table 37 → 37).
+>
+> **Two circularity notes.** A *self*-reference cannot be written as `.references(() => t.cols.id)`
+> inside `t`'s own initializer — TS7022, the thunk's body needs the type being inferred — so the
+> spelling is the `foreignKey` extra, whose callback parameter is that table's own refs. A
+> *mutual* pair needs the thunk's return type stated once (`(): RefLike => orgs.cols.id`), the same
+> device as Drizzle's `AnyPgColumn`. Both are documented on the method and tested.
+>
+> **`Table` gained one property, `cols`** — the same instantiation `[REFS]` already holds, under a
+> name a schema file can type, because `.references(() => orgs.cols.id)` otherwise needs the
+> phantom slot symbol. Measured cost across the 100-table headline: 63 instantiations on TS 5.9.3,
+> 19 on TS 7.0.2 (0.08% / 0.01%).
+
 ### 2.4 Table-level nodes (the extras array)
 
 ```ts
@@ -746,6 +776,23 @@ TS-only (`$` prefix — never in the IR, per D4):
 
 `INHERITS` is deliberately absent (D16).
 
+> **AS BUILT 2026-08-28 (design/11 §3 K2a).** `TableExtra` is the tagged union D5 promises, with
+> seven node kinds:
+>
+> | node | spelling as built |
+> |---|---|
+> | `primaryKey` | `primaryKey(t.a, t.b)` (WS0). The `{ name, columns }` object form is not built; the emitter always names it `<table>_pkey`, which is what the server would have chosen. |
+> | `index` / `uniqueIndex` | `index('i').on(t.a, t.b)` (WS0). Plain b-tree column lists only — `.using()`, `.where()`, `.include()`, `.desc()`, `.opclass()`, `.with()`, `.concurrently()` and expression indexes are **not built**. |
+> | `comment` | `comment('…')` (WS0). |
+> | `unique` | **built**: `unique('u_ab').nullsNotDistinct().on(t.a, t.b)`. A UNIQUE *constraint*, distinct from `uniqueIndex`, because an FK can point at the first and not at the second. The name is optional; unnamed falls back to `<table>_<cols>_key`. |
+> | `check` | **built**: `check('c_positive', sql\`…\`)`. The name is **mandatory** here (unlike the column method): PostgreSQL's own default for a multi-column check is the bare `<table>_check`, which collides on the second one. `.notValid()` is not built. |
+> | `foreignKey` | **built**: `foreignKey({ name?, columns: [...refs], references: () => [...refs], onDelete?, onUpdate?, deferrable?, initiallyDeferred? })`. `references` is a thunk for the same reason `.references()` is one; it is also the **self-FK** and **composite-FK** spelling. Named `foreignColumns` in the design sketch — renamed to `references` to match the column method, and because the thunk is the load-bearing part. |
+> | `renamedFrom` | **built**: `renamedFrom('organisations')`. |
+>
+> **Not built:** `exclude`, `partitionBy`, `partitions`, `unlogged`, `withOptions`, `tablespace`,
+> `replicaIdentity`, `rls.*`, `dropColumn`, `external`. `EXCLUDE`, partitions and `comment`-as-a-fact
+> are K3's; the rest have no IR to land in yet.
+
 ---
 
 ## 3. Beyond tables — the differentiator surface
@@ -765,6 +812,29 @@ export const cleanup = audit.function('cleanup', { ... });
 ```
 
 `defineSchema({ ... }, { defaultSchema: 'public' })` sets where unqualified objects land. `search_path` is set explicitly per connection by the runtime, never inferred.
+
+> **AS BUILT 2026-08-28 (design/11 §3 K2a).** `pgSchema(name, { renamedFrom? })` returns
+> `{ kind: 'schema', name, renamedFrom, table(...), enum(...) }` — `table` is `pgTable` with
+> `{ schema: name }` already applied and `enum` is `pgEnum` with `{ schema: name }`. `.view()`,
+> `.function()`, `.domain()`, `.sequence()` are **not built** (no IR for them yet).
+>
+> Two consequences worth stating:
+>
+>  - **`RefRuntime` gained `schema`.** `.references(() => events.cols.id)` hands the emitter one
+>    column reference and nothing else; without the schema on it, a cross-schema FK target would
+>    have to be guessed by table name, which is ambiguous the moment two schemas hold a table of
+>    the same name. Runtime metadata only — `RefRuntime` is non-generic, so the type budget did not
+>    move.
+>  - **`defaultSchema` is an emitter option, not a registry one.** `defineSchema` still takes
+>    tables (and relations) only; `emitSchema(schema, { defaultSchema })` decides where an
+>    unqualified object lands, defaulting to `public`. The registry describes the schema; where it
+>    is *written* is a property of the run (and, under the tier-3 shadow map, of the tier).
+>
+> An enum with no `{ schema }` lands in the emitter's default schema — deliberately **not** in the
+> schema of whichever table happens to use it, because two tables in two schemas may share one enum
+> and letting the placement follow the first user makes the DDL depend on registry order. An enum
+> no column uses is not emitted at all (`11` §3 K2a: enums are reachable only through
+> `ColumnDdl.enumName`/`enumValues`/`enumSchema`).
 
 ### 3.2 `pgEnum`
 
@@ -1072,6 +1142,20 @@ Consequences:
 - Lint rule `stale-rename` (warning) flags annotations that have been inert for N consecutive `generate` runs, so they get cleaned up eventually.
 
 Interactive `--interactive` mode does not "resolve" anything — it **writes the annotation into your source file** and re-runs. There is exactly one resolution mechanism.
+
+> **AS BUILT 2026-08-28 (design/11 §3 K2a).** Two of the four spellings exist and both are
+> **carriers only** — nothing in K2a acts on them:
+>
+>  - `.renamedFrom('old')` on a column → `ColumnDdl.renamedFrom`;
+>  - `renamedFrom('old')` in the extras → `{ node: 'renamedFrom', from }`;
+>  - `pgSchema('audit', { renamedFrom: 'auditing' })` → `PgSchema.renamedFrom`;
+>  - `pgEnum(..., { renamedFrom })` and `renamedValues` are **not built**.
+>
+> The emitter ignores all of them: a rename is a statement about the *difference* between two
+> states, and the emitter only ever describes one. The resolution semantics above ("fires iff `old`
+> exists and `new` does not") are evaluated by K2b's `generate` against the current IR, feeding the
+> kit's existing `RenameHint[]` — which is what makes `--hints-file` and the annotation one
+> mechanism with two spellings (`11` §1.8).
 
 ### 5.2 Destructive-change acknowledgment (D9)
 
@@ -1382,6 +1466,28 @@ Behavioural contracts the schema layer guarantees:
 - Functions/triggers/raw objects carry `bodyHash`; signature changes appear in `identity`, so the drop/replace decision is a pure function of the IR.
 - `partitions({ unknown: 'adopt' })` means the IR asserts *nothing* about undeclared partitions; they must never enter the drop set.
 - Relations contribute **zero** IR nodes.
+
+> **AS BUILT 2026-08-28 — NOT BUILT, and deliberately so (design/11 §1.5).** `schema.$ir()` does
+> not exist and will not. DDL emission lives in `@pg-prime/kit` (`src/schema/emit.ts`), and the
+> desired IR is derived the way `06` §3's diagram already says — `desired SQL text → [shadow DB] →
+> extract → IR(desired)`. `IrNode` above would be a **second model of PostgreSQL** living in the
+> runtime package: a second place for `format_type` to be approximated, a second set of identity
+> tuples to keep in step with `ir/stable-id.ts`, and a second thing to be wrong when PostgreSQL
+> normalizes an expression differently from how we wrote it. One extractor, one IR.
+>
+> What the schema layer supplies instead is exactly the structural metadata this section's
+> behavioural contracts require, and the kit reads it **structurally, through `import type`**
+> (`11` §1.3):
+>
+> | this section's contract | as built |
+> |---|---|
+> | `IrNode.identity` tuples | `ir/stable-id.ts`'s `StableId`, in the kit — the same uniform-arity idea, one definition |
+> | `sql`-valued defaults / check expressions are opaque strings | `DefaultSpec { kind: 'expr' }` and `CheckSpec.expression`; the shadow database normalizes them |
+> | literal defaults are structurally comparable and carry their codec | `DefaultSpec { kind: 'value' }` + `ColumnDdl.pgType`; the kit's literal renderer keys on `pgType`, so `default(0)` on `int4` and `default('0')` on `text` cannot collide |
+> | `dependsOn` drives the topological sort | FK edges from `ColumnDdl.references` / the `foreignKey` extra, resolved at emit time; the kit's `diff/order.ts` does the sort on the extracted IR |
+> | `renamedFrom` | `ColumnDdl.renamedFrom` / the `renamedFrom` extra (§5.1 AS BUILT) |
+> | `comment` | `ColumnDdl.comment` / the `comment` extra; emitted as `COMMENT ON`, **not yet a fact kind** (K3) |
+> | `bodyHash`, `tombstone`, `provenance`, `source` | not built — no repeatables, no tombstones, no source maps in K2a |
 
 ---
 

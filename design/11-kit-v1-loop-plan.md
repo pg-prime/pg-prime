@@ -203,6 +203,150 @@ type, modifier and extra in the DSL appears in the fixture), `test/shadow/ladder
 round-trips names; cross-schema FK; `dispose` leaves nothing behind, asserted from `pg_namespace`).
 R10 record with ≥ 6 mutations.
 
+#### K2a — RESULT (2026-08-28)
+
+**Built.**
+
+| # | deliverable | file(s) |
+|---|---|---|
+| 1 | DSL: `.references()` `.check()` `.unique(name?, opts)` `.comment()` `.renamedFrom()`; extras `foreignKey` `check` `unique` `renamedFrom`; `pgSchema`; `pgEnum(..., { schema })` | `packages/pg-prime/src/schema/{ddl.ts,column.ts,extras.ts,table.ts,ref.ts,index.ts}`, `src/index.ts` |
+| 2 | `emitSchema(schema, { schemaMap?, defaultSchema? })` | `packages/pg-prime-kit/src/schema/{emit.ts,types.ts}` |
+| 3 | `provisionShadow(admin, target, opts)`, tiers 1–3 + a typed tier-4 refusal | `packages/pg-prime-kit/src/shadow/ladder.ts` |
+| 4 | `loadDesired(schema, shadow)` and the IR schema-map reversal | `packages/pg-prime-kit/src/schema/{load.ts,remap.ts}` |
+| 5 | AS BUILT notes | `05` §2.3 §2.4 §3.1 §5.1 §7.2, `06` §3.2, here |
+
+**Signatures K2b wires to.**
+
+```ts
+// @pg-prime/kit
+interface SchemaLike { readonly tables: Readonly<Record<string, { readonly $: TableRuntime }>> }
+
+function emitSchema(schema: SchemaLike, options?: {
+  schemaMap?: ReadonlyMap<string, string>
+  defaultSchema?: string                      // 'public'
+}): { sql: readonly string[]; diagnostics: readonly Diagnostic[]; schemas: readonly string[] }
+
+function provisionShadow(admin: ConnInfo, target: ConnInfo, options: {
+  shadow?: 'auto' | 'temp-schema' | 'createdb' | 'offline' | { url: string }
+  schemas: readonly string[]
+  token?: string
+}): Promise<Shadow>          // { conn, schemaMap, tier, reason, diagnostics, dispose }
+
+function loadDesired(schema: SchemaLike, shadow: Shadow, options?: {
+  defaultSchema?: string
+  statementTimeout?: string
+}): Promise<ExtractResult>   // { ir, pgVersionNum, diagnostics }, in the USER's schema names
+
+function desiredSql(schema: SchemaLike, shadow: Shadow, options?): readonly string[]
+```
+
+**Divergences from the brief, and why.**
+
+1. **`Table` gained a `cols` property.** `.references(() => orgs.cols.id)` has to name a column of
+   another table, and the only spelling that existed was `orgs[REFS].id` — importing a phantom slot
+   symbol whose sole reason for being exported is TS2527. `cols` is the *identical instantiation*
+   `[REFS]` already holds, so the instantiation cache serves both. Measured, A/B, on the 100-table
+   headline: **+63 instantiations on TS 5.9.3, +19 on TS 7.0.2** (0.08% / 0.01%). This is not the
+   `Table & Columns` intersection `04` §1.3 rejects: one property, no intersection, no per-column
+   cost, and a column keyed `cols` cannot collide with it because columns never live on the table.
+2. **A self-referencing FK cannot be written with `.references()`** — `() => nodes.cols.id` inside
+   `nodes`'s own initializer is a TS7022 circularity (the thunk's *body* needs the type still being
+   inferred; the thunk only defers the *value*). The spelling is the `foreignKey` extra, whose
+   callback parameter is that table's own refs. A **mutual** pair needs the thunk's return type
+   annotated once, `(): RefLike => orgs.cols.id`, exactly as Drizzle needs `AnyPgColumn`. Both are
+   documented on the methods and pinned by tests that `pnpm typecheck` compiles.
+3. **`pgEnum` gained `{ schema }` and `ColumnDdl` gained `enumSchema`.** Without it a cross-schema
+   enum has no home: `enumColumn` records only the bare type name, and "put it in the schema of
+   whichever table uses it" makes the emitted DDL depend on registry iteration order.
+4. **`foreignKey({ references })`, not `{ foreignColumns }`** (`05` §2.4 spells it the second way).
+   Renamed to match the column method, and because the thunk — not the array — is the load-bearing
+   part.
+5. **`check(name, sql)` requires the name**, unlike `.check(sql, name?)` on a column. PostgreSQL's
+   own default for a multi-column check is the bare `<table>_check`, which collides on the second
+   one, and inventing `ChooseConstraintName`'s uniquifying suffix is K3's item 2.
+6. **The kit's `tsconfig.json` maps `pg-prime` to its source; `tsconfig.build.json` maps it to
+   nothing.** CI runs `pnpm typecheck` with no build in front of it, so a bare `pg-prime` specifier
+   would need `packages/pg-prime/dist` to exist. The typecheck project resolves through `paths` and
+   drops `rootDir` (which moved to the build project, or every pg-prime source file is a TS6059);
+   the build project sets `paths: {}`, so the publish emit reads the peer's real `.d.ts`. The
+   emitted declarations name `pg-prime` either way — `check:dts` now reports the kit's external
+   specifiers as **`pg, pg-prime`**, which is §1.3's line.
+7. **The treeshake budgets were re-baselined upward** by the same rule that set them
+   (`budget = min(design, ceil(measured/1024)*1024)`): connect-one-select 46 291 → 47 212 B min+gz
+   (+921), full-crud-tx 46 660 → 47 571 (+911), root-import-all 50 004 → 51 660 (+1 656). Two of
+   the three are still below `08` §1.2's design number. The module-set goldens gained exactly one
+   entry, `dist/schema/ddl.js`. Reasons recorded in `tools/budgets.json`.
+8. **Comments are emitted but are not a fact kind**, so the D10 witness sees them in database A and
+   not in database B. Rather than dropping them from the fixture, the round-trip test asserts that
+   the dumps differ by **exactly the five `COMMENT ON` statements and nothing else** — a stronger
+   statement than equality, and one that starts failing the moment K3's `comment` fact makes it
+   stale.
+
+**`bench:types` — before / after.** All budgets green both times; nothing gated moved.
+
+| metric | before (6e25685) | after | budget |
+|---|---|---|---|
+| instantiations / column (declaration), 5.9.3 / 7.0.2 | 3 / 3.08 | **3 / 3.08** | 8 |
+| instantiations / table (declaration), 5.9.3 / 7.0.2 | 36 / 37 | **36 / 37** | 50 |
+| instantiations / table, all 3 row shapes, 5.9.3 / 7.0.2 | 342 / 387 | **342 / 387** | 500 |
+| instantiations / declared relation | 32.5 | **32.5** | 50 |
+| marginal instantiations / usage (100t) | 40 | **40** | 1000 |
+| schema-size independence ratio 300t/25t | 1.000 | **1.000** | 1.15 |
+| headline instantiations, 5.9.3 | 74 507 | **80 485** (+8.0%) | 200 000 |
+| headline instantiations, 7.0.2 | 124 322 | **131 388** (+5.7%) | 200 000 |
+| headline check time s, 5.9.3 / 7.0.2 | 0.32 / 0.046 | **0.38 / 0.045** | 2 / 0.5 |
+| headline peak memory MB, 5.9.3 / 7.0.2 | 117 / 50 | **120 / 59** | 250 |
+| package `.d.ts` bytes | 364 406 | **377 261** (+3.5%) | 409 600 |
+
+The headline rise is the new *surface* (five methods on `Col<M>`, four extras builders, `pgSchema`,
+`ddl.ts`'s types, 18 new root exports), not a new per-column or per-table cost — the three
+per-declaration rows are unchanged to the digit, which is the claim `11` §3 K2a asked to be proved.
+`cols` accounts for 63 of the 5 978 (measured by removing it and re-running).
+
+**R10 mutation record.** Ten mutations, ten caught; the suites run were
+`packages/pg-prime-kit/test/{schema-emit,shadow}` and `packages/pg-prime/test/schema`.
+
+| mutation | caught by |
+|---|---|
+| a UNIQUE constraint is named `_uniq` instead of the server's `_key` | `emit.test.ts` "pkey / key / check / fkey, exactly as the server would choose them" **and** `roundtrip.test.ts` "names its constraints exactly as PostgreSQL would have" |
+| `fkClause` drops `ON DELETE` | `roundtrip.test.ts` "carries the modifiers PostgreSQL can only have learned from the emitted DDL" (`pg_get_constraintdef` on the live catalog) |
+| the DEFAULT renderer dispatches on the JS value instead of on `ColumnDdl.pgType` | `emit.test.ts` "renders each one the way PostgreSQL parses it back" (`jsonb().default('x')` becomes `'x'`, not `'"x"'`) **and** `ladder.test.ts`'s tier-3 load fails |
+| the cycle breaker is removed, every FK is emitted inline | `emit.test.ts` "breaks a cycle with ALTER TABLE … ADD CONSTRAINT" and the statement-order test, **and** both tier-3 loads (`relation "users" does not exist`) |
+| the schema map is reversed on ids but not on payload TEXT | `ladder.test.ts` "reverses the map on the IR" (the checkpoint still contains `pgprime_shadow_`) and both fingerprint-equality tests |
+| the schema map is not reversed on dependency EDGES | the same three, via the cross-schema FK edge assertion and the fingerprints |
+| tier-3 `dispose` leaves its temp schemas behind | `ladder.test.ts`'s `pg_namespace` assertion — *and* the next test in the file, because the leftovers collide |
+| an enum column type is emitted unqualified | `emit.test.ts` ×2 and both tier-3 loads (`type "member_role" does not exist`) |
+| `.check()` accepts a bind parameter | `packages/pg-prime/test/schema/ddl.test.ts` "rejects a bind parameter with a sentence naming the reason" and the table-level twin |
+| the ladder ignores `rolcreatedb` and always takes tier 2 | `ladder.test.ts` "auto demotes to tier 3" (the NOCREATEDB role gets `permission denied to create database`) |
+
+**Acceptance.** `pnpm test` 46 files / 778 tests, **4.66 s** (tier-0 gate: 5 s) · `pnpm test:live`
+79 files / 1507 passed, 2 skipped · `pnpm --filter @pg-prime/kit test` 19 files / **169 tests**
+(was 125) · `pnpm typecheck` clean · `pnpm bench:types` all budgets PASS · `pnpm type-errors:check`
+no drift · `pnpm build` clean · `pnpm api-snapshot` `pg-prime` 227v/221t root, 44v/67t `./schema`;
+`@pg-prime/kit` 88v/81t · `pnpm package:check` green (8/8 size gates, emit parity 0 FAIL,
+`check:dts` clean on 5.9.3 and 7.0.2 with the kit's externals now `pg, pg-prime`, tree-shake gates
+ok, publint/attw clean, pack-smoke OK).
+
+**Not done / uncertain.**
+
+- `notValid()` on `.references()` / `.check()` / `foreignKey` / `check` — the two-phase add is a
+  `generate`-time rewrite (`06` §3.5), not a declaration, so it has no home in the DSL yet.
+- Index expressiveness: `index()` is a plain b-tree column list. `.using()`, `.where()`,
+  `.include()`, `.desc()`, `.opclass()`, `.with()`, `.concurrently()` and expression indexes are
+  not built; `.concurrently()`'s tri-state (`05` D15) is a `generate` decision anyway.
+- A **column-level** `.check()` has no ref to interpolate — the columns callback's parameter is the
+  `ColumnKit`, not the refs — so the column's DB name has to be written by hand in the fragment.
+  The extras-level `check('c', sql`${t.unitPrice} > 0`)` does not have this problem. Worth
+  revisiting if the casing strategy bites someone.
+- `emitSchema` reports a duplicate constraint name as an `error` diagnostic rather than appending
+  PostgreSQL's uniquifying suffix — that suffix is K3's item 2, and inventing a different one would
+  be worse than refusing.
+- Tier 1 **resets** the schemas it is pointed at. That is the documented `SHADOW_DATABASE_URL`
+  contract and it emits a warning diagnostic, but it is a loaded gun in a way tiers 2 and 3 are not.
+- `pnpm --filter @pg-prime/kit test` was run against PG 17 only (`pgprime-pg17-b`, :54333). The
+  15/16/18 matrix is CI's.
+
+
 ### K3 — Object-kind coverage, the two gaps, Tier R/O/U, lint
 
 **Owns:** `packages/pg-prime-kit/src/{catalog,diff,ir,prove,sql}/**`, `src/repeatables/**`, `src/lint/**`,

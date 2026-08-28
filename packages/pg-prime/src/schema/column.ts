@@ -1,6 +1,9 @@
 import { SchemaError } from '../sql/errors.js'
 import { InvalidIdentifierError } from '../sql/errors.js'
 import { quoteIdentPart } from '../sql/ident.js'
+import type { AnyFragment } from '../sql/fragment.js'
+import { checkFkAction, fragmentDdlText } from './ddl.js'
+import type { CheckSpec, ForeignKeyOptions, RefLike, RefSpec, UniqueSpec } from './ddl.js'
 import { META } from './symbols.js'
 import type { ColMeta, DateString, OrmTypeError } from './types.js'
 
@@ -28,9 +31,24 @@ export interface ColumnDdl {
   readonly identity: 'always' | 'byDefault' | undefined
   readonly primaryKey: boolean
   readonly unique: boolean
+  /** `.unique(name?, { nullsNotDistinct? })` — present iff {@link ColumnDdl.unique} is true. */
+  readonly uniqueSpec: UniqueSpec | undefined
   readonly enumName: string | undefined
   readonly enumValues: readonly string[] | undefined
+  /** Schema the enum type lives in; `undefined` → the registry's default schema. */
+  readonly enumSchema: string | undefined
   readonly arrayDim: number
+  /** `.references(() => other.id, opts)` — single-column FK, resolved lazily (design/11 §1.7). */
+  readonly references: RefSpec | undefined
+  /**
+   * `.check(sql`…`, name?)`. A list rather than one slot: two independent column CHECKs are two
+   * `pg_constraint` rows, and collapsing them would make the second silently replace the first.
+   */
+  readonly checks: readonly CheckSpec[]
+  /** `.comment(text)` — `COMMENT ON COLUMN`. */
+  readonly comment: string | undefined
+  /** `.renamedFrom(old)` — the rename annotation of design/05 §5.1. */
+  readonly renamedFrom: string | undefined
 }
 
 /** TS-only column metadata. Never reaches DDL or the migration IR. */
@@ -110,7 +128,40 @@ export interface Col<M extends ColMeta> {
   generatedByDefault(): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
   /** Marks the column `pk: true` so design/03 §2.3's `GROUP BY` guard can see it (04 §1.1). */
   primaryKey(): Col<{ t: M['t']; pg: M['pg']; opt: M['opt']; ro: M['ro']; pk: true }>
-  unique(): Col<M>
+  /**
+   * `UNIQUE` constraint (design/05 §2.3). Returns `Col<M>` — uniqueness constrains the *values* a
+   * column may hold, never its TypeScript type, so not one of the five meta slots moves.
+   */
+  unique(name?: string, options?: { readonly nullsNotDistinct?: boolean }): Col<M>
+  /**
+   * Single-column `FOREIGN KEY` (design/05 §2.3, design/11 §1.7). The target is a **thunk**: the
+   * referenced table is usually declared later in the same file, and a mutually-referencing pair
+   * has no declaration order that works without one.
+   *
+   * ```ts
+   * orgId: t.uuid().references(() => orgs.cols.id, { onDelete: 'cascade' })
+   * ```
+   *
+   * Two circularity notes, both about the TYPE level (the thunk already handles the value level):
+   *
+   *  - a **self**-reference cannot be written here at all — `() => nodes.cols.id` inside `nodes`'s
+   *    own initializer is a TS7022, because the thunk's body needs the type still being inferred.
+   *    Use the `foreignKey` extra, whose callback parameter is this table's own refs:
+   *    `(t) => [foreignKey({ columns: [t.parentId], references: () => [t.id] })]`.
+   *  - a **mutual** pair (`orgs.ownerId → users.id` and `users.primaryOrgId → orgs.id`) needs the
+   *    thunk's return type stated once, which is what stops TypeScript walking the loop:
+   *    `.references((): RefLike => orgs.cols.id)`. Same device as Drizzle's `AnyPgColumn`.
+   */
+  references(target: () => RefLike, options?: ForeignKeyOptions): Col<M>
+  /**
+   * Column-scoped `CHECK`, named `<table>_<column>_check` unless given (design/05 §2.3).
+   * The fragment may not carry a bind parameter — see {@link fragmentDdlText}.
+   */
+  check(expression: AnyFragment, name?: string): Col<M>
+  /** `COMMENT ON COLUMN`. */
+  comment(text: string): Col<M>
+  /** Rename annotation (design/05 §5.1): fires iff `old` exists and this column does not. */
+  renamedFrom(old: string): Col<M>
   /**
    * `text[]`. The element type is the column's own type **without** its `| null`: a nullable
    * `text[]` is `string[] | null`, never `(string | null)[]` — one `NOT NULL` in the DDL cannot
@@ -228,8 +279,50 @@ class ColumnBuilder implements ColumnRuntime, Bodies {
     }
     return this.#next({ primaryKey: true })
   }
-  unique(): ColumnBuilder {
-    return this.#next({ unique: true })
+  unique(name?: string, options?: { readonly nullsNotDistinct?: boolean }): ColumnBuilder {
+    if (name !== undefined) checkName(name, `.unique("${name}") constraint name`)
+    return this.#next({
+      unique: true,
+      uniqueSpec: { name, nullsNotDistinct: options?.nullsNotDistinct ?? false },
+    })
+  }
+  references(target: () => RefLike, options?: ForeignKeyOptions): ColumnBuilder {
+    if (typeof target !== 'function') {
+      throw new SchemaError(
+        'pg-prime: .references() takes a THUNK — .references(() => orgs.id), not ' +
+          '.references(orgs.id). The referenced table is usually declared further down the same ' +
+          'file, and a mutually-referencing pair has no declaration order that works without one.',
+      )
+    }
+    if (options?.name !== undefined) checkName(options.name, `.references({ name: "${options.name}" })`)
+    return this.#next({
+      references: {
+        target: () => [target()],
+        name: options?.name,
+        onDelete: checkFkAction(options?.onDelete, '.references({ onDelete })'),
+        onUpdate: checkFkAction(options?.onUpdate, '.references({ onUpdate })'),
+        deferrable: options?.deferrable ?? options?.initiallyDeferred ?? false,
+        initiallyDeferred: options?.initiallyDeferred ?? false,
+      },
+    })
+  }
+  check(expression: AnyFragment, name?: string): ColumnBuilder {
+    if (name !== undefined) checkName(name, `.check(…, "${name}") constraint name`)
+    const text = fragmentDdlText(expression, '.check()')
+    if (text.trim() === '') {
+      throw new SchemaError('pg-prime: .check() was given an empty expression.')
+    }
+    return this.#next({ checks: [...this.ddl.checks, { name, expression: text }] })
+  }
+  comment(text: string): ColumnBuilder {
+    if (typeof text !== 'string') {
+      throw new SchemaError(`pg-prime: .comment() expects a string; received ${typeof text}.`)
+    }
+    return this.#next({ comment: text })
+  }
+  renamedFrom(old: string): ColumnBuilder {
+    checkName(old, `.renamedFrom("${String(old)}")`)
+    return this.#next({ renamedFrom: old })
   }
   array(): ColumnBuilder {
     return this.#next({ pgType: `${this.ddl.pgType}[]`, arrayDim: this.ddl.arrayDim + 1 })
@@ -257,9 +350,15 @@ function baseDdl(pgType: string, dbName: string | undefined): ColumnDdl {
     identity: undefined,
     primaryKey: false,
     unique: false,
+    uniqueSpec: undefined,
     enumName: undefined,
     enumValues: undefined,
+    enumSchema: undefined,
     arrayDim: 0,
+    references: undefined,
+    checks: [],
+    comment: undefined,
+    renamedFrom: undefined,
   }
 }
 
@@ -280,6 +379,17 @@ export interface PgEnum<N extends string, V extends readonly string[]> {
   readonly kind: 'enum'
   readonly name: N
   readonly values: V
+  /**
+   * The schema the type lives in. `undefined` means "wherever the emitter's default schema is" —
+   * NOT "the schema of whichever table happens to use it": two tables in two schemas may share one
+   * enum, and letting the placement follow the first user makes the DDL order-dependent.
+   */
+  readonly schema: string | undefined
+}
+
+/** `pgEnum(name, values, options?)` — design/05 §3.2. */
+export interface PgEnumOptions {
+  readonly schema?: string
 }
 
 export type AnyPgEnum = PgEnum<string, readonly string[]>
@@ -307,8 +417,10 @@ export function checkName(value: unknown, what: string): void {
 export function pgEnum<N extends string, const V extends readonly [string, ...string[]]>(
   name: N,
   values: V,
+  options?: PgEnumOptions,
 ): PgEnum<N, V> {
   checkName(name, `pgEnum("${name}") type name`)
+  if (options?.schema !== undefined) checkName(options.schema, `pgEnum("${name}") schema name`)
   const seen = new Set<string>()
   for (const label of values) {
     // An enum LABEL is a literal, not an identifier — PostgreSQL accepts `''` — but it is still
@@ -322,7 +434,7 @@ export function pgEnum<N extends string, const V extends readonly [string, ...st
     }
     seen.add(label)
   }
-  return { kind: 'enum', name, values }
+  return { kind: 'enum', name, values, schema: options?.schema }
 }
 
 /** `Infer<typeof memberRole>` → `'owner' | 'admin' | 'member'`. */
@@ -385,7 +497,12 @@ export function jsonb(name?: string): Base<unknown, 'jsonb'> {
   return make<unknown, 'jsonb'>('jsonb', name)
 }
 export function enumColumn<E extends AnyPgEnum>(e: E, name?: string): Base<E['values'][number], E['name']> {
-  const ddl: ColumnDdl = { ...baseDdl(e.name, name), enumName: e.name, enumValues: e.values }
+  const ddl: ColumnDdl = {
+    ...baseDdl(e.name, name),
+    enumName: e.name,
+    enumValues: e.values,
+    enumSchema: e.schema,
+  }
   return new ColumnBuilder(ddl, EMPTY_TS) as unknown as Base<E['values'][number], E['name']>
 }
 

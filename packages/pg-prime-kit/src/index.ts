@@ -90,6 +90,24 @@ export {
 
 export { generate, type GenerateInput, type GenerateResult } from "./generate.js";
 
+/**
+ * The DSL → desired-state leg (design/11 §3 K2a). `pg-prime` is a PEER dependency and is imported
+ * for TYPES ONLY — `test/schema-emit/no-value-import.test.ts` fails the build on a value import.
+ */
+export { emitSchema, EmitError, type EmitOptions, type EmitResult } from "./schema/emit.js";
+export { desiredSql, loadDesired, DesiredLoadError, type LoadDesiredOptions } from "./schema/load.js";
+export { makeRemapper, remapDiagnostics, remapIr, type Remapper } from "./schema/remap.js";
+export type { ColumnDdl, RefRuntime, SchemaLike, TableExtra, TableLike, TableRuntime } from "./schema/types.js";
+export {
+  parseShadowUrl,
+  provisionShadow,
+  OfflineShadowError,
+  ShadowNameTooLongError,
+  type ProvisionShadowOptions,
+  type Shadow,
+  type ShadowStrategy,
+} from "./shadow/ladder.js";
+
 export {
   connectionString,
   createDatabase,

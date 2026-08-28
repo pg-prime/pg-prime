@@ -1,9 +1,11 @@
 {
+  "//": "The --noEmit TYPECHECK project. Two deliberate differences from the publish project (tsconfig.build.json, which extends this one): `paths` resolves `pg-prime` to its SOURCE, and there is no `rootDir`. Both exist for the same reason — CI runs `pnpm typecheck` with no build in front of it, so packages/pg-prime/dist does not exist yet, and a `rootDir` of `src` would make every pg-prime source file a TS6059 'not under rootDir'. The specifier in our source stays the bare `pg-prime`, so the emitted declarations still name the peer dependency; tsconfig.build.json switches `paths` OFF so the publish emit type-checks against the built .d.ts a consumer actually gets.",
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src",
-    "outDir": "dist",
-    "declaration": true
+    "noEmit": true,
+    "paths": {
+      "pg-prime": ["../pg-prime/src/index.ts"]
+    }
   },
   "include": ["src"]
 }

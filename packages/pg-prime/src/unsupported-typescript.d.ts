@@ -84,6 +84,7 @@ export declare const builtinCodecs: Unsupported
 export declare const byteaCodec: Unsupported
 export declare const cast: Unsupported
 export declare const charCodec: Unsupported
+export declare const check: Unsupported
 export declare const cidrCodec: Unsupported
 export declare const clearDescribeCache: Unsupported
 export declare const coalesce: Unsupported
@@ -109,6 +110,8 @@ export declare const exists: Unsupported
 export declare const float4Codec: Unsupported
 export declare const float8Codec: Unsupported
 export declare const fn: Unsupported
+export declare const foreignKey: Unsupported
+export declare const fragmentDdlText: Unsupported
 export declare const gt: Unsupported
 export declare const gte: Unsupported
 export declare const has: Unsupported
@@ -195,6 +198,7 @@ export declare const pgDriver: Unsupported
 export declare const pgEnum: Unsupported
 export declare const pgLsnCodec: Unsupported
 export declare const pgPrime: Unsupported
+export declare const pgSchema: Unsupported
 export declare const pgTable: Unsupported
 export declare const placeholder: Unsupported
 export declare const primaryKey: Unsupported
@@ -209,6 +213,7 @@ export declare const rangeOverlaps: Unsupported
 export declare const rangeUnion: Unsupported
 export declare const rangeUpper: Unsupported
 export declare const regex: Unsupported
+export declare const renamedFrom: Unsupported
 export declare const resolveRelations: Unsupported
 export declare const similarTo: Unsupported
 export declare const smallint: Unsupported
@@ -237,6 +242,7 @@ export declare const tsqueryCodec: Unsupported
 export declare const tsrangeCodec: Unsupported
 export declare const tstzrangeCodec: Unsupported
 export declare const tsvectorCodec: Unsupported
+export declare const unique: Unsupported
 export declare const uniqueIndex: Unsupported
 export declare const unknownCodec: Unsupported
 export declare const utf8ByteLength: Unsupported
@@ -264,6 +270,7 @@ export type BoolOperand = Unsupported
 export type Bound = Unsupported
 export type BuilderError = Unsupported
 export type BulkOpts = Unsupported
+export type CheckSpec = Unsupported
 export type ClassOperand<T0 = any, T1 = any> = Unsupported
 export type Codec<T0 = any, T1 = any, T2 = any> = Unsupported
 export type CodecContext = Unsupported
@@ -303,7 +310,10 @@ export type ExplainResult = Unsupported
 export type Expr<T0 = any, T1 = any> = Unsupported
 export type ExprOf<T0 = any> = Unsupported
 export type FieldOrigin = Unsupported
+export type FkAction = Unsupported
 export type Fn = Unsupported
+export type ForeignKeyExtraInput = Unsupported
+export type ForeignKeyOptions = Unsupported
 export type Fragment<T0 = any> = Unsupported
 export type FrameOpts = Unsupported
 export type FromValuesOpts = Unsupported
@@ -355,6 +365,7 @@ export type PgDriverError = Unsupported
 export type PgDriverErrorData = Unsupported
 export type PgEncodeError = Unsupported
 export type PgEnum<T0 = any, T1 = any> = Unsupported
+export type PgEnumOptions = Unsupported
 export type PgErrorKind = Unsupported
 export type PgExecMode = Unsupported
 export type PgField = Unsupported
@@ -373,6 +384,8 @@ export type PgQuery = Unsupported
 export type PgRawValue = Unsupported
 export type PgResult = Unsupported
 export type PgResultChunk = Unsupported
+export type PgSchema = Unsupported
+export type PgSchemaOptions = Unsupported
 export type PgServerErrorData = Unsupported
 export type PgTimestampString = Unsupported
 export type PkOf<T0 = any> = Unsupported
@@ -390,7 +403,9 @@ export type RangePg = Unsupported
 export type RawQuery = Unsupported
 export type RawRow = Unsupported
 export type Ref<T0 = any, T1 = any, T2 = any> = Unsupported
+export type RefLike = Unsupported
 export type RefRuntime = Unsupported
+export type RefSpec = Unsupported
 export type Refs<T0 = any> = Unsupported
 export type RefsAt<T0 = any> = Unsupported
 export type RefsOf<T0 = any> = Unsupported
@@ -449,6 +464,7 @@ export type TsqueryOperand = Unsupported
 export type TsvectorOperand = Unsupported
 export type TypeClass = Unsupported
 export type TypedFragment<T0 = any, T1 = any> = Unsupported
+export type UniqueSpec = Unsupported
 export type UnsafeLiteralError = Unsupported
 export type UnsupportedNodeError = Unsupported
 export type Update<T0 = any> = Unsupported

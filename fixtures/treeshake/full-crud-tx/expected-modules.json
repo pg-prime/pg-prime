@@ -36,6 +36,7 @@
     "node_modules/pg-prime/dist/query/update.js",
     "node_modules/pg-prime/dist/query/window.js",
     "node_modules/pg-prime/dist/schema/column.js",
+    "node_modules/pg-prime/dist/schema/ddl.js",
     "node_modules/pg-prime/dist/schema/relations.js",
     "node_modules/pg-prime/dist/schema/symbols.js",
     "node_modules/pg-prime/dist/schema/table.js",

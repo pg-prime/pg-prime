@@ -14,6 +14,15 @@ export interface Projectable {
 export interface RefRuntime {
   /** Source alias / table name. */
   readonly table: string
+  /**
+   * The table's schema, or `undefined` for the emitter's default schema.
+   *
+   * Carried here — not only on `TableRuntime` — because `.references(() => other.id)` hands the
+   * emitter a column reference and nothing else: without the schema the FK target of a
+   * cross-schema reference would have to be guessed by table name, which is ambiguous the moment
+   * two schemas hold a table of the same name (design/11 §3 K2a's cross-schema FK test).
+   */
+  readonly schema: string | undefined
   /** TS key of the column. */
   readonly key: string
   /** Resolved DB column name (casing strategy applied). */

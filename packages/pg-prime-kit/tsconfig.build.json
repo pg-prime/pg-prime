@@ -1,12 +1,15 @@
 {
-  "//": "The publish emit (design/08 §3.1, §3.2). `isolatedDeclarations: true` here, per design §3.2 — the kit's API is ordinary functions and data, so it is free, it buys parallel emit, and it guarantees no inferred type leaks a deep internal path into the published `.d.ts`. It cost exactly ONE annotation to turn on (`MIGRATION_NAME: RegExp` in src/plan/plan.ts). There is no esbuild bundle: design §3.1 bundles the kit because of CLI cold-start, and the CLI does not exist yet — see the AS BUILT note under §3.1.",
+  "//": "The publish emit (design/08 §3.1, §3.2). `isolatedDeclarations: true` here, per design §3.2 — the kit's API is ordinary functions and data, so it is free, it buys parallel emit, and it guarantees no inferred type leaks a deep internal path into the published `.d.ts`. It cost exactly ONE annotation to turn on (`MIGRATION_NAME: RegExp` in src/plan/plan.ts). There is no esbuild bundle: design §3.1 bundles the kit because of CLI cold-start, and the CLI does not exist yet — see the AS BUILT note under §3.1. `paths: {}` undoes the typecheck project's source mapping for `pg-prime`, so this emit reads the peer dependency's PUBLISHED declarations — `pnpm -r build` builds pg-prime first, because the kit declares it as a workspace devDependency.",
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
     "isolatedDeclarations": true,
-    "noEmit": false
+    "noEmit": false,
+    "paths": {}
   },
   "include": ["src"]
 }

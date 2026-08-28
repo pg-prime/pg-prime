@@ -37,7 +37,11 @@
     "@types/pg": "^8.21.0",
     "pg": "^8.23.0"
   },
+  "peerDependencies": {
+    "pg-prime": ">=0.0.0"
+  },
   "devDependencies": {
+    "pg-prime": "workspace:*",
     "vitest": "^4.1.10"
   }
 }

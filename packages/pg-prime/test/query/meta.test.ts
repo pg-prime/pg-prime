@@ -171,9 +171,15 @@ describe('codecFor — failing loudly, at seam time', () => {
       identity: undefined,
       primaryKey: false,
       unique: false,
+      uniqueSpec: undefined,
       enumName: undefined,
       enumValues: undefined,
+      enumSchema: undefined,
       arrayDim: 0,
+      references: undefined,
+      checks: [],
+      comment: undefined,
+      renamedFrom: undefined,
     }
     expect(() => codecFor(ddl, r, 'settings', 'prefs')).toThrow(NoCodecError)
     expect(() => codecFor(ddl, r, 'settings', 'prefs')).toThrow(

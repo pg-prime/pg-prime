@@ -100,9 +100,15 @@ function derivedColumn(): ColumnRuntime {
       identity: undefined,
       primaryKey: false,
       unique: false,
+      uniqueSpec: undefined,
       enumName: undefined,
       enumValues: undefined,
+      enumSchema: undefined,
       arrayDim: 0,
+      references: undefined,
+      checks: [],
+      comment: undefined,
+      renamedFrom: undefined,
     },
     ts: { defaultFn: undefined, onUpdateFn: undefined, narrowed: false },
   }
@@ -112,7 +118,7 @@ function derivedRefs(source: string, alias: string, fields: readonly DerivedFiel
   const out: Record<string, RefNode> = {}
   const column = derivedColumn()
   for (const f of fields) {
-    const rt: RefRuntime = { table: source, key: f.key, dbName: f.key, column }
+    const rt: RefRuntime = { table: source, schema: undefined, key: f.key, dbName: f.key, column }
     out[f.key] = mkNode({ ...col(alias, f.key, f.codec), $: rt })
   }
   return Object.freeze(out)

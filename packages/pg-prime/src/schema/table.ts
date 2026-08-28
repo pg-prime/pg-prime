@@ -1,7 +1,7 @@
 import { SchemaError } from '../sql/errors.js'
 import { COLS, INS, META, NAME, REFS, RELS, SEL, SRC, UPD } from './symbols.js'
-import { checkName, kit } from './column.js'
-import type { AnyCol, ColumnKit, ColumnRuntime } from './column.js'
+import { checkName, kit, pgEnum } from './column.js'
+import type { AnyCol, ColumnKit, ColumnRuntime, PgEnum } from './column.js'
 import type { TableExtra } from './extras.js'
 import type { RefRuntime, RefsOfCols } from './ref.js'
 import type { Cols, InsertRow, Rels, SelectRow, UpdateRow } from './types.js'
@@ -50,6 +50,17 @@ export interface Table<N extends string, C extends Cols, R extends Rels = {}> {
   readonly [NAME]: N
   readonly [COLS]: C
   readonly [REFS]: RefsOfCols<N, C>
+  /**
+   * The same pre-computed `[REFS]` slot under a name a schema file can type.
+   *
+   * `.references(() => orgs.cols.id)` (design/11 §1.7) has to name one column of a table declared
+   * elsewhere in the file, and the symbol spelling — `orgs[REFS].id` — requires importing a
+   * phantom slot key whose only reason for being exported is TS2527. This is deliberately NOT the
+   * Drizzle `Table & Columns` intersection design/04 §1.3 rejects: it is one property, its type is
+   * the identical instantiation `[REFS]` already holds (so the instantiation cache serves both),
+   * and a column keyed `cols` cannot collide with it because columns never live on the table.
+   */
+  readonly cols: RefsOfCols<N, C>
   readonly [SEL]: SelectRow<C>
   readonly [INS]: InsertRow<C>
   readonly [UPD]: UpdateRow<C>
@@ -67,6 +78,7 @@ export interface AnyTable {
   readonly [NAME]: any
   readonly [COLS]: any
   readonly [REFS]: any
+  readonly cols: any
   readonly [SEL]: any
   readonly [INS]: any
   readonly [UPD]: any
@@ -192,7 +204,7 @@ export function pgTable<N extends string, B extends Record<string, AnyCol>>(
       )
     }
     dbNames.set(dbName, key)
-    const rt: RefRuntime = Object.freeze({ table: name, key, dbName, column: col })
+    const rt: RefRuntime = Object.freeze({ table: name, schema: options?.schema, key, dbName, column: col })
     runtimes.push(rt)
     refs[key] = Object.freeze({ [SRC]: name, [NAME]: key, [META]: col, $: rt })
   }
@@ -209,6 +221,7 @@ export function pgTable<N extends string, B extends Record<string, AnyCol>>(
     [NAME]: name,
     [COLS]: undefined,
     [REFS]: refsObj,
+    cols: refsObj,
     [SEL]: undefined,
     [INS]: undefined,
     [UPD]: undefined,
@@ -219,3 +232,62 @@ export function pgTable<N extends string, B extends Record<string, AnyCol>>(
 
 /** design/04 §1.3 spelling. */
 export const table = pgTable
+
+// ─────────────────────────────────────────────────────────────────────────────
+// pgSchema (design/05 §3.1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `pgSchema('audit', { renamedFrom: 'auditing' })`. */
+export interface PgSchemaOptions {
+  readonly renamedFrom?: string
+}
+
+/**
+ * A namespace factory bound to one PostgreSQL schema.
+ *
+ * `audit.table(...)` is `pgTable(..., { schema: 'audit' })` with the schema already applied, which
+ * is the only thing design/05 §3.1 asks of it: the binding is what makes a schema move a one-line
+ * edit instead of a find-and-replace over every table in the file.
+ */
+export interface PgSchema {
+  readonly kind: 'schema'
+  readonly name: string
+  readonly renamedFrom: string | undefined
+  table<N extends string, B extends Record<string, AnyCol>>(
+    name: N,
+    columns: B | ((t: ColumnKit) => B),
+    extras?: (t: RefsOfCols<N, ColsOf<B>>) => readonly TableExtra[],
+    options?: Omit<TableOptions, 'schema'>,
+  ): Table<N, ColsOf<B>>
+  /** `audit.enum('event_kind', [...])` — `pgEnum` with `{ schema }` already applied. */
+  enum<EN extends string, const V extends readonly [string, ...string[]]>(
+    name: EN,
+    values: V,
+  ): PgEnum<EN, V>
+}
+
+export function pgSchema(name: string, options?: PgSchemaOptions): PgSchema {
+  checkName(name, `pgSchema("${name}") schema name`)
+  if (options?.renamedFrom !== undefined) {
+    checkName(options.renamedFrom, `pgSchema("${name}", { renamedFrom })`)
+  }
+  return Object.freeze({
+    kind: 'schema' as const,
+    name,
+    renamedFrom: options?.renamedFrom,
+    table<N extends string, B extends Record<string, AnyCol>>(
+      tableName: N,
+      columns: B | ((t: ColumnKit) => B),
+      extras?: (t: RefsOfCols<N, ColsOf<B>>) => readonly TableExtra[],
+      tableOptions?: Omit<TableOptions, 'schema'>,
+    ): Table<N, ColsOf<B>> {
+      return pgTable(tableName, columns, extras, { ...tableOptions, schema: name })
+    },
+    enum<EN extends string, const V extends readonly [string, ...string[]]>(
+      enumName: EN,
+      values: V,
+    ): PgEnum<EN, V> {
+      return pgEnum(enumName, values, { schema: name })
+    },
+  })
+}

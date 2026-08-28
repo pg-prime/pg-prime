@@ -272,6 +272,44 @@ provisioning must close its own extraction pool first; and the shadow must be cr
 same `LC_COLLATE`/`LC_CTYPE`/ICU locale as the target or index and constraint definitions
 normalize differently.
 
+> **AS BUILT 2026-08-28 (design/11 §3 K2a) — `@pg-prime/kit/src/shadow/ladder.ts`.**
+>
+> ```ts
+> provisionShadow(admin: ConnInfo, target: ConnInfo, {
+>   shadow?: 'auto' | 'temp-schema' | 'createdb' | 'offline' | { url: string }
+>   schemas: readonly string[]
+>   token?: string          // test-only: makes the shadow's name predictable
+> }): Promise<{
+>   conn: ConnInfo
+>   schemaMap: ReadonlyMap<string, string>   // user schema → the schema the DDL is written into
+>   tier: 1 | 2 | 3
+>   reason: string
+>   diagnostics: readonly Diagnostic[]
+>   dispose(): Promise<void>
+> }>
+> ```
+>
+> | tier | as built |
+> |---|---|
+> | **1** | `{ url }` parsed into a `ConnInfo`. The managed schemas are **reset** (`DROP SCHEMA … CASCADE` + `CREATE SCHEMA`) before the load and again on `dispose`, with a `shadow_url_reset` warning diagnostic — Prisma's `SHADOW_DATABASE_URL` contract, said out loud. `schemaMap` is the identity. |
+> | **2** | `CREATE DATABASE pgprime_shadow_<8 hex> TEMPLATE template0` carrying the target's `encoding`/`datcollate`/`datctype` and, when the provider is ICU or builtin, `LOCALE_PROVIDER` + `ICU_LOCALE`/`BUILTIN_LOCALE`. The locale row is read as `to_jsonb(pg_database)` so that `daticulocale` (PG 15/16) and `datlocale` (PG 17+) are both found without a version table. `TEMPLATE template0` is both required when the locale is stated and the least likely to hit `55006`; if it fires anyway, `auto` **demotes to tier 3** rather than terminating anyone's session. `schemaMap` is the identity; `dispose` drops the database (`db/pg.ts`'s prefix gate is what authorises the force-drop). |
+> | **3** | One `CREATE SCHEMA pgprime_shadow_<8 hex>_<name>` per managed schema, **in the target database**. The mapped name keeps the original in it when 63 UTF-8 bytes allow and falls back to a positional `_s<i>` when they do not — never a truncation, because a truncated name is a map that cannot be reversed. `dispose` drops each with `CASCADE` and then **asserts from `pg_namespace` that nothing survived**. Emits a `shadow_temp_schema` info diagnostic naming the constraint §3.2 states: objects with a fixed schema (extensions, event triggers, roles) cannot be renamed into it. |
+> | **4** | `shadow: 'offline'` throws a typed `OfflineShadowError` whose message names the three alternatives. |
+>
+> Selection for `'auto'`: a url → 1; `rolcreatedb OR rolsuper` on `current_user` → 2 (demoting to 3
+> on `55006`); otherwise 3. **§1.6's decision holds: tier 3 rewrites schema identifiers, not
+> `search_path`** — the emitter is always schema-qualified, so the map is applied at emit time and
+> reversed on the extracted IR (`src/schema/remap.ts`), covering fact ids, edge endpoints, and the
+> four payload fields that embed server-produced qualified text (`column.type`, `column.default`,
+> `constraint.definition`, `index.definition`) plus the encoded id in `sequence.ownedBy`. A missed
+> one is not cosmetic: those fields are hashed.
+>
+> **Proof it works where it has to.** `test/shadow/ladder.test.ts` creates
+> `CREATE ROLE pgprime_k2_nocreatedb WITH LOGIN NOCREATEDB NOSUPERUSER`, asserts that role really
+> gets `permission denied to create database`, and runs the whole `provisionShadow` →
+> `loadDesired` → `dispose` path as it. The tier-3 IR and the tier-2 IR of the same schema have the
+> **same fingerprint**, which is the property the map exists to preserve.
+
 ### 3.3 Rename resolution
 
 **Annotation is the only authority.** Three inputs, strictly ordered:
