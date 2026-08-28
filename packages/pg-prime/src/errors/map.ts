@@ -46,7 +46,24 @@ export function driverDataOf(e: unknown): PgDriverErrorData | undefined {
   if (typeof e !== 'object' || e === null) return undefined
   const data = (e as Carrier).pgPrime
   if (data === undefined || typeof data !== 'object') return undefined
-  return typeof (data as { kind?: unknown }).kind === 'string' ? data : undefined
+  if (typeof (data as { kind?: unknown }).kind === 'string') return data
+  // A **partial** carrier: `{ pgPrime: { server: { sqlstate } } }` and nothing else. `02` §7 says
+  // the seam's data has a `kind`, but the SQLSTATE is the routing key and a carrier that has one
+  // is unambiguously a server error — so a minimal adapter, a test double or a future field
+  // ordering all classify correctly instead of falling through to "not ours" and reaching the
+  // caller as a bare `Error`. Widening here rather than at every read site keeps the rule in one
+  // place.
+  const server = (data as { server?: unknown }).server
+  if (typeof server === 'object' && server !== null && typeof (server as { sqlstate?: unknown }).sqlstate === 'string') {
+    return {
+      kind: 'server',
+      message: (data as { message?: string }).message ?? (server as { message?: string }).message ?? '',
+      connectionUnusable: (data as { connectionUnusable?: boolean }).connectionUnusable ?? false,
+      adapter: (data as { adapter?: string }).adapter ?? 'unknown',
+      ...(data as object),
+    } as PgDriverErrorData
+  }
+  return undefined
 }
 
 /** SQLSTATE of anything, whether it came through the seam or straight off `pg`. */
@@ -116,12 +133,17 @@ export function mapDriverError(data: PgDriverErrorData, cause: unknown, o: MapOp
   const server = data.server
   const state = server?.sqlstate ?? ''
   const Ctor = classForSqlState(state)
+  // Never an empty message. The seam's `server.message` is the good one, `data.message` the next
+  // best, and the underlying `Error`'s own the last resort — a mapped error that says nothing is
+  // strictly worse than the raw one it replaced, and an adapter (or a test double) that fills only
+  // `server.sqlstate` is a shape we accept in `driverDataOf`.
+  const text = firstNonEmpty(server?.message, data.message, cause instanceof Error ? cause.message : '')
   const { detail, detailRedacted } = redactDetail(server?.detail, state, o.errors)
 
   const init: QueryErrorInit = {
     ...base,
     code: state,
-    ...(server === undefined ? {} : { server, severity: severityOf(server.severity) }),
+    ...(server === undefined ? {} : { server, severity: severityOf(server.severity ?? 'ERROR') }),
     ...(sql === undefined ? {} : { sql }),
     ...(o.errors.includeParams && o.params !== undefined ? { params: o.params } : {}),
     paramCount: o.params?.length ?? 0,
@@ -135,7 +157,7 @@ export function mapDriverError(data: PgDriverErrorData, cause: unknown, o: MapOp
   }
 
   if (state === '25P02') {
-    return new InFailedTransactionError(inFailedTransactionMessage(server?.message, o.poisonedBy), {
+    return new InFailedTransactionError(inFailedTransactionMessage(text, o.poisonedBy), {
       ...init,
       ...(o.poisonedBy === undefined ? {} : { poisonedBy: o.poisonedBy }),
     })
@@ -144,13 +166,18 @@ export function mapDriverError(data: PgDriverErrorData, cause: unknown, o: MapOp
   const Integrity = Ctor as unknown as typeof IntegrityConstraintError
   if (isIntegrity(Ctor)) {
     const resolved = resolveConstraint(o.schema, server?.constraint, server?.table, server?.column)
-    return new Integrity(constraintMessage(server?.message ?? data.message, server?.constraint, resolved), {
+    return new Integrity(constraintMessage(text, server?.constraint, resolved), {
       ...init,
       ...(resolved === undefined ? {} : { resolved }),
     })
   }
 
-  return new Ctor(server?.message ?? data.message, init)
+  return new Ctor(text, init)
+}
+
+function firstNonEmpty(...values: readonly (string | undefined)[]): string {
+  for (const v of values) if (v !== undefined && v !== '') return v
+  return 'pg-prime: the database reported an error with no message.'
 }
 
 function isIntegrity(Ctor: unknown): boolean {

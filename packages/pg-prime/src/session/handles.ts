@@ -295,9 +295,10 @@ export async function runTransaction<T>(
   const txId = nextTxId()
   const openedAt = state.errors.captureCallSite ? captureCallSite(runTransaction) : undefined
 
-  await ensureGuardStore.call(undefined)
-  const store = state.devGuard ? await ensureGuardStore() : undefined
-  void store
+  // The dev guard's AsyncLocalStorage is imported here, lazily, inside an `await` that already
+  // exists — so `node:async_hooks` never enters a bundle that does not open a transaction, and
+  // the tree-shake golden can assert it (07 §1.6).
+  if (state.devGuard) await ensureGuardStore()
 
   let attempt = 0
   for (;;) {

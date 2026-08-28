@@ -32,7 +32,7 @@ export default defineConfig({
           // file, so it costs nothing here and it is the only thing that pins the wire-protocol
           // rules the PGlite bridge implements.
           include: [
-            'test/{schema,sql,compile,query}/**/*.test.ts',
+            'test/{schema,sql,compile,query,session}/**/*.test.ts',
             'test/live/**/*.unit.test.ts',
             // design/09 WS7: the fuzz *harness* (the regression corpus's loader, validator and
             // append path) has no database in it, and it is machinery that only runs when

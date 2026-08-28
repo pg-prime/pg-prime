@@ -27,12 +27,24 @@ import type { PgConnection, PgResultChunk } from '../driver/index.js'
 import type { Fragment } from '../sql/index.js'
 import { sql as sqlTag, toNode } from '../sql/index.js'
 import type { BuilderCtx } from './builder-state.js'
-import type { ExecEnv, ExplainOptions, ExplainResult, StreamOptions } from './executor.js'
+import type { ExecEnv, ExplainOptions, ExplainResult, RunOptions, StreamOptions } from './executor.js'
+import type { StatementDescriptor } from '../session/runner.js'
 import { dynamicRowDecoder } from './executor.js'
 import { explainWith, runnerOf, takeFirst, toSQLOf } from './terminals.js'
 import type { SqlSnapshot } from './terminals.js'
 
 export type RawRow = Record<string, unknown>
+
+/**
+ * The session layer's runner, duck-typed.
+ *
+ * `Runner` (`./builder-state.ts`) is the builder's seam and belongs to another workstream, so the
+ * raw path asks whether the runner it was given happens to be a session one rather than widening
+ * the interface. Both runners `pgPrime` produces are; `compileOnly()` produces none at all.
+ */
+interface RawCapableRunner {
+  runRaw<Row>(desc: StatementDescriptor<Row>, opts?: RunOptions): Promise<Row[]>
+}
 
 export interface RawQuery {
   readonly sql: string
@@ -83,17 +95,46 @@ class RawQueryImpl implements RawQuery {
     return toSQLOf(this.#compiled)
   }
 
+  /**
+   * Through the runner's **statement** path, not its bare `use`.
+   *
+   * A raw statement is still a query: it gets `07` §7.1's start/end/error events, §7.3's
+   * slow-query record, §4's error mapping and §6.2's per-statement timeout, exactly like a builder
+   * query. It got none of those while it went straight to `conn.execute`, and the reason was
+   * incidental — it has no `Compiled` decode plan — not principled.
+   */
   async execute(): Promise<RawRow[]> {
     const runner = runnerOf(this.#ctx)
     const c = this.#compiled
-    return runner.use(async (conn) => {
-      const result = await conn.execute({
-        text: c.sql,
-        params: c.binds.map((b) => (b.k === 'value' ? b.encoded : null)),
-        paramTypes: paramTypesOf(c.binds),
+    const raw = (runner as unknown as Partial<RawCapableRunner>).runRaw
+    const params = c.binds.map((b) => (b.k === 'value' ? b.encoded : null))
+    const paramTypes = paramTypesOf(c.binds)
+    if (raw === undefined) {
+      return runner.use(async (conn) => {
+        const result = await conn.execute({ text: c.sql, params, paramTypes })
+        return dynamicRowDecoder(c.sql, result.fields, runner.env.registry)(result.rows)
       })
-      return dynamicRowDecoder(c.sql, result.fields, runner.env.registry)(result.rows)
-    })
+    }
+    return raw.call<RawCapableRunner, [StatementDescriptor<RawRow>], Promise<RawRow[]>>(
+      runner as unknown as RawCapableRunner,
+      {
+        sql: c.sql,
+        paramCount: params.length,
+        paramTypes,
+        operation: 'other',
+        tables: undefined,
+        async perform(conn, env, opts) {
+          const result = await conn.execute({
+            text: c.sql,
+            params,
+            paramTypes,
+            ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+          })
+          const rows = dynamicRowDecoder(c.sql, result.fields, env.registry)(result.rows)
+          return { rows, rowCount: result.rowCount ?? rows.length }
+        },
+      },
+    )
   }
 
   async executeTakeFirst(): Promise<RawRow | undefined> {

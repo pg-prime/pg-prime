@@ -23,6 +23,7 @@
 import type { Compiled } from '../compile/contract.js'
 import { paramTypesOf } from '../compile/contract.js'
 import type { PgConnection, PgDriver, PgNoticeData } from '../driver/types.js'
+import { PgPrimeError as PgPrimeErrorClass } from '../errors/index.js'
 import type { PgPrimeError } from '../errors/index.js'
 import {
   DbClosedError,
@@ -73,6 +74,41 @@ export interface SessionState {
 /** Per-statement options a runner threads down from the handle and from the call. */
 export interface StatementOptions extends CallOptions {
   readonly params?: Readonly<Record<string, unknown>> | undefined
+}
+
+/**
+ * What {@link execute} needs to know about a statement, whichever surface produced it.
+ *
+ * Two things produce one: a compiled builder query, and `` db.sql`…` `` — and until this existed
+ * the second got no hooks, no slow-query log, no per-statement timeout and no error mapping,
+ * because it reached the connection through `Runner.use` instead. A raw statement is still a
+ * query; `07` §7.1 does not have an exception for it.
+ */
+export interface StatementDescriptor<Row> {
+  readonly sql: string
+  readonly paramCount: number
+  /** `07` §4.3: "always present, always safe" — an OID names no user value. */
+  readonly paramTypes: readonly number[]
+  readonly operation: QueryOperation
+  readonly tables: readonly string[] | undefined
+  /** Runs it. `timing` is filled when somebody is listening. */
+  perform(conn: PgConnection, env: ExecEnv, opts: RunOptions): Promise<{ rows: Row[]; rowCount: number }>
+}
+
+/** A compiled builder query as a descriptor. */
+export function compiledStatement<Row>(compiled: Compiled<Row>): StatementDescriptor<Row> {
+  const c = compiled as unknown as Compiled<unknown>
+  return {
+    sql: compiled.sql,
+    paramCount: compiled.binds.length,
+    paramTypes: paramTypesOf(compiled.binds),
+    operation: operationOf(c),
+    tables: tablesOf(c),
+    async perform(conn, env, opts) {
+      const rows = await runOn(conn, compiled, env, opts)
+      return { rows, rowCount: rows.length }
+    },
+  }
 }
 
 /** What the two runners share. Not exported: `Runner` is the seam, this is the implementation. */
@@ -213,7 +249,7 @@ export class PoolRunner extends BaseRunner {
     const lease = await acquire(this.state, this.signalFor(o))
     let dispose = false
     try {
-      return await execute(this.state, lease, compiled, o, this.handle, 0, undefined)
+      return await execute(this.state, lease, compiledStatement(compiled), o, this.handle, 0, undefined)
     } catch (e) {
       dispose = poisons(e)
       throw e
@@ -233,7 +269,15 @@ export class PoolRunner extends BaseRunner {
         text: 'select set_config($1,$2,true)',
         params: ['statement_timeout', String(o.timeoutMs)],
       })
-      const rows = await execute(this.state, lease, compiled, { ...o, timeoutMs: undefined }, this.handle, 0, undefined)
+      const rows = await execute(
+        this.state,
+        lease,
+        compiledStatement(compiled),
+        { ...o, timeoutMs: undefined },
+        this.handle,
+        0,
+        undefined,
+      )
       await lease.conn.execute({ text: 'commit', params: [], mode: 'simple' })
       opened = false
       return rows
@@ -264,7 +308,9 @@ export class PoolRunner extends BaseRunner {
       await lease.conn.execute({ text: 'begin', params: [], mode: 'simple' })
       const out: Row[] = []
       try {
-        for (const c of all) out.push(...(await execute(this.state, lease, c, o, this.handle, 0, undefined)))
+        for (const c of all) {
+          out.push(...(await execute(this.state, lease, compiledStatement(c), o, this.handle, 0, undefined)))
+        }
       } catch (e) {
         dispose = poisons(e)
         if (!dispose) {
@@ -274,6 +320,28 @@ export class PoolRunner extends BaseRunner {
       }
       await lease.conn.execute({ text: 'commit', params: [], mode: 'simple' })
       return out
+    } finally {
+      await release(this.state, lease, dispose)
+    }
+  }
+
+  /**
+   * `` db.sql`…` `` — the same hooks, the same mapping, the same log, the same timeout.
+   *
+   * It is a separate entry point only because a raw statement has no `Compiled` and therefore no
+   * decode plan; everything else about it is a query.
+   */
+  async runRaw<Row>(desc: StatementDescriptor<Row>, opts?: RunOptions): Promise<Row[]> {
+    this.assertOpen()
+    const o = this.merged(opts)
+    this.guard(o)
+    const lease = await acquire(this.state, this.signalFor(o))
+    let dispose = false
+    try {
+      return await execute(this.state, lease, desc, o, this.handle, 0, undefined)
+    } catch (e) {
+      dispose = poisons(e)
+      throw e
     } finally {
       await release(this.state, lease, dispose)
     }
@@ -372,7 +440,9 @@ export class ConnRunner extends BaseRunner {
     try {
       return await f(this.conn)
     } catch (e) {
-      throw this.#mapped(e, undefined)
+      const mapped = this.#mapped(e, undefined)
+      if (mapped instanceof PgPrimeErrorClass && isPoisoning(mapped)) this.tx.poisonedBy ??= mapped
+      throw mapped
     }
   }
 
@@ -383,6 +453,11 @@ export class ConnRunner extends BaseRunner {
   }
 
   async run<Row>(compiled: Compiled<Row>, opts?: RunOptions): Promise<Row[]> {
+    return this.runRaw(compiledStatement(compiled), opts)
+  }
+
+  /** See `PoolRunner.runRaw`. Same statement path, the transaction's own connection. */
+  async runRaw<Row>(desc: StatementDescriptor<Row>, opts?: RunOptions): Promise<Row[]> {
     this.#assertUsable()
     const o = this.merged(opts)
     await this.#applyLocalTimeout(o)
@@ -391,7 +466,7 @@ export class ConnRunner extends BaseRunner {
       return await execute(
         this.state,
         { conn: this.conn, waitedMs: 0 },
-        compiled,
+        desc,
         o,
         this.#handle,
         this.tx.depth,
@@ -585,10 +660,10 @@ function tablesOf(compiled: Compiled<unknown>): readonly string[] | undefined {
  * applied to the rows. `runOn` does both, so the split is measured by timing the boundary the
  * executor exposes — `07` §7.1 asks for "driver time vs our decode time", which is what this is.
  */
-async function execute<Row>(
+export async function execute<Row>(
   state: SessionState,
   lease: Lease,
-  compiled: Compiled<Row>,
+  desc: StatementDescriptor<Row>,
   o: StatementOptions,
   handle: 'db' | 'tx' | 'session',
   depth: number,
@@ -599,20 +674,20 @@ async function execute<Row>(
   const callSite = state.errors.captureCallSite ? captureCallSite(execute) : undefined
   const started = performance.now()
   const queryId = wantEvents ? nextQueryId() : ''
-  const paramCount = compiled.binds.length
+  const paramCount = desc.paramCount
 
   const start: QueryStartEvent | undefined = wantEvents
     ? {
         queryId,
-        sql: compiled.sql,
+        sql: desc.sql,
         paramCount,
         execMode: o.statement ?? state.env.statement,
         handle,
         depth,
         attempt: tx?.attempt ?? 1,
         startedAt: started,
-        operation: operationOf(compiled as unknown as Compiled<unknown>),
-        tables: tablesOf(compiled as unknown as Compiled<unknown>),
+        operation: desc.operation,
+        tables: desc.tables,
         label: o.label,
         txId: tx?.txId,
       }
@@ -633,9 +708,8 @@ async function execute<Row>(
   }
 
   try {
-    const rows = await runOn(
+    const out = await desc.perform(
       lease.conn,
-      compiled,
       state.env,
       timing === undefined ? runOpts : { ...runOpts, timing },
     )
@@ -646,27 +720,18 @@ async function execute<Row>(
       hooks.queryEnd({
         ...start,
         durationMs,
-        rowCount: rows.length,
-        command: compiled.meta.kind.toUpperCase(),
+        rowCount: out.rowCount,
+        command: desc.operation.toUpperCase(),
         serverMs,
         decodeMs,
         waitedForConnectionMs: lease.waitedMs,
       })
-      logQuery(state, start, durationMs, rows.length, serverMs, decodeMs, lease.waitedMs, callSite)
+      logQuery(state, start, durationMs, out.rowCount, serverMs, decodeMs, lease.waitedMs, callSite)
     }
-    return rows
+    return out.rows
   } catch (raw) {
     const durationMs = performance.now() - started
-    const error = mapStatementError(
-      state,
-      raw,
-      compiled as unknown as Compiled<unknown>,
-      o,
-      handle,
-      tx,
-      callSite,
-      timer.fired(),
-    )
+    const error = mapStatementError(state, raw, desc, o, handle, tx, callSite, timer.fired())
     if (tx !== undefined && isPoisoning(error)) tx.poisonedBy ??= error
     if (start !== undefined) {
       hooks.queryError({
@@ -751,10 +816,10 @@ function startClientTimeout(
   }
 }
 
-function mapStatementError(
+function mapStatementError<Row>(
   state: SessionState,
   raw: unknown,
-  compiled: Compiled<unknown>,
+  desc: StatementDescriptor<Row>,
   o: StatementOptions,
   handle: 'db' | 'tx' | 'session',
   tx: TxRuntime | undefined,
@@ -768,9 +833,9 @@ function mapStatementError(
       ...(o.label === undefined ? {} : { label: o.label }),
     },
     errors: state.errors,
-    sql: compiled.sql,
+    sql: desc.sql,
     params: undefined,
-    paramTypes: paramTypesOf(compiled.binds),
+    paramTypes: desc.paramTypes,
     ...(callSite === undefined ? {} : { callSite }),
     schema: state.schema,
     ...(tx?.poisonedBy === undefined ? {} : { poisonedBy: tx.poisonedBy }),
