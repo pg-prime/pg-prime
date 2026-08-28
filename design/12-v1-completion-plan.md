@@ -469,10 +469,11 @@ green on the first run and are the reason the record is worth keeping.
   It now filters on `classid`/`objid`/`objsubid`, which is the pair a one-argument
   `pg_advisory_*` call stores — and the assertions got stronger as a result (exactly 1, then 0).
 - **The §5.4 startup probe perturbs the pool, once.** It opens up to three extra pooled connections
-  to create the contention it needs, so  — which counts backends in
-   — runs with . A diagnostic that opens connections and a test
+  to create the contention it needs, so `test/pg/session-listen.test.ts` — which counts backends in
+  `pg_stat_activity` — runs with `devGuard: false`. A diagnostic that opens connections and a test
   that counts them cannot both be right, and turning the diagnostic off in that one file is the
-  smaller lie.
+  smaller lie. It is also skipped entirely for the `driver:` form, where the caller owns the
+  connection policy and we do not even know the host.
 - **Conflict-prone files for the integrator**: `src/query/types.ts` (my hunks are the four handle
   interfaces plus one import block and one re-export block — B owns the rest), `src/index.ts`,
   `src/query/executor.ts` (`RunTiming`, `streamBatchesOn`), `src/query/raw.ts`,
