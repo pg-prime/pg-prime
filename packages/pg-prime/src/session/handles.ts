@@ -158,10 +158,16 @@ function installQueryable(handle: object, state: SessionState, runner: AnyRunner
   install(handle, 'copyFrom', makeCopyFrom(state, runner))
   install(handle, 'copyTo', makeCopyTo(state, runner))
 
-  install(handle, 'withOptions', (opts: CallOptions) => makeScoped(state, runner, kind, opts))
-  install(handle, 'outsideTransaction', () =>
-    makeScoped(state, runner, kind, { outsideTransaction: true }),
-  )
+  // Installed here only for the ROOT handle, whose scoped clone is a plain `Queryable`. A `Tx` and
+  // a `Session` re-install their own, because their scoped clone must still be a `Tx` / a `Session`
+  // — the type says so, and a clone that had lost `savepoint` or `set` would be a runtime
+  // `TypeError` behind a green compile.
+  if (kind === 'db') {
+    install(handle, 'withOptions', (opts: CallOptions) => makeScoped(state, runner, kind, opts))
+    install(handle, 'outsideTransaction', () =>
+      makeScoped(state, runner, kind, { outsideTransaction: true }),
+    )
+  }
 }
 
 function streamOpts(opts: StreamCallOptions | undefined): (StreamOptions & RunOptions) | undefined {
@@ -556,11 +562,18 @@ interface TxShape {
   readonly label?: string
 }
 
-export function makeTxHandle(deps: TxDeps, conn: PgConnection, tx: TxRuntime, shape: TxShape): object {
+export function makeTxHandle(
+  deps: TxDeps,
+  conn: PgConnection,
+  tx: TxRuntime,
+  shape: TxShape,
+  extra: CallOptions = {},
+): object {
   const state = deps.state
   const defaults: StatementOptions = {
     ...(shape.signal === undefined ? {} : { signal: shape.signal }),
     ...(shape.label === undefined ? {} : { label: shape.label }),
+    ...extra,
   }
   const runner = new ConnRunner(state, defaults, conn, tx, 'tx')
   const ctx: BuilderCtx = { ...deps.ctxSeed, runner }
@@ -610,6 +623,12 @@ export function makeTxHandle(deps: TxDeps, conn: PgConnection, tx: TxRuntime, sh
     throw { [DOOMED]: true, value } as Doomed
   })
 
+  install(handle, 'withOptions', (opts: CallOptions) =>
+    makeTxHandle(deps, conn, tx, shape, { ...defaults, ...opts }),
+  )
+  install(handle, 'outsideTransaction', () =>
+    makeTxHandle(deps, conn, tx, shape, { ...defaults, outsideTransaction: true }),
+  )
   return handle
 }
 
@@ -810,21 +829,29 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
     baselineTimeoutMs: undefined,
     label: undefined,
   }
-  const runner = new ConnRunner(state, {}, lease.conn, tx, 'session')
-  const ctx: BuilderCtx = { ...deps.ctxSeed, runner }
-  const handle = makeExecutor(ctx, deps.handles)
-  attachDeps(runner, deps)
-  installQueryable(handle, state, runner, 'session')
-  installGetter(handle, 'backendPid', () => lease.conn.backendPid)
-
-  install(handle, 'transaction', <T2>(a: Callback<T2> | TxOptions, b?: Callback<T2> | TxOptions) =>
-    runNestedOnConnection(deps, lease.conn, tx, a, b),
-  )
-  /** `Session.set()` is `set_config($1,$2,false)` — the session-scoped sibling of `setLocal`. */
-  install(handle, 'set', (a: unknown, b?: unknown) => setLocalOn(runner, a, b, false))
-  install(handle, 'advisoryLock', async (key: bigint | string, o?: AdvisoryLockOptions): Promise<AdvisoryLock | boolean> =>
-    sessionAdvisoryLock(state, runner, key, o),
-  )
+  /** Built once, and again for every `withOptions` — a scoped `Session` is still a `Session`. */
+  const makeSessionHandle = (extra: CallOptions): object => {
+    const scopedRunner = new ConnRunner(state, extra as StatementOptions, lease.conn, tx, 'session')
+    attachDeps(scopedRunner, deps)
+    const h = makeExecutor({ ...deps.ctxSeed, runner: scopedRunner }, deps.handles)
+    installQueryable(h, state, scopedRunner, 'session')
+    installGetter(h, 'backendPid', () => lease.conn.backendPid)
+    install(h, 'transaction', <T2>(a: Callback<T2> | TxOptions, b?: Callback<T2> | TxOptions) =>
+      runNestedOnConnection(deps, lease.conn, tx, a, b),
+    )
+    // `Session.set()` is `set_config($1,$2,false)` — the session-scoped sibling of `setLocal`.
+    install(h, 'set', (a: unknown, b?: unknown) => setLocalOn(scopedRunner, a, b, false))
+    install(
+      h,
+      'advisoryLock',
+      async (key: bigint | string, o?: AdvisoryLockOptions): Promise<AdvisoryLock | boolean> =>
+        sessionAdvisoryLock(state, scopedRunner, key, o),
+    )
+    install(h, 'withOptions', (opts: CallOptions) => makeSessionHandle({ ...extra, ...opts }))
+    install(h, 'outsideTransaction', () => makeSessionHandle({ ...extra, outsideTransaction: true }))
+    return h
+  }
+  const handle = makeSessionHandle({})
   let dispose = false
   try {
     // A session is NOT a transaction, so the guard must not see a frame — but a `db` statement

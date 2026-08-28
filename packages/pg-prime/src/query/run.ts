@@ -506,7 +506,23 @@ export function compileOnly<Sc extends AnySchema>(schema: Sc, registry?: CodecRe
   )
   installGetter(executor, 'schema', () => schema)
   installGetter(executor, 'kind', () => 'db')
+  // `Queryable` promises `run` / `explain` / `stream` / `streamBatches` / `notify` / `copy*`, and a
+  // compile-only executor has no connection to honour them with. They are installed anyway, each
+  // raising the sentence `runnerOf` raises for `.execute()` — `TypeError: db.run is not a function`
+  // would be a worse answer to the same mistake.
+  for (const name of ['run', 'explain', 'stream', 'streamBatches', 'notify', 'copyFrom', 'copyTo']) {
+    install(executor, name, noExecutor)
+  }
+  install(executor, 'withOptions', () => executor as unknown as Queryable<Sc>)
+  install(executor, 'outsideTransaction', () => executor as unknown as Queryable<Sc>)
   return executor as unknown as Queryable<Sc>
+}
+
+function noExecutor(): never {
+  throw new BuilderError(
+    'pg-prime: this executor was built by compileOnly(schema), so it can compile a query but not ' +
+      'run one. Build it from pgPrime({ driver | pool | connection, schema }) if you need a database.',
+  )
 }
 
 /** Re-exported so `pg-prime`'s barrel needs one import for the constructor and its config. */

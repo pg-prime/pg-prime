@@ -235,5 +235,4 @@ for (const mut of MUTATIONS) {
     writeFileSync(file, original)
   }
 }
-writeFileSync('.mutation-record.json', `${JSON.stringify(rows, null, 2)}\n`)
 console.log(`\n${rows.filter((r) => r.red).length}/${rows.length} caught`)

@@ -76,7 +76,7 @@ import {
 } from '../../src/errors/index.js'
 import { HookBus, SEMCONV, spanAttributes, spanName } from '../../src/observe/index.js'
 import { POOLER_MODES, POOLER_PROFILES } from '../../src/pooler/index.js'
-import { pgPrime } from '../../src/query/run.js'
+import { compileOnly, pgPrime } from '../../src/query/run.js'
 import { defineSchema, pgTable } from '../../src/schema/index.js'
 import { resolveSessionSettings } from '../../src/session/gucs.js'
 import { resetGuardForTests } from '../../src/session/guard.js'
@@ -1133,6 +1133,56 @@ describe('config validation is eager and names the key (07 §1.1)', () => {
     expect(destroyed).toHaveBeenCalled()
     const err = await db.sql`select 1`.execute().catch((e: unknown) => e)
     expect((err as Error).name).toBe('DbClosedError')
+  })
+
+  /**
+   * A scoped clone has to be the SAME kind of handle. The type says `Tx.withOptions(): Tx`, and a
+   * clone that had lost `savepoint` / `setLocal` / `rollbackWith` would be a runtime `TypeError`
+   * behind a green compile — which is the worst shape a bug can take.
+   */
+  it('withOptions preserves the handle: a scoped Tx is still a Tx, a scoped Session a Session', async () => {
+    const { driver, db } = setup()
+    await db.transaction(async (tx) => {
+      const scoped = tx.withOptions({ label: 'scoped' })
+      expect(scoped.kind).toBe('tx')
+      expect(typeof scoped.savepoint).toBe('function')
+      expect(typeof scoped.setLocal).toBe('function')
+      expect(typeof scoped.rollbackWith).toBe('function')
+      expect(scoped.attempt).toBe(tx.attempt)
+      driver.rows.push([['1']])
+      await scoped.savepoint(async (sp) => sp.sql`select 1`.execute())
+    })
+    await db.session(async (s) => {
+      const scoped = s.withOptions({ label: 'scoped' })
+      expect(scoped.kind).toBe('session')
+      expect(typeof scoped.set).toBe('function')
+      expect(typeof scoped.advisoryLock).toBe('function')
+      expect(typeof scoped.transaction).toBe('function')
+    })
+  })
+
+  /**
+   * `compileOnly` returns a `Queryable`, so it declares `run` / `stream` / `copyFrom` and has no
+   * database to honour them with. They must raise the sentence that names the fix, not
+   * `TypeError: db.run is not a function`.
+   */
+  it('compileOnly() answers every Queryable member with the sentence, never a TypeError', async () => {
+    const q = compileOnly(schema)
+    expect(q.kind).toBe('db')
+    expect(q.schema).toBe(schema)
+    for (const call of [
+      () => q.run({} as never),
+      () => q.stream({} as never),
+      () => q.streamBatches({} as never),
+      () => q.notify('x'),
+      () => (q.copyFrom as unknown as () => void)(),
+    ]) {
+      expect(call).toThrow(/compileOnly/)
+    }
+    // …and the thing it CAN do still works.
+    expect(q.from(schema.h.users).select(({ users: u }) => ({ id: u.id })).compile().sql).toContain(
+      'select',
+    )
   })
 
   it('handles carry their kind, and every one of them can reach the schema', async () => {
