@@ -279,10 +279,12 @@ One correction to this plan's own arithmetic before the numbers: §3 K4 item 4 c
 `checkpoint` and `db seed`, so its twelfth is **`db seed`**; `pull` is a thirteenth that §6.2
 never listed and that `00` decision 5 specifies. All thirteen ship. Recorded in `06` §6.5.
 
-**Numbers.** Kit suite **379 → 411** (405 passed + 6 pooler-gated skips), 51 → 56 files:
-**38.6 s** on PG 17 (`:54333`) and **45.1 s** on PG 18 (`:54332`), both green. `pnpm test`
-(tier 0) 46 → 47 files, 778 → **790 tests, 4.69 s** (ceiling 5.0 s) · `pnpm test:live` 80 files,
-**1 519 passed + 2 skipped** · root `pnpm typecheck` clean · `pnpm build` clean ·
+**Numbers.** Kit suite **379 → 411** (405 passed + 6 pooler-gated skips), 51 → 56 files, green on
+**all four majors**: PG 15 `:54335` 64.4 s · PG 16 `:54336` 44.4 s · PG 17 `:54333` 38.6–69.8 s ·
+PG 18 `:54332` 45.1 s. `pnpm test` (tier 0) 46 → 47 files, 778 → **790 tests**, **4.69–5.32 s**
+across five runs on a busy design machine (ceiling 5.0 s; the run is transform-dominated and the
+new file's own twelve tests measure 4 ms) · `pnpm test:live` 80 files, **1 519 passed + 2
+skipped** · root `pnpm typecheck` clean · `pnpm build` clean ·
 `pnpm api-snapshot` `@pg-prime/kit` 162 → **174 values / 166 types**, `pg-prime` **234v/234t**
 (root) and **51v/80t** (`./schema`) · `pnpm package:check` green (8/8 size gates, emit parity
 0 FAIL, `check:dts` clean, tree-shake ok after one re-baseline, publint/attw clean, the tarball's
