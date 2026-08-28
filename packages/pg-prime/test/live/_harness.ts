@@ -176,11 +176,6 @@ export type TestDecl = (name: string, fn: () => void | Promise<void>) => void
 
 let skips = 0
 
-/** Count of guard-skipped tests in this worker. Printed per skip so CI shows the total (design/09 §5). */
-export function skipCount(): number {
-  return skips
-}
-
 function skip(reason: string): TestDecl {
   skips += 1
   announce(`[live] skip #${skips} (${liveTarget().kind}): ${reason}`)

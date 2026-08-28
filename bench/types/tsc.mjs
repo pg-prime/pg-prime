@@ -63,17 +63,3 @@ export function measure(tscPath, dir, repeats = 1) {
   return best
 }
 
-/** Emit `.d.ts` for one file tree and return the total bytes written. */
-export function declarationBytes(tscPath, files, outDir) {
-  execFileSync(
-    process.execPath,
-    [
-      tscPath, ...files,
-      '--declaration', '--emitDeclarationOnly', '--outDir', outDir,
-      '--target', 'es2023', '--module', 'nodenext', '--moduleResolution', 'nodenext',
-      '--strict', '--skipLibCheck', '--pretty', 'false',
-    ],
-    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] },
-  )
-  return outDir
-}

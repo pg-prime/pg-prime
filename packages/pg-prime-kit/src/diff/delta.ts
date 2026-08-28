@@ -13,8 +13,6 @@ export type Delta =
       readonly anchor: { readonly position: "BEFORE" | "AFTER"; readonly label: string } | null;
     };
 
-export const deltaSubject = (d: Delta): StableId => (d.op === "rename" ? d.to : d.id);
-
 /** Rename hints are an INPUT (annotation-first, D5). Nothing here infers them. */
 export interface RenameHint {
   readonly from: StableId | string;

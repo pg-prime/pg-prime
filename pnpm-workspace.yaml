@@ -1,4 +1,7 @@
 packages:
   - packages/*
   - bench/*
-  - examples/*
+  # `examples/*` and `docs/` are design/08 §7 rows that do not exist yet. A workspace path that
+  # matches no package is a `sherif` finding (`non-existant-packages`), so each is added by the
+  # workstream that creates it — design/12 D for `docs/`, and for `examples/` whichever of D's
+  # `title=` blocks lands first.

@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "endOfLine": "lf",
+  "insertFinalNewline": true,
+
+  "semi": false,
+  "singleQuote": true,
+  "quoteProps": "as-needed",
+  "trailingComma": "all",
+  "arrowParens": "always",
+  "bracketSpacing": true,
+  "objectWrap": "preserve",
+
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "fixtures/**",
+    "tools/api-snapshot/**",
+    "**/*.md"
+  ],
+
+  "overrides": [
+    {
+      "files": ["packages/pg-prime-kit/**"],
+      "options": {
+        "semi": true,
+        "singleQuote": false,
+        "printWidth": 120
+      }
+    }
+  ]
+}

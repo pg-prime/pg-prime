@@ -69,8 +69,6 @@ export function handMapRows(rows) {
  * registered, so it is the identical input and the identical mapper — which is what makes the
  * `orm() / raw()` ratio a measurement of *our* overhead rather than of two different jobs.
  */
-export const handMapper = handMapRows
-
 /** The narrower mapper the point-select and 1000-row cases use: `id`, `email`, `name`. */
 export function handMapUsers(rows) {
   const out = new Array(rows.length)

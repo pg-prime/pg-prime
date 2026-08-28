@@ -1,0 +1,25 @@
+# design/08 §3.4: "formatting is not a design decision and should not consume review time."
+# This file is the editor half; `.oxfmtrc.json` is the tool half and reads these values.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Goldens are byte-for-byte comparisons. Nothing may touch them.
+[fixtures/**]
+trim_trailing_whitespace = false
+insert_final_newline = false
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab

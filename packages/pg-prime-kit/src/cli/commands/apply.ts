@@ -12,7 +12,6 @@ import type { ResolvedConfig } from "../../config/load.js";
 import { createRepeatablesPass } from "../../repeatables/index.js";
 import { applyPending, type ApplyPendingOptions, type ApplyPendingResult } from "../../runner/run.js";
 import { bool, ms, str, type OptionSpec, type ParseResult } from "../args.js";
-import { EXIT } from "../exit.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
 
 export const APPLY_OPTIONS: readonly OptionSpec[] = [
@@ -157,5 +156,3 @@ function text(config: ResolvedConfig, r: ApplyPendingResult): string {
   lines.push(bullets("pending:", r.pending));
   return lines.filter((l) => l !== "").join("\n") || "nothing to do.";
 }
-
-export const APPLY_EXIT_NOTE: string = `Exit: ${String(EXIT.ok)} applied or nothing to do · ${String(EXIT.error)} error · ${String(EXIT.drift)} drift · ${String(EXIT.locked)} lock unavailable`;
