@@ -31,7 +31,7 @@
   },
   "treeshake": {
     "_why": "design/08 §1.2's min+gz lines, measured by §2.4's method: gzip(esbuild --bundle --format=esm --minify --platform=node) of fixtures/treeshake/<case>/entry.ts resolved THROUGH the package's export map, with rollup + @rollup/plugin-node-resolve run beside it as the independent DCE second opinion. §1.2 says these are provisional and get baselined on the first measurement, then ratcheted downward only.",
-    "_baselined": "provisional, baselined 2026-08-28; re-baselined 2026-08-28 for design/11 §3 K2a (the DSL gained .references/.check/.unique(name,opts)/.comment/.renamedFrom, the check/foreignKey/unique/renamedFrom extras, pgSchema and src/schema/ddl.ts). Every number below moved UP by the same rule the first baseline used — budget = min(design, ceil(measured / 1024) * 1024) — and two of the three remain below design/08 §1.2. The module-set goldens gained exactly one entry, dist/schema/ddl.js, which is what design §2.4 step 3 wants a reviewer to see.",
+    "_baselined": "provisional, baselined 2026-08-28; re-baselined 2026-08-28 for design/11 §3 K2a (the DSL gained .references/.check/.unique(name,opts)/.comment/.renamedFrom, the check/foreignKey/unique/renamedFrom extras, pgSchema and src/schema/ddl.ts); re-baselined 2026-08-29 for design/12 K4 (the DSL gained the index options, pgEnum's renamedFrom, t.raw, primaryKey({name}), clusterOn/partitionBy/partitionOf, and src/schema/objects.ts's pgDomain/pgSequence/pgExtension). Every number moved UP by the same rule the first baseline used — budget = min(design, ceil(measured / 1024) * 1024). ONLY root-import-all's budget moved for K4 (52 224 → 53 248 B, +1 182 B measured, still 2.3x below design's 122 880); connect-one-select and full-crud-tx grew by +48 B and +46 B and stayed inside their existing budgets, which is the evidence that the new declarations are NOT reachable from a program that only opens a handle and runs a select — they are separate module-level functions with no edge from the executor. The module-set goldens gained exactly one entry, dist/schema/objects.js, in root-import-all only.",
     "_rule": "budget = min(design, ceil(measured / 1024) * 1024). Rounding the measurement up to the next whole KB and never above design's number ratchets three of the four cases BELOW design on their first measurement, and leaves ~2% of headroom so that a comment edit in packages/pg-prime/src does not turn the package job red. The zero-tolerance regression detector for these fixtures is not the byte count — it is fixtures/treeshake/<case>/expected-modules.json, the exact set of modules that contributed bytes, which is what design §2.4 step 3 says actually works.",
     "_design": {
       "connect-one-select": 35840,
@@ -40,7 +40,14 @@
       "side-effects-only": 200
     },
     "_measured": {
-      "_when": "2026-08-28 (design/11 §3 K2a), esbuild 0.28.2, node 24.14.1, packages/pg-prime built with typescript 7.0.2",
+      "_when": "2026-08-29 (design/12 K4), esbuild 0.28.2, node 24.14.1, packages/pg-prime built with typescript 7.0.2",
+      "connect-one-select": 47260,
+      "full-crud-tx": 47617,
+      "root-import-all": 52842,
+      "side-effects-only": 20
+    },
+    "_measuredBeforeK4": {
+      "_when": "2026-08-28 (design/11 §3 K2a). Kept so the K4 delta reads as +48 / +46 / +1182 B min+gz rather than as an absolute.",
       "connect-one-select": 47212,
       "full-crud-tx": 47571,
       "root-import-all": 51660,
@@ -55,7 +62,7 @@
     },
     "connect-one-select": 48128,
     "full-crud-tx": 48128,
-    "root-import-all": 52224,
+    "root-import-all": 53248,
     "side-effects-only": 200
   },
   "_overDesign": {

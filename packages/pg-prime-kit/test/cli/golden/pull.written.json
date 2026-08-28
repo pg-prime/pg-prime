@@ -1,0 +1,25 @@
+{
+  "command": "pull",
+  "status": "written",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "out": "<masked>",
+  "sqlDir": "<masked>",
+  "counts": {
+    "table": 11
+  },
+  "repeatables": [],
+  "unsupported": [],
+  "written": {
+    "schema": "<masked>",
+    "report": "<masked>",
+    "repeatables": 0
+  },
+  "report": "<masked>",
+  "error": null
+}

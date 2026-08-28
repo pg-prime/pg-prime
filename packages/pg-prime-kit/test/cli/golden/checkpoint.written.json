@@ -1,0 +1,26 @@
+{
+  "command": "migrate checkpoint",
+  "status": "written",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "written": {
+    "sql": "<masked>",
+    "plan": "<masked>",
+    "ir": "<masked>"
+  },
+  "migration": {
+    "id": "0002_checkpoint",
+    "planId": "<masked>",
+    "statements": 5,
+    "fingerprint": "<masked>",
+    "supersedes": []
+  },
+  "warnings": [],
+  "error": null
+}

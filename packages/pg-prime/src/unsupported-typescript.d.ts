@@ -87,6 +87,7 @@ export declare const charCodec: Unsupported
 export declare const check: Unsupported
 export declare const cidrCodec: Unsupported
 export declare const clearDescribeCache: Unsupported
+export declare const clusterOn: Unsupported
 export declare const coalesce: Unsupported
 export declare const comment: Unsupported
 export declare const compileOnly: Unsupported
@@ -194,11 +195,16 @@ export declare const over: Unsupported
 export declare const overlaps: Unsupported
 export declare const overlapsNet: Unsupported
 export declare const parseArrayLiteral: Unsupported
+export declare const partitionBy: Unsupported
+export declare const partitionOf: Unsupported
+export declare const pgDomain: Unsupported
 export declare const pgDriver: Unsupported
 export declare const pgEnum: Unsupported
+export declare const pgExtension: Unsupported
 export declare const pgLsnCodec: Unsupported
 export declare const pgPrime: Unsupported
 export declare const pgSchema: Unsupported
+export declare const pgSequence: Unsupported
 export declare const pgTable: Unsupported
 export declare const placeholder: Unsupported
 export declare const primaryKey: Unsupported
@@ -212,6 +218,7 @@ export declare const rangeLower: Unsupported
 export declare const rangeOverlaps: Unsupported
 export declare const rangeUnion: Unsupported
 export declare const rangeUpper: Unsupported
+export declare const raw: Unsupported
 export declare const regex: Unsupported
 export declare const renamedFrom: Unsupported
 export declare const resolveRelations: Unsupported
@@ -321,6 +328,11 @@ export type GroupedQuery<T0 = any, T1 = any, T2 = any, T3 = any> = Unsupported
 export type Grouping = Unsupported
 export type Handle<T0 = any, T1 = any> = Unsupported
 export type IdentRejectReason = Unsupported
+export type IndexColumn = Unsupported
+export type IndexColumnLike = Unsupported
+export type IndexItem = Unsupported
+export type IndexNulls = Unsupported
+export type IndexOptions = Unsupported
 export type Infer<T0 = any> = Unsupported
 export type InferResult<T0 = any> = Unsupported
 export type Insert<T0 = any> = Unsupported
@@ -350,6 +362,7 @@ export type Order = Unsupported
 export type OrderArg = Unsupported
 export type OrderBy = Unsupported
 export type OrmTypeError<T0 = any> = Unsupported
+export type PartitionOfOptions = Unsupported
 export type PgAcquireOptions = Unsupported
 export type PgArrayLiteral = Unsupported
 export type PgCapabilities = Unsupported
@@ -359,6 +372,8 @@ export type PgCopyResult = Unsupported
 export type PgDateString = Unsupported
 export type PgDecodeError = Unsupported
 export type PgDescribeResult = Unsupported
+export type PgDomain = Unsupported
+export type PgDomainOptions = Unsupported
 export type PgDriver = Unsupported
 export type PgDriverConfig = Unsupported
 export type PgDriverError = Unsupported
@@ -368,6 +383,8 @@ export type PgEnum<T0 = any, T1 = any> = Unsupported
 export type PgEnumOptions = Unsupported
 export type PgErrorKind = Unsupported
 export type PgExecMode = Unsupported
+export type PgExtension = Unsupported
+export type PgExtensionOptions = Unsupported
 export type PgField = Unsupported
 export type PgInterval = Unsupported
 export type PgLikeClient = Unsupported
@@ -386,6 +403,8 @@ export type PgResult = Unsupported
 export type PgResultChunk = Unsupported
 export type PgSchema = Unsupported
 export type PgSchemaOptions = Unsupported
+export type PgSequence = Unsupported
+export type PgSequenceOptions = Unsupported
 export type PgServerErrorData = Unsupported
 export type PgTimestampString = Unsupported
 export type PkOf<T0 = any> = Unsupported
@@ -393,6 +412,7 @@ export type PlaceholderRef = Unsupported
 export type PrepareOptions = Unsupported
 export type PreparedQuery<T0 = any, T1 = any> = Unsupported
 export type PreparedStatementOptions = Unsupported
+export type PrimaryKeyInput = Unsupported
 export type Project<T0 = any> = Unsupported
 export type ProjectPreJoin<T0 = any> = Unsupported
 export type Projectable = Unsupported

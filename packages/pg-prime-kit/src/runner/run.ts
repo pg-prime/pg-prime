@@ -325,6 +325,17 @@ export function resumeFrom(row: MigrationRow | undefined): number {
 const segmentOf = (segments: readonly Segment[], i: number): number =>
   segments.find((s) => s.statements.includes(i))?.index ?? 0;
 
+/**
+ * A file this run will not touch again.
+ *
+ * `superseded` belongs here as much as `applied` does: design/06 §4.5's checkpoint rule
+ * records the files it jumped over, and a jumped file that read as *pending* would be
+ * re-offered on the next `apply` and fail its own fingerprint gate — which is exactly what
+ * the recording exists to prevent.
+ */
+const isSettled = (r: MigrationRow): boolean =>
+  r.status === "applied" || r.status === "baselined" || r.status === "superseded";
+
 /** `0007` or `0007_add_orders` both name the same file. */
 function matchesTarget(file: MigrationFile, target: string): boolean {
   return file.id === target || String(file.seq).padStart(4, "0") === target || file.name === target;
@@ -471,7 +482,7 @@ export async function applyPendingOn(
 
   const readRows = async (): Promise<MigrationRow[]> => (present ? readMigrationRows(client) : []);
   const pendingIdsOf = (rows: readonly MigrationRow[]): string[] => {
-    const settled = new Set(rows.filter((r) => r.status === "applied" || r.status === "baselined").map((r) => r.id));
+    const settled = new Set(rows.filter(isSettled).map((r) => r.id));
     return files.filter((f) => !settled.has(f.id)).map((f) => f.id);
   };
 
@@ -602,11 +613,15 @@ export async function applyPendingOn(
      * absent would make the reconciler above unable to tell a jumped file from a deleted
      * one. `superseded` says what happened: never executed here, and never will be.
      */
-    const settled = new Set(rows.filter((r) => r.status === "applied" || r.status === "baselined").map((r) => r.id));
+    const settled = new Set(rows.filter(isSettled).map((r) => r.id));
     const recorded = new Set(rows.map((r) => r.id));
-    const checkpointFiles = options.checkpoints === "ignore" ? [] : await listCheckpoints(migrationsDir);
+    const checkpointFiles = await listCheckpoints(migrationsDir);
     const newest = checkpointFiles.length === 0 ? undefined : checkpointFiles[checkpointFiles.length - 1]!;
-    const jump = newest !== undefined && rows.length === 0 ? newest : undefined;
+    // `checkpoints: "ignore"` is the EXISTING-database rule applied unconditionally, not
+    // "pretend the files are not there": a checkpoint's `from.fingerprint` is the fresh
+    // database's, so running one after the history it stands in for has already been
+    // applied fails its own gate. Ignoring a checkpoint means superseding it, always.
+    const jump = newest !== undefined && rows.length === 0 && options.checkpoints !== "ignore" ? newest : undefined;
     const checkpointIds = new Set(checkpointFiles.map((c) => c.id));
     const superseded =
       jump !== undefined

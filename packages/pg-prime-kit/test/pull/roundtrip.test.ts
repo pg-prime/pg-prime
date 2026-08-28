@@ -26,6 +26,7 @@ import { EXIT } from "../../src/cli/exit.js";
 import { runSqlScript } from "../../src/db/pg.js";
 import { envelopeOf, runCli, urlOf } from "../support/cli.js";
 import { dbConn, destroyDatabase, makeDatabase, serverAvailable, REPO_ROOT } from "../support/db.js";
+import { golden } from "../cli/_mask.js";
 import { makeProject, type Project } from "../cli/_project.js";
 
 const T = 300_000;
@@ -118,6 +119,11 @@ describe.each(CORPORA)("pull round-trips $name", (corpus) => {
       };
       expect(report.unsupported).toHaveLength(unsupported.length);
       expect(report.repeatables.length).toBe((envelope["repeatables"] as unknown[]).length);
+      // One envelope golden for the command, on the smallest corpus: the shape is the
+      // contract and the other three differ only in their counts.
+      if (corpus.name === "chinook") {
+        await expect(golden(envelope)).toMatchFileSnapshot("../cli/golden/pull.written.json");
+      }
 
       /* 4. idempotence — a second pull over the result is byte-identical */
       const again = await cli("pull");

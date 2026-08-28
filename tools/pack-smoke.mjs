@@ -202,7 +202,7 @@ if (process.argv[1] && process.argv[1].endsWith('pack-smoke.mjs')) {
     } else {
       const mode = statSync(join(app, 'node_modules', '@pg-prime', 'kit', 'dist', 'cli.js')).mode & 0o111
       const help = tryRun(bin, ['--help'], app)
-      const ok = help.ok && help.out.includes('Usage: pg-prime migrate <command> [options]')
+      const ok = help.ok && help.out.includes('Usage: pg-prime <command> [options]')
       console.log(`pg-prime --help: ${ok ? 'ok' : 'FAILED'} (dist/cli.js exec bits ${mode.toString(8)})`)
       if (!ok) {
         failures.push('`pg-prime --help` from the installed tarball')
