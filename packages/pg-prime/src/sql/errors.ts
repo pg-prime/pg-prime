@@ -5,27 +5,22 @@
  * branch without `instanceof` across realm boundaries.
  */
 
-export type PgPrimeErrorCode =
-  | 'INVALID_IDENTIFIER'
-  | 'UNSAFE_LITERAL'
-  | 'UNSUPPORTED_NODE'
-  | 'TOO_MANY_PARAMETERS'
-  | 'INVALID_FRAGMENT'
-  | 'NO_CODEC'
-  | 'NULL_OPERAND'
-  | 'DECODE_PLAN'
-  | 'BUILDER'
-  | 'SCHEMA'
-  | 'CODEC_MISMATCH'
+/**
+ * `PgPrimeError` and the two universal ancestors moved to `src/errors/base.ts` — a module with no
+ * imports at all — so that `07` §4.2's runtime classes can extend `UsageError` without closing an
+ * import cycle back through `sql/ident.ts`. They are re-exported from here because every existing
+ * import path names them at this address.
+ */
+export { ConfigError, PgPrimeError, UsageError } from '../errors/base.js'
+export type {
+  ErrorContext,
+  ErrorInit,
+  HandleKind,
+  PgPrimeErrorCode,
+  UsageErrorInit,
+} from '../errors/base.js'
 
-export class PgPrimeError extends Error {
-  readonly code: PgPrimeErrorCode
-  constructor(code: PgPrimeErrorCode, message: string) {
-    super(message)
-    this.name = new.target.name
-    this.code = code
-  }
-}
+import { PgPrimeError, UsageError } from '../errors/base.js'
 
 /**
  * Thrown when a part cannot be represented as a Postgres identifier *losslessly*. See `ident.ts`
@@ -84,14 +79,14 @@ export class UnsupportedNodeError extends PgPrimeError {
  * parameter per column regardless of row count), a SELECT with a huge `IN` list gets `= any($1)`,
  * which the builder already emits for `inList`.
  */
-export class TooManyParametersError extends PgPrimeError {
+export class TooManyParametersError extends UsageError {
   readonly count: number
   readonly statement: string
   constructor(count: number, statement = 'statement') {
     super(
-      'TOO_MANY_PARAMETERS',
       `compiled ${statement} uses ${count} bind parameters; the PostgreSQL wire protocol caps ` +
         `parameters at 65535. Use strategy: 'unnest' or chunk the batch.`,
+      { code: 'TOO_MANY_PARAMETERS' },
     )
     this.count = count
     this.statement = statement
