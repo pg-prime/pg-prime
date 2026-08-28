@@ -1276,6 +1276,25 @@ describe('AbortSignal and per-statement timeouts (07 §6.1, §6.2)', () => {
     expect(err).toBeInstanceOf(AbortError)
   })
 
+  it('a transaction-level timeoutMs is the BASELINE, so a plain statement does not clear it', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['1']], [['1']])
+    await db.transaction(
+      async (tx) => {
+        await tx.sql`select 1`.execute()
+        await tx.withOptions({ timeoutMs: 10 }).sql`select 1`.execute()
+      },
+      { timeoutMs: 9_000 },
+    )
+    const params = driver.log.filter((r) => r.text.startsWith('select set_config')).map((r) => r.params)
+    // One at BEGIN for the transaction, one for the statement that asked for its own. The plain
+    // statement in between emits nothing, because the baseline is already in place.
+    expect(params).toStrictEqual([
+      ['statement_timeout', '9000'],
+      ['statement_timeout', '10'],
+    ])
+  })
+
   it("inside a transaction a timeout is SET LOCAL statement_timeout, and it is not re-emitted", async () => {
     const { driver, db } = setup()
     driver.rows.push([['1']], [['1']], [['1']])
@@ -1287,9 +1306,11 @@ describe('AbortSignal and per-statement timeouts (07 §6.1, §6.2)', () => {
     })
     const texts = driver.texts()
     expect(texts.filter((t) => t.startsWith('select set_config'))).toHaveLength(2)
+    // The restore is `set_config(…, NULL, true)`, which puts back the value the session would
+    // otherwise have. `'0'` would DISABLE the timeout for the rest of the transaction instead.
     expect(driver.log.filter((r) => r.text.startsWith('select set_config')).map((r) => r.params)).toStrictEqual([
       ['statement_timeout', '1000'],
-      ['statement_timeout', '0'],
+      ['statement_timeout', null],
     ])
   })
 

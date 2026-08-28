@@ -397,6 +397,7 @@ async function once<T>(deps: TxDeps, a: OnceArgs<T>): Promise<{ result: unknown;
     inFlight: 0,
     warned: false,
     localTimeoutMs: undefined,
+    baselineTimeoutMs: a.timeoutMs,
     label: a.label,
   }
   let commitWritten = false
@@ -615,6 +616,7 @@ async function runSavepoint<T>(
     depth,
     inFlight: 0,
     warned: parent.warned,
+    baselineTimeoutMs: o?.timeoutMs ?? parent.baselineTimeoutMs,
     label: o?.label ?? parent.label,
   }
   await conn.execute({ text: savepointSql(depth), params: [], mode: 'simple' })
@@ -785,6 +787,7 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
     inFlight: 0,
     warned: false,
     localTimeoutMs: undefined,
+    baselineTimeoutMs: undefined,
     label: undefined,
   }
   const runner = new ConnRunner(state, {}, lease.conn, tx, 'session')

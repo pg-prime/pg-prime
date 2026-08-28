@@ -385,6 +385,12 @@ export interface TxRuntime {
   warned: boolean
   /** The current transaction-local `statement_timeout`, so a repeat costs no round trip. */
   localTimeoutMs: number | undefined
+  /**
+   * What a statement with no opinion of its own should get: the transaction's own `timeoutMs`, or
+   * nothing. Without it, one `.withOptions({ timeoutMs })` statement would silently *clear* the
+   * timeout the caller set on the whole transaction.
+   */
+  baselineTimeoutMs: number | undefined
   readonly label: string | undefined
 }
 
@@ -508,11 +514,15 @@ export class ConnRunner extends BaseRunner {
    * that wants a different value (including "none") emits the change.
    */
   async #applyLocalTimeout(o: StatementOptions): Promise<void> {
-    const want = o.timeoutMs
+    const want = o.timeoutMs ?? this.tx.baselineTimeoutMs
     if (want === this.tx.localTimeoutMs) return
+    // `set_config(name, NULL, true)` **restores** the value the session would otherwise have —
+    // measured on PG 15 and 17 — which is what "the statement's timeout is over" has to mean.
+    // Sending `'0'` would instead DISABLE the timeout for the rest of the transaction, i.e. turn a
+    // per-statement bound into a per-transaction exemption.
     await this.conn.execute({
       text: 'select set_config($1,$2,true)',
-      params: ['statement_timeout', want === undefined ? '0' : String(want)],
+      params: ['statement_timeout', want === undefined ? null : String(want)],
     })
     this.tx.localTimeoutMs = want
   }
