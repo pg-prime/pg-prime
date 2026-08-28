@@ -352,8 +352,18 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
     created.add(decl.key);
     const target = quoteQualified(mapped(decl.schema, `table ${decl.key}`), decl.name);
 
-    /* A partition CHILD has no column list: its columns come from the parent, and
-     * repeating them is a syntax error. Its own constraints are added afterwards. */
+    const by = decl.runtime.extras.find((e) => e.node === "partitionBy");
+    const partitionBy =
+      by !== undefined && by.node === "partitionBy" ? ` PARTITION BY ${by.strategy.toUpperCase()} (${by.key})` : "";
+    sql.push(`CREATE TABLE ${target} (\n  ${body.join(",\n  ")}\n)${partitionBy}`);
+
+    /* A partition CHILD is created standalone and then ATTACHed, which is what `pg_dump`
+     * emits and — on PostgreSQL 18 — the only form that round-trips. `CREATE TABLE …
+     * PARTITION OF …` CLONES the parent's constraints, including the names: PG 18
+     * catalogues NOT NULL as a `pg_constraint` row, so the child ends up with the parent's
+     * `payment_amount_not_null` where a standalone child has its own
+     * `payment_p2022_01_amount_not_null`, and the next `generate` plans a rename of an
+     * inherited constraint, which PostgreSQL refuses. Found by pagila on PG 18. */
     const child = decl.runtime.extras.find((e) => e.node === "partitionOf");
     if (child !== undefined && child.node === "partitionOf") {
       const parentSchema = child.parentSchema ?? decl.schema;
@@ -361,20 +371,8 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
         mapped(parentSchema, `table ${qualify(parentSchema, child.parent)}`),
         child.parent,
       );
-      sql.push(`CREATE TABLE ${target} PARTITION OF ${parent} ${child.bound}`);
-      for (const clause of [...decl.constraintLines, ...decl.fks.map((fk) => fkClause(fk, mapped))]) {
-        // A partition child's PRIMARY KEY comes from the parent's; only what the parent
-        // does not already give it is added, and PostgreSQL rejects the rest loudly.
-        if (clause.includes(" PRIMARY KEY ")) continue;
-        sql.push(`ALTER TABLE ${target} ADD ${clause}`);
-      }
-      continue;
+      sql.push(`ALTER TABLE ${parent} ATTACH PARTITION ${target} ${child.bound}`);
     }
-
-    const by = decl.runtime.extras.find((e) => e.node === "partitionBy");
-    const partitionBy =
-      by !== undefined && by.node === "partitionBy" ? ` PARTITION BY ${by.strategy.toUpperCase()} (${by.key})` : "";
-    sql.push(`CREATE TABLE ${target} (\n  ${body.join(",\n  ")}\n)${partitionBy}`);
   }
 
   // The cycle breaker (design/11 §3 K2a: "deferred FKs for cycles").

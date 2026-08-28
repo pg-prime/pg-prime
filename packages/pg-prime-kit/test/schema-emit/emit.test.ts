@@ -38,7 +38,12 @@ describe("determinism", () => {
     // before the first `CREATE TABLE` that names one.
     expect(lastOf("CREATE DOMAIN")).toBeLessThan(firstOf("CREATE SEQUENCE"));
     expect(lastOf("CREATE SEQUENCE")).toBeLessThan(firstOf("CREATE TABLE"));
-    expect(lastOf("CREATE TABLE")).toBeLessThan(firstOf("ALTER TABLE"));
+    // The deferred FK — the cycle breaker — comes after every table. `ATTACH PARTITION` is
+    // also an `ALTER TABLE` and sits with its child's `CREATE`, so the two are told apart
+    // by the whole statement rather than by its first three words.
+    const all = emitSchema(corpus).sql;
+    const lastCreateTable = all.map((s) => s.startsWith("CREATE TABLE")).lastIndexOf(true);
+    expect(lastCreateTable).toBeLessThan(all.findIndex((s) => s.startsWith("ALTER TABLE") && s.includes(" ADD ")));
     expect(lastOf("CREATE INDEX")).toBeLessThan(firstOf("COMMENT ON"));
     // `CLUSTER ON` names an index, and `OWNED BY` names a column, so both come after the
     // objects they name and before the comments.
@@ -169,7 +174,7 @@ describe("dependency order", () => {
       "PARTITION BY RANGE (at)",
     );
     expect(out).toContain(
-      `CREATE TABLE "public"."readings_2024" PARTITION OF "public"."readings" ` +
+      `ALTER TABLE "public"."readings" ATTACH PARTITION "public"."readings_2024" ` +
         `FOR VALUES FROM ('2024-01-01 00:00:00+00') TO ('2025-01-01 00:00:00+00')`,
     );
     expect(out).toContain('ALTER SEQUENCE "public"."tickets_no_seq" OWNED BY "public"."tickets"."no"');
