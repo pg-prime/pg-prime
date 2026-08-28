@@ -222,7 +222,13 @@ export function combine(
  * keeps that fix honest.
  */
 export function userProjection(r: Rng, u: UserRefs, mint: () => string): Projection {
-  const out: Record<string, Projectable> = { id: u.id }
+  // One draw in six is the whole-alias spread (`12` B). It is generated next to the hand-picked
+  // keys rather than instead of them, because the interesting case is a `$all` that shares a
+  // projection with a relation column, a `nest` group and an aggregate — which is where a spread
+  // that leaked an accessor, or a key that collided with one, would show up.
+  const out: Record<string, Projectable> = chance(r, 1 / 6)
+    ? { ...(chance(r, 0.5) ? u.$all : q.omit(u.$all, 'meta', 'deletedAt')) }
+    : { id: u.id }
   if (chance(r, 0.7)) out['email'] = u.email
   if (chance(r, 0.4)) out['role'] = u.role
   if (chance(r, 0.3)) out['balance'] = u.balance
@@ -232,10 +238,10 @@ export function userProjection(r: Rng, u: UserRefs, mint: () => string): Project
   }
   if (chance(r, 0.45)) {
     // `many` (0), `all` (4) and the two nested shapes (5, 6) project a json column; `count` (1),
-    // `sum` (2) and `exists` (3) project a scalar. All seven are drawn under every chain shape —
-    // `all()` is spelled out because the first, partial fix listed the other three and the fuzzer
-    // came back with it 5 000 live cases later, at seed 3300751089.
-    switch (int(r, 0, 6)) {
+    // `sum` (2), `exists` (3) and `12` B's `avg`/`min`/`max` (7-9) project a scalar. All ten are
+    // drawn under every chain shape — `all()` is spelled out because the first, partial fix listed
+    // the other three and the fuzzer came back with it 5 000 live cases later, at seed 3300751089.
+    switch (int(r, 0, 9)) {
       case 0:
         out['posts'] = u.posts.many((s) =>
           s
@@ -252,6 +258,18 @@ export function userProjection(r: Rng, u: UserRefs, mint: () => string): Project
         break
       case 3:
         out['any'] = u.posts.exists()
+        break
+      case 7:
+        // `12` B's three new aggregates. Unlike `sum` they are NOT coalesced, so the empty
+        // relation comes back NULL — the live oracle is what checks that, and generating them
+        // here is what puts them under `distinct`, a set operation and a window.
+        out['avgAmount'] = u.posts.avg((p) => p.amount)
+        break
+      case 8:
+        out['minTitle'] = u.posts.min((p) => p.title)
+        break
+      case 9:
+        out['newest'] = u.posts.max((p) => p.createdAt)
         break
       case 4:
         out['all'] = u.posts.all()
@@ -712,10 +730,109 @@ function setOpSelect(db: AnyDb, h: Handles, r: Rng, mint: () => string): () => C
 }
 
 /**
+ * Shape 6 — the joins `12` B added: right, full, cross, and the two laterals.
+ *
+ * Written out as five blocks for the same reason the four `plain` combinations are: each block's
+ * scope type is different (a RIGHT join nulls the aliases bound before it, a FULL join both sides,
+ * a lateral binds a derived row shape), and only writing them out gets the callbacks checked.
+ *
+ * Every block ends in a projection drawn from the same helpers as every other shape, so the new
+ * joins meet relation projections, `nest` groups and `$all` spreads without a second generator.
+ */
+function outerJoinSelect(db: AnyDb, h: Handles, r: Rng, mint: () => string): () => CompiledFacts {
+  switch (int(r, 0, 4)) {
+    case 0: {
+      // RIGHT: `users` survives, `posts` may be missing — the mirror of the left-join block.
+      const built = db
+        .from(h.posts)
+        .rightJoin(h.users, 'u', ({ posts: p, u }) => q.eq(p.authorId, u.id))
+        .where(({ u }) => combine(r, int(r, 0, 1), () => userLeaf(r, u, mint)))
+        .select(({ posts: p, u }) => ({
+          ...userProjection(r, u, mint),
+          title: p.title,
+          grp: chance(r, 0.5) ? nest({ t: p.title }) : q.nestNullable({ t: p.title, at: p.createdAt }),
+        }))
+      return () => factsOf(built)
+    }
+    case 1: {
+      const built = db
+        .from(h.posts)
+        .fullJoin(h.users, 'u', ({ posts: p, u }) => q.eq(p.authorId, u.id))
+        .select(({ posts: p, u }) => ({
+          uid: u.id,
+          pid: p.id,
+          grp: q.nestNullable({ email: u.email, title: p.title }),
+        }))
+      return () => factsOf(built)
+    }
+    case 2: {
+      const built = db
+        .from(h.tags)
+        .crossJoin(h.kv, 'k')
+        .where(({ k }) => q.isNotNull(k.v))
+        .select(({ tags: t, k }) => ({ name: t.name, v: k.v, grp: nest({ id: t.id }) }))
+      return () => factsOf(built)
+    }
+    case 3: {
+      // An inner lateral correlated on the outer alias — the shape a per-parent top-N wants.
+      const built = db
+        .from(h.users)
+        .innerJoinLateral(
+          (t) =>
+            db
+              .from(h.posts)
+              .where(({ posts: p }) => q.eq(p.authorId, t.users.id))
+              .orderBy(({ posts: p }) => [q.desc(p.createdAt), q.asc(p.id)])
+              .limit(int(r, 1, 4))
+              .select(({ posts: p }) => ({ id: p.id, title: p.title })),
+          'recent',
+          chance(r, 0.4) ? ({ recent }) => q.isNotNull(recent.title) : undefined,
+        )
+        .select(({ users: u, recent }) => ({
+          ...userProjection(r, u, mint),
+          rid: recent.id,
+          rtitle: recent.title,
+        }))
+      return () => factsOf(built)
+    }
+    default: {
+      const built = db
+        .from(h.users)
+        .leftJoinLateral(
+          (t) =>
+            db
+              .from(h.comments)
+              .innerJoin(h.posts, 'p', ({ comments: c, p }) => q.eq(c.postId, p.id))
+              .where(({ p }) => q.eq(p.authorId, t.users.id))
+              .limit(int(r, 1, 3))
+              .select(({ comments: c }) => ({ id: c.id, body: c.body })),
+          'cs',
+        )
+        .select(({ users: u, cs }) => ({
+          email: u.email,
+          cid: cs.id,
+          grp: q.nestNullable({ body: cs.body }),
+        }))
+      return () => factsOf(built)
+    }
+  }
+}
+
+/**
  * Weighted shape choice. Plain select dominates because it is the shape with the most degrees of
  * freedom — the others are narrower templates whose value is that they exist at all.
  */
-const SHAPES = ['plain', 'plain', 'plain', 'plain', 'grouped', 'windowed', 'cte', 'setop'] as const
+const SHAPES = [
+  'plain',
+  'plain',
+  'plain',
+  'plain',
+  'grouped',
+  'windowed',
+  'cte',
+  'setop',
+  'outerjoin',
+] as const
 
 export interface ChainOptions {
   /**
@@ -751,7 +868,9 @@ export function makeChain(db: AnyDb, h: Handles, seed: number, opts: ChainOption
           ? windowedSelect(db, h, r, mint)
           : shape === 'cte'
             ? cteSelect(db, h, r, mint)
-            : setOpSelect(db, h, r, mint)
+            : shape === 'outerjoin'
+              ? outerJoinSelect(db, h, r, mint)
+              : setOpSelect(db, h, r, mint)
 
   if (labels.length === 0) labels.push(shape)
   return { seed, shape, labels, prefixes, compile }

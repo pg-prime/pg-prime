@@ -244,7 +244,7 @@ describe('builder fuzz', () => {
     )
     // The generator must keep reaching every shape; a weighting bug that silently stopped emitting
     // set operations would otherwise look like a clean run.
-    for (const shape of ['plain', 'grouped', 'windowed', 'cte', 'setop']) {
+    for (const shape of ['plain', 'grouped', 'windowed', 'cte', 'setop', 'outerjoin']) {
       expect(byShape[shape] ?? 0, `shape "${shape}" was never generated`).toBeGreaterThan(0)
     }
     // …and invariant (b) must not be vacuous. Measured: ~87% of chains carry a bind and ~46% carry
