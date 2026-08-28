@@ -1,0 +1,20 @@
+{
+  "command": "migrate baseline",
+  "status": "refused",
+  "exitCode": 1,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "marked": [],
+  "written": null,
+  "migration": null,
+  "warnings": [],
+  "error": {
+    "code": "baseline_refused",
+    "message": "<masked>"
+  }
+}

@@ -20,10 +20,13 @@
 //      rather than asserted — a negative control, because a gate nobody has seen fire is a gate
 //      that might be misconfigured.
 //   6. `publint --strict` and `attw --pack --profile esm-only` on each tarball (§2.4 step 5).
+//   7. Run `pg-prime --help` from `node_modules/.bin` of the same throwaway project. `@pg-prime/kit`
+//      declares a `bin`, and whether a shebang'd `dist/cli.js` keeps its 0755 through `pnpm pack` →
+//      `npm install` is not something any other check here would notice.
 //
 // Network: step 2 and step 5 install from the npm registry.
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -185,6 +188,29 @@ if (process.argv[1] && process.argv[1].endsWith('pack-smoke.mjs')) {
     if (!ran.ok) {
       failures.push('running the emitted consumer')
       console.error(ran.out)
+    }
+
+    // ── the `bin` — installed, executable, and it runs ───────────────────────
+    // `@pg-prime/kit`'s `bin` is a file tsc emitted with a shebang and 0644, which
+    // `tools/build-package.mjs` chmods to 0755. Whether the mode bit survives `pnpm pack`
+    // → `npm install` is the kind of thing that is only ever discovered by a user, so it
+    // is asserted here the way a user meets it: run the command npm put on the PATH.
+    const bin = join(app, 'node_modules', '.bin', 'pg-prime')
+    if (!existsSync(bin)) {
+      failures.push('node_modules/.bin/pg-prime is missing after installing the tarball')
+      console.log('pg-prime --help: FAILED (the bin was not linked)')
+    } else {
+      const mode = statSync(join(app, 'node_modules', '@pg-prime', 'kit', 'dist', 'cli.js')).mode & 0o111
+      const help = tryRun(bin, ['--help'], app)
+      const ok = help.ok && help.out.includes('Usage: pg-prime migrate <command> [options]')
+      console.log(`pg-prime --help: ${ok ? 'ok' : 'FAILED'} (dist/cli.js exec bits ${mode.toString(8)})`)
+      if (!ok) {
+        failures.push('`pg-prime --help` from the installed tarball')
+        console.error(help.out)
+      }
+      if (mode === 0) {
+        failures.push('dist/cli.js lost its executable bit through pnpm pack → npm install')
+      }
     }
 
     // ── the negative control: TypeScript 5.8.3 must be refused ───────────────

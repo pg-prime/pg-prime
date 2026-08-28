@@ -49,9 +49,9 @@ describe("acceptance: 3-table fixture round-trips through the in-house engine", 
       expect(result.written).toBeDefined();
 
       const sql = await readFile(result.written!.sqlPath, "utf8");
-      expect(sql).toContain("-- pg-orm:migration 0001_acceptance");
-      expect(sql).toContain(`-- pg-orm:to        ${result.desiredIR.fingerprint}`);
-      expect(sql).toContain("-- pg-orm:stmt 0");
+      expect(sql).toContain("-- pg-prime:migration 0001_acceptance");
+      expect(sql).toContain(`-- pg-prime:to        ${result.desiredIR.fingerprint}`);
+      expect(sql).toContain("-- pg-prime:stmt 0");
       const planJson = JSON.parse(await readFile(result.written!.planPath, "utf8")) as typeof result.plan;
       expect(planJson.planId).toMatch(/^sha256:[0-9a-f]{64}$/);
       expect(planJson.from.fingerprint).toBe(result.currentIR.fingerprint);

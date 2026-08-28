@@ -174,7 +174,7 @@ describe("plan bookkeeping", () => {
       pgMin: plan.pg.minVersion,
     });
     // CREATE_INDEX is shareUpdateExclusive => statement timeout null; DROP COLUMN => 30s
-    expect(sql).toContain("-- pg-orm:timeout   lock=3s statement=per-statement");
+    expect(sql).toContain("-- pg-prime:timeout   lock=3s statement=per-statement");
     expect(sql).toContain("SET search_path = pg_catalog;");
     expect(plan.statements[1]?.timeouts.statement).toBeNull();
   });

@@ -1,11 +1,14 @@
 {
   "name": "@pg-prime/kit",
   "version": "0.0.0",
-  "description": "Migration engine for pg-prime: catalog diffing, plan generation, prove-on-shadow-clone, apply. Pre-alpha — programmatic API only, no CLI yet.",
+  "description": "Migration engine for pg-prime: catalog diffing, plan generation, prove-on-shadow-clone, apply. Pre-alpha — `pg-prime migrate apply|status|baseline|unlock` plus the programmatic API.",
   "license": "MPL-2.0",
   "type": "module",
   "engines": {
     "node": ">=22.12"
+  },
+  "bin": {
+    "pg-prime": "./dist/cli.js"
   },
   "files": [
     "dist"

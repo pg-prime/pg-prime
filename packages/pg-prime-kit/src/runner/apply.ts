@@ -7,6 +7,15 @@ export interface ApplyError {
   readonly statementIndex: number;
   readonly sql: string;
   readonly message: string;
+  /**
+   * The SQLSTATE `pg` put on the error, when there was one.
+   *
+   * The runner's retry policy (design/06 §5.6) is a function of SQLSTATE — 55P03 backs
+   * off five times, 40P01 retries the file once, 57014 never retries — and flattening the
+   * error to a message threw that away, leaving the caller to guess from message text
+   * that varies by server version and locale (design/09 R13 says not to).
+   */
+  readonly sqlState?: string;
 }
 
 export interface ApplyReport {
@@ -30,7 +39,7 @@ export interface ApplyOptions {
  * timeout used to be string-interpolated into DDL. `set_config` is the same GUC write
  * with a real parameter, and it takes the local/session flag as data too.
  */
-async function setConfig(
+export async function setConfig(
   client: CatalogClient,
   name: string,
   value: string,
@@ -40,7 +49,7 @@ async function setConfig(
 }
 
 /** Session GUCs a bare (non-transactional) segment set for itself. */
-async function resetSessionGucs(client: CatalogClient): Promise<void> {
+export async function resetSessionGucs(client: CatalogClient): Promise<void> {
   await client.query("RESET lock_timeout");
   await client.query("RESET statement_timeout");
   await client.query("RESET search_path");
@@ -80,6 +89,7 @@ export async function applySegments(
     } catch (err) {
       if (seg.transactional) await client.query("ROLLBACK").catch(() => undefined);
       else await resetSessionGucs(client).catch(() => undefined);
+      const code = (err as { code?: unknown } | null)?.code;
       return {
         status: "failed",
         appliedStatements: applied,
@@ -87,6 +97,7 @@ export async function applySegments(
           statementIndex: executing,
           sql: statements[executing]?.sql ?? "",
           message: err instanceof Error ? err.message : String(err),
+          ...(typeof code === "string" ? { sqlState: code } : {}),
         },
       };
     }
@@ -102,19 +113,83 @@ export function advisoryLockKey(database: string, schemas: readonly string[]): b
   return BigInt.asIntN(64, digest.readBigUInt64BE(0));
 }
 
+async function backendPid(client: CatalogClient): Promise<string> {
+  await client.query("BEGIN");
+  const r = await client.query("SELECT pg_backend_pid() AS pid");
+  await client.query("COMMIT");
+  return String(r.rows[0]?.["pid"]);
+}
+
 /**
  * Two `pg_backend_pid()` reads in two transactions. Different pids ⟹ a
  * transaction-mode pooler, under which session advisory locks are silently
  * broken. No other ORM checks this; it costs two round trips.
+ *
+ * **It can say no when the answer is yes.** design/06 §5.2 presents this as the whole
+ * test; measured against PgBouncer 1.25 in `pool_mode=transaction` with one idle client
+ * it returns `false`, because the pooler hands the same (and only) idle server
+ * connection back for the second transaction. It is decisive only on a pool that is
+ * already serving somebody else. `detectTransactionPoolerStrict` closes that hole.
  */
 export async function detectTransactionPooler(client: CatalogClient): Promise<boolean> {
-  const read = async (): Promise<string> => {
-    await client.query("BEGIN");
-    const r = await client.query("SELECT pg_backend_pid() AS pid");
-    await client.query("COMMIT");
-    return String(r.rows[0]?.["pid"]);
-  };
-  return (await read()) !== (await read());
+  return (await backendPid(client)) !== (await backendPid(client));
+}
+
+/** What `pin` must do: hold ONE server connection busy, and release it when called. */
+export type PinConnection = () => Promise<() => Promise<void>>;
+
+export const POOLER_PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * The deterministic form of §5.2's probe: make the pooler prove it can move us.
+ *
+ * Read the pid, then open a *second* client and leave a transaction open on it. PgBouncer
+ * hands out the most-recently-used idle server, so the second client takes the one we
+ * just released and holds it; our next transaction therefore cannot land on the same
+ * backend and the pid changes. On a direct connection the pid is a property of the socket
+ * and cannot change at all, so there is no false positive.
+ *
+ * A pool sized 1 cannot move us — it makes us *wait* instead — so a probe that does not
+ * answer inside `timeoutMs` is also a pooler: a direct connection answers in one round
+ * trip. Either way the session advisory lock this run depends on is not safe.
+ */
+export async function detectTransactionPoolerStrict(
+  client: CatalogClient,
+  pin: PinConnection,
+  timeoutMs: number = POOLER_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
+  const first = await backendPid(client);
+  if (first !== (await backendPid(client))) return true;
+
+  let release: (() => Promise<void>) | null = null;
+  try {
+    release = await pin();
+  } catch {
+    // Cannot open a second connection (max_connections, a pool at its limit). Fall back
+    // to the cheap answer rather than refusing a connection we have no evidence against.
+    return false;
+  }
+  const TIMED_OUT = Symbol("timed out");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const probe = backendPid(client);
+    probe.catch(() => undefined);
+    const raced = await Promise.race([
+      probe,
+      new Promise<typeof TIMED_OUT>((r) => {
+        timer = setTimeout(() => r(TIMED_OUT), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (raced === TIMED_OUT) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      return true;
+    }
+    return raced !== first;
+  } finally {
+    if (timer) clearTimeout(timer);
+    await release().catch(() => undefined);
+  }
 }
 
 export async function acquireSessionLock(

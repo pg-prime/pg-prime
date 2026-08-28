@@ -24,5 +24,7 @@ export default defineConfig({
   },
   test: {
     setupFiles: ["./test/setup.ts"],
+    // Builds `dist/` once, for the CLI tests that spawn the real binary (R17).
+    globalSetup: ["./test/globalSetup.ts"],
   },
 });

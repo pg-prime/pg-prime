@@ -1,0 +1,252 @@
+{
+  "command": "migrate apply",
+  "status": "dry_run",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "lock": {
+    "acquired": false,
+    "runId": "<masked>",
+    "waitedMs": "<masked>",
+    "stale": false,
+    "holder": "<masked>"
+  },
+  "applied": [
+    {
+      "id": "0001_create_widgets",
+      "txmode": "transactional",
+      "statements": 2,
+      "durationMs": "<masked>",
+      "resumedFrom": null,
+      "retries": 0
+    },
+    {
+      "id": "0002_index_widgets",
+      "txmode": "none",
+      "statements": 2,
+      "durationMs": "<masked>",
+      "resumedFrom": null,
+      "retries": 0
+    }
+  ],
+  "pending": [],
+  "fingerprint": "<masked>",
+  "preflight": {
+    "invalidIndexes": [],
+    "notValidConstraints": [],
+    "ccnewLeftovers": [],
+    "touchedByPending": []
+  },
+  "repeatables": {
+    "applied": [],
+    "unchanged": []
+  },
+  "warnings": [
+    "pgprime.migrations does not exist yet; --dry-run reports the run against an empty history",
+    "0001_create_widgets has no plan; applying it without a fingerprint gate",
+    "0002_index_widgets has no plan; applying it without a fingerprint gate"
+  ],
+  "diagnostics": [
+    {
+      "code": "plan_missing",
+      "severity": "info",
+      "subject": "0001_create_widgets.sql",
+      "message": "0001_create_widgets.plan.json is absent; 0001_create_widgets.sql is treated as hand-written — no fingerprint gate, no checksum gate, and statement metadata comes from the file's own directives"
+    },
+    {
+      "code": "plan_missing",
+      "severity": "info",
+      "subject": "0002_index_widgets.sql",
+      "message": "0002_index_widgets.plan.json is absent; 0002_index_widgets.sql is treated as hand-written — no fingerprint gate, no checksum gate, and statement metadata comes from the file's own directives"
+    }
+  ],
+  "stream": [
+    {
+      "text": "BEGIN"
+    },
+    {
+      "text": "SELECT set_config($1, $2, $3)",
+      "values": [
+        "lock_timeout",
+        "3s",
+        true
+      ]
+    },
+    {
+      "text": "SELECT set_config($1, $2, $3)",
+      "values": [
+        "search_path",
+        "pg_catalog",
+        true
+      ]
+    },
+    {
+      "text": "SELECT set_config($1, $2, $3)",
+      "values": [
+        "statement_timeout",
+        "30s",
+        true
+      ]
+    },
+    {
+      "text": "CREATE TABLE public.widgets (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text NOT NULL)"
+    },
+    {
+      "text": "SELECT set_config($1, $2, $3)",
+      "values": [
+        "statement_timeout",
+        "30s",
+        true
+      ]
+    },
+    {
+      "text": "ALTER TABLE public.widgets ADD CONSTRAINT widgets_name_key UNIQUE (name)"
+    },
+    {
+      "text": "SELECT set_config($1, $2, $3)",
+      "values": [
+        "statement_timeout",
+        "30s",
+        true
+      ]
+    },
+    {
+      "text": "INSERT INTO pgprime.migrations (\n    id, seq, name, checksum, plan_id, fingerprint_from, fingerprint_to, txmode,\n    statements_total, statements_applied, statement_uncertain, segment_applied,\n    status, started_at, finished_at, duration_ms, applied_from, error, engine_version\n  ) VALUES (\n    '0001_create_widgets', 1, 'create_widgets', 'sha256:4dfc2450362d8592e3beea85f137b6bc347350c46ef6e6131027fc72740e91bf', NULL,\n    NULL, NULL, 'transactional',\n    2, 2, NULL, 0,\n    'applied', transaction_timestamp(), clock_timestamp(),\n    (EXTRACT(EPOCH FROM (clock_timestamp() - transaction_timestamp())) * 1000)::int,\n    'k1-golden', NULL, '0.0.0-spike'\n  )\n  ON CONFLICT (id) DO UPDATE SET\n    checksum = EXCLUDED.checksum, plan_id = EXCLUDED.plan_id,\n    fingerprint_from = EXCLUDED.fingerprint_from, fingerprint_to = EXCLUDED.fingerprint_to,\n    txmode = EXCLUDED.txmode, statements_total = EXCLUDED.statements_total,\n    statements_applied = EXCLUDED.statements_applied, statement_uncertain = NULL,\n    segment_applied = EXCLUDED.segment_applied, status = EXCLUDED.status,\n    started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at,\n    duration_ms = EXCLUDED.duration_ms, applied_by = current_user,\n    applied_from = EXCLUDED.applied_from, error = NULL,\n    engine_version = EXCLUDED.engine_version"
+    },
+    {
+      "text": "COMMIT"
+    },
+    {
+      "text": "INSERT INTO pgprime.migrations (\n       id, seq, name, checksum, plan_id, fingerprint_from, fingerprint_to, txmode,\n       statements_total, statements_applied, statement_uncertain, segment_applied,\n       status, started_at, applied_from, error, engine_version\n     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,'running',now(),$12,NULL,$13)\n     ON CONFLICT (id) DO UPDATE SET\n       checksum = EXCLUDED.checksum, plan_id = EXCLUDED.plan_id,\n       fingerprint_from = EXCLUDED.fingerprint_from, fingerprint_to = EXCLUDED.fingerprint_to,\n       txmode = EXCLUDED.txmode, statements_total = EXCLUDED.statements_total,\n       status = 'running', started_at = now(), finished_at = NULL, duration_ms = NULL,\n       applied_by = current_user, applied_from = EXCLUDED.applied_from, error = NULL,\n       engine_version = EXCLUDED.engine_version",
+      "values": [
+        "0002_index_widgets",
+        2,
+        "index_widgets",
+        "sha256:7871482afe5f42fc61c1f41d1279fc5ca538f4b5f7aa72ae51d35cdb6d027b54",
+        null,
+        null,
+        null,
+        "none",
+        2,
+        0,
+        0,
+        "k1-golden",
+        "0.0.0-spike"
+      ]
+    },
+    {
+      "text": "SELECT set_config($1, $2, $3)",
+      "values": [
+        "lock_timeout",
+        "3s",
+        false
+      ]
+    },
+    {
+      "text": "SELECT set_config($1, $2, $3)",
+      "values": [
+        "search_path",
+        "pg_catalog",
+        false
+      ]
+    },
+    {
+      "text": "BEGIN"
+    },
+    {
+      "text": "UPDATE pgprime.migrations SET statement_uncertain = $2 WHERE id = $1",
+      "values": [
+        "0002_index_widgets",
+        0
+      ]
+    },
+    {
+      "text": "COMMIT"
+    },
+    {
+      "text": "SELECT set_config($1, $2, $3)",
+      "values": [
+        "statement_timeout",
+        "0",
+        false
+      ]
+    },
+    {
+      "text": "DROP INDEX CONCURRENTLY IF EXISTS public.widgets_name_idx"
+    },
+    {
+      "text": "BEGIN"
+    },
+    {
+      "text": "UPDATE pgprime.migrations\n        SET statements_applied = GREATEST(statements_applied, $2),\n            segment_applied = GREATEST(segment_applied, $3),\n            statement_uncertain = NULL\n      WHERE id = $1",
+      "values": [
+        "0002_index_widgets",
+        1,
+        0
+      ]
+    },
+    {
+      "text": "COMMIT"
+    },
+    {
+      "text": "BEGIN"
+    },
+    {
+      "text": "UPDATE pgprime.migrations SET statement_uncertain = $2 WHERE id = $1",
+      "values": [
+        "0002_index_widgets",
+        1
+      ]
+    },
+    {
+      "text": "COMMIT"
+    },
+    {
+      "text": "SELECT set_config($1, $2, $3)",
+      "values": [
+        "statement_timeout",
+        "0",
+        false
+      ]
+    },
+    {
+      "text": "CREATE INDEX CONCURRENTLY widgets_name_idx ON public.widgets USING btree (name)"
+    },
+    {
+      "text": "BEGIN"
+    },
+    {
+      "text": "UPDATE pgprime.migrations\n        SET statements_applied = GREATEST(statements_applied, $2),\n            segment_applied = GREATEST(segment_applied, $3),\n            statement_uncertain = NULL\n      WHERE id = $1",
+      "values": [
+        "0002_index_widgets",
+        2,
+        0
+      ]
+    },
+    {
+      "text": "COMMIT"
+    },
+    {
+      "text": "RESET lock_timeout"
+    },
+    {
+      "text": "RESET statement_timeout"
+    },
+    {
+      "text": "RESET search_path"
+    },
+    {
+      "text": "UPDATE pgprime.migrations\n        SET status = 'applied', statements_applied = $2, statement_uncertain = NULL,\n            finished_at = now(),\n            duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::int,\n            error = NULL\n      WHERE id = $1",
+      "values": [
+        "0002_index_widgets",
+        2
+      ]
+    }
+  ],
+  "error": null
+}

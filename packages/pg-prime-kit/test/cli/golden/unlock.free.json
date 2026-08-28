@@ -1,0 +1,15 @@
+{
+  "command": "migrate unlock",
+  "status": "no_lock",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "forced": false,
+  "released": false,
+  "staleAfterMs": 60000,
+  "stale": false,
+  "holder": "<masked>",
+  "note": null,
+  "error": null
+}

@@ -1,0 +1,36 @@
+{
+  "command": "migrate status",
+  "status": "up_to_date",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "history": {
+    "present": false,
+    "version": null
+  },
+  "fingerprint": "<masked>",
+  "fingerprintSource": null,
+  "migrations": [],
+  "pending": [],
+  "partial": [],
+  "missingFiles": [],
+  "checksumDrift": [],
+  "lock": {
+    "held": false,
+    "stale": false,
+    "staleAfterMs": 60000,
+    "holder": "<masked>"
+  },
+  "repeatables": {
+    "tracked": 0,
+    "drift": [],
+    "passImplemented": false
+  },
+  "diagnostics": [],
+  "error": null
+}

@@ -961,6 +961,29 @@ CREATE TABLE IF NOT EXISTS pg_orm.data_progress (
 `fingerprint_to` on the last applied row is the **current schema fingerprint of record**, which is
 what makes `status` and `check` cheap (no introspection needed for the fast path).
 
+**AS BUILT · 2026-08-28 (design/11 K1).** `packages/pg-prime-kit/src/history/schema.ts`. The five
+tables above exist verbatim under **`pgprime`** (design/11 §1.1's rename), plus one addition:
+
+```sql
+CREATE TABLE IF NOT EXISTS pgprime.meta (key text PRIMARY KEY, value text NOT NULL);
+INSERT INTO pgprime.meta (key, value) VALUES ('history_version', '1') ON CONFLICT DO NOTHING;
+```
+
+A later change to these tables has to be detectable *before* anything else is read, and inferring
+it from `information_schema.columns` is guesswork. `ensureHistory(client)` runs all seven statements
+in **one transaction of its own** — half-created history is worse than none — and retries once on
+`23505`/`42P06`/`42P07`/`42710`, because `CREATE … IF NOT EXISTS` checks for existence *before* it
+inserts the catalog row and two replicas starting together is the normal case (§5.5), not the
+exceptional one. `test/runner/history.test.ts` runs three `ensureHistory` calls concurrently and
+then reads the whole shape back out of `information_schema.columns` and compares it to this
+section's column list, transcribed into the test.
+
+Two columns are written differently from what the naive reading suggests, both to keep a client
+clock out of the history table: `started_at`/`duration_ms` on the transactional path come from
+`transaction_timestamp()` and `clock_timestamp()` inside the migration's own transaction, and
+`heartbeat_at`'s age is computed server-side (`EXTRACT(EPOCH FROM (now() - heartbeat_at))`) so a
+skewed client cannot invent a stale lease.
+
 ### 4.5 Checkpoints
 
 A checkpoint is a normal migration file tagged `-- pg-orm:checkpoint` containing the **full schema
@@ -1130,6 +1153,93 @@ the next runner resumes the `running` row per §5.4.
 
 ---
 
+### 5.7 AS BUILT · 2026-08-28 (design/11 K1)
+
+`src/runner/{run,files,status}.ts` implement §5.1 steps 1–9 as `applyPending(conn, dir, options)`.
+Everything above is built. Six things are built **differently**, each for a reason that was measured
+rather than preferred.
+
+**1. §5.2's two-pid pooler probe does not fire on an idle pool. Measured.** Against PgBouncer 1.25
+in `pool_mode=transaction` with one client, `BEGIN; SELECT pg_backend_pid(); COMMIT;` twice returns
+the *same* pid: the pooler hands the one idle server connection straight back for the second
+transaction. `detectTransactionPooler` is kept (it is decisive on a busy pool and costs two round
+trips) and `detectTransactionPoolerStrict` is added: read the pid, then open a **second** client and
+leave a transaction open on it so the pooler's most-recently-used idle server is taken, then read the
+pid again. Under transaction pooling we are moved and the pid changes; on a direct connection the pid
+is a property of the socket and cannot change, so there is no false positive. A pool of size 1 cannot
+move us — it makes us wait — so a probe that does not answer within 3 s is also a pooler. Both
+directions are asserted against a real PgBouncer in `test/runner/pooler.test.ts`, including the
+negative control, and the "the cheap probe says no" measurement is asserted too rather than described,
+so a future PgBouncer that behaves differently shows up as a failing test.
+
+**2. The refusal exits 1, not 6.** §3 K1 of design/11 says "exit 6-class"; §0's gate row for the same
+workstream says "exit 1 and the right sentence", and §6.1 reserves 6 for "a concurrent deploy holds
+it". Nothing holds the lock here — the connection is unusable — so it is the `1` of §6.2's
+`0 · 1 · 4 · 6`. The message names `pg_backend_pid`, the port the server behind the pooler reports,
+and the usual 6432/5432 and 6543/5432 pairs.
+
+**3. The lease heartbeat runs on a second connection, not "from the same connection".** §5.2's
+wording cannot work: the migration connection spends the whole of a `CREATE INDEX CONCURRENTLY`
+inside one statement, `pg.Client` serialises, and issuing a second `query()` while one is in flight
+is deprecated in `pg@8` and removed in `pg@9`. Queuing the beats behind the build means **no beat
+for the entire build** — exactly when the lease is the only evidence the runner is alive — and the
+next deploy would report a healthy run as stale and offer to break it. `applyPending` therefore opens
+one extra connection for the heartbeat and closes it with the run. What §5.2 is protecting is
+unharmed: the advisory lock still lives on the dedicated connection, and both connections die with
+the process. `test/runner/lock.test.ts` watches `heartbeat_at` advance four times while a
+`pg_sleep(3)` is in flight; putting the beat back on the migration connection makes that test red.
+
+**4. Resume restarts a `txmode none` file at statement 0 when `statement_uncertain` is set.** §5.4
+says "re-execute `statement_uncertain`, then continue" and, in the same paragraph, that "the
+`DROP INDEX CONCURRENTLY IF EXISTS` prefix simultaneously cleans up the INVALID index left by the
+crashed CIC". Those two sentences contradict each other: the prefix is an *earlier* statement, already
+counted in `statements_applied`, so re-executing only the uncertain one re-runs
+`CREATE INDEX CONCURRENTLY x` against the invalid `x` the crash left behind and fails with 42P07 —
+forever. TX201 ("every statement in a `txmode none` file MUST be idempotent") is exactly the licence
+to replay the file, so:
+
+- `statement_uncertain IS NULL` → resume at `statements_applied`. The crash landed on a clean
+  boundary; nothing is dirty.
+- `statement_uncertain = i` → restart at 0. A statement was in flight and its residue is unknown;
+  only a replay of the (idempotent) file is guaranteed to clean it up.
+
+The cost is re-running the completed statements of the file, which for the CIC shape the rewriter
+emits is one `DROP INDEX CONCURRENTLY IF EXISTS`. `test/runner/resume.test.ts` SIGKILLs a spawned
+runner mid-build, terminates the orphaned backend, **asserts the INVALID index is really there**, and
+then resumes; reverting to the literal reading makes it red.
+
+**5. The history INSERT is a statement of the migration's own transaction.** §5.3 draws it inside the
+`BEGIN`/`COMMIT`, and `applySegments` owns that framing, so the row is rendered as one literal
+`INSERT … ON CONFLICT DO UPDATE` (values through `quoteLiteral`) and appended to the last
+transactional segment as statement `n` — every real statement keeps its index. "Applied" and
+"recorded" therefore commit together, and a transactional failure leaves neither. Because that also
+means a failure leaves *no row at all*, `markFailed` writes one afterwards in its own statement with
+the `error` jsonb, which is what makes the failure visible. `--dry-run`'s golden shows the INSERT
+before the `COMMIT`; moving it out makes that golden red.
+
+**6. Retries are scoped to the unit that rolled back.** §5.3 and §5.6 give per-SQLSTATE budgets but
+not a unit. A transactional file is retried whole (the transaction rolled back); a bare statement in a
+`txmode none` file is retried alone (nothing else did). Budgets, counting the first try:
+`55P03` 5 · `40001` 5 · `40P01` 2 · `57014` 1 · everything else 1. Backoff is exponential from 100 ms
+with ±50% jitter, capped at 5 s. The SQLSTATE comes off the error object — `ApplyError` gained a
+`sqlState` field for it — never off the message text (design/09 R13).
+
+**Two things §5 asks for that are NOT built.** (a) A fingerprint mismatch **cannot name the drifted
+objects**: naming them needs an IR of the expected state, and §4.3 deliberately rejects a per-migration
+snapshot. The message names the migration, the expected fingerprint, the live one, the managed schema
+set and how to re-extract; naming objects arrives with checkpoints (K4). (b) The **managed schema set
+is configuration**, not plan data — `Plan` has no `schemas` field, and it scopes the diff, the
+fingerprint *and* the advisory lock key, so `apply --schema` (or `schemas` in `pg-prime.config.ts`)
+has to match what `generate` used. A mismatch surfaces as a fingerprint refusal, which is the right
+failure but not the clearest sentence; putting the set in the plan is a K2b change to `plan.ts`.
+
+`--dry-run` is implemented by running the real code path against a client that records instead of
+executing, so there is no second implementation of the statement stream to drift from the first.
+`test/runner/dry-run.test.ts` records the real run through a forwarding proxy and asserts the two
+streams are equal query for query and bind for bind.
+
+---
+
 ## 6. CLI — exact semantics and exit codes
 
 ### 6.1 Exit codes (uniform across every command)
@@ -1224,6 +1334,53 @@ Exit: 0 · 4 (findings).
 **`migrate unlock [--force]`** — inspect or break a stale lease.
 
 **`db seed [--set <name>]`** — §7.
+
+---
+
+### 6.3 AS BUILT · 2026-08-28 (design/11 K1)
+
+The binary is **`pg-prime`** (`"bin": { "pg-prime": "./dist/cli.js" }` in `@pg-prime/kit`), named
+after the product, with `migrate` as the noun. Four of §6.2's commands ship — `apply` (alias
+`deploy`), `status`, `baseline`, `unlock` — and `pg-prime --help` lists the other seven under
+"Not in this release" with the workstream that owns them, rather than pretending they do not exist.
+There is no CLI framework: `src/cli/args.ts` is ~150 lines and the kit's runtime dependencies are
+still exactly `pg` + `@types/pg`.
+
+§6.1's table is `src/cli/exit.ts`'s `EXIT`, one object, imported by every command **and by the
+runner** — "uniform across every command" only means something if there is one table. `--output json`
+always writes one envelope to **stdout**, including for a usage error, an unknown command and an
+unexpected throw; text output goes to stdout on success and stderr on failure. Envelope keys are
+written in a fixed order and goldened per command under `test/cli/golden/`, with volatile fields
+masked by the documented list in `test/cli/_mask.ts` (never by a regex over the document).
+
+Flags built, beyond §6.2's list, both because a test needed a deterministic value and both useful:
+`apply --applied-from <id>` (what §4.4's `applied_from` column is for — a CI run id) and
+`apply --heartbeat <duration>` (the lease refresh interval, which must stay well under
+`--stale-lock-after`). `--yes` is accepted and ignored: `apply` never prompts.
+
+Two semantics §6.2 left open, decided here:
+
+- **`unlock` exits 6 when a LIVE lease is held** and 0 when the lock is free, when the lease is stale,
+  or after `--force` released it. An orchestrator shelling out to `unlock` to decide whether to retry
+  needs "somebody is deploying" to be non-zero. `--force` deletes the lease row and says so; it cannot
+  release the winner's *session* advisory lock, and the envelope's `note` says that too when the lease
+  it broke was not stale.
+- **`baseline --at <id>` marks every file up to and including `<id>`**, not only that one. "The
+  database is at 0003" means 0000–0003 all ran, by whatever tool; marking one would leave its
+  predecessors pending and `apply` would run them. All of them get `status='baselined'`, because none
+  of them was executed by us.
+
+`baseline` without `--at` writes `0000_baseline.sql` + `.plan.json` through the ordinary create path
+and stamps `proof: { status: 'skipped', reason: 'baseline' }` — `Proof` gained the optional `reason`
+field, additively, so `{status:'skipped'}` from `generate --no-prove` still parses. One correction to
+design/11 §1.9's "`ddl.ts`'s create path against an **empty** IR": the null IR is not what a fresh
+database looks like — a fresh one already has `public` — so a baseline whose `from.fingerprint` was
+the null hash could never pass its own fingerprint gate, and `verify`'s replay-from-empty would fail
+on the very first file. The "from" IR is therefore the current IR restricted to the schemas whose OID
+`initdb` assigned (`pg_namespace.oid < 16384`), which is `public` and is asked of the server rather
+than hard-coded. `test/runner/baseline.test.ts` proves the property design/11 §1.9 actually wants:
+baseline an adopted database, apply the written file to a *different, empty* one, and the two
+fingerprints are equal.
 
 ---
 

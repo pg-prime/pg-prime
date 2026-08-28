@@ -161,6 +161,90 @@ refusal through a real transaction-mode PgBouncer; CI has one), `test/runner/fin
 → exit 4, names the objects), `test/cli/*.test.ts` (R17 goldens for all four commands, incl. `--dry-run`).
 R10 record with ≥ 6 mutations.
 
+**K1 RESULT — 2026-08-28 · DONE.**
+
+**Shipped.** 17 new source files, 3 512 lines (`src/history/{schema,store}.ts`,
+`src/runner/{files,run,status}.ts`, `src/cli.ts`, `src/cli/{args,exit,main,output}.ts`,
+`src/cli/commands/{apply,status,baseline,unlock}.ts`, `src/config/{define,load,index}.ts`), and
+13 test files + 5 support files, 2 425 lines, under `test/{runner,cli}/`. Three existing files were
+edited: `src/plan/plan.ts` (the `-- pg-orm:` → `-- pg-prime:` directive rename, and one additive
+field — `Proof.reason`), `src/runner/apply.ts` (`ApplyError.sqlState`, the strict pooler probe, and
+`setConfig`/`resetSessionGucs` exported for the `txmode none` path), and `src/index.ts` (the barrel:
+**76 values / 64 types → 109 / 104**). Outside the kit: `tools/build-package.mjs` chmods `bin`
+targets and asserts their shebang; `tools/pack-smoke.mjs` runs `pg-prime --help` out of the installed
+tarball. Kit suite **125 → 202 tests, 28 files, 29.6 s** (tier 2, PG 17 + PgBouncer 1.25); the
+built package is 153 files / 689.5 KB.
+
+**Divergences, all recorded in `06` with the measurement that forced them:**
+
+| # | Design says | Built | Why |
+|---|---|---|---|
+| 1 | §5.2's two-pid probe detects a transaction pooler | it does **not** on an idle pool; `detectTransactionPoolerStrict` pins a second server connection and forces the move | measured against PgBouncer 1.25 `pool_mode=transaction`: same pid twice |
+| 2 | §3 K1 "exit 6-class" pooler refusal | exit **1** | §0's own gate row for K1 says exit 1, and §6.1 reserves 6 for a held lock |
+| 3 | §5.2 heartbeat "from the same connection" | a second connection | `pg.Client` serialises; the beat would queue behind a whole `CREATE INDEX CONCURRENTLY`, and concurrent `query()` is removed in `pg@9` |
+| 4 | §5.4 "re-execute `statement_uncertain`, then continue" | restart the file at 0 when `statement_uncertain` is set; resume at `statements_applied` when it is null | the `DROP INDEX CONCURRENTLY IF EXISTS` prefix §5.4 relies on is an *earlier* statement; TX201 makes the replay safe |
+| 5 | §1.9 baseline diffs "against an empty IR" | against the IR of a *fresh database* (schemas with `pg_namespace.oid < 16384`) | the null IR matches no real database, so the baseline could never pass its own fingerprint gate on replay |
+| 6 | §5.6 "message names the drifted objects" | names the migration, both fingerprints and the schema set | naming objects needs an expected-state IR; `06` §4.3 rejects a per-migration snapshot. Arrives with checkpoints (K4) |
+| 7 | §6.2 `baseline --at <id>` "marks an existing file applied" | marks every file up to **and including** `<id>` | otherwise the predecessors stay pending and `apply` runs them, which is the opposite of adoption |
+
+**Two flags added** beyond `06` §6.2: `apply --applied-from <id>` (fills §4.4's `applied_from`
+column, and makes the CLI goldens machine-independent) and `apply --heartbeat <duration>`.
+
+**R10 — the mutation record.** Ten mutations, each applied to the file K1 owns, the suite run, the
+file restored. Nine were caught first time; M5 needed a *faithful* mutation (the first attempt did
+not actually reproduce a naive line scanner) and was then caught.
+
+| # | Mutation | Verdict | Caught by |
+|---|---|---|---|
+| M1 | `resumeFrom` returns `statementsApplied` even when `statement_uncertain` is set (the design's literal reading) | RED | `runner/resume.test.ts` — "SIGKILL during the concurrent build…" (42P07 on the invalid index) |
+| M2 | the fingerprint gate never refuses | RED | `runner/fingerprint.test.ts` ×2 — the non-empty-database case and the `--verify-fingerprint` case |
+| M3 | `57014` retried five times like a lock timeout | RED | `runner/failure.test.ts` — "57014 (statement_timeout) is never retried" |
+| M4 | the strict pooler probe's verdict is thrown away | RED | `runner/pooler.test.ts` ×3 — the probe, the refusal, and the refusal through the binary |
+| M5 | a naive line scanner replaces the SQL lexer in `findDirectives` | RED | `runner/resume.test.ts` — "the dollar-quoted body's `-- pg-prime:stmt 99` was not read as a marker" |
+| M6 | the history INSERT moves out of the migration's transaction | RED | `cli/envelope.test.ts` — the `apply.dry-run` golden puts it before `COMMIT` |
+| M7 | the lease heartbeat goes back on the migration connection | RED | `runner/lock.test.ts` — "the lease keeps beating DURING a long statement" (1 beat, not 4) |
+| M8 | `EXIT.pending` becomes 0 | RED | `cli/envelope.test.ts` — "status with two pending migrations: exit 5" |
+| M9 | checksum drift is only ever a warning | RED | `runner/fingerprint.test.ts` — "an edited migration file is checksum drift" |
+| M10 | an unknown CLI option becomes a positional | RED | `cli/usage.test.ts` ×3 — including "an unknown flag exits 1 and never reaches the database" |
+
+**Gate.** `apply` from empty through the corpus's generated plans, twice, on four chains
+(acceptance, evolve ×2 steps, enum-ordering ×2 steps, multi-schema) — second run `up_to_date`,
+exit 0, catalog fingerprint equal to the last plan's `to`, every row `applied` with
+`statements_applied = statements_total`. Resume proven by SIGKILLing a spawned runner mid-CIC
+(5/5 runs, ~6 s each). PgBouncer transaction mode refused with exit 1 and the sentence that names
+the direct port. The two-runner lock test is 5/5 (~11 s each). `pnpm package:check` green with the
+new `bin`, the regenerated api snapshot and the regenerated `types@<5.9` stub.
+
+**Interfaces round 2 depends on.**
+
+```ts
+applyPending(conn: ConnInfo, migrationsDir: string, options?: ApplyPendingOptions): Promise<ApplyPendingResult>
+applyPendingOn(client: CatalogClient, migrationsDir: string, options?): Promise<ApplyPendingResult>   // caller owns the connection
+migrationStatus(conn: ConnInfo, migrationsDir: string, options?: StatusOptions): Promise<StatusReport>
+
+interface RepeatablesPass {            // K3 implements; NO_REPEATABLES is the stub
+  plan(dir: string, appliedHashes: ReadonlyMap<string, string>): Promise<readonly RepeatableFile[]>
+}
+interface RepeatableFile { readonly path: string; readonly sha256: string; readonly statements: readonly string[] }
+
+defineConfig(config: PgPrimeConfig): PgPrimeConfig    // url | connection | migrations | repeatables
+loadConfig(path?: string, cwd?: string): Promise<LoadedConfig>   // schemas | shadow | schema | timeouts | production
+resolveConfig(input: ResolveInput): ResolvedConfig
+EXIT / RUNNER_EXIT                     // design/06 §6.1, one table
+```
+
+`ApplyPendingResult` always carries `status` + `exitCode` and never throws for an expected failure;
+`RunnerFailure.code` is one of `transaction_pooler | pool_connection | missing_file |
+checksum_drift | fingerprint_mismatch | unknown_target | plan_invalid | lock_unavailable |
+sql_error`. Adding a command is: an `OptionSpec[]`, a `run(config, argv) => CommandOutput`, and one
+row in `COMMANDS` in `src/cli/main.ts`.
+
+**Open for K2b.** (a) The managed schema set is config-only; putting `schemas` in `Plan` would let
+`apply` detect a mismatched set directly instead of through a fingerprint refusal. (b) `status`'s
+repeatable drift is a stub until K3's `RepeatablesPass` lands (`passImplemented: false` in the
+envelope says so). (c) `baseline` refuses when extraction produces error-severity diagnostics —
+`writePlan`'s hazard gate — which is right, but the message is `writePlan`'s rather than baseline's.
+
 ### K2a — DSL → desired state, and the shadow ladder
 
 **Owns:** `packages/pg-prime/src/schema/**` (+ its tests, `tools/api-snapshot` regeneration, the stub),

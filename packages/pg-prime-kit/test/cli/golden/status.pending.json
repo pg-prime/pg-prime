@@ -1,0 +1,75 @@
+{
+  "command": "migrate status",
+  "status": "pending",
+  "exitCode": 5,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "history": {
+    "present": false,
+    "version": null
+  },
+  "fingerprint": "<masked>",
+  "fingerprintSource": null,
+  "migrations": [
+    {
+      "id": "0001_create_widgets",
+      "state": "pending",
+      "txmode": "transactional",
+      "statementsTotal": 2,
+      "statementsApplied": 0,
+      "statementUncertain": null,
+      "appliedAt": "<masked>",
+      "appliedBy": "<masked>",
+      "checksumOk": null
+    },
+    {
+      "id": "0002_index_widgets",
+      "state": "pending",
+      "txmode": "none",
+      "statementsTotal": 2,
+      "statementsApplied": 0,
+      "statementUncertain": null,
+      "appliedAt": "<masked>",
+      "appliedBy": "<masked>",
+      "checksumOk": null
+    }
+  ],
+  "pending": [
+    "0001_create_widgets",
+    "0002_index_widgets"
+  ],
+  "partial": [],
+  "missingFiles": [],
+  "checksumDrift": [],
+  "lock": {
+    "held": false,
+    "stale": false,
+    "staleAfterMs": 60000,
+    "holder": "<masked>"
+  },
+  "repeatables": {
+    "tracked": 0,
+    "drift": [],
+    "passImplemented": false
+  },
+  "diagnostics": [
+    {
+      "code": "plan_missing",
+      "severity": "info",
+      "subject": "0001_create_widgets.sql",
+      "message": "0001_create_widgets.plan.json is absent; 0001_create_widgets.sql is treated as hand-written — no fingerprint gate, no checksum gate, and statement metadata comes from the file's own directives"
+    },
+    {
+      "code": "plan_missing",
+      "severity": "info",
+      "subject": "0002_index_widgets.sql",
+      "message": "0002_index_widgets.plan.json is absent; 0002_index_widgets.sql is treated as hand-written — no fingerprint gate, no checksum gate, and statement metadata comes from the file's own directives"
+    }
+  ],
+  "error": null
+}

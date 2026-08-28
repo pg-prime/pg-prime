@@ -112,8 +112,94 @@ export {
   acquireSessionLock,
   releaseSessionLock,
   detectTransactionPooler,
+  type ApplyError,
+  type ApplyOptions,
   type ApplyReport,
 } from "./runner/apply.js";
+
+/* ------------------------- the runner (design/06 §5) ------------------------ */
+
+export {
+  applyPending,
+  applyPendingOn,
+  forceUnlock,
+  inspectLease,
+  NO_REPEATABLES,
+  PoolRefusedError,
+  type AppliedMigration,
+  type ApplyPendingOptions,
+  type ApplyPendingResult,
+  type IssuedQuery,
+  type LeaseInspection,
+  type LockReport,
+  type PreflightReport,
+  type RepeatablesReport,
+  type RunnerEvent,
+  type RunnerFailure,
+} from "./runner/run.js";
+export {
+  executionPlan,
+  findDirectives,
+  parseMigrationSql,
+  readMigrationsDir,
+  MIGRATION_FILE,
+  type ExecutionPlan,
+  type FileDirective,
+  type FileDirectives,
+  type FileStatement,
+  type MigrationFile,
+  type ParsedSql,
+  type ReadMigrationsResult,
+  type TxMode,
+} from "./runner/files.js";
+export {
+  migrationStatus,
+  migrationStatusOn,
+  type EntryState,
+  type StatusEntry,
+  type StatusOptions,
+  type StatusReport,
+} from "./runner/status.js";
+
+/* --------------------- history tables (design/06 §4.4) --------------------- */
+
+export {
+  ensureHistory,
+  historyPresent,
+  historyVersion,
+  HISTORY_DDL,
+  HISTORY_SCHEMA,
+  HISTORY_VERSION,
+  type MigrationStatus,
+} from "./history/schema.js";
+export {
+  currentFingerprint,
+  readMigrationRows,
+  readRepeatableRows,
+  type LockRow,
+  type MigrationRow,
+  type RepeatableRow,
+} from "./history/store.js";
+
+/* ---------------------- the CLI's contracts (design/06 §6) ------------------ */
+
+export { EXIT, RUNNER_EXIT, type ExitCode, type RunnerStatus } from "./cli/exit.js";
+export {
+  defineConfig,
+  findConfigFile,
+  loadConfig,
+  parseDatabaseUrl,
+  resolveConfig,
+  ConfigError,
+  CONFIG_FILENAMES,
+  ENV_VAR,
+  STRIP_TYPES_MARKER,
+  type LoadedConfig,
+  type ParsedUrl,
+  type PgPrimeConfig,
+  type ResolveInput,
+  type ResolvedConfig,
+} from "./config/index.js";
 
 export { generate, type GenerateInput, type GenerateResult } from "./generate.js";
 

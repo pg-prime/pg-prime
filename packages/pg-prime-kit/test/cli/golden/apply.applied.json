@@ -1,0 +1,69 @@
+{
+  "command": "migrate apply",
+  "status": "applied",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "lock": {
+    "acquired": true,
+    "runId": "<masked>",
+    "waitedMs": "<masked>",
+    "stale": false,
+    "holder": "<masked>"
+  },
+  "applied": [
+    {
+      "id": "0001_create_widgets",
+      "txmode": "transactional",
+      "statements": 2,
+      "durationMs": "<masked>",
+      "resumedFrom": null,
+      "retries": 0
+    },
+    {
+      "id": "0002_index_widgets",
+      "txmode": "none",
+      "statements": 2,
+      "durationMs": "<masked>",
+      "resumedFrom": null,
+      "retries": 0
+    }
+  ],
+  "pending": [],
+  "fingerprint": "<masked>",
+  "preflight": {
+    "invalidIndexes": [],
+    "notValidConstraints": [],
+    "ccnewLeftovers": [],
+    "touchedByPending": []
+  },
+  "repeatables": {
+    "applied": [],
+    "unchanged": []
+  },
+  "warnings": [
+    "0001_create_widgets has no plan; applying it without a fingerprint gate",
+    "0002_index_widgets has no plan; applying it without a fingerprint gate"
+  ],
+  "diagnostics": [
+    {
+      "code": "plan_missing",
+      "severity": "info",
+      "subject": "0001_create_widgets.sql",
+      "message": "0001_create_widgets.plan.json is absent; 0001_create_widgets.sql is treated as hand-written — no fingerprint gate, no checksum gate, and statement metadata comes from the file's own directives"
+    },
+    {
+      "code": "plan_missing",
+      "severity": "info",
+      "subject": "0002_index_widgets.sql",
+      "message": "0002_index_widgets.plan.json is absent; 0002_index_widgets.sql is treated as hand-written — no fingerprint gate, no checksum gate, and statement metadata comes from the file's own directives"
+    }
+  ],
+  "stream": null,
+  "error": null
+}

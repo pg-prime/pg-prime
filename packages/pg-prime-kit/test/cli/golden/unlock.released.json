@@ -1,0 +1,15 @@
+{
+  "command": "migrate unlock",
+  "status": "released",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "forced": true,
+  "released": true,
+  "staleAfterMs": 60000,
+  "stale": false,
+  "holder": "<masked>",
+  "note": "the lease was NOT stale — its holder's session lock, if the backend is still alive, is untouched",
+  "error": null
+}

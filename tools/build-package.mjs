@@ -12,8 +12,12 @@
 //      input and never emits it, so `src/unsupported-typescript.d.ts` — the `types@<5.9` gate of
 //      design §2.2, which the export map points every subpath at — would otherwise be missing from
 //      the tarball and every subpath would resolve to nothing on an old TypeScript.
+//   3. Every `bin` target is chmod +x. tsc preserves the shebang from `src/cli.ts` but emits 0644,
+//      and while `npm install` sets the bit on the symlink it creates, `publint` reads the tarball
+//      and a 0644 `bin` is one of the things it fails on. `tools/pack-smoke.mjs` proves the end
+//      state by running `pg-prime --help` out of an installed tarball.
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -67,6 +71,23 @@ export function buildPackage(pkgDir, { out = join(pkgDir, 'dist'), tsc = TSC_7, 
     copied.push(rel)
   }
 
+  const executable = []
+  const pkgJsonPath = join(pkgDir, 'package.json')
+  if (existsSync(pkgJsonPath)) {
+    const bin = JSON.parse(readFileSync(pkgJsonPath, 'utf8')).bin
+    const targets = typeof bin === 'string' ? [bin] : bin ? Object.values(bin) : []
+    for (const target of targets) {
+      // `bin` is written relative to the package root and points into `dist/`.
+      const rel = target.replace(/^\.\//, '').replace(/^dist\//, '')
+      const abs = join(out, ...rel.split('/'))
+      if (!existsSync(abs)) throw new Error(`build-package: bin target ${target} is missing from ${out}`)
+      const text = readFileSync(abs, 'utf8')
+      if (!text.startsWith('#!')) throw new Error(`build-package: bin target ${target} has no shebang`)
+      chmodSync(abs, 0o755)
+      executable.push(rel)
+    }
+  }
+
   const files = listFiles(out)
   const bytes = files.reduce((n, f) => n + statSync(join(out, f)).size, 0)
   if (!quiet) {
@@ -74,10 +95,11 @@ export function buildPackage(pkgDir, { out = join(pkgDir, 'dist'), tsc = TSC_7, 
     console.log(
       `${relative(ROOT, pkgDir).split(sep).join('/')} → ${relative(ROOT, out).split(sep).join('/')}  ` +
         `${files.length} files, ${(bytes / 1024).toFixed(1)} KB, ${ms} ms` +
-        (copied.length ? `  (+${copied.length} hand-written .d.ts copied: ${copied.join(', ')})` : ''),
+        (copied.length ? `  (+${copied.length} hand-written .d.ts copied: ${copied.join(', ')})` : '') +
+        (executable.length ? `  (+x: ${executable.join(', ')})` : ''),
     )
   }
-  return { out, files, bytes, copied }
+  return { out, files, bytes, copied, executable }
 }
 
 if (process.argv[1] && process.argv[1].endsWith('build-package.mjs')) {

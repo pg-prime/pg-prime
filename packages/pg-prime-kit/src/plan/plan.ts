@@ -37,6 +37,13 @@ export interface PlanHazard {
 
 export interface Proof {
   readonly status: "passed" | "failed" | "skipped";
+  /**
+   * Why a proof was skipped. `migrate baseline` (design/11 §1.9) writes a plan whose DDL
+   * was never executed anywhere — the database it describes already exists — so there is
+   * nothing to prove on a clone, and "skipped" with no reason is indistinguishable from
+   * `generate --no-prove`. Additive: every existing `{ status: "skipped" }` still parses.
+   */
+  readonly reason?: string;
   readonly at?: string;
   readonly shadow?: string;
   /** which tier of design/06 §3.2 actually provisioned the shadow */
@@ -297,13 +304,13 @@ export function renderSql(r: RenderInput): string {
   const lock = r.statements.length ? uniform((s) => s.timeouts.lock) : "3s";
   const statement = r.statements.length ? uniform((s) => s.timeouts.statement) : "30s";
   const lines: string[] = [
-    `-- pg-orm:migration ${r.id}`,
-    `-- pg-orm:plan      ${r.id}.plan.json`,
-    `-- pg-orm:from      ${r.from}`,
-    `-- pg-orm:to        ${r.to}`,
-    `-- pg-orm:txmode    ${r.txmode}`,
-    `-- pg-orm:timeout   lock=${lock} statement=${statement}`,
-    `-- pg-orm:requires-pg ${r.pgMin}`,
+    `-- pg-prime:migration ${r.id}`,
+    `-- pg-prime:plan      ${r.id}.plan.json`,
+    `-- pg-prime:from      ${r.from}`,
+    `-- pg-prime:to        ${r.to}`,
+    `-- pg-prime:txmode    ${r.txmode}`,
+    `-- pg-prime:timeout   lock=${lock} statement=${statement}`,
+    `-- pg-prime:requires-pg ${r.pgMin}`,
     "",
     // Every identifier the emitter writes is schema-qualified, and extraction ran
     // under the same search_path, so pinning it makes the file mean the same thing
@@ -312,7 +319,7 @@ export function renderSql(r: RenderInput): string {
     "",
   ];
   for (const seg of r.segments) {
-    lines.push(`-- pg-orm:segment ${seg.index} ${seg.transactional ? "transactional" : "bare"}`);
+    lines.push(`-- pg-prime:segment ${seg.index} ${seg.transactional ? "transactional" : "bare"}`);
     for (const i of seg.statements) {
       const s = r.statements[i]!;
       const flags = [
@@ -320,7 +327,7 @@ export function renderSql(r: RenderInput): string {
         s.idempotent ? "idempotent" : "non-idempotent",
         ...(s.hazards.length ? [`hazards=${s.hazards.join(",")}`] : []),
       ];
-      lines.push(`-- pg-orm:stmt ${i} ${flags.join(" ")}`);
+      lines.push(`-- pg-prime:stmt ${i} ${flags.join(" ")}`);
       lines.push(`${s.sql};`);
       lines.push("");
     }

@@ -1,0 +1,49 @@
+{
+  "command": "migrate apply",
+  "status": "up_to_date",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "lock": {
+    "acquired": true,
+    "runId": "<masked>",
+    "waitedMs": "<masked>",
+    "stale": false,
+    "holder": "<masked>"
+  },
+  "applied": [],
+  "pending": [],
+  "fingerprint": "<masked>",
+  "preflight": {
+    "invalidIndexes": [],
+    "notValidConstraints": [],
+    "ccnewLeftovers": [],
+    "touchedByPending": []
+  },
+  "repeatables": {
+    "applied": [],
+    "unchanged": []
+  },
+  "warnings": [],
+  "diagnostics": [
+    {
+      "code": "plan_missing",
+      "severity": "info",
+      "subject": "0001_create_widgets.sql",
+      "message": "0001_create_widgets.plan.json is absent; 0001_create_widgets.sql is treated as hand-written — no fingerprint gate, no checksum gate, and statement metadata comes from the file's own directives"
+    },
+    {
+      "code": "plan_missing",
+      "severity": "info",
+      "subject": "0002_index_widgets.sql",
+      "message": "0002_index_widgets.plan.json is absent; 0002_index_widgets.sql is treated as hand-written — no fingerprint gate, no checksum gate, and statement metadata comes from the file's own directives"
+    }
+  ],
+  "stream": null,
+  "error": null
+}

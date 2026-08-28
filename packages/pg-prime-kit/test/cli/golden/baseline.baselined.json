@@ -1,0 +1,33 @@
+{
+  "command": "migrate baseline",
+  "status": "baselined",
+  "exitCode": 0,
+  "at": "<masked>",
+  "durationMs": "<masked>",
+  "database": "<masked>",
+  "migrationsDir": "<masked>",
+  "schemas": [
+    "public"
+  ],
+  "marked": [
+    "0000_baseline"
+  ],
+  "written": {
+    "sql": "<masked>",
+    "plan": "<masked>"
+  },
+  "migration": {
+    "id": "0000_baseline",
+    "planId": "<masked>",
+    "statements": 2,
+    "txmode": "transactional",
+    "fingerprint": "<masked>",
+    "proof": {
+      "status": "skipped",
+      "reason": "baseline",
+      "at": "<masked>"
+    }
+  },
+  "warnings": [],
+  "error": null
+}
