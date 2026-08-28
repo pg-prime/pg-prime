@@ -219,6 +219,226 @@ scratch file fails `pnpm lint` (recorded in the RESULT, then removed); `changese
 **Gate:** `lint` green on the PR in < 60 s with the type-aware rules on; every other job unchanged;
 `release.yml` dry-run green; zero behaviour change (`pnpm test`, `test:live`, kit suite counts identical).
 
+### C — RESULT (2026-08-29)
+
+Branch `worktree-agent-a7312e75cf7e3366b`, five commits on top of `f053409`. Every deliverable
+built; the divergences are recorded below and in `08` §3.4 AS BUILT. **Zero behaviour change** —
+every suite is at its baseline count.
+
+#### Numbers
+
+| Gate | Result | Note |
+|---|---|---|
+| `pnpm install --frozen-lockfile` | **1.1 s**, clean | lockfile updated and committed |
+| `pnpm lint` | **green — 10.4 s cold, 3.9 s warm** | 0 errors, 47 warnings (all `no-unnecessary-condition`, below). `08` §4.6's budget is 60 s |
+| `pnpm typecheck` | green, 1.7 s | tsgo 7.0.2, six `-p` projects |
+| `pnpm test` (tier 0) | **778 passed / 46 files — 4.82 s warm, 5.35 s cold** | baseline 778. The 5 s ceiling holds warm; `f053409` measured 5.05–5.53 s in the same window on the same machine, so the spread is the machine's, not this branch's |
+| `pnpm test:live` (tier 1) | **1507 passed + 2 skipped / 79 files, 33.4 s** | baseline 1507 + 2 |
+| `pg-prime` tier 2 (`:54331`) | **1526 passed + 4 skipped / 83 files, 7.8 s** | no PgBouncer on that URL, so the 4 skips are `07` §5.1's, announced loudly |
+| `@pg-prime/kit`, no env (`:54329`) | **373 passed + 6 skipped / 51 files, 41.0 s** | baseline 373 + 6 |
+| `pnpm build` | green | pg-prime 229 files / 1580.0 KB · kit 237 files / 1326.1 KB |
+| `pnpm api-snapshot:check` | **no drift** | `.` 227v/221t · `./schema` 44v/67t · `./sql` 23v/17t · `./codecs` 58v/17t · `./driver` 5v/25t · kit 162v/157t |
+| `pnpm package:check` | green | size budgets, emit parity, `check:dts`, tree-shake goldens, `publint --strict`, `attw`, and the pack smoke's 5.9.3-compiles / 5.8.3-refuses pair |
+| `pnpm publish -r --dry-run --no-git-checks` | green | rehearsed twice — see "the release path" |
+| `actionlint` 1.7.12 | clean on `ci.yml`, `release.yml`, `ci-nightly.yml` | after checking the linter is not a no-op against a deliberately broken workflow |
+
+#### Deliverable → files
+
+| # | Deliverable | Files |
+|---|---|---|
+| 1 | oxlint + the type-aware rules, and the mechanical fixes | `.oxlintrc.json`; root `package.json` (`lint`, `lint:oxlint`, `lint:fix`); 30 source files, listed under "conflict surface" |
+| 2 | Formatter | `.oxfmtrc.json`, `.editorconfig`; `format` / `format:check`. **The tree is NOT formatted** (decision 19) |
+| 3 | `sherif` + `knip` | `knip.json`; `lint:deps`, `lint:knip`, `lint:knip:full`; `pnpm-workspace.yaml`; six dead exports deleted |
+| 4 | Changesets | `.changeset/{config.json,README.md,light-poems-attack.md}`; `changeset` / `changeset:status`; the changeset step in `ci.yml`'s `lint` job |
+| 5 | Release | `.github/workflows/release.yml`, `RELEASING.md` |
+| 6 | `lint` job + docs | `.github/workflows/ci.yml`; `08` §3.4 AS BUILT, `08` §4.6 AS BUILT `lint` row, `00-overview.md` items 5 and 6 |
+
+#### What the linters found
+
+**oxlint 1.80.0 + oxlint-tsgolint 7.0.2001 — `--type-aware` runs.** `12` §6's first risk did not
+materialise: tsgolint resolves a tsconfig per file with no extra configuration, needs no separate
+lint project, and **none of the five type-aware rules was lost**. Findings on `f053409`, by rule:
+
+| Rule | Found | Disposition |
+|---|---|---|
+| `typescript/no-unnecessary-condition` | **152** | **warn, not error** — divergence 1 |
+| `eslint/no-unused-vars` | 23 | 13 fixed (imports/vars removed), 9 in `*.probe.ts` (rule off there), 1 suppressed (`SINK`, the profiler's DCE sink) |
+| `typescript/require-await` | 16 | 4 fixed (`async` dropped from synchronous `it()` bodies), 12 suppressed — all async-seam implementations (`PgDriver.release`, `RepeatablesPass`, `CatalogClient.query`, `poolerProbe`, `dispose`, the tier-0 mock driver, the fake pg pool) |
+| `unicorn/no-new-array` | 13 | rule **off** — pre-sized arrays in the decoder and the diff's ordering pass; `Array.from({length})` fills with `undefined` and is slower |
+| `typescript/no-base-to-string` | 12 | rule **off** — not in `08` §3.4's set |
+| `eslint/no-unused-expressions` | 9 | rule off for `*.probe.ts` (7), where a bare expression *is* the assertion; 2 fixed with `void` in `test/sql/tag-guards.test.ts` |
+| `typescript/unbound-method` | 7 | rule **off** — not in §3.4's set |
+| `typescript/require-array-sort-compare` | 7 | rule **off** — adding comparators is a behaviour question, not a lint fix |
+| `typescript/no-floating-promises` | 6 | all in `*.probe.ts`; rule off there, because a probe is compiled and never run |
+| `unicorn/no-thenable` | 5 | rule **off** — `Query` is a thenable by design (`03` §2.7) |
+| `typescript/await-thenable` | 5 | all suppressed — the `as never` cast that reaches pg's per-query `types` overload also erases the Promise from the signature |
+| `unicorn/no-useless-spread` | 4 | all four fixed |
+| `typescript/restrict-template-expressions` | 4 | rule **off** |
+| `typescript/no-duplicate-type-constituents` | 4 | rule **off** |
+| `typescript/no-meaningless-void-operator` | 2 | rule **off** |
+| `typescript/no-implied-eval` | 2 | rule **off** — `new Function` is the compiled row decoder (`03` Appendix B) |
+| `eslint/no-loss-of-precision` | 2 | suppressed — 2⁵³+1 is the input the int8 codec must refuse |
+| `typescript/no-useless-default-assignment` | 1 | rule **off** |
+| `eslint/no-unused-private-class-members` | 1 | fixed — dead `#registry` getter in `query/select.ts` |
+| `eslint/no-control-regex` | 1 | suppressed — the ident fuzzer's control-character scoring |
+| `no-restricted-imports` | **0** | the boundaries already hold, once scoped as in divergence 2 |
+| `import/no-default-export` | **0** | in `src/`; off for tests, vitest configs and `tools/` |
+
+The `correctness` category is promoted to **error** on top of §3.4's set: 67 errors at the start,
+0 now, 47 warnings left.
+
+**sherif 1.13.0** — one issue, `examples/*` in `pnpm-workspace.yaml` matching no package
+(`non-existant-packages`). Removed, with a comment naming the workstream that adds it back. Clean.
+
+**knip 6.33.0** — configured per workspace; it derives each package's entry points from its
+**export map**, which is `08` §1.1's actual reason for wanting it. Unconfigured it reported 58
+files and 6 dependencies, all artefacts of not being configured. Configured, it found **six
+genuinely dead exports, all deleted**: `packages/pg-prime/src/compile/index.ts` (a barrel no file
+imported), `APPLY_EXIT_NOTE`, `deltaSubject`, `skipCount`, `handMapper`, `declarationBytes` — and
+deleting the first left `EXIT` unused in `apply.ts`, which oxlint then caught, which is the two
+tools working as a pair. `exports` / `types` / `nsExports` / `nsTypes` / `duplicates` are
+**excluded from the gate** and available as `pnpm lint:knip:full`; their 26 residual findings are
+re-export hops through the public barrels, declaration-emit type re-exports, seams whose own doc
+comment says "exposed so a test/hook can name this" (`paramsOf`, `registryOf` — S will want them),
+and three unused members of the symmetric `eq`/`neq`/`lt`/`lte`/`gt`/`gte` family. For a library,
+"not imported inside this repo" is the wrong oracle for "unused export"; `08` §2.3's committed
+api-snapshot golden is the right one and is already a gate.
+
+#### Divergences from the brief, with reasons
+
+1. **`no-unnecessary-condition` warns; it does not gate.** 152 findings. All 47 in
+   `packages/*/src` are deliberate runtime guards: `eq()`'s `if (b === null)` throw, for the
+   untyped JavaScript caller `NonNullOperand` cannot reach; `pgTable`'s "that is not a column"
+   sentence, documented in place as the fix for a bare `TypeError`; `toPgField`'s `?? -1` defaults
+   over a *structural* `PgLikeField` that a duck-typed pool may not fully populate;
+   `msg?.parameterName` on a `pg` connection event. Deleting them is a behaviour change, which C's
+   contract forbids; suppressing them is 47 inline directives in the files S, B and K4 are editing
+   right now. The rule is `off` under `packages/*/test`, `bench/` and `tools/`, which is where the
+   other 105 findings are and where the type-aware program is a guess, because those files are in
+   no `tsc` project. *Revisit trigger:* a rule option that exempts a narrowing whose input crosses
+   an `any`/structural boundary.
+2. **The `../schema` boundary rule is scoped to what holds.** `08` §2.1 says `src/query` and
+   `src/compile` import `../schema` as types only. `src/compile` does — it names nothing from
+   `../schema` at all. `src/query` does **not**, and its two value imports are load-bearing:
+   `NAME` (a `Symbol.for` key read off handles and tables at runtime in `cte.ts`, `scope.ts`,
+   `select.ts`, `update.ts` — a type cannot carry a symbol value) and `resolveRelations` (the
+   runtime half of the relation feature, called from `query/relations.ts`). The rule allows
+   exactly those two by name and refuses every other value import, so a *third* one cannot appear
+   without the allow-list changing in review. The `pg` half came out stronger than §2.1 asked:
+   nothing in `packages/pg-prime/src` names `pg`, including `src/driver`, which duck-types the
+   pool instead — the rule is still written where the design puts the boundary, so that the day
+   the driver does need `pg`, moving an import is not also a lint fight.
+3. **The formatter is `oxfmt@0.65.0`, not prettier.** §3.4 offered "`oxlint`'s formatter if
+   stable, else prettier". Measured, on a copy of the tree and never on the tree: idempotent
+   (`--write`, then `--check` clean over 416 files in 27 ms), and it supports per-directory
+   `overrides`, which is what keeps the eventual one-time format a re-wrap rather than a rewrite.
+   With `printWidth` 100 / no semicolons / single quotes as the base and
+   `packages/pg-prime-kit/**` overridden to 120 / semicolons / double quotes, the format is
+   **278 files changed, +5255 / −3168, with zero quote or semicolon churn**. Those two styles are
+   measurements of the tree, not preferences: pg-prime, `tools/` and `bench/` have 0
+   semicolon-terminated statements and 8 762 single quotes in `src` alone; the kit has 1 930
+   semicolons and 7 478 double quotes. Alternatives measured and rejected: `printWidth` 100
+   everywhere (297 files, +7196/−3205) and 120 everywhere (282 files, +4249/−4373 — smaller, but
+   it *joins* lines the pg-prime authors wrapped at 100 on purpose).
+4. **Decision 12's site needs no rule exception.** `no-restricted-imports` only sees static
+   `import`/`export` declarations, so K4's one `await import('pg-prime')` under `src/seed/` is
+   invisible to it, and the config says so in a comment. The guard that *does* have to be amended
+   is the grep in `packages/pg-prime-kit/test/schema-emit/no-value-import.test.ts`, which K4 owns.
+   A *static* `import … from 'pg-prime'` under `src/seed/` stays an error.
+5. **`changeset status` is gated on a `packages/` diff computed inside the job**, not on a
+   workflow-level `paths:` filter, because a `paths:` filter would skip the whole `lint` job —
+   including `pnpm lint` — on a PR that only touches CI. The step is a no-op with one line of
+   output otherwise.
+
+#### The release path
+
+`release.yml` is one job with two shapes: a push to `main` hands off to `changesets/action@v1`
+(the "Version Packages" PR, or the publish when no changesets remain), and `workflow_dispatch`
+runs the identical `install → build → package:check` and then
+`pnpm publish -r --dry-run --no-git-checks`. `dry_run` **defaults to true**, and `dry_run: false`
+is refused with a sentence — a release is a merge, not a button.
+`permissions: { contents: write, pull-requests: write, id-token: write }`,
+`NPM_CONFIG_PROVENANCE: true`, **no `NPM_TOKEN` anywhere**. Per decision 20 the job asserts an
+OIDC token is reachable and fails naming the three causes (a fork, an org policy, an edited
+`permissions:`) rather than dying inside npm with `ENEEDAUTH` forty lines later.
+
+Rehearsed locally, twice:
+
+- at the current versions, `pnpm publish -r --dry-run --no-git-checks` → *"There are no new
+  packages that should be published"* — correct, because all four `0.0.0` placeholders are already
+  on the registry, and this is the guard that stops a re-publish;
+- on a throwaway branch, `changeset version` → **`pg-prime` and `@pg-prime/kit` both to `0.1.0`**
+  with `@pg-prime/testing` and `@pg-prime/create` untouched at `0.0.0` (the `fixed` group works),
+  then `pnpm build` + dry-run publish → `+ pg-prime@0.1.0`, `+ @pg-prime/kit@0.1.0`, tarballs
+  packed (kit: 240 files, 343.5 kB packed / 1.4 MB unpacked). Branch deleted, tree restored,
+  versions back at `0.0.0`.
+
+One thing that rehearsal surfaced, now in `RELEASING.md`: `pnpm changeset version` run locally
+needs a `GITHUB_TOKEN`, because `@changesets/changelog-github` calls the API to attribute each
+entry. In CI that is `secrets.GITHUB_TOKEN`, already wired on the action step.
+
+#### Negative controls (R10)
+
+Each mutation was introduced, observed to fail its gate, and removed. None of it is in the tree.
+
+| # | Mutation | Expected | Observed |
+|---|---|---|---|
+| 1 | `boom()` — an un-awaited `Promise<void>` — in a scratch `src/query/_negative-control.ts` | `pnpm lint` fails | `error typescript(no-floating-promises)` at `11:3`; `pnpm lint` exit **1** |
+| 2 | `import pg from 'pg'` in the same file | fails | `error eslint(no-restricted-imports): 'pg' import is restricted`. The *same* import in `packages/pg-prime-kit/src/` correctly did **not** fire — the kit depends on `pg` |
+| 3 | `import { NAME, pgTable } from '../schema/index.js'` in `src/query/` | `pgTable` fails, `NAME` does not | `error … 'pgTable' import from '../schema/index.js' is restricted because only NAME, resolveRelations import(s) is/are allowed`; nothing for `NAME`, nothing for the `import type` line beside it |
+| 4 | `import { pgTable } from "pg-prime"` in `packages/pg-prime-kit/src/` | fails | `error eslint(no-restricted-imports): 'pg-prime' import is restricted`; the `import type { AnySchema } from "pg-prime"` beside it did **not** fire (`allowTypeImports`) |
+| 5 | `export default 42` in `src/query/` | fails | `error import(no-default-export): Prefer named exports` |
+| 6 | a `packages/` change on a branch with the changeset deleted | `changeset status --since=origin/main` fails | *"Some packages have been changed but no changesets were found"*, **exit 1**. With the changeset present on the same diff: *"Packages to be bumped: minor — @pg-prime/kit, pg-prime"*, exit 0 |
+| 7 | a workflow with an undefined context property and a broken `if:` expression | `actionlint` fails | two `[expression]` errors — so the clean result on our three workflows is a real result, not a silent no-op |
+
+`pnpm lint` with controls 1–5 present: **exit 1, 5 errors**. With them removed: **exit 0**.
+
+#### Conflict surface for the integrator
+
+Everything C touched that another round-A branch also owns. All line-local except where noted.
+
+| File | C's change | Owner |
+|---|---|---|
+| `packages/pg-prime/src/query/select.ts` | deleted a dead `#registry` getter (4 lines) and its `CodecRegistry` type import | **B** |
+| `packages/pg-prime/src/driver/pg-adapter.ts` | one `oxlint-disable-next-line` above `release()` | **S** |
+| `packages/pg-prime/src/compile/nodes.ts` | dropped `jsonCodecJson` from an import list | B |
+| `packages/pg-prime/src/compile/index.ts` | **deleted** — dead barrel, nothing imported it | B |
+| `packages/pg-prime-kit/src/runner/run.ts` | two `oxlint-disable` directives | **K4** |
+| `packages/pg-prime-kit/src/generate.ts` | `loadDesired(…, { ...(x) })` → `loadDesired(…, x)`; **12 lines re-indented** — the largest single hunk C produced | **K4** |
+| `packages/pg-prime-kit/src/cli/commands/verify.ts` | the same reshape, 11 lines | **K4** |
+| `packages/pg-prime-kit/src/cli/commands/apply.ts` | deleted `APPLY_EXIT_NOTE` and its now-unused `EXIT` import | K4 |
+| `packages/pg-prime-kit/src/cli/commands/push.ts` | deleted a dead `segments` local and its assignment | K4 |
+| `packages/pg-prime-kit/src/diff/{ddl,delta}.ts` | dropped two unused imports; deleted `deltaSubject` | K4 |
+| root `package.json` | 10 new scripts, 7 new devDependencies | everyone |
+| `pnpm-lock.yaml` | 66 packages added | everyone |
+| `.github/workflows/ci.yml` | one new job at the top of `jobs:` | — |
+| `design/08-architecture.md` | §3.4 AS BUILT (new), §4.6's `lint` row | D |
+| `design/00-overview.md` | items 5 and 6 rewritten | D |
+
+Test files touched — 15 in `pg-prime`, 7 in the kit — all suppression comments or one-word
+removals: `pg-prime/test/{codec/builtins, codec/date, codec/encoding-policy, driver/_fake-pg,
+driver/execute, driver/types-trick, fuzz/ident-oracle, live/_harness, live-query/cte,
+live-query/relations, live-query/select, query/_mock-driver, query/ast-equivalence, query/guards,
+sql/tag-guards}` and `pg-prime-kit/test/{cli/config, kinds/emptiness, kinds/observation,
+repeatables/apply, runner/dry-run, schema-emit/roundtrip, shadow/ladder}`.
+
+#### Left for the integrator, and for the operator
+
+- **The one-time format** (decision 19): on a quiet `main`, `pnpm format`, one commit, then add
+  `- run: pnpm format:check` to the `lint` job. Round B branches from that commit. C deliberately
+  did neither.
+- **`examples/*` is out of `pnpm-workspace.yaml`.** Whoever creates `examples/` or `docs/` adds
+  the line back, or `sherif` fails.
+- **Operator, before any release:** `RELEASING.md` §1 — configure the trusted publisher on
+  npmjs.com for each of the four packages (organization `pg-prime`, repository `pg-prime`,
+  workflow filename **`release.yml`**, environment empty), then remove the automation tokens.
+  Until that is done, `changeset publish` fails with an auth error, which is the correct
+  behaviour. Renaming `release.yml` breaks publishing for every package until each trusted
+  publisher is edited.
+- **`pgormjs@0.0.0`** is deprecated, not unpublished — the exact command is `RELEASING.md` §5.
+
+---
+
 ### K4 — Data migrations, seeding, checkpoints, `pull`, and the DSL it needs
 
 **Owns:** `packages/pg-prime-kit/src/{data,seed,checkpoint,pull}/**` (new), `src/runner/*` (batch

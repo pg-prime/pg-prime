@@ -66,6 +66,13 @@ configured on a package that exists. So for each of `pg-prime`, `@pg-prime/kit`,
 **Tooling floor.** Trusted publishing needs npm ≥ 11.5.1 or pnpm ≥ 10.17. The workflow pins pnpm
 through the root `packageManager` field (10.33.0) and Node 24, both of which are above it.
 
+**One gotcha, if you ever run `pnpm changeset version` on your laptop.** The changelog generator is
+`@changesets/changelog-github`, which calls the GitHub API to attribute each entry, so it needs a
+`GITHUB_TOKEN` in the environment (`read:user`, `repo:status`) and fails with a link to the token
+page without one. In CI this is `secrets.GITHUB_TOKEN`, already wired on the `changesets/action`
+step. You should not normally need to run `version` by hand at all — that is what the "Version
+Packages" PR is.
+
 ---
 
 ## 2. Who may release
@@ -155,7 +162,7 @@ pnpm publish -r --dry-run --no-git-checks
 deprecate it — do not unpublish it, because unpublishing breaks anyone who already resolved it:
 
 ```sh
-npm deprecate pgormjs@"*" "Renamed to pg-prime. Install `pg-prime` (and `@pg-prime/kit` for the CLI)."
+npm deprecate pgormjs@'*' 'Renamed to pg-prime. Install pg-prime (and @pg-prime/kit for the CLI).'
 ```
 
 Then, on npmjs.com, remove any automation token scoped to `pgormjs` and leave the package
