@@ -1155,14 +1155,16 @@ Deferred, each with its owner:
 - **`prepare()` / placeholders, `stream`, `explain`, `executeTakeFirst`, `assertShape`** — WS6.
   `src/query/run.ts` is compile → `PgQuery` → `buildDecoder` and nothing more. An unfilled bind
   slot throws with a sentence pointing at WS6.
-- **Recursive CTEs.** `CteNode.recursive` and the emitter's `with recursive` exist; the builder has
-  no self-reference API, because `.with(name, f)` cannot hand `f` a handle to the CTE it is
-  defining without a second signature. Not needed by any `03` §2 example.
-- **`right` / `full` / `cross` joins and `innerJoinLateral`.** The emitter handles all four join
-  types; only `inner` and `left` are on `Query`, which is what `03` §2.2 shows. A right join makes
-  the *existing* aliases nullable, which is a different type-level move from `leftJoin`'s and is
-  not worth the budget until something asks for it. Lateral *derived tables* work today through
-  `.as(name)`; a lateral *join* does not.
+- ~~**Recursive CTEs.**~~ → **built in `12` B** as `withRecursive(name, base, step, opts?)`. The
+  second signature is two callbacks: `base` fixes the row type and `step` is handed the CTE's own
+  handle already typed by it, so nothing infers a fixed point and the expensive type `03` §5 punts
+  never exists. `03` §2.7 AS BUILT.
+- ~~**`right` / `full` / `cross` joins and `innerJoinLateral`.**~~ → **built in `12` B**, all five
+  including `leftJoinLateral`. The different type-level move is exactly the content: a right join
+  nulls the aliases already in scope, a full join both sides, a cross join neither, and the runtime
+  witness set is computed by replaying the joins in binding order. The one thing that could not be
+  made honest — a right or full join added *after* `.select()` — is refused with a sentence rather
+  than half-supported. `03` §2.2 AS BUILT.
 
 #### Deviations from the plan as written
 
@@ -1403,23 +1405,31 @@ through a junction, declaration-level `where` and `orderBy`, the three hard asks
 
 Deferred, each with its owner:
 
-- **`avg` / `min` / `max` over a relation.** The workstream's goal line names nine members and
-  these are not among them; shipping fewer than asked is the safe direction, and `fn.avg` over a
-  `sql` fragment reaches them meanwhile.
-- **`$all` in a projection** (`...u.$all`). `03` §4.2 sketches it and `.all()` is its relation-side
-  equivalent, which is what the goal line asks for. A `$`-prefixed member on every scope object is
-  a decision about the *column* surface, not the relation one.
-- **Typed relation-level `where` / `orderBy`.** `RelConfig` still types them `unknown`, so the
-  callback's parameter has to be annotated by hand at the declaration site. Typing it needs the
-  table's refs at a point where `defineRelations` only has the registry key.
-- **FK inference**, for the reason in decision 4: there is no foreign key to infer from until the
-  column DSL grows `.references()`.
+- ~~**`avg` / `min` / `max` over a relation.**~~ → **built in `12` B**, with `sum`'s hoisting and
+  digest-sharing rules and — the one difference, written down because it is easy to get wrong —
+  **no coalesce**: zero is the sum of no rows, not their average, minimum or maximum, so all three
+  are `| null`. Result codecs come from `fn.*` rather than a second table, and the OID differential
+  asks the server to confirm all six.
+- ~~**`$all` in a projection** (`...u.$all`).~~ → **built in `12` B**. The decision about the
+  column surface was taken by measurement: a `$`-prefixed member on every scope object costs one
+  intersection member per alias per scope instantiation, which is 0.00 %–1.96 % per `bench:types`
+  fixture and 0 % on the two hot per-query shapes. It is a spread and not a group, so a left-joined
+  alias's `$all` nulls per column.
+- ~~**Typed relation-level `where` / `orderBy`.**~~ → **built in `12` B**. `RelConfig<T>` takes the
+  target *table* and the callbacks read `T[REFS]`, the slot the table already pre-computed; the
+  registry key is enough because `RelBuilders`' picker for key `K` already knows `T[K]`. +5
+  instantiations per declared relation, and nothing per query.
+- ~~**FK inference**, for the reason in decision 4~~ → **built in `12` B**, now that `11` K2a gave
+  the DSL `.references()` and `foreignKey(...)`. Decision 4 said "not deferred, impossible"; the
+  premise expired and the conclusion with it. `12` decision 18 is the rule, and the plan's original
+  "ambiguous FK inference throws with both candidate FKs named" (deviation 5 below) is what ships.
 - **Sharing across scopes.** Two identical aggregates in a parent and inside one of its relations
   are two laterals, necessarily — they correlate on different rows.
 
 Carried from WS4, unchanged: CTE refs keep `pg: any`; recursive CTEs have no self-reference API;
 `right` / `full` / `cross` joins and `innerJoinLateral` are not on `Query`; `prepare` / `stream` /
-`explain` / `assertShape` are WS6's.
+`explain` / `assertShape` are WS6's. (**`12` B** built the joins and the recursive CTE — see §3.4's
+annotated list; `pg: any` stands.)
 
 #### Deviations from the plan as written
 
@@ -1430,7 +1440,8 @@ Carried from WS4, unchanged: CTE refs keep `pg: any`; recursive CTEs have no sel
 4. Aggregate laterals are written into the join list before relation laterals, because the CSE pass
    runs before the projection is flattened. `03` §2.3's golden happens to show the same order.
 5. The plan's "ambiguous FK inference throws with both candidate FKs named" is a missing-`from`/`to`
-   error instead, per decision 4.
+   error instead, per decision 4. **Reverted in `12` B**: the ambiguity error exists and names every
+   candidate, and the missing-`from`/`to` error now fires only when there is also no foreign key.
 6. The plan's CSE golden asks for a shared `"rev"` lateral; it is `"_r1"`, per decision 2.
 
 ---
@@ -1650,6 +1661,13 @@ Deferred, each with its owner and its reason:
 Carried unchanged: CTE refs keep `pg: any`; recursive CTEs have no self-reference API; `right` /
 `full` / `cross` joins and `innerJoinLateral` are not on `Query`; `avg`/`min`/`max` over a relation
 and `$all` in a projection are WS5's deferrals.
+
+> **`12` B, 2026-08-29.** Every clause of that sentence except the first is now false: all five
+> joins, `withRecursive`, the three relation aggregates and `$all` are built, and `fromRaw` with
+> them. CTE refs keep `pg: any`, which is a `04` §1.3 consequence and not a gap — see §3.4's
+> decision 8, still standing. WS6's own deferrals (`streamBatches`, the `rollback: false` overload,
+> the session layer, `cachedDescribe`, a typed `db.sql<T>`, `rowCount`) are untouched by `12` B and
+> belong to `12`'s S workstream or stay recorded.
 
 #### Deviations from the plan as written
 

@@ -12,7 +12,7 @@
  * create them beside every other file's fixture without collision (R6).
  */
 
-import { int8Codec, numericCodec } from '../../src/codec/index.js'
+import { int8Codec, jsonbCodec, numericCodec } from '../../src/codec/index.js'
 import * as q from '../../src/query/types.js'
 import type { Executor } from '../../src/query/types.js'
 import { defineSchema, pgEnum, pgTable } from '../../src/schema/index.js'
@@ -153,6 +153,70 @@ export function makeAppendixA(ns?: string) {
             d.fromCte('moved').select(({ moved: m }) => ({ payload: m.payload, at: m.at })),
           )
           .returning(({ live: l }) => ({ id: l.id })),
+    },
+    {
+      label: '§2.1 the `$all` spread, with one column omitted (12 B)',
+      build: (db) =>
+        db
+          .from(h.products)
+          .select(({ products: p }) => ({ ...q.omit(p.$all, 'updatedAt') }))
+          .orderBy(({ products: p }) => q.asc(p.id)),
+    },
+    {
+      label: '§2.2 right join — the aliases already in scope are the nullable ones (12 B)',
+      build: (db) =>
+        db
+          .from(h.events, 'e')
+          .rightJoin(h.users, 'u', ({ e, u }) => q.eq(e.kind, u.name))
+          .select(({ e, u }) => ({ email: u.email, kind: e.kind })),
+    },
+    {
+      label: '§2.2 left join lateral — the per-parent top-N (12 B)',
+      build: (db) =>
+        db
+          .from(h.users)
+          .leftJoinLateral(
+            (t) =>
+              db
+                .from(h.events, 'e')
+                .where(({ e }) => q.eq(e.kind, t.users.name))
+                .orderBy(({ e }) => q.desc(e.at))
+                .limit(3)
+                .select(({ e }) => ({ kind: e.kind, at: e.at })),
+            'recent',
+          )
+          .select(({ users: u, recent }) => ({ email: u.email, kind: recent.kind })),
+    },
+    {
+      label: '§2.7 withRecursive — the row type is the base term\'s (12 B)',
+      build: (db) =>
+        db
+          .withRecursive(
+            'tree',
+            (d) =>
+              d
+                .from(h.events, 'e')
+                .where(({ e }) => q.eq(e.kind, 'root'))
+                .select(({ e }) => ({ kind: e.kind, at: e.at })),
+            (d, self) =>
+              d
+                .from(h.events, 'e')
+                .innerJoin(self, 't', ({ e, t }) => q.eq(e.kind, t.kind))
+                .select(({ e }) => ({ kind: e.kind, at: e.at })),
+          )
+          .fromCte('tree')
+          .select(({ tree }) => ({ kind: tree.kind })),
+    },
+    {
+      label: '§5 fromRaw — a set-returning function with a column definition list (12 B)',
+      build: (db) =>
+        db
+          .fromRaw(
+            q.sql`jsonb_to_recordset(${q.val({ id: 1 }, jsonbCodec)})`,
+            { id: int8Codec, price: numericCodec },
+            { alias: 'j', columnTypes: true },
+          )
+          .select(({ j }) => ({ id: j.id, price: j.price })),
     },
     {
       label: '§2.9 jsonb path as a PARAMETER (the CVE class, designed out)',

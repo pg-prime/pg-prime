@@ -552,11 +552,33 @@ Notes on shape:
 > puts the handles on `db.h`, so a query file still needs one import.
 >
 > Everything else holds byte for byte: the compiled SQL is Appendix A's, `in([])` is the constant
-> `false`, and a comparison's right-hand side takes a value, a ref or an expression. `u.$all` is
-> spelled `.selectAll('users')` (every column of one alias, nullable as a whole when that alias was
-> left-joined); a `{ ...u.$all }` spread would have to be a runtime record, and the builder's scope
-> objects are cached per `(table, alias)` precisely so that they are not rebuilt per query.
+> `false`, and a comparison's right-hand side takes a value, a ref or an expression.
 > Repeated `.where()` conjoins and repeated `.orderBy()` appends — see `09` §3.4 decision 3.
+
+> **AS BUILT (`12` B, 2026-08-29) — `$all` ships as this section writes it.** WS4 offered
+> `.selectAll('users')` instead, reasoning that a spread "would have to be a runtime record" and
+> that the scope objects are cached per `(table, alias)` so they are not rebuilt per query. Both
+> halves are true and the conclusion does not follow: the record `$all` hands out **is** that
+> cached ref record, by reference, so the feature is one extra property on an object built at most
+> once per `(registry, handle, alias, avoid-list)`.
+>
+> ```ts
+> .select(({ users: u }) => ({ ...u.$all }))                       // every column, exact
+> .select(({ users: u }) => ({ ...omit(u.$all, 'passwordHash') })) // Prisma's `omit`, for free
+> .select(({ users: u }) => ({ ...u.$all, posts: u.posts.all() })) // §4.2 form (b), as written
+> ```
+>
+> Three properties, each pinned by a test: the spread is byte-identical to `.selectAll(alias)`,
+> which stays; `omit` is an ordinary copy, so it cannot mutate the shared record (the negative
+> control is a later query still seeing the column); and it is a **spread, not a group**, so under
+> a LEFT JOIN each column carries its own `| null` rather than the object nulling as a whole —
+> whole-object nullability is `nest`/`nestNullable`'s rule (§2.2), and a spread has no object.
+>
+> The type cost is one intersection member per alias per scope instantiation, which is the floor
+> for an added member: **0.00 % to +1.96 % per `bench:types` fixture**, 0 % on the two hot
+> per-query shapes, +0.80 % on the relation shape, +2.7 % on the 20-chained-joins diagnostic
+> shape (twenty-one scope instantiations). A column keyed `$all` cannot exist on a table —
+> `pgTable` reserves a leading `$` — and a CTE or derived table that projects one is refused.
 
 ### 2.2 Joins
 
@@ -599,9 +621,47 @@ Left-join nullability propagates to the **whole nested literal object**, not to 
 
 Lateral joins are first-class: `.innerJoinLateral(sub, alias, on)` / `.leftJoinLateral(...)`, where `sub` is a select builder that may reference outer scope refs.
 
+> **AS BUILT (`12` B, 2026-08-29) — all five ship.** `rightJoin`, `fullJoin`, `crossJoin`,
+> `innerJoinLateral` and `leftJoinLateral` are on `Query`, and the note above is superseded.
+>
+> **The type-level move is the mirror of `leftJoin`'s, and it is the whole content of the
+> feature.** `leftJoin` adds an alias and marks *that* alias nullable; a RIGHT join marks every
+> alias **already in scope** nullable, because the rows that survive are the joined table's; a
+> FULL join marks both; a CROSS join marks neither and takes no `on` at all (PostgreSQL rejects
+> `cross join … on …`, and the emitter refuses to drop a predicate silently). The runtime witness
+> set — `GroupPlan.witnesses`, which decides when a `nestNullable({…})` is null — is computed from
+> the same rule by replaying the joins in binding order, so `a left join b right join c` nulls `a`
+> and `b` and not `c`.
+>
+> One ordering is **refused** rather than half-supported: a right or full join added *after*
+> `.select(...)` throws a `BuilderError` naming the order to write. The projection has already
+> fixed both the type of every column it took from an alias and the witness set of every group in
+> it, and recompiling the plan would leave the type behind — handing back a `null` the caller was
+> told could not happen. `09` §3.4 left the question open by not shipping the two joins at all;
+> this closes it in the direction that cannot lie. A LEFT join after `.select()` stays legal: it
+> can only null the alias it adds, which the projection cannot already mention.
+>
+> `sub` is a select builder *or a callback handed this query's scope* —
+> `q.innerJoinLateral(t => db.from(h.posts).where(p => eq(p.authorId, t.users.id))…, 'recent')` —
+> which is what makes the sub-query correlated without a second executor parameter. `on` is
+> optional and defaults to `ON TRUE`, the shape a lateral almost always wants; the alias becomes an
+> ordinary source, so its columns are reached as `t.recent.x` with the sub-query's own codecs.
+
 ### 2.3 Relational projection — the differentiator
 
 **This is D2.** A relation accessor lives on the table scope next to the columns, and returns an *expression* usable anywhere in a projection. Because it is an expression, it composes with everything else in the same query: aggregates, window functions, `GROUP BY`, CTEs, set operations, `RETURNING`.
+
+> **AS BUILT (`12` B, 2026-08-29) — the aggregate table is complete.** `avg` / `min` / `max` join
+> `count` / `sum` on every relation accessor, with `sum`'s hoisting and structural-digest sharing
+> rules unchanged (`03` §2.3 point 6: two occurrences of the same aggregate collapse into one
+> `LEFT JOIN LATERAL`). The one thing that differs from `sum`, and the reason it is written down
+> rather than left to be discovered: **they are not coalesced.** `coalesce(sum(x), 0)` is honest
+> because an empty relation sums to zero; zero is not its average, its minimum or its maximum, so
+> those three are `| null` in the type and NULL in the row. Result codecs are PostgreSQL's, taken
+> from `fn.avg`/`fn.min`/`fn.max` rather than restated — `avg(numeric)` and `avg(int4)` are
+> `numeric` (a precision-exact string), `avg(float8)` is `float8`, and `min`/`max` keep the
+> operand's own codec and brand. The OID differential in `test/live-query/relations.test.ts` asks
+> the server to confirm all six.
 
 > **CONFIRMED 2026-08-26 — fork F3 decided in favour of this spelling (09 §3.0).** 04 §2.4 proposed a second lambda parameter (`(t, r) => r.u.posts(…)`) "specifically to avoid an intersection". Measured, that reason does not survive: the intersection is instantiated once per (alias, table) and cached, while the second parameter forces `RelsNs<S>` on **every** `select`, including the majority that project no relation. On-scope is cheaper or equal on every shape and both compilers (−1.1 % to −4.2 % per query, −0.4 % / −2.0 % whole-program). The price is that a relation may now collide with a column name — §4.1's "fail loudly on a relation/column name collision" is what pays for this fork and is owed by WS5.
 
@@ -1063,6 +1123,31 @@ await db
 > Recursive CTEs are not offered: `.with(name, f)` cannot hand `f` a handle to the CTE it is
 > defining without a second signature, and no `03` §2 example needs one. The emitter already
 > spells `with recursive`.
+
+> **AS BUILT (`12` B, 2026-08-29) — the second signature exists, and it is two callbacks.**
+> `withRecursive(name, base, step, opts?)` emits `WITH RECURSIVE "name" AS (base UNION ALL step)`,
+> with `{ unionAll: false }` for `UNION` (the cycle-avoiding spelling, at the cost of an equality
+> comparison per intermediate row) and `materialized` as on `.with()`.
+>
+> ```ts
+> db.withRecursive(
+>   'tree',
+>   (d)       => d.from(h.comments).where(c => isNull(c.postId)).select(c => ({ id: c.id })),
+>   (d, self) => d.from(h.comments).innerJoin(self, 't', t => eq(t.comments.postId, t.t.id))
+>                 .select(t => ({ id: t.comments.id })),
+> ).fromCte('tree').select(t => ({ id: t.tree.id }))
+> ```
+>
+> **The row type is fixed by `base`, and that is what makes it affordable.** `step` is handed the
+> CTE's own handle already typed by the base term, so nothing infers a fixed point — this is not
+> the self-referential row typing §5 punts, and the implementation is "run `base`, read its result
+> shape, register the handle, then run `step`". A `step` whose projection disagrees is an error at
+> the callback's return, where the reader wrote it. Measured cost: the method is one member on an
+> interface, so a query that never calls it instantiates nothing (`12` B's RESULT).
+>
+> The `pg: any` limit above is unchanged and still a `04` §1.3 consequence rather than a gap:
+> recovering the PG type class needs the projection record on `Query`, which is the fourth type
+> parameter that document rules out.
 
 ### 2.8 Set operations, window functions, subqueries
 
@@ -1606,6 +1691,33 @@ export interface RelationMeta {
 > of the schema file rather than on the first query that touches the relation: hard ask #1's
 > name collision, a relation pointing at a table the registry does not have, a missing `from`/`to`,
 > a `from`/`to` arity mismatch, and a column reference belonging to the wrong table.
+
+> **AS BUILT (`12` B, 2026-08-29) — `from`/`to` are optional, and the callbacks are typed.**
+> The column DSL grew `.references()` and `foreignKey(...)` in `11` K2a, so the open ask is
+> answerable and is answered (`12` decision 18):
+>
+> - a **`one`** follows the child's own foreign key to its parent — the child being the table the
+>   relation is declared on; a **`many`** follows the inverse; the m2m form accepts the bare
+>   junction table (`through: postTags`) and infers both hops the same way.
+> - **exactly one** candidate resolves. Zero and "more than one" are both refused, and both name
+>   what is missing: the zero case names the two tables and both ways to fix it, the ambiguous case
+>   lists every candidate as `posts.authorId -> users.id, posts.editorId -> users.id` and the
+>   explicit spelling. Guessing "the first one" is how a relation silently returns the wrong rows.
+> - **explicit `from`/`to` always win**, and the two are declared together or not at all.
+> - a column-level `.references()` and an equivalent `foreignKey(...)` extra are **one** candidate,
+>   not an ambiguity: they are one key in the database, so the paths are deduplicated on the
+>   correlation itself.
+>
+> So `defineSchema`'s five errors are now **seven**: the ambiguity, and the `from`-without-`to`
+> guard, join the five above (the "missing `from`/`to`" one is reworded — it now fires only when
+> there is also no foreign key).
+>
+> `RelConfig.where` / `orderBy` are typed: the callback receives the **target table's** refs, so no
+> declaration site annotates by hand. It costs `RelConfig<T[K]>` one instantiation per declared
+> relation — measured at **+5 instantiations per declared relation** on `bench:types` (32.5 → 37.5
+> against a budget of 50), and nothing per query. The cost is per *target*, not per relation: 20
+> relations onto 20 distinct targets measure 44.1 each and 20 onto one target 13.3 each (21 tables,
+> TS 5.9.3), so the bench's one-target-per-relation fixture is the worst case.
 >
 > One row of the table below reads differently in practice. `.count()` / `.sum(f)` are described as
 > "a correlated scalar subquery", and that is what they *are* — but §2.3's own compiled SQL shows
@@ -1649,12 +1761,12 @@ const r2 = await db.from(users).select(({ users: u }) => ({
 // r2: Loaded<typeof users, { posts: true }>[]
 ```
 
-> **AS BUILT 2026-08-26 (WS5, `09` §3.5).** Form (b)'s `u.posts.all()` ships; `...u.$all` does not
-> — a projection still names its columns, or reaches for `selectAll(alias)` at the top level. The
-> `Loaded` claim itself is what matters here and it holds unchanged: a projection that loaded
-> `posts` is assignable to `Loaded<typeof users, 'posts'>` with no cast, no `Collection` and no
-> `Ref`, which is pinned by `test/query/types/relations.probe.ts` passing a builder result straight
-> into a function that demands the load state.
+> **AS BUILT 2026-08-26 (WS5, `09` §3.5), amended by `12` B.** Form (b)'s `u.posts.all()` shipped
+> in WS5; `...u.$all` did not, and now does — so form (b) is reachable exactly as written above
+> (§2.1's AS BUILT note has the measurement). The `Loaded` claim is what matters here and it holds
+> unchanged: a projection that loaded `posts` is assignable to `Loaded<typeof users, 'posts'>` with
+> no cast, no `Collection` and no `Ref`, which is pinned by `test/query/types/relations.probe.ts`
+> passing a builder result straight into a function that demands the load state.
 
 `Loaded<T, H>` is a derived alias over the relation graph, used to *declare* load state in function signatures — MikroORM's insight, which converts "did someone populate this?" from a runtime `undefined` into a compile error (mikroorm.md §3.2):
 
@@ -1675,18 +1787,45 @@ Scoping v1 brutally small is SUMMARY risk #2 (Drizzle: 9.5 months of RC; Kysely:
 
 | Punted | Why | v1 workaround |
 |---|---|---|
-| **Typed recursive CTEs** (`withRecursive`) | Self-referential row typing is the single most expensive type in any builder that has it; trees/graphs are a minority of queries | `db.withRaw('tree', sql\`…\`, shape)` — an explicit column→codec map, fully decoded |
+| ~~**Typed recursive CTEs** (`withRecursive`)~~ **built in `12` B** | Self-referential row typing is the single most expensive type in any builder that has it; trees/graphs are a minority of queries | `withRecursive(name, base, step)` ships (§2.7 AS BUILT): the row type is fixed by `base`, so no fixed point is inferred and the expensive type never exists. `withRaw` was the fallback and was not needed |
 | **`MERGE`** | PG 15 has it, but `RETURNING` only landed in PG 17; the API pays for itself only with `RETURNING` | `INSERT … ON CONFLICT` covers ~95% of real usage |
 | **Streaming / cursors / portals** (`for await`) | Needs adapter capability negotiation and a second execution path; the adapter interface already reserves `stream()` | `.limit()`-based batching, or drop to the driver |
 | **`GROUPING SETS` / `CUBE` / `ROLLUP`** | Typing "column may be NULL because it was rolled up" correctly is genuinely hard | `sql` fragment in `groupBy` |
 | **Relay cursor pagination helper** | Well-scoped and self-contained, so it is a clean v2 add-on | Keyset predicates compose today: `row(a, b).gt(row($1, $2))` |
 | **Nested writes / `saveGraph`** | Needs FK ordering and is adjacent to the UoW we rejected; deserves its own design | Explicit `insertMany` + writable CTEs, which is more predictable anyway |
-| **Set-returning functions as FROM items** (beyond `unnest` / `generate_series`) | `jsonb_to_recordset` etc. need a column-definition-list DSL | `db.fromRaw(sql\`…\`, shape)` |
+| **Set-returning functions as FROM items** (beyond `unnest` / `generate_series`) | `jsonb_to_recordset` etc. need a column-definition-list DSL | `db.fromRaw(sql\`…\`, shape)` — **built in `12` B**, see below |
 | **Query-plan middleware / budgets** (Prisma-next's inspectable plan) | Genuinely good idea; needs the plugin type-channel designed first | `.toSQL()` + `.explain()` ship in v1 |
 | **Polymorphic relations** | Prisma's oldest top-voted open issue for a reason | Explicit union queries + set ops |
 | **`ts_headline`, text-search config management, dictionaries** | Long tail | `sql` fragments; the operators and `*_to_tsquery` helpers ship in v1 |
 | **`COPY`-based bulk load** | Session-pooling-only, needs its own protocol path | `unnest` insert strategy handles very large batches |
 | **Result caching** | Explicit non-goal — scope creep (drizzle.md §7). We expose `meta.reads`/`meta.writes` as invalidation hooks and nothing more | userland |
+
+> **AS BUILT (`12` B, 2026-08-29) — `fromRaw`.** `db.fromRaw(frag, shape, opts?)` puts a
+> hand-written FROM item in the chain, and `shape` — a column→codec record — does three jobs at
+> once, which is the whole design: it names the emitted column-alias list, it names the row's keys,
+> and each codec decodes its own column. So there is no second place for the column names to be
+> written and drift, and the result is as exactly typed and as fully decoded as a table's.
+>
+> ```ts
+> db.fromRaw(sql`generate_series(1::int8, 3::int8)`, { n: int8Codec }, { alias: 'g' })
+>   .select(({ g }) => ({ n: g.n }))
+> // from generate_series(1::int8, 3::int8) as "g"("n")
+>
+> db.fromRaw(sql`jsonb_to_recordset(${doc})`, { id: int8Codec, name: textCodec },
+>            { alias: 'j', columnTypes: true })
+> // from jsonb_to_recordset($1) as "j"("id" bigint, "name" text)
+> ```
+>
+> `columnTypes: true` emits the column **definition** list a function returning `record` cannot do
+> without, from the same codecs' `sqlName`s. It is an option rather than the default because
+> PostgreSQL rejects a definition list for a function that does not return `record` — the two
+> spellings are both pinned, the second as the `42601` it is. The fragment goes through the
+> ordinary raw path, so its holes are parameters and its identifier splices are sanitised exactly
+> as anywhere else: `fromRaw` is a shorter way to write a FROM item, never a way around §3.4.
+>
+> The refs it hands out are the CTE-shaped ones, so the recorded `pg: any` limit applies to them
+> too (§2.7). A `shape` with no columns, and a first argument that is not a `sql` fragment, are
+> both refused with a sentence.
 
 ---
 
@@ -1819,6 +1958,47 @@ insert into "public"."live" ("payload", "at")
 select "moved"."payload" as "payload", "moved"."at" as "at"
 from "moved" as "moved"
 returning "id" as "id"
+
+-- §2.1 the `$all` spread, with one column omitted (12 B)
+select "products"."id" as "id", "products"."price" as "price"
+from "public"."products" as "products"
+order by "products"."id" asc
+
+-- §2.2 right join — the aliases already in scope are the nullable ones (12 B)
+select "u"."email" as "email", "e"."kind" as "kind"
+from "public"."events" as "e"
+right join "public"."users" as "u" on "e"."kind" = "u"."name"
+
+-- §2.2 left join lateral — the per-parent top-N (12 B)
+select "users"."email" as "email", "recent"."kind" as "kind"
+from "public"."users" as "users"
+left join lateral (
+  select "e"."kind" as "kind", "e"."at" as "at"
+  from "public"."events" as "e"
+  where "e"."kind" = "users"."name"
+  order by "e"."at" desc
+  limit $1
+) as "recent" on true
+-- params: ["3"]
+
+-- §2.7 withRecursive — the row type is the base term's (12 B)
+with recursive "tree" as (
+  select "e"."kind" as "kind", "e"."at" as "at"
+  from "public"."events" as "e"
+  where "e"."kind" = $1
+  union all
+  select "e"."kind" as "kind", "e"."at" as "at"
+  from "public"."events" as "e"
+  inner join "tree" as "t" on "e"."kind" = "t"."kind"
+)
+select "tree"."kind" as "kind"
+from "tree" as "tree"
+-- params: ["root"]
+
+-- §5 fromRaw — a set-returning function with a column definition list (12 B)
+select "j"."id" as "id", "j"."price" as "price"
+from jsonb_to_recordset($1) as "j"("id" bigint, "price" numeric)
+-- params: ["{\"id\":1}"]
 
 -- §2.9 jsonb path as a PARAMETER (the CVE class, designed out)
 select "users"."id" as "id"
