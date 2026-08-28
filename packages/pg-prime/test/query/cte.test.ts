@@ -11,12 +11,17 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import { int8Codec, jsonbCodec, textCodec } from '../../src/codec/index.js'
+import { buildDecoder } from '../../src/compile/decode.js'
 import { compileOnly } from '../../src/query/run.js'
+import { sql } from '../../src/sql/index.js'
 import * as q from '../../src/query/types.js'
 import { schema } from './_schema.js'
 
 const db = compileOnly(schema)
 const sqlOf = (b: { compile(): { sql: string } }) => b.compile().sql
+const vals = (b: { compile(): { binds: readonly unknown[] } }) =>
+  b.compile().binds.map((x) => (x as { encoded?: unknown }).encoded)
 
 describe('§2.7 — .with() widens the scope', () => {
   const withRecent = () =>
@@ -169,6 +174,169 @@ describe('Appendix A — the writable CTE that feeds an INSERT … SELECT', () =
     expect(built.compile().shape).toMatchObject({
       fields: [{ codec: { name: 'int8' } }, { codec: { name: 'numeric' } }],
     })
+  })
+})
+
+describe('§2.7 — withRecursive (12 B, decision 17)', () => {
+  const tree = () =>
+    db.withRecursive(
+      'tree',
+      (d) =>
+        d
+          .from(schema.h.comments)
+          .where(({ comments: c }) => q.isNull(c.postId))
+          .select(({ comments: c }) => ({ id: c.id, body: c.body })),
+      (d, self) =>
+        d
+          .from(schema.h.comments)
+          .innerJoin(self, 't', ({ comments: c, t }) => q.eq(c.postId, t.id))
+          .select(({ comments: c }) => ({ id: c.id, body: c.body })),
+    )
+
+  it('emits WITH RECURSIVE … AS (base UNION ALL step), byte for byte', () => {
+    expect(sqlOf(tree().fromCte('tree').select(({ tree: t }) => ({ id: t.id })))).toBe(
+      [
+        'with recursive "tree" as (',
+        '  select "comments"."id" as "id", "comments"."body" as "body"',
+        '  from "public"."comments" as "comments"',
+        '  where "comments"."post_id" is null',
+        '  union all',
+        '  select "comments"."id" as "id", "comments"."body" as "body"',
+        '  from "public"."comments" as "comments"',
+        '  inner join "tree" as "t" on "comments"."post_id" = "t"."id"',
+        ')',
+        'select "tree"."id" as "id"',
+        'from "tree" as "tree"',
+      ].join('\n'),
+    )
+  })
+
+  it('{ unionAll: false } is UNION — the cycle-avoiding spelling', () => {
+    const built = db.withRecursive(
+      'tree',
+      (d) => d.from(schema.h.comments).select(({ comments: c }) => ({ id: c.id })),
+      (d, self) =>
+        d
+          .from(schema.h.comments)
+          .innerJoin(self, 't', ({ comments: c, t }) => q.eq(c.postId, t.id))
+          .select(({ comments: c }) => ({ id: c.id })),
+      { unionAll: false },
+    )
+    const sql = sqlOf(built.fromCte('tree').select(({ tree: t }) => ({ id: t.id })))
+    expect(sql).toContain('with recursive "tree" as (')
+    expect(sql).toContain('\n  union\n')
+    expect(sql).not.toContain('union all')
+  })
+
+  it("the row type and the codecs come from the BASE term, and reach the outer query", () => {
+    const compiled = tree()
+      .fromCte('tree')
+      .select(({ tree: t }) => ({ id: t.id, body: t.body }))
+      .compile()
+    // `comments.id` is int8: a CTE that lost its codecs would decode this as the string '1'.
+    expect(buildDecoder(compiled.shape)([['9007199254740993', 'x']])).toStrictEqual([
+      { id: 9007199254740993n, body: 'x' },
+    ])
+  })
+
+  it('the recursive CTE composes with an ordinary one, and RECURSIVE marks the whole clause', () => {
+    const sql = sqlOf(
+      db
+        .with('seed', (d) => d.from(schema.h.posts).select(({ posts: p }) => ({ id: p.id })))
+        .withRecursive(
+          'tree',
+          (d) => d.from(schema.h.comments).select(({ comments: c }) => ({ id: c.id })),
+          (d, self) =>
+            d
+              .from(schema.h.comments)
+              .innerJoin(self, 't', ({ comments: c, t }) => q.eq(c.postId, t.id))
+              .select(({ comments: c }) => ({ id: c.id })),
+        )
+        .fromCte('tree')
+        .select(({ tree: t }) => ({ id: t.id })),
+    )
+    // PostgreSQL takes the keyword once, for the whole list — `emitWith`'s rule, and the reason
+    // a non-recursive sibling does not need its own spelling.
+    expect(sql.startsWith('with recursive "seed" as (')).toBe(true)
+    expect(sql).toContain(', "tree" as (')
+  })
+
+  it('refuses a duplicate name and a callback that does not return a SELECT', () => {
+    expect(() =>
+      db
+        .with('t', (d) => d.from(schema.h.posts).select(({ posts: p }) => ({ id: p.id })))
+        .withRecursive(
+          't',
+          (d) => d.from(schema.h.comments).select(({ comments: c }) => ({ id: c.id })),
+          (d) => d.from(schema.h.comments).select(({ comments: c }) => ({ id: c.id })),
+        ),
+    ).toThrowError(/already declared/)
+    expect(() =>
+      db.withRecursive(
+        'tree',
+        () => ({}) as never,
+        (d) => d.from(schema.h.comments).select(({ comments: c }) => ({ id: c.id })),
+      ),
+    ).toThrowError(/base callback must return a SELECT/)
+  })
+})
+
+describe('§5 — fromRaw (12 B)', () => {
+  it('emits the fragment verbatim, then an alias list built from the shape', () => {
+    const built = db
+      .fromRaw(sql`generate_series(1, ${10})`, { n: int8Codec }, { alias: 'g' })
+      .select(({ g }) => ({ n: g.n }))
+    expect(sqlOf(built)).toBe(
+      ['select "g"."n" as "n"', 'from generate_series(1, $1) as "g"("n")'].join('\n'),
+    )
+    expect(vals(built)).toStrictEqual(['10'])
+  })
+
+  it('{ columnTypes: true } emits the column DEFINITION list, from the codecs sqlName', () => {
+    expect(
+      sqlOf(
+        db
+          .fromRaw(
+            sql`jsonb_to_recordset(${q.val({ a: 1 }, jsonbCodec)})`,
+            { id: int8Codec, title: textCodec },
+            { alias: 'j', columnTypes: true },
+          )
+          .select(({ j }) => ({ id: j.id, title: j.title })),
+      ),
+    ).toBe(
+      [
+        'select "j"."id" as "id", "j"."title" as "title"',
+        'from jsonb_to_recordset($1) as "j"("id" bigint, "title" text)',
+      ].join('\n'),
+    )
+  })
+
+  it('the declared codecs decode the row, so a bigint survives past 2^53', () => {
+    const compiled = db
+      .fromRaw(sql`generate_series(1, 2)`, { n: int8Codec })
+      .select(({ raw }) => ({ n: raw.n }))
+      .compile()
+    expect(buildDecoder(compiled.shape)([['9007199254740993']])).toStrictEqual([
+      { n: 9007199254740993n },
+    ])
+  })
+
+  it('it is an ordinary source: joinable, and the default alias is "raw"', () => {
+    expect(
+      sqlOf(
+        db
+          .fromRaw(sql`generate_series(1, 3)`, { n: int8Codec })
+          .innerJoin(schema.h.posts, 'p', ({ raw, p }) => q.eq(p.id, raw.n))
+          .select(({ p }) => ({ id: p.id })),
+      ),
+    ).toContain('from generate_series(1, 3) as "raw"("n")')
+  })
+
+  it('refuses an empty shape and a non-fragment', () => {
+    expect(() => db.fromRaw(sql`x`, {})).toThrowError(/at least one column/)
+    expect(() => db.fromRaw('generate_series(1,2)' as never, { n: int8Codec })).toThrowError(
+      /takes a `sql` fragment/,
+    )
   })
 })
 

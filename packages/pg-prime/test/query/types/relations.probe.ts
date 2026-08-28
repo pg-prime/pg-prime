@@ -14,8 +14,9 @@
  * `Loaded<usersH, 'posts'>` with no cast and no wrapper.
  */
 import { expectTypeOf } from 'expect-type'
-import type { Executor, RowOf } from '../../../src/query/types.js'
+import type { Executor, RowOf, SchemaExecutor } from '../../../src/query/types.js'
 import { desc, isTrue } from '../../../src/query/types.js'
+import { defineRelations, defineSchema, pgTable, REFS } from '../../../src/schema/index.js'
 import type { Loaded } from '../../../src/schema/index.js'
 import type { UserId, UserPrefs, UsersH } from '../../schema/fixture.js'
 import { schema } from '../../schema/fixture.js'
@@ -152,3 +153,118 @@ db.from(schema.h.users, 'u').select((t) => ({ x: t.u.posts.sum((p) => p.title) }
 
 // @ts-expect-error a column the projection did not select is not on the result
 rows[0]!.posts[0]!.nope
+
+// ─────────────────────────────────────────────────────────────────────────────
+// avg / min / max over a relation (`12` B)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The result type is PostgreSQL's, not the operand's, and it is nullable where `sum` is not:
+ * `sum` coalesces to zero because an empty relation sums to zero, while the average, minimum and
+ * maximum of no rows are NULL and no coalesce can honestly invent one.
+ */
+const relSum = db.from(schema.h.posts, 'p').select((t) => ({
+  total: t.p.author.sum((a) => a.views), // sum(int8)  → numeric → string, never null
+  n: t.p.author.count(),
+}))
+type _RelSum = Assert<Eq<RowOf<typeof relSum>, { total: string; n: bigint }>>
+
+const relAvg = db.from(schema.h.posts, 'p').select((t) => ({
+  bal: t.p.author.avg((a) => a.balance), // avg(numeric) → numeric → string
+  age: t.p.author.avg((a) => a.age), // avg(int4)    → numeric → string
+}))
+type _RelAvg = Assert<Eq<RowOf<typeof relAvg>, { bal: string | null; age: string | null }>>
+
+/** `min`/`max` keep the operand's own type — codec, brand and all. */
+const relMinMax = db.from(schema.h.users, 'u').select((t) => ({
+  newest: t.u.posts.max((p) => p.createdAt),
+  oldest: t.u.posts.min((p) => p.createdAt),
+}))
+type _RelMinMax = Assert<
+  Eq<RowOf<typeof relMinMax>, { newest: Date | null; oldest: Date | null }>
+>
+
+const relBranded = db.from(schema.h.posts, 'p').select((t) => ({ who: t.p.author.max((a) => a.id) }))
+type _RelBranded = Assert<Eq<RowOf<typeof relBranded>, { who: UserId | null }>>
+
+/** The sub-scope is the child's, so an aggregate nested inside a relation composes. */
+const relDeep = db.from(schema.h.users, 'u').select((t) => ({
+  posts: t.u.posts.many((q) => q.select((p) => ({ n: p.comments.max((c) => c.body) }))),
+}))
+type _RelDeep = Assert<Eq<RowOf<typeof relDeep>, { posts: { n: string | null }[] }>>
+
+// @ts-expect-error `avg` is numeric-gated: a text column is not an operand
+db.from(schema.h.users, 'u').select((t) => ({ v: t.u.posts.avg((p) => p.title) }))
+
+// @ts-expect-error the callback must return an operand, not the whole scope
+db.from(schema.h.users, 'u').select((t) => ({ v: t.u.posts.min((p) => p) }))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A declared `where` / `orderBy` is typed, and FK inference needs no `from`/`to`
+// ─────────────────────────────────────────────────────────────────────────────
+
+const orgs = pgTable('orgs', (t) => ({ id: t.bigint().primaryKey(), name: t.text() }))
+const people = pgTable('people', (t) => ({
+  id: t.bigint().primaryKey(),
+  orgId: t.bigint().references(() => orgs[REFS].id),
+  active: t.boolean(),
+  joinedAt: t.timestamptz(),
+}))
+const inferredTables = { orgs, people }
+
+/**
+ * No `from`/`to` and no hand annotation on either callback — `12` B items 3 and 4 in one
+ * declaration. `t` is the **target's** refs, so `t.active` resolves and the operator class gate
+ * applies to it exactly as it would inside a query.
+ */
+const inferred = defineSchema(
+  inferredTables,
+  defineRelations(inferredTables, (r) => ({
+    orgs: {
+      people: r.many.people({
+        where: (t) => isTrue(t.active),
+        orderBy: (t) => [desc(t.joinedAt), t.id],
+      }),
+    },
+    people: { org: r.one.orgs() },
+  })),
+)
+
+declare const inferredDb: SchemaExecutor<typeof inferred>
+
+const viaInferred = inferredDb
+  .from(inferred.h.orgs)
+  .select((t) => ({ id: t.orgs.id, people: t.orgs.people.all() }))
+type _Inferred = Assert<
+  Eq<
+    RowOf<typeof viaInferred>,
+    { id: bigint; people: { id: bigint; orgId: bigint; active: boolean; joinedAt: Date }[] }
+  >
+>
+
+/** The inverse direction is inferred too, and a `one` is not an array. */
+const viaInverse = inferredDb
+  .from(inferred.h.people)
+  .select((t) => ({ org: t.people.org.one((q) => q.select((o) => ({ name: o.name }))) }))
+type _Inverse = Assert<Eq<RowOf<typeof viaInverse>, { org: { name: string } }>>
+
+defineRelations(inferredTables, (r) => ({
+  orgs: {
+    // @ts-expect-error `nope` is not a column of the target table
+    people: r.many.people({ where: (t) => isTrue(t.nope) }),
+  },
+}))
+
+defineRelations(inferredTables, (r) => ({
+  orgs: {
+    // @ts-expect-error the callback must return a boolean expression, not a timestamp column
+    people: r.many.people({ where: (t) => t.joinedAt }),
+  },
+}))
+
+defineRelations(inferredTables, (r) => ({
+  orgs: {
+    // @ts-expect-error a sort direction is not an expression, and `orderBy` is not `where`
+    people: r.many.people({ orderBy: (t) => isTrue(t.nope) }),
+  },
+}))

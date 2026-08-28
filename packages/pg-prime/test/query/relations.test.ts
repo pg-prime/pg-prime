@@ -13,8 +13,17 @@
 
 import { describe, expect, it } from 'vitest'
 import { numericCodec } from '../../src/codec/index.js'
+import { buildDecoder } from '../../src/compile/decode.js'
 import { SchemaError } from '../../src/sql/errors.js'
-import { defineRelations, defineSchema, pgTable, REFS } from '../../src/schema/index.js'
+import {
+  defineRelations,
+  defineSchema,
+  foreignKey,
+  pgTable,
+  REFS,
+  resolveRelations,
+} from '../../src/schema/index.js'
+import type { RefLike } from '../../src/schema/index.js'
 import { compileOnly } from '../../src/query/run.js'
 import { add, desc, eq, fn, gt, isNull, isTrue, nest, over, sql } from '../../src/query/types.js'
 import type { RefsAtAlias } from '../../src/query/ref.js'
@@ -436,6 +445,267 @@ describe('child aliases', () => {
       .compile()
     expect(c.sql).toContain('from "public"."users" as "users2"')
     expect(c.sql).toContain('where "users2"."id" = "users"."author_id"')
+  })
+})
+
+describe('avg / min / max over a relation (12 B)', () => {
+  it('avg emits the aggregate uncoalesced, hoisted like sum, with numeric as the result codec', () => {
+    const c = db
+      .from(schema.h.users, 'users')
+      .select((t) => ({ avgAmount: t.users.posts.avg((p) => p.amount) }))
+      .compile()
+    expect(c.sql).toBe(
+      [
+        'select "_r0"."v" as "avgAmount"',
+        'from "public"."users" as "users"',
+        'left join lateral (',
+        '  select avg("posts"."amount") as "v"',
+        '  from "public"."posts" as "posts"',
+        '  where "posts"."author_id" = "users"."id"',
+        ') as "_r0" on true',
+      ].join('\n'),
+    )
+    // `avg(numeric)` is `numeric`, which decodes to a precision-exact string — never a float.
+    expect(buildDecoder(c.shape)([['1.005']])).toStrictEqual([{ avgAmount: '1.005' }])
+    expect(buildDecoder(c.shape)([[null]])).toStrictEqual([{ avgAmount: null }])
+  })
+
+  it('R4 — sum IS coalesced and avg/min/max are NOT: zero is a sum, never an average', () => {
+    const sqlFor = (f: (t: never) => unknown): string =>
+      (db.from(schema.h.users, 'users').select(f as never).compile() as { sql: string }).sql
+    expect(
+      sqlFor(((t: { users: { posts: { sum: (f: unknown) => unknown } } }) => ({
+        v: t.users.posts.sum((p: { amount: unknown }) => p.amount),
+      })) as never),
+    ).toContain('coalesce(sum("posts"."amount"), 0)')
+    for (const name of ['avg', 'min', 'max'] as const) {
+      const built = sqlFor(((t: Record<string, never>) => ({
+        v: (t['users'] as never as Record<string, Record<string, (f: unknown) => unknown>>)[
+          'posts'
+        ]?.[name]?.((p: { amount: unknown }) => p.amount),
+      })) as never)
+      expect(built).toContain(`${name}("posts"."amount") as "v"`)
+      expect(built).not.toContain('coalesce')
+    }
+  })
+
+  it('min / max keep the operand codec, so a bigint stays exact past 2^53', () => {
+    const c = db
+      .from(schema.h.users, 'users')
+      .select((t) => ({ newest: t.users.posts.max((p) => p.id), oldest: t.users.posts.min((p) => p.id) }))
+      .compile()
+    expect(c.sql).toContain('max("posts"."id") as "v"')
+    expect(c.sql).toContain('min("posts"."id") as "v"')
+    expect(buildDecoder(c.shape)([['9007199254740993', '1']])).toStrictEqual([
+      { newest: 9007199254740993n, oldest: 1n },
+    ])
+  })
+
+  it('they share a lateral with an identical sibling and not with a different one', () => {
+    const shared = db
+      .from(schema.h.users, 'users')
+      .select((t) => ({
+        a: t.users.posts.avg((p) => p.amount),
+        rank: over(fn.rank(), (w) => w.orderBy(desc(t.users.posts.avg((p) => p.amount)))),
+      }))
+      .compile()
+    expect(shared.sql.match(/left join lateral/g)).toHaveLength(1)
+    expect(shared.sql.split('\n')[0]).toBe(
+      'select "_r0"."v" as "a", rank() over (order by "_r0"."v" desc) as "rank"',
+    )
+    const distinctAggs = db
+      .from(schema.h.users, 'users')
+      .select((t) => ({
+        a: t.users.posts.avg((p) => p.amount),
+        b: t.users.posts.min((p) => p.amount),
+        c: t.users.posts.max((p) => p.amount),
+      }))
+      .compile()
+    expect(distinctAggs.sql.match(/left join lateral/g)).toHaveLength(3)
+  })
+
+  it('the declared `where` reaches them, and they work in a RETURNING list', () => {
+    const c = live
+      .update(fx.schema.h.posts)
+      .set(() => ({ title: 'x' }))
+      .where((t) => eq(t.posts.id, 1n))
+      .returning((t) => ({ newest: t.posts.comments.max((x) => x.id) }))
+      .compile()
+    // No FROM clause to hang a lateral on, so it stays the correlated subquery it always was.
+    expect(c.sql).toContain('returning (\n  select max("comments"."id") as "v"')
+    expect(c.sql).not.toContain('lateral')
+  })
+
+  it('an operand that is not an expression is refused, naming the accessor and the relation', () => {
+    expect(() =>
+      db
+        .from(schema.h.users, 'users')
+        .select((t) => ({ v: t.users.posts.avg(() => 1 as never) }))
+        .compile(),
+    ).toThrowError(/avg\(\) on relation "users\.posts"/)
+  })
+})
+
+describe('FK inference (12 decision 18)', () => {
+  const orgs = pgTable('orgs', (t) => ({ id: t.bigint().primaryKey() }))
+  const people = pgTable('people', (t) => ({
+    id: t.bigint().primaryKey(),
+    orgId: t.bigint().references(() => orgs[REFS].id),
+  }))
+
+  it('a `one` follows the child own foreign key to its parent', () => {
+    const tables = { orgs, people }
+    const s = defineSchema(
+      tables,
+      defineRelations(tables, (r) => ({ people: { org: r.one.orgs() } })),
+    )
+    expect(resolveRelations(s.tables, s.rels)['people']?.['org']).toMatchObject({
+      from: ['orgId'],
+      to: ['id'],
+      kind: 'one',
+    })
+    expect(
+      compileOnly(s)
+        .from(s.h.people)
+        .select((t) => ({ o: t.people.org.one((x) => x.select((y) => ({ id: y.id }))) }))
+        .compile().sql,
+    ).toContain('where "orgs"."id" = "people"."org_id"')
+  })
+
+  it('a `many` follows the inverse, and the inferred pair is the same pair', () => {
+    const tables = { orgs, people }
+    const s = defineSchema(
+      tables,
+      defineRelations(tables, (r) => ({ orgs: { people: r.many.people() } })),
+    )
+    expect(resolveRelations(s.tables, s.rels)['orgs']?.['people']).toMatchObject({
+      from: ['id'],
+      to: ['orgId'],
+      kind: 'many',
+    })
+  })
+
+  it('an explicit from/to always wins, even when a foreign key exists', () => {
+    const tables = { orgs, people }
+    const s = defineSchema(
+      tables,
+      defineRelations(tables, (r) => ({
+        people: { org: r.one.orgs({ from: people[REFS].id, to: orgs[REFS].id }) },
+      })),
+    )
+    expect(resolveRelations(s.tables, s.rels)['people']?.['org']).toMatchObject({ from: ['id'] })
+  })
+
+  it('two foreign keys to the same table are refused, with both candidates named', () => {
+    const twoFks = pgTable('memberships', (t) => ({
+      id: t.bigint().primaryKey(),
+      orgId: t.bigint().references(() => orgs[REFS].id),
+      parentOrgId: t.bigint().references(() => orgs[REFS].id),
+    }))
+    const tables = { orgs, memberships: twoFks }
+    const build = (): unknown =>
+      defineSchema(
+        tables,
+        defineRelations(tables, (r) => ({ memberships: { org: r.one.orgs() } })),
+      )
+    expect(build).toThrowError(SchemaError)
+    expect(build).toThrowError(/could be inferred from 2 foreign keys/)
+    expect(build).toThrowError(/memberships\.orgId -> orgs\.id, memberships\.parentOrgId -> orgs\.id/)
+  })
+
+  it('a composite `foreignKey(...)` extra is inferred, and pairs positionally', () => {
+    const parent = pgTable('pairs', (t) => ({ a: t.bigint(), b: t.text() }))
+    const child = pgTable(
+      'kids',
+      (t) => ({ id: t.bigint().primaryKey(), pa: t.bigint(), pb: t.text() }),
+      (t) => [foreignKey({ columns: [t.pa, t.pb], references: () => [parent[REFS].a, parent[REFS].b] })],
+    )
+    const tables = { pairs: parent, kids: child }
+    const s = defineSchema(
+      tables,
+      defineRelations(tables, (r) => ({ kids: { parent: r.one.pairs() } })),
+    )
+    expect(resolveRelations(s.tables, s.rels)['kids']?.['parent']).toMatchObject({
+      from: ['pa', 'pb'],
+      to: ['a', 'b'],
+    })
+  })
+
+  it('a column-level and an equivalent table-level key are ONE candidate, not an ambiguity', () => {
+    const child = pgTable(
+      'dupes',
+      (t) => ({ id: t.bigint().primaryKey(), orgId: t.bigint().references(() => orgs[REFS].id) }),
+      (t) => [foreignKey({ columns: [t.orgId], references: () => [orgs[REFS].id] })],
+    )
+    const tables = { orgs, dupes: child }
+    expect(() =>
+      defineSchema(
+        tables,
+        defineRelations(tables, (r) => ({ dupes: { org: r.one.orgs() } })),
+      ),
+    ).not.toThrow()
+  })
+
+  it('a self-referencing key resolves in both directions', () => {
+    const nodes = pgTable('nodes', (t) => ({
+      id: t.bigint().primaryKey(),
+      parentId: t.bigint().nullable().references((): RefLike => nodes[REFS].id),
+    }))
+    const tables = { nodes }
+    const s = defineSchema(
+      tables,
+      defineRelations(tables, (r) => ({
+        nodes: { parent: r.maybeOne.nodes(), children: r.many.nodes() },
+      })),
+    )
+    const rels = resolveRelations(s.tables, s.rels)['nodes']
+    expect(rels?.['parent']).toMatchObject({ from: ['parentId'], to: ['id'] })
+    expect(rels?.['children']).toMatchObject({ from: ['id'], to: ['parentId'] })
+  })
+
+  it('the m2m `through` form infers both hops from the junction table alone', () => {
+    const left = pgTable('lefts', (t) => ({ id: t.bigint().primaryKey() }))
+    const right = pgTable('rights', (t) => ({ id: t.bigint().primaryKey() }))
+    const junction = pgTable('link', (t) => ({
+      leftId: t.bigint().references(() => left[REFS].id),
+      rightId: t.bigint().references(() => right[REFS].id),
+    }))
+    const tables = { lefts: left, rights: right, link: junction }
+    const s = defineSchema(
+      tables,
+      defineRelations(tables, (r) => ({ lefts: { rights: r.many.rights({ through: junction }) } })),
+    )
+    expect(resolveRelations(s.tables, s.rels)['lefts']?.['rights']).toMatchObject({
+      from: ['id'],
+      to: ['id'],
+      through: { from: ['leftId'], to: ['rightId'] },
+    })
+    expect(
+      compileOnly(s)
+        .from(s.h.lefts)
+        .select((t) => ({ rs: t.lefts.rights.all() }))
+        .compile().sql,
+    ).toContain('inner join "public"."link" as "link" on "link"."right_id" = "rights"."id"')
+  })
+
+  it('a `through` with only one hop declared is refused', () => {
+    const left = pgTable('lefts', (t) => ({ id: t.bigint().primaryKey() }))
+    const right = pgTable('rights', (t) => ({ id: t.bigint().primaryKey() }))
+    const junction = pgTable('link', (t) => ({
+      leftId: t.bigint().references(() => left[REFS].id),
+      rightId: t.bigint().references(() => right[REFS].id),
+    }))
+    const tables = { lefts: left, rights: right, link: junction }
+    expect(() =>
+      defineSchema(
+        tables,
+        defineRelations(tables, (r) => ({
+          lefts: {
+            rights: r.many.rights({ through: { table: junction, from: junction[REFS].leftId } }),
+          },
+        })),
+      ),
+    ).toThrowError(/declares `through.from` without `through.to`/)
   })
 })
 

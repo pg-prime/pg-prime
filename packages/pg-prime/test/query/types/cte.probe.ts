@@ -12,7 +12,8 @@
  */
 import { expectTypeOf } from 'expect-type'
 import type { Executor, RowOf } from '../../../src/query/types.js'
-import { eq, fn, gt, ilike, nest } from '../../../src/query/types.js'
+import { eq, fn, gt, ilike, nest, sql } from '../../../src/query/types.js'
+import { int8Codec, numericCodec, textCodec } from '../../../src/codec/index.js'
 import type { UserId } from '../../schema/fixture.js'
 import { schema } from '../../schema/fixture.js'
 import type { Assert, Eq } from './kit.js'
@@ -132,3 +133,89 @@ type _SumOnCte = Assert<Eq<RowOf<typeof sumCte>, { v: string | number | bigint |
 
 const sumTable = db.from(schema.h.users, 'u').select((t) => ({ v: fn.sum(t.u.balance) }))
 type _SumOnTable = Assert<Eq<RowOf<typeof sumTable>, { v: string | null }>>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// withRecursive — the row type is fixed by the BASE term (`12` decision 17)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * This is deliberately **not** the self-referential row typing `03` §5 punts to v2. Nothing here
+ * infers a fixed point: `base` decides the row, `step` is handed the CTE's handle already typed by
+ * it, and a `step` whose projection disagrees is an error at the callback's return — which is
+ * where the reader wrote the mistake, not three clauses later.
+ */
+const tree = db
+  .withRecursive(
+    'tree',
+    (d) =>
+      d
+        .from(schema.h.comments, 'c')
+        .select((t) => ({ id: t.c.id, body: t.c.body })),
+    (d, self) =>
+      d
+        .from(schema.h.comments, 'c')
+        .innerJoin(self, 't', (t) => eq(t.c.postId, t.t.id))
+        .select((t) => ({ id: t.c.id, body: t.c.body })),
+  )
+  .fromCte('tree')
+  .select((t) => ({ id: t.tree.id, body: t.tree.body }))
+
+type _Tree = Assert<Eq<RowOf<typeof tree>, { id: string; body: string }>>
+
+/** The handle `step` receives carries the base's columns, and only those. */
+db.withRecursive(
+  'tree',
+  (d) => d.from(schema.h.comments, 'c').select((t) => ({ id: t.c.id })),
+  (d, self) =>
+    d
+      .from(schema.h.comments, 'c')
+      // @ts-expect-error the base projected `id` only, so the CTE has no `body`
+      .innerJoin(self, 't', (t) => eq(t.c.body, t.t.body))
+      .select((t) => ({ id: t.c.id })),
+)
+
+/** A step whose row shape disagrees with the base is refused. */
+db.withRecursive(
+  'tree',
+  (d) => d.from(schema.h.comments, 'c').select((t) => ({ id: t.c.id })),
+  // @ts-expect-error `{ other: string }` is not the base's `{ id: string }`
+  (d) => d.from(schema.h.comments, 'c').select((t) => ({ other: t.c.body })),
+)
+
+/** The declared CTE is an ordinary source afterwards: joinable, and `.with()` chains onto it. */
+const chained = db
+  .withRecursive(
+    'tree',
+    (d) => d.from(schema.h.comments, 'c').select((t) => ({ id: t.c.id })),
+    (d, self) =>
+      d
+        .from(schema.h.comments, 'c')
+        .innerJoin(self, 't', (t) => eq(t.c.postId, t.t.id))
+        .select((t) => ({ id: t.c.id })),
+  )
+  .with('extra', (d) => d.from(schema.h.posts, 'p').select((t) => ({ pid: t.p.id })))
+  .fromCte('tree')
+  .select((t) => ({ id: t.tree.id }))
+type _Chained = Assert<Eq<RowOf<typeof chained>, { id: string }>>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// fromRaw — an explicit column→codec map, fully decoded (`03` §5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const raw = db
+  .fromRaw(sql`generate_series(1, 10)`, { n: int8Codec }, { alias: 'g' })
+  .select((t) => ({ n: t.g.n }))
+type _Raw = Assert<Eq<RowOf<typeof raw>, { n: bigint }>>
+
+/** Each column decodes through its own codec, so a `numeric` is a precision-exact string. */
+const rawTwo = db
+  .fromRaw(sql`x`, { id: int8Codec, amount: numericCodec, name: textCodec })
+  .select((t) => ({ id: t.raw.id, amount: t.raw.amount, name: t.raw.name }))
+type _RawTwo = Assert<Eq<RowOf<typeof rawTwo>, { id: bigint; amount: string; name: string }>>
+
+/** The default alias is `raw`, and the shape's keys are the only columns there are. */
+// @ts-expect-error `nope` is not in the declared shape
+db.fromRaw(sql`x`, { n: int8Codec }).select((t) => ({ v: t.raw.nope }))
+
+// @ts-expect-error the alias in `opts` is the scope key; `g` was not declared
+db.fromRaw(sql`x`, { n: int8Codec }, { alias: 'r' }).select((t) => ({ v: t.g.n }))
