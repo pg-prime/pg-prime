@@ -567,6 +567,26 @@ all in K2a's code against K3's new facts, all fixed in the integration commit th
 Also: K2a's witness test (`roundtrip.test.ts`) went red as designed — the five `COMMENT ON` statements
 it allowed to be missing now round-trip — and its assertion is now `missing === []`.
 
+### Round-1 integration — K1 over K2a + K3 · 2026-08-28
+
+K1 was cherry-picked last (`25a9737`). Three seams, none of them a bug in K1's own scope:
+
+1. **`RepeatablesPass` / `RepeatableFile` existed twice** — K1 declared the runner's contract
+   (`plan(dir, hashes) → RepeatableFile[]`) as a seam for K3 to fill; K3 shipped its own richer pair
+   (`plan() → { toApply, unchanged, orphaned }`, `apply()`). Unified on K3's: the runner now imports
+   them from `src/repeatables/`, reads `plan.toApply` / `plan.unchanged`, and `status` reports
+   `toApply` as the repeatable drift. `NO_REPEATABLES` is still the CLI's binding —
+   `createRepeatablesPass(config.repeatables)` is K2b's one-line wire plus its runner tests.
+2. **`ShadowStrategy` existed twice** — K1's config carried a `string` placeholder, K2a the real
+   union. The config now imports K2a's, so `pg-prime.config.ts` type-checks `shadow: { url }`.
+3. **`freshDatabaseIR` (baseline) had to learn K3's two new facts.** K1 derived "what a fresh
+   database already has" from `pg_namespace.oid < 16384`; with `comment` and `extension` as fact
+   kinds, an empty database now also yields `'standard public schema'` and `initdb`'s extensions,
+   so a baseline's `from` fingerprint stopped matching an empty database's live fingerprint and its
+   first statement became `COMMENT ON SCHEMA public …`. The same rule extended: comments whose
+   target is a built-in schema, and extensions with `pg_extension.oid < 16384`, are part of the
+   fresh IR.
+
 ## 4. Round 2 (after K1/K2a/K3 merge)
 
 **K2b** wires `generate` to `loadDesired` + `provisionShadow` + repeatables + rename annotations, adds

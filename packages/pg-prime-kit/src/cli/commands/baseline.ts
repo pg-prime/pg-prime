@@ -16,7 +16,7 @@ import { buildStatements } from "../../diff/ddl.js";
 import { diffIR } from "../../diff/diff.js";
 import { orderStatements } from "../../diff/order.js";
 import { SchemaIR } from "../../ir/fact.js";
-import { idName } from "../../ir/stable-id.js";
+import { encodeId, idName } from "../../ir/stable-id.js";
 import { ensureHistory } from "../../history/schema.js";
 import { beginRow, markApplied, readMigrationRows } from "../../history/store.js";
 import { writePlan, WriteRefusedError } from "../../plan/emit.js";
@@ -223,10 +223,26 @@ async function freshDatabaseIR(
     [[...schemas]],
   );
   const builtIn = new Set(r.rows.map((row) => String(row["nspname"])));
-  return SchemaIR.build(
-    current.factsOfKind("schema").filter((f) => builtIn.has(idName(f.id))),
-    [],
+  // The same rule for the two other things `initdb` leaves behind that the extractor can see:
+  // the comment it puts on `public` ('standard public schema') and any extension it installed
+  // into a managed schema. Without these a fresh database's own furniture becomes the first
+  // statements of every baseline, and its replay-from-empty fingerprint never matches.
+  const ext = await client.query(
+    `SELECT extname FROM pg_extension WHERE oid < ${String(FIRST_NORMAL_OID)}`,
   );
+  const builtInExtensions = new Set(ext.rows.map((row) => String(row["extname"])));
+  const schemaFacts = current.factsOfKind("schema").filter((f) => builtIn.has(idName(f.id)));
+  const schemaIds = new Set(schemaFacts.map((f) => encodeId(f.id)));
+  const commentFacts = current
+    .factsOfKind("comment")
+    .filter((f) => f.id.kind === "comment" && schemaIds.has(f.id.target));
+  const extensionFacts = current
+    .factsOfKind("extension")
+    .filter((f) => builtInExtensions.has(idName(f.id)));
+  const facts = [...schemaFacts, ...commentFacts, ...extensionFacts];
+  const kept = new Set(facts.map((f) => encodeId(f.id)));
+  const edges = current.edges().filter((e) => kept.has(encodeId(e.from)) && kept.has(encodeId(e.to)));
+  return SchemaIR.build(facts, edges);
 }
 
 function refusal(config: ResolvedConfig, started: number, message: string): CommandOutput {

@@ -19,7 +19,13 @@ const pkgDir = resolve(here, "..");
 const repoRoot = resolve(pkgDir, "../..");
 
 export default function setup(): void {
-  execFileSync(process.execPath, [join(repoRoot, "tools", "build-package.mjs"), pkgDir, "--quiet"], {
-    stdio: ["ignore", "inherit", "inherit"],
-  });
+  // `pg-prime` first: the kit's publish emit (tsconfig.build.json, `paths: {}`) resolves the peer
+  // dependency through its export map to packages/pg-prime/dist, which a fresh checkout — and
+  // CI's `pg` / nightly `pg-matrix` jobs, which run `pnpm test:pg` with no build in front of it —
+  // does not have. Building the kit alone then fails with TS2307 on `src/schema/types.ts`.
+  for (const dir of [resolve(pkgDir, "../pg-prime"), pkgDir]) {
+    execFileSync(process.execPath, [join(repoRoot, "tools", "build-package.mjs"), dir, "--quiet"], {
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+  }
 }

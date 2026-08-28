@@ -79,12 +79,10 @@ export interface LintResult {
 export type LintFormat = "text" | "json";
 
 /**
- * `-- pg-prime:` is the v1 namespace (design/11 §1.1). `renderSql` in `plan/plan.ts`
- * still writes the legacy `-- pg-orm:` prefix — the rename is another workstream's file
- * this round — so both are accepted. That is not only a transition kindness: a
- * hand-written migration committed before the rename keeps its suppressions, and a
- * linter that silently stopped recognising half the corpus's markers would report every
- * per-statement `nolint` as file-wide.
+ * `-- pg-prime:` is the v1 namespace (design/11 §1.1) and is what `renderSql` writes since K1
+ * landed. The legacy `-- pg-orm:` prefix is still accepted: a hand-written migration committed
+ * before the rename keeps its suppressions, and a linter that silently stopped recognising half
+ * a corpus's markers would report every per-statement `nolint` as file-wide.
  */
 const DIRECTIVE_LINE = /^--\s*(?:pg-prime|pg-orm):\s*(.*)$/;
 
