@@ -27,12 +27,15 @@
  * The *text* of each branded error is a separate artifact with a separate runner:
  * `type-errors.test.ts` + `tools/type-errors/`.
  */
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+
+const run = promisify(execFile)
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..', '..', '..')
@@ -43,14 +46,28 @@ const COMPILERS = {
   '7.0.2': join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc'),
 }
 
-function tsc(bin: string, args: readonly string[]): string[] {
+/**
+ * `execFile`, not `execFileSync`, and the tests are `concurrent`.
+ *
+ * This file is the tier-0 CRITICAL PATH and it was invisible as one. design/12 §1 decision 11
+ * caps `pnpm test` at 5 s and the merged round-A tree measured 5.3-5.6; the integration record
+ * attributed that to transform and import across 48 files. Measured per file (design/12 §4 P
+ * item 5), it is not: the 46 files that are not these two run in **3.18 s** with 972 of the 980
+ * tests in them, and these two run in **5.49 s** with eight. Each spawns `tsc` four times -- two
+ * compilers x (`--noEmit`, declaration emit) -- and `execFileSync` blocks the worker thread, so
+ * the four ran end to end.
+ *
+ * They are four independent child processes writing to four different places, so they can
+ * overlap. Nothing else about the test changes: the same four invocations, the same assertions.
+ */
+async function tsc(bin: string, args: readonly string[]): Promise<string[]> {
   let out: string
   try {
-    out = execFileSync(process.execPath, [bin, '-p', PROJECT, '--pretty', 'false', ...args], {
+    const r = await run(process.execPath, [bin, '-p', PROJECT, '--pretty', 'false', ...args], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'pipe'],
     })
+    out = r.stdout
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string }
     out = `${err.stdout ?? ''}${err.stderr ?? ''}`
@@ -59,16 +76,16 @@ function tsc(bin: string, args: readonly string[]): string[] {
 }
 
 describe.each(Object.entries(COMPILERS))('TypeScript %s', (version, bin) => {
-  it('typechecks the query sources and the type probes cleanly', () => {
+  it.concurrent('typechecks the query sources and the type probes cleanly', async () => {
     // An unused `@ts-expect-error` is itself TS2578, so a *lost* rejection — an operator that
     // stops being gated by type class, a left join that stops nulling its alias — fails here.
-    expect(tsc(bin, ['--noEmit'])).toEqual([])
+    expect(await tsc(bin, ['--noEmit'])).toEqual([])
   }, 180_000)
 
-  it('emits declarations without TS2527 (no inaccessible unique symbol)', () => {
+  it.concurrent('emits declarations without TS2527 (no inaccessible unique symbol)', async () => {
     const out = mkdtempSync(join(tmpdir(), `pg-prime-query-dts-${version}-`))
     try {
-      const errors = tsc(bin, [
+      const errors = await tsc(bin, [
         '--noEmit',
         'false',
         '--emitDeclarationOnly',
