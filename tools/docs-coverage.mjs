@@ -50,7 +50,12 @@ const pages = readAllPages()
 
 // ── 1. API coverage ──────────────────────────────────────────────────────────
 const entries = new Map()
-for (const file of ['pg-prime.json', 'pg-prime-kit.json', 'pg-prime-create.json', 'pg-prime-testing.json']) {
+for (const file of [
+  'pg-prime.json',
+  'pg-prime-kit.json',
+  'pg-prime-create.json',
+  'pg-prime-testing.json',
+]) {
   const golden = JSON.parse(readFileSync(join(ROOT, 'tools', 'api-snapshot', file), 'utf8'))
   for (const [subpath, entry] of Object.entries(golden.entries)) {
     entries.set(`${golden.package}#${subpath}`, {
@@ -313,20 +318,9 @@ console.log('docs-coverage: OK')
 // conflict, and a `const` at the end of a module is in its temporal dead zone when the checks
 // above run.
 function checkNoRunReasons(allPages, sink, noteSink) {
-  /**
-   * The pages design/13 §3 hands to another branch, which E must not edit.
-   *
-   * Every entry is a *claim*: that page still has an unexplained `no-run` today. When the owning
-   * branch lands and the claim stops being true, this check fails and says to delete the line —
-   * so the waiver cannot outlive the integration it exists for.
-   */
-  const PENDING_R22 = new Map([
-    ['guides/testing.mdx', 'T rewrites this page around @pg-prime/testing (design/13 §3 T)'],
-  ])
   /** A reason has to be a sentence; `no-run="x"` is not one. */
   const MIN_REASON = 12
 
-  const waived = new Map()
   let explained = 0
   let unexplained = 0
 
@@ -349,28 +343,12 @@ function checkNoRunReasons(allPages, sink, noteSink) {
         continue
       }
       unexplained++
-      if (PENDING_R22.has(page.page)) {
-        waived.set(page.page, (waived.get(page.page) ?? 0) + 1)
-        continue
-      }
       sink.push(
         `${where}: no-run with no reason (R22). Write it as the block's first line — ` +
           '`// no-run: <why>` — or as `no-run="<why>"` on the fence when a comment would be ' +
           'wrong for the reader.',
       )
     }
-  }
-
-  for (const [page, owner] of PENDING_R22) {
-    const n = waived.get(page)
-    if (n === undefined) {
-      sink.push(
-        `docs-coverage: ${page} has no unexplained no-run block left, so its PENDING_R22 waiver ` +
-          'in tools/docs-coverage.mjs is stale — delete that line (design/13 §3, R22).',
-      )
-      continue
-    }
-    noteSink.push(`R22: ${n} no-run block(s) on ${page} waived — ${owner}`)
   }
 
   noteSink.push(
