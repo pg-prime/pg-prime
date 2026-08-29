@@ -1087,8 +1087,8 @@ With the default reverted to `meta.keys` the first of those fails with exactly E
 The expression column is **not** in the pg-prime schema, and that is the honest modelling: the DSL
 has no `.generatedAlwaysAs()` (design/05 §2.3's row is not built; the kit's `pull` emits a note
 instead), so today it is simply undeclared — and COPY refuses a generated expression column *by
-name* (`428C9`), so a default list built from the database rather than from the schema would break
-that table twice over.
+name* (`42P10`, *"Generated columns cannot be used in COPY"*, measured on PG 17.11), so a default
+list built from the database rather than from the schema would break that table twice over.
 
 **Docs, reverted to the fixed behaviour.** `guides/copy.mdx`'s first example drops the explicit
 `columns` and the comment that explained the workaround, and the `CopyOptions` table row states the

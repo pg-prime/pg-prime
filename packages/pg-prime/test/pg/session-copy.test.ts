@@ -49,8 +49,8 @@ const events = pgTable(
  * all (`design/05` §2.3's row is not built; the kit's `pull` emits a note instead) — so it is
  * simply absent from the schema here, which is how a project models one today, and the default
  * list therefore cannot name it either. COPY *refuses* a generated expression column by name
- * (`428C9`), so a default list built from the database rather than from the schema would break
- * this table twice over.
+ * (`42P10`, measured), so a default list built from the database rather than from the schema would
+ * break this table twice over.
  */
 const ledger = pgTable(
   'ledger',
@@ -223,7 +223,7 @@ describe("copyFrom's default columns are the ones an insert may name (07 §6.6)"
 
       // The server supplied both generated columns, which is the proof neither was in the list:
       // `\N` into `id` is the `23502` this fix exists to remove, and naming `doubled` at all is a
-      // `428C9`. Read with raw SQL, because `doubled` is not in the schema.
+      // `42P10`. Read with raw SQL, because `doubled` is not in the schema.
       const rows = await db.sql`
         select id::int as id, label, amount::text as amount, doubled::text as doubled
         from pgprime_pg_copy.ledger order by id
