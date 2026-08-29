@@ -36,17 +36,18 @@ import {
   cast,
   funcFrom,
   param,
+  setItem,
   table as tableFrom,
   update as updateNode,
   valuesFrom,
 } from '../compile/nodes.js'
 import { BuilderError } from '../sql/errors.js'
 import type { BuilderCtx, UpdateState } from './builder-state.js'
-import type { ExplainOptions, ExplainResult } from './executor.js'
+import type { ExplainOptions, ExplainResult, StatementMode } from './executor.js'
 import type { PrepareOptions, PreparedQueryImpl } from './prepared.js'
 import { prepareFrom } from './prepared.js'
 import type { SqlSnapshot } from './terminals.js'
-import { explainWith, runnerOf, takeFirst, toSQLOf } from './terminals.js'
+import { explainWith, runnerOf, takeFirst, toSQLOf, withRunOption } from './terminals.js'
 import { setItemsOf } from './insert.js'
 import { metaOf } from './meta.js'
 import type { TableCodecMeta } from './meta.js'
@@ -219,7 +220,7 @@ export class UpdateBuilder {
       compact({
         with: this.s.ctes.length > 0 ? this.s.ctes : undefined,
         target: this.s.target,
-        set: this.s.set,
+        set: this.#withOnUpdate(),
         from: this.s.from.length > 0 ? this.s.from : undefined,
         where: this.s.where,
         returning: this.s.returning,
@@ -228,13 +229,59 @@ export class UpdateBuilder {
     return this.#ast
   }
 
+  /**
+   * `05` §6.2's `.$onUpdate(fn)`, applied — here rather than in `.set()`, for two reasons.
+   *
+   * `.set()` merges, so a column filled at the first call and set explicitly at the second would
+   * be assigned twice and PostgreSQL rejects that (42701) — the very error `.set()` raises by hand
+   * one screen up. And `toAst()` memoises on the instance, so the factory runs **once** per
+   * builder however many times the query is compiled, inspected or executed. Appended after the
+   * caller's assignments, which is the order two `.set()` calls already produce.
+   *
+   * Deliberately **not** applied to `onConflict().doUpdate()`: that list is the upsert's conflict
+   * action — the columns a caller chose to overwrite, usually a subset — and adding one to it
+   * changes what an upsert writes. `$onUpdate` means `UPDATE`.
+   */
+  #withOnUpdate(): readonly SetItem[] {
+    const fns = this.#meta.clientOnUpdates
+    if (fns === undefined) return this.s.set
+    const meta = this.#meta
+    const already = new Set(this.s.set.map((i) => i.column.name))
+    const extra: SetItem[] = []
+    for (const key of Object.keys(fns)) {
+      const column = meta.byKey[key] as ColumnMeta
+      if (already.has(column.name)) continue
+      extra.push(setItem(column, param((fns[key] as () => unknown)(), column.codec)))
+    }
+    return extra.length === 0 ? this.s.set : [...this.s.set, ...extra]
+  }
+
   compile(): Compiled<unknown> {
     this.#compiled ??= compileAst(this.toAst())
     return this.#compiled
   }
 
+  // ── per-statement options (07 §6.1, §6.2, §1.5, §2.3) ─────────────────────
+
+  /** See `SelectBuilder.signal` — the same four setters over the same `RunOptions` bag. */
+  signal(signal: AbortSignal): UpdateBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { signal }) })
+  }
+
+  timeout(ms: number): UpdateBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { timeoutMs: ms }) })
+  }
+
+  outsideTransaction(): UpdateBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { outsideTransaction: true }) })
+  }
+
+  withExecMode(mode: StatementMode): UpdateBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { statement: mode }) })
+  }
+
   async execute(): Promise<unknown[]> {
-    return runnerOf(this.s.ctx).run(this.compile())
+    return runnerOf(this.s.ctx).run(this.compile(), this.s.run)
   }
 
   /** `rows[0]` of the RETURNING list. See `terminals.ts` for why this is not `maxRows: 1` — on a
@@ -244,12 +291,12 @@ export class UpdateBuilder {
   }
 
   prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
-    return prepareFrom(this.s.ctx, this.compile(), name, opts)
+    return prepareFrom(this.s.ctx, this.compile(), name, opts, this.s.run)
   }
 
   /** `analyze: true` here is wrapped and rolled back unless you say `rollback: false` (07 §7.5). */
   explain(opts?: ExplainOptions): Promise<ExplainResult> {
-    return explainWith(this.s.ctx, this.compile(), opts)
+    return explainWith(this.s.ctx, this.compile(), opts, this.s.run)
   }
 
   toSQL(): SqlSnapshot {
@@ -332,6 +379,7 @@ export function makeUpdate(
     sources,
     scope: rebuildScope(sources, ctx),
     allRows: false,
+    run: undefined,
   })
 }
 

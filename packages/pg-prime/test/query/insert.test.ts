@@ -16,6 +16,7 @@ import { textCodec } from '../../src/codec/index.js'
 import { BuilderError, TooManyParametersError } from '../../src/sql/errors.js'
 import { compileOnly, pgPrime } from '../../src/query/run.js'
 import * as q from '../../src/query/types.js'
+import { defineSchema, pgTable } from '../../src/schema/index.js'
 import { mockDriver } from './_mock-driver.js'
 import { schema } from './_schema.js'
 
@@ -339,5 +340,97 @@ describe('§2.7 — insert … select puts each value in the column the projecti
         .insertInto(schema.h.users)
         .fromSelect((d) => d.from(schema.h.users, 'src').select(({ src }) => ({ nope: src.id }))),
     ).toThrowError(BuilderError)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `.$default()` — design/05 §6.2, and design/12 §4 D finding a
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A table of its own rather than a column on `_schema.ts`'s `users`.
+ *
+ * `_schema.ts` is the twin of `test/sql/_helpers.ts` and `ast-equivalence.test.ts` compares the
+ * two ASTs `toStrictEqual`; a client-side default there would put a column into every insert the
+ * hand-built side does not have, and the oracle would be "the builder produces some AST".
+ */
+const defaulted = pgTable('defaulted', (t) => ({
+  id: t.integer().primaryKey(),
+  slug: t.text().$default(() => `s${(seq += 1)}`),
+  note: t.text().nullable(),
+}))
+let seq = 0
+const dSchema = defineSchema({ defaulted })
+const dDb = compileOnly(dSchema)
+
+describe('`.$default()` is applied on insert (05 §6.2; design/12 §4 D finding a)', () => {
+  it('fills a column the caller omitted, as a bind and not as SQL', () => {
+    // The bug: the column was recorded on the schema and read by nobody, so `Insertable` marked it
+    // optional and the statement then omitted it — a NOT NULL column whose only default is a
+    // `$default` failed with 23502.
+    seq = 0
+    const built = dDb.insertInto(dSchema.h.defaulted).values({ id: 1 })
+    expect(sqlOf(built)).toBe('insert into "public"."defaulted" ("id", "slug") values ($1, $2)')
+    expect(vals(built)).toStrictEqual(['1', 's1'])
+  })
+
+  it('is called ONCE PER ROW for a bulk insert', () => {
+    seq = 0
+    const built = dDb.insertInto(dSchema.h.defaulted).valuesMany([{ id: 1 }, { id: 2 }, { id: 3 }])
+    expect(vals(built)).toStrictEqual(['1', 's1', '2', 's2', '3', 's3'])
+  })
+
+  it('an explicit value wins, and no factory runs for it', () => {
+    seq = 0
+    const built = dDb.insertInto(dSchema.h.defaulted).values({ id: 1, slug: 'given' })
+    expect(vals(built)).toStrictEqual(['1', 'given'])
+    expect(seq).toBe(0)
+  })
+
+  it('an explicit `undefined` counts as absent', () => {
+    // `Insertable` marks the column optional, so `{ slug: undefined }` is how a caller spells "I
+    // have nothing for this". Binding NULL there would be a 23502 naming a column whose default is
+    // in the schema two lines up.
+    seq = 0
+    // The cast is the point of the case: with `exactOptionalPropertyTypes` on — which this
+    // repository and `docs-typecheck` both use — the literal is a compile error, and without it
+    // (the majority of consumer tsconfigs, and every `{ ...partial }` spread) it is not. The
+    // runtime has to answer for the second world.
+    const built = dDb
+      .insertInto(dSchema.h.defaulted)
+      .values({ id: 1, slug: undefined } as unknown as { id: number })
+    expect(vals(built)).toStrictEqual(['1', 's1'])
+  })
+
+  it('runs once per builder, not once per compile — `.compile()` stays pure (03 §1.3)', () => {
+    seq = 0
+    const built = dDb.insertInto(dSchema.h.defaulted).values({ id: 1 })
+    const first = built.compile().sql
+    built.toAst()
+    expect(built.compileAll().map((c) => c.sql)).toStrictEqual([first])
+    expect(vals(built)).toStrictEqual(['1', 's1'])
+    expect(seq).toBe(1)
+  })
+
+  it('the rectangularity error still talks about what the CALLER wrote', () => {
+    expect(() =>
+      dDb.insertInto(dSchema.h.defaulted).valuesMany([{ id: 1 }, { id: 2, note: 'x' }] as never),
+    ).toThrowError(/Row 1 sets \[id, note\]; row 0 sets \[id\]/)
+  })
+
+  it('`defaultValues()` is untouched: it means the DATABASE’s defaults', () => {
+    // A client-side default is a value we would have to compute and send, and `default values` is
+    // the statement that sends none. Filling it would make the two spellings the same statement.
+    expect(sqlOf(dDb.insertInto(dSchema.h.defaulted).defaultValues())).toBe(
+      'insert into "public"."defaulted" () default values',
+    )
+  })
+
+  it('reaches a real wire through the same path as any other bind', async () => {
+    seq = 0
+    const driver = mockDriver()
+    const live = pgPrime({ driver, schema: dSchema })
+    await live.insertInto(dSchema.h.defaulted).values({ id: 7 }).execute()
+    expect(driver.log[0]!.params).toStrictEqual(['7', 's1'])
   })
 })

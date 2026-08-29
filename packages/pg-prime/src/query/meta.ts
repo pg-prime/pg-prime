@@ -49,6 +49,16 @@ export interface TableCodecMeta {
   readonly keys: readonly string[]
   /** TS key → column. `posts.authorId` → the `"author_id"` meta. */
   readonly byKey: Readonly<Record<string, ColumnMeta>>
+  /**
+   * `05` §6.2's `.$default(fn)` — TS key → factory — or `undefined` when no column declares one.
+   *
+   * `undefined` rather than an empty record so the write builders can skip the whole feature with
+   * one property read: this is on the path of every insert, including the 1 000-row batch design/12
+   * §4 P item 2 spent a workstream on, and a schema that uses no `$default` must pay nothing.
+   */
+  readonly clientDefaults: Readonly<Record<string, () => unknown>> | undefined
+  /** `.$onUpdate(fn)`, same shape and the same `undefined`-when-empty rule. */
+  readonly clientOnUpdates: Readonly<Record<string, () => unknown>> | undefined
 }
 
 const CACHE = new WeakMap<
@@ -83,6 +93,8 @@ function build(t: TableLike, registry: CodecRegistry): TableCodecMeta {
   const columns: ColumnMeta[] = []
   const keys: string[] = []
   const byKey: Record<string, ColumnMeta> = {}
+  let clientDefaults: Record<string, () => unknown> | undefined
+  let clientOnUpdates: Record<string, () => unknown> | undefined
 
   for (const ref of rt.columns) {
     const meta = columnMeta(
@@ -92,6 +104,11 @@ function build(t: TableLike, registry: CodecRegistry): TableCodecMeta {
     columns.push(meta)
     keys.push(ref.key)
     byKey[ref.key] = meta
+    // The `$` law (design/05 D4) keeps these out of the DDL and the migration IR; it does not keep
+    // them out of the runtime, which is the half that was never wired up.
+    const ts = ref.column.ts
+    if (ts.defaultFn !== undefined) (clientDefaults ??= {})[ref.key] = ts.defaultFn
+    if (ts.onUpdateFn !== undefined) (clientOnUpdates ??= {})[ref.key] = ts.onUpdateFn
   }
 
   return {
@@ -99,6 +116,8 @@ function build(t: TableLike, registry: CodecRegistry): TableCodecMeta {
     columns: Object.freeze(columns),
     keys: Object.freeze(keys),
     byKey: Object.freeze(byKey),
+    clientDefaults: clientDefaults === undefined ? undefined : Object.freeze(clientDefaults),
+    clientOnUpdates: clientOnUpdates === undefined ? undefined : Object.freeze(clientOnUpdates),
   }
 }
 

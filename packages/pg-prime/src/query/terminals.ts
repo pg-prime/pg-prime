@@ -11,7 +11,7 @@
 import type { Compiled, CompiledMeta } from '../compile/contract.js'
 import type { PgParam } from '../driver/index.js'
 import { BuilderError } from '../sql/errors.js'
-import type { BuilderCtx, Runner } from './builder-state.js'
+import type { BuilderCtx, QueryRunOptions, Runner } from './builder-state.js'
 import type { ExplainOptions, ExplainResult, RunOptions, StreamOptions } from './executor.js'
 import { bindsToParams, explainOn, makeResult, needsRollbackRail, streamOn } from './executor.js'
 
@@ -77,6 +77,30 @@ export function toSQLOf(
  */
 export function takeFirst<Row>(rows: readonly Row[]): Row | undefined {
   return rows[0]
+}
+
+/** `undefined` stays `undefined`, so a query that sets no option allocates nothing. */
+export function withRunOption(
+  base: QueryRunOptions | undefined,
+  patch: QueryRunOptions,
+): QueryRunOptions {
+  return base === undefined ? patch : { ...base, ...patch }
+}
+
+/**
+ * The builder's accumulated options under the ones passed to `.stream(opts)`.
+ *
+ * The call wins, which is the same precedence `.execute()` gets for free (the runner's `merged()`
+ * puts the call's `RunOptions` over the handle's defaults). Neither side is copied when the other
+ * is absent, because the common statement sets no options at all.
+ */
+export function mergeRun<T extends object>(
+  run: QueryRunOptions | undefined,
+  opts: T | undefined,
+): (T & QueryRunOptions) | undefined {
+  if (run === undefined) return opts as (T & QueryRunOptions) | undefined
+  if (opts === undefined) return run as T & QueryRunOptions
+  return { ...run, ...opts }
 }
 
 export function runnerOf(ctx: BuilderCtx): Runner {

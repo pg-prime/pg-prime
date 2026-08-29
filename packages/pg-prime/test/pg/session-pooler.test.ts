@@ -353,3 +353,67 @@ describe("07 §0's snippet runs unchanged on both (the S gate)", () => {
     60_000,
   )
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3.6 — the other half of finding b: nothing was installed, so NULL is right
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('a per-statement timeout under a transaction profile restores NULL (07 §3.6, R19)', () => {
+  requiresPgBouncer()(
+    'the bound is lifted after the statement, and pg-prime installed nothing to put back',
+    async () => {
+      // The direct-connection half of this claim is in `test/pg/session.test.ts`: there pg-prime
+      // installs `statement_timeout` itself and has to put *that* value back, because
+      // `set_config(name, NULL, true)` restores the RESET value and a session-level SET never
+      // becomes one. Here it installs nothing — `resolveSessionSettings` refuses under a
+      // transaction profile, since a SET at connect would leak onto another client's server
+      // connection — so `NULL` is exactly right, and both halves have to hold or the fix is a
+      // different bug.
+      //
+      // What is deliberately NOT asserted is the *value* `SHOW` reports. Through a transaction
+      // pooler that value belongs to whichever client last had this server connection, which is
+      // §3.6's whole point; asserting it would be asserting the leak. The behavioural claims are
+      // leak-independent, and they are the ones that matter.
+      const skipped: string[] = []
+      const db = make({
+        schema,
+        connection: BOUNCER as string,
+        poolerMode: 'pgbouncer-transaction',
+        session: { statementTimeout: '30s' },
+        poolOptions: { max: 2 },
+        log: { level: 'silent' },
+        hooks: {
+          onInternal: (e) => {
+            if (e.kind === 'session-guc-skipped') skipped.push(e.message)
+          },
+        },
+      })
+      // (1) We installed nothing: the profile said so, once, at construction.
+      expect(skipped.join(' ')).toMatch(/statement_timeout/)
+      expect(skipped.join(' ')).toMatch(/ALTER ROLE/)
+
+      const after = await db.transaction(async (tx) => {
+        await tx.withOptions({ timeoutMs: 250 }).sql`select 1`.execute()
+        return showTimeout(tx)
+      })
+      // (2) The per-statement bound is gone from the rest of the transaction…
+      expect(after).not.toBe('250ms')
+
+      // (3) …and gone in the sense that matters: a statement that would have tripped it does not.
+      await expect(
+        db.transaction(async (tx) => {
+          await tx.withOptions({ timeoutMs: 250 }).sql`select 1`.execute()
+          await tx.sql`select pg_sleep(1)`.execute()
+        }),
+      ).resolves.toBeUndefined()
+    },
+    60_000,
+  )
+})
+
+async function showTimeout(handle: {
+  sql: (t: TemplateStringsArray) => { execute(): Promise<Record<string, unknown>[]> }
+}): Promise<unknown> {
+  const rows = await handle.sql`show statement_timeout`.execute()
+  return (rows[0] as Record<string, unknown>)['statement_timeout']
+}

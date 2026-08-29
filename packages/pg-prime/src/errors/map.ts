@@ -83,6 +83,14 @@ export interface MapOptions {
   readonly context: ErrorContext
   readonly errors: ResolvedErrorOptions
   readonly sql?: string | undefined
+  /**
+   * The bind values. **This is the only source of `paramCount` as well**, which is why the caller
+   * passes them whatever the redaction policy says: `07` §4.3 calls `paramCount` "always
+   * present", and deriving it from anything else is a second number that can disagree (it read
+   * `0` for every statement until design/12 §4 F1, because the runner passed `undefined` here).
+   *
+   * Whether the VALUES are published is decided below, once, by `errors.includeParams`.
+   */
   readonly params?: readonly unknown[] | undefined
   readonly paramTypes?: readonly number[] | undefined
   readonly callSite?: string | undefined

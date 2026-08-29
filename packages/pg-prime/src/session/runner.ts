@@ -41,7 +41,7 @@ import type { QueryStartEvent } from '../observe/index.js'
 import type { PoolerMode, PoolerProfile } from '../pooler/profiles.js'
 import type { Runner } from '../query/builder-state.js'
 import type { ExecEnv, RunOptions, RunTiming } from '../query/executor.js'
-import { runOn } from '../query/executor.js'
+import { bindsToParams, runOn } from '../query/executor.js'
 import type { AnySchema } from '../schema/index.js'
 import { assertNotInsideTransaction, concurrentStatementsWarning } from './guard.js'
 import type { CallOptions, SessionDefaults, TransactionDefaults } from './types.js'
@@ -60,6 +60,11 @@ export interface SessionState {
   readonly session: SessionDefaults | undefined
   /** The `set_config` batch to run once per physical connection, or `[]` when there is nothing to do. */
   readonly connectSettings: readonly (readonly [string, string])[]
+  /**
+   * The `statement_timeout` **we** install per physical connection, or `undefined` when we install
+   * none. Read by `ConnRunner.#restoreValue`, which explains why it has to exist.
+   */
+  readonly sessionStatementTimeout: string | undefined
   readonly transaction: TransactionDefaults | undefined
   readonly signal: AbortSignal | undefined
   readonly spanContext: SpanContext
@@ -99,6 +104,16 @@ export interface StatementDescriptor<Row> {
   readonly paramTypes: readonly number[]
   readonly operation: QueryOperation
   readonly tables: readonly string[] | undefined
+  /**
+   * The bind values that were sent — the failure path's only source for both `paramCount` and,
+   * under `errors.includeParams`, `params` (`07` §4.3).
+   *
+   * A method, not a field: the values are the PII, so they are built where an error is already
+   * being constructed and never on the success path. Whether they are *published* is
+   * `mapDriverError`'s decision and only its decision — R10 M9 is the mutation that pins that,
+   * and R10 M8 is why the count is not computed separately here.
+   */
+  paramValues(opts: StatementOptions): readonly unknown[] | undefined
   /** Runs it. `timing` is filled when somebody is listening. */
   perform(conn: PgConnection, env: ExecEnv, opts: RunOptions): Promise<StatementResult<Row>>
 }
@@ -157,6 +172,11 @@ class CompiledStatement<Row> implements StatementDescriptor<Row> {
     return this.#tables
   }
 
+  /** Exactly what `runOn` put in the `Bind` message, rebuilt on the failure path only. */
+  paramValues(opts: StatementOptions): readonly unknown[] {
+    return bindsToParams(this.compiled.binds, opts.params)
+  }
+
   perform(conn: PgConnection, env: ExecEnv, opts: RunOptions): Promise<StatementResult<Row>> {
     // `paramTypes` forced rather than lazy: `runOn` needs it for `Parse` anyway, so this is ONE
     // `paramTypesOf` per statement that the error mapper reuses, instead of the two it was. Not
@@ -191,7 +211,7 @@ abstract class BaseRunner implements Runner {
   abstract use<T>(f: (conn: PgConnection) => Promise<T>): Promise<T>
   abstract scope<T>(f: (conn: PgConnection) => AsyncIterable<T>): AsyncIterable<T>
   abstract run<Row>(compiled: Compiled<Row>, opts?: RunOptions): Promise<Row[]>
-  abstract runChunked<Row>(all: readonly Compiled<Row>[]): Promise<Row[]>
+  abstract runChunked<Row>(all: readonly Compiled<Row>[], opts?: RunOptions): Promise<Row[]>
 
   protected merged(opts: RunOptions | undefined): StatementOptions {
     const o = opts as (RunOptions & CallOptions) | undefined
@@ -344,9 +364,9 @@ export class PoolRunner extends BaseRunner {
    * A half-applied bulk insert is the failure mode that makes chunking untrustworthy, and it is
    * invisible: the caller sees a rejected promise and 40 000 of 50 000 rows committed.
    */
-  async runChunked<Row>(all: readonly Compiled<Row>[]): Promise<Row[]> {
+  async runChunked<Row>(all: readonly Compiled<Row>[], opts?: RunOptions): Promise<Row[]> {
     this.assertOpen()
-    const o = this.defaults
+    const o = this.merged(opts)
     this.guard(o)
     const lease = await acquire(this.state, this.signalFor(o))
     let dispose = false
@@ -564,10 +584,10 @@ export class ConnRunner extends BaseRunner {
   }
 
   /** Already atomic — opening a nested `BEGIN` would emit a 25001 warning and commit nothing. */
-  async runChunked<Row>(all: readonly Compiled<Row>[]): Promise<Row[]> {
+  async runChunked<Row>(all: readonly Compiled<Row>[], opts?: RunOptions): Promise<Row[]> {
     this.#assertUsable()
     const out: Row[] = []
-    for (const c of all) out.push(...(await this.run(c)))
+    for (const c of all) out.push(...(await this.run(c, opts)))
     return out
   }
 
@@ -596,15 +616,30 @@ export class ConnRunner extends BaseRunner {
   async #applyLocalTimeout(o: StatementOptions): Promise<void> {
     const want = o.timeoutMs ?? this.tx.baselineTimeoutMs
     if (want === this.tx.localTimeoutMs) return
-    // `set_config(name, NULL, true)` **restores** the value the session would otherwise have —
-    // measured on PG 15 and 17 — which is what "the statement's timeout is over" has to mean.
-    // Sending `'0'` would instead DISABLE the timeout for the rest of the transaction, i.e. turn a
-    // per-statement bound into a per-transaction exemption.
     await this.conn.execute({
       text: 'select set_config($1,$2,true)',
-      params: ['statement_timeout', want === undefined ? null : String(want)],
+      params: ['statement_timeout', want === undefined ? this.#restoreValue() : String(want)],
     })
     this.tx.localTimeoutMs = want
+  }
+
+  /**
+   * What "the statement's timeout is over" restores to, and why it is not always `NULL`.
+   *
+   * `set_config(name, NULL, true)` restores the GUC's **reset** value — right when the value we
+   * displaced came from `postgresql.conf` or `ALTER ROLE`, wrong when it came from *us*, because a
+   * session-level `SET` does not become the reset value. There `NULL` lands on the server's
+   * default (`0`: no timeout) for the rest of the transaction, which is the per-transaction
+   * exemption the `'0'` spelling was rejected for. Measured on PG 15/17/18 (design/12 §4 D, b).
+   *
+   * So: the value **we** installed on **this physical connection** (keyed on `serverParameters`,
+   * as `applyConnectSettings` keys it), and `NULL` only when we installed nothing — the
+   * transaction-pooler case, and `pool:`/`driver:` with no `session:`.
+   */
+  #restoreValue(): string | null {
+    const value = this.state.sessionStatementTimeout
+    if (value === undefined) return null
+    return this.state.configured.has(this.conn.serverParameters as object) ? value : null
   }
 
   #mapped(e: unknown, sql: string | undefined): unknown {
@@ -678,9 +713,11 @@ export async function acquire(
   if (state.connectSettings.length !== 0) await applyConnectSettings(state, conn)
   const probe = state.startupProbe
   if (probe !== undefined) {
+    // Arm, do not run: the probe owns its own scheduling, because it may only open a connection
+    // when the pool is at rest and this is the moment it demonstrably is not (see
+    // `maybeWarnAtStartup`).
     state.startupProbe = undefined
-    const t = setTimeout(probe, 0)
-    ;(t as unknown as { unref?: () => void }).unref?.()
+    probe()
   }
   return { conn, waitedMs }
 }
@@ -1001,7 +1038,13 @@ function mapStatementError<Row>(
     },
     errors: state.errors,
     sql: desc.sql,
-    params: undefined,
+    // `07` §4.3's `paramCount` and `params` come from ONE place. The values are the PII and
+    // `mapDriverError` alone decides whether to publish them; the count is safe and always
+    // published, and deriving it from the same array is what stops the two disagreeing. This is
+    // the failure path, once, next to constructing an Error with a stack — the success path never
+    // reaches it, which was the whole reason the previous code passed `undefined` here and made
+    // `paramCount` read 0 for every statement in the default configuration.
+    params: paramValuesOf(desc, o),
     paramTypes: desc.paramTypes,
     ...(callSite === undefined ? {} : { callSite }),
     schema: state.schema,
@@ -1020,6 +1063,24 @@ function mapStatementError<Row>(
       ...(callSite === undefined ? {} : { callSite }),
     },
   )
+}
+
+/**
+ * The descriptor's bind values, or nothing.
+ *
+ * `paramValues` can itself throw — a prepared statement missing a placeholder raises a
+ * `BuilderError` — and an error mapper that throws while mapping an error replaces the real
+ * failure with its own.
+ */
+function paramValuesOf<Row>(
+  desc: StatementDescriptor<Row>,
+  o: StatementOptions,
+): readonly unknown[] | undefined {
+  try {
+    return desc.paramValues(o)
+  } catch {
+    return undefined
+  }
 }
 
 /** Anything that leaves the transaction in the aborted state, i.e. anything the server rejected. */

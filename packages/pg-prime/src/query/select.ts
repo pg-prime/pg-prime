@@ -50,7 +50,7 @@ import {
 import { NAME } from '../schema/index.js'
 import type { TableRuntime } from '../schema/index.js'
 import { BuilderError } from '../sql/errors.js'
-import type { BuilderCtx, SelectState, SetOpState } from './builder-state.js'
+import type { BuilderCtx, QueryRunOptions, SelectState, SetOpState } from './builder-state.js'
 import { queryAstOf } from './nominal.js'
 import { registerBuilder } from './nominal.js'
 import type { RefScope } from './ref.js'
@@ -67,11 +67,19 @@ import {
   toExprNode,
   toOrderItems,
 } from './scope.js'
-import type { ExplainOptions, ExplainResult, StreamOptions } from './executor.js'
+import type { ExplainOptions, ExplainResult, StatementMode, StreamOptions } from './executor.js'
 import type { PrepareOptions, PreparedQueryImpl } from './prepared.js'
 import { prepareFrom } from './prepared.js'
 import type { SqlSnapshot } from './terminals.js'
-import { explainWith, runnerOf, streamWith, takeFirst, toSQLOf } from './terminals.js'
+import {
+  explainWith,
+  mergeRun,
+  runnerOf,
+  streamWith,
+  takeFirst,
+  toSQLOf,
+  withRunOption,
+} from './terminals.js'
 import { oneOf, toWindowDef } from './window.js'
 import type { WindowFn, WindowLiteral, WindowSpec } from './window.js'
 
@@ -460,6 +468,7 @@ export class SelectBuilder {
       this.s.ctx,
       setop({ op, left, right: queryAstOf(q, `.${opMethod(op)}()`) }),
       left,
+      this.s.run,
     )
   }
 
@@ -531,9 +540,41 @@ export class SelectBuilder {
     return this.#compiled
   }
 
+  // ── per-statement options (07 §6.1, §6.2, §1.5, §2.3) ─────────────────────
+
+  /**
+   * `07` §6.1's own spelling — `db.select(...).signal(ac.signal)` — and its three siblings.
+   *
+   * **Setters and nothing else**: each records a field in the same `RunOptions` bag the handle
+   * path threads, which `execute()` hands to `Runner.run` for `BaseRunner.merged()` to fold over
+   * the handle's defaults, exactly as for `db.run(q, opts)`. No second execution path, no branch
+   * on the hot path, and the SQL is byte-identical — the tier-0 goldens assert that.
+   *
+   * Precedence, since two places can now say the same thing: call > builder > handle. So
+   * `db.run(q.timeout(250), { timeoutMs: 50 })` runs at 50 ms.
+   */
+  signal(signal: AbortSignal): SelectBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { signal }) })
+  }
+
+  /** §6.2. `SET LOCAL statement_timeout` inside a transaction; a client timer plus cancel outside. */
+  timeout(ms: number): SelectBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { timeoutMs: ms }) })
+  }
+
+  /** §1.5 layer 3: "yes, I mean the outer handle" — the per-statement dev-guard opt-out. */
+  outsideTransaction(): SelectBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { outsideTransaction: true }) })
+  }
+
+  /** §2.3's per-query override of `pgPrime({ statement })`. */
+  withExecMode(mode: StatementMode): SelectBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { statement: mode }) })
+  }
+
   async execute(): Promise<unknown[]> {
     if (this.s.projection === undefined) throw needsSelect()
-    return runnerOf(this.s.ctx).run(this.compile())
+    return runnerOf(this.s.ctx).run(this.compile(), this.s.run)
   }
 
   /** `rows[0]`. See `terminals.ts` for why this is not `maxRows: 1`. */
@@ -544,17 +585,17 @@ export class SelectBuilder {
   /** The compiled artifact with typed holes (03 §1.4b). */
   prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
     if (this.s.projection === undefined) throw needsSelect()
-    return prepareFrom(this.s.ctx, this.compile(), name, opts)
+    return prepareFrom(this.s.ctx, this.compile(), name, opts, this.s.run)
   }
 
   /** Transaction-scoped server-side cursor (07 §6.3). */
   stream(opts?: StreamOptions): AsyncIterable<unknown> {
     if (this.s.projection === undefined) throw needsSelect()
-    return streamWith(this.s.ctx, this.compile(), opts)
+    return streamWith(this.s.ctx, this.compile(), mergeRun(this.s.run, opts))
   }
 
   explain(opts?: ExplainOptions): Promise<ExplainResult> {
-    return explainWith(this.s.ctx, this.compile(), opts)
+    return explainWith(this.s.ctx, this.compile(), opts, this.s.run)
   }
 
   /** Never throws — not on an unfilled placeholder, and not on a query with no executor. */
@@ -710,8 +751,25 @@ export class SetOpBuilder {
     return this.#compiled
   }
 
+  /** See `SelectBuilder.signal` — the same four setters over the same bag (07 §6.1/§6.2). */
+  signal(signal: AbortSignal): SetOpBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { signal }) })
+  }
+
+  timeout(ms: number): SetOpBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { timeoutMs: ms }) })
+  }
+
+  outsideTransaction(): SetOpBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { outsideTransaction: true }) })
+  }
+
+  withExecMode(mode: StatementMode): SetOpBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { statement: mode }) })
+  }
+
   async execute(): Promise<unknown[]> {
-    return runnerOf(this.s.ctx).run(this.compile())
+    return runnerOf(this.s.ctx).run(this.compile(), this.s.run)
   }
 
   async executeTakeFirst(): Promise<unknown> {
@@ -719,15 +777,15 @@ export class SetOpBuilder {
   }
 
   prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
-    return prepareFrom(this.s.ctx, this.compile(), name, opts)
+    return prepareFrom(this.s.ctx, this.compile(), name, opts, this.s.run)
   }
 
   stream(opts?: StreamOptions): AsyncIterable<unknown> {
-    return streamWith(this.s.ctx, this.compile(), opts)
+    return streamWith(this.s.ctx, this.compile(), mergeRun(this.s.run, opts))
   }
 
   explain(opts?: ExplainOptions): Promise<ExplainResult> {
-    return explainWith(this.s.ctx, this.compile(), opts)
+    return explainWith(this.s.ctx, this.compile(), opts, this.s.run)
   }
 
   toSQL(): SqlSnapshot {
@@ -735,7 +793,12 @@ export class SetOpBuilder {
   }
 }
 
-function makeSetOp(ctx: BuilderCtx, node: SetOpNode, left: SelectNode | SetOpNode): SetOpBuilder {
+function makeSetOp(
+  ctx: BuilderCtx,
+  node: SetOpNode,
+  left: SelectNode | SetOpNode,
+  run: QueryRunOptions | undefined,
+): SetOpBuilder {
   const refs: Record<string, Node> = {}
   for (const f of fieldsOfQuery(left)) refs[f.key] = outputColumn(f.key, f.codec)
   return new SetOpBuilder({
@@ -745,6 +808,9 @@ function makeSetOp(ctx: BuilderCtx, node: SetOpNode, left: SelectNode | SetOpNod
     limit: undefined,
     offset: undefined,
     resultRefs: Object.freeze(refs),
+    // A `.timeout(ms)` set on the left branch is a statement-level option, and the set operation
+    // IS that statement — losing it at the `union` would be a silent downgrade.
+    run,
   })
 }
 
@@ -778,6 +844,7 @@ export function makeSelect(
     locking: undefined,
     sources,
     scope: rebuildScope(sources, ctx),
+    run: undefined,
   })
 }
 

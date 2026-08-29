@@ -129,6 +129,7 @@ class RawQueryImpl implements RawQuery {
         paramTypes,
         operation: 'other',
         tables: undefined,
+        paramValues: () => params,
         async perform(conn, env, opts) {
           const result = await conn.execute({
             text: c.sql,

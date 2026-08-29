@@ -85,7 +85,7 @@ import type {
 } from './errors.js'
 import type { AnyFragment } from '../sql/index.js'
 import type { INV, PRJ, ROW } from './symbols.js'
-import type { ExplainOptions, ExplainResult, StreamOptions } from './executor.js'
+import type { ExplainOptions, ExplainResult, StatementMode, StreamOptions } from './executor.js'
 import type { PrepareOptions, PreparedQuery } from './prepared.js'
 import type { RawQuery } from './raw.js'
 import type { SqlSnapshot } from './terminals.js'
@@ -679,6 +679,14 @@ export interface SetQuery<O, B extends readonly unknown[]> extends SetOps<O, B> 
   stream(opts?: StreamOptions): AsyncIterable<O>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  /** See {@link Query.signal} — the same four setters, the same bag. */
+  signal(signal: AbortSignal): SetQuery<O, B>
+  /** §6.2. `SET LOCAL statement_timeout` inside a transaction; a client timer plus cancel outside. */
+  timeout(ms: number): SetQuery<O, B>
+  /** §1.5 layer 3's per-statement opt-out from the dev guard. */
+  outsideTransaction(): SetQuery<O, B>
+  /** §2.3's per-query override of `pgPrime({ statement })`. */
+  withExecMode(mode: StatementMode): SetQuery<O, B>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -879,6 +887,21 @@ export interface Query<S extends Sources, O, N = never> extends SetOps<O, readon
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   /** The SQL and the encoded binds. Never throws, including on an unfilled placeholder. */
   toSQL(): SqlSnapshot
+  /**
+   * `07` §6.1/§6.2's per-statement options, on the builder — the spelling the design document
+   * uses (`db.select(...).signal(s)`), reaching the same `RunOptions` the handle path threads.
+   *
+   * Thin setters: the SQL is unchanged (the tier-0 goldens assert it byte for byte) and there is
+   * no second execution path. Precedence is call > builder > handle, so
+   * `db.run(q.timeout(250), { timeoutMs: 50 })` runs at 50 ms.
+   */
+  signal(signal: AbortSignal): Query<S, O, N>
+  /** §6.2. `SET LOCAL statement_timeout` inside a transaction; a client timer plus cancel outside. */
+  timeout(ms: number): Query<S, O, N>
+  /** §1.5 layer 3's per-statement opt-out from the dev guard. */
+  outsideTransaction(): Query<S, O, N>
+  /** §2.3's per-query override of `pgPrime({ statement })`. */
+  withExecMode(mode: StatementMode): Query<S, O, N>
 }
 
 /**
@@ -953,6 +976,14 @@ export interface GroupedQuery<S extends Sources, O, N, G extends string> extends
   stream: Selected<O, (opts?: StreamOptions) => AsyncIterable<O>>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  /** See {@link Query.signal} — the same four setters, the same bag. */
+  signal(signal: AbortSignal): GroupedQuery<S, O, N, G>
+  /** §6.2. `SET LOCAL statement_timeout` inside a transaction; a client timer plus cancel outside. */
+  timeout(ms: number): GroupedQuery<S, O, N, G>
+  /** §1.5 layer 3's per-statement opt-out from the dev guard. */
+  outsideTransaction(): GroupedQuery<S, O, N, G>
+  /** §2.3's per-query override of `pgPrime({ statement })`. */
+  withExecMode(mode: StatementMode): GroupedQuery<S, O, N, G>
 }
 
 /** One indexed access. `InferResult<Q>` is the array form. */
@@ -1458,6 +1489,14 @@ export interface InsertQuery<H extends AnyHandle, O, C extends Sources = {}> ext
   /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE INSERT` inserts (07 §7.5). */
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  /** See {@link Query.signal} — the same four setters, the same bag. */
+  signal(signal: AbortSignal): InsertQuery<H, O, C>
+  /** §6.2. `SET LOCAL statement_timeout` inside a transaction; a client timer plus cancel outside. */
+  timeout(ms: number): InsertQuery<H, O, C>
+  /** §1.5 layer 3's per-statement opt-out from the dev guard. */
+  outsideTransaction(): InsertQuery<H, O, C>
+  /** §2.3's per-query override of `pgPrime({ statement })`. */
+  withExecMode(mode: StatementMode): InsertQuery<H, O, C>
 }
 
 /**
@@ -1531,6 +1570,14 @@ export interface UpdateQuery<H extends AnyHandle, O, V> extends RowSource<O> {
   /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE UPDATE` updates (07 §7.5). */
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  /** See {@link Query.signal} — the same four setters, the same bag. */
+  signal(signal: AbortSignal): UpdateQuery<H, O, V>
+  /** §6.2. `SET LOCAL statement_timeout` inside a transaction; a client timer plus cancel outside. */
+  timeout(ms: number): UpdateQuery<H, O, V>
+  /** §1.5 layer 3's per-statement opt-out from the dev guard. */
+  outsideTransaction(): UpdateQuery<H, O, V>
+  /** §2.3's per-query override of `pgPrime({ statement })`. */
+  withExecMode(mode: StatementMode): UpdateQuery<H, O, V>
 }
 
 /**
@@ -1566,6 +1613,14 @@ export interface DeleteQuery<
   /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE DELETE` deletes (07 §7.5). */
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  /** See {@link Query.signal} — the same four setters, the same bag. */
+  signal(signal: AbortSignal): DeleteQuery<H, O, S>
+  /** §6.2. `SET LOCAL statement_timeout` inside a transaction; a client timer plus cancel outside. */
+  timeout(ms: number): DeleteQuery<H, O, S>
+  /** §1.5 layer 3's per-statement opt-out from the dev guard. */
+  outsideTransaction(): DeleteQuery<H, O, S>
+  /** §2.3's per-query override of `pgPrime({ statement })`. */
+  withExecMode(mode: StatementMode): DeleteQuery<H, O, S>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

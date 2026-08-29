@@ -40,10 +40,18 @@ import type { AnyCodec, CodecOut } from '../codec/index.js'
 import type { Compiled, CompiledMeta } from '../compile/contract.js'
 import { placeholder as placeholderNode } from '../compile/nodes.js'
 import { BuilderError } from '../sql/errors.js'
-import type { BuilderCtx } from './builder-state.js'
+import type { BuilderCtx, QueryRunOptions } from './builder-state.js'
 import type { ExplainOptions, ExplainResult, StatementMode, StreamOptions } from './executor.js'
 import { assertNoExtraPlaceholders } from './executor.js'
-import { explainWith, runnerOf, streamWith, takeFirst, toSQLOf } from './terminals.js'
+import {
+  explainWith,
+  mergeRun,
+  runnerOf,
+  streamWith,
+  takeFirst,
+  toSQLOf,
+  withRunOption,
+} from './terminals.js'
 import type { SqlSnapshot } from './terminals.js'
 import type { Expr } from './types.js'
 
@@ -94,6 +102,15 @@ export interface PreparedQuery<P, O> {
   executeTakeFirst(params: P): Promise<O | undefined>
   stream(params: P, opts?: StreamOptions): AsyncIterable<O>
   explain(params: P, opts?: ExplainOptions): Promise<ExplainResult>
+  /**
+   * `07` §6.1/§6.2's per-statement options, inherited from the builder that prepared this and
+   * overridable here. The artifact is immutable, so each returns a **new** `PreparedQuery` over
+   * the same compiled statement — no re-compile, no second decode plan, nothing re-derived.
+   */
+  signal(signal: AbortSignal): PreparedQuery<P, O>
+  timeout(ms: number): PreparedQuery<P, O>
+  outsideTransaction(): PreparedQuery<P, O>
+  withExecMode(mode: StatementMode): PreparedQuery<P, O>
 }
 
 type Values = Readonly<Record<string, unknown>>
@@ -103,18 +120,47 @@ export class PreparedQueryImpl<O> implements PreparedQuery<Values, O> {
   readonly #ctx: BuilderCtx
   readonly #compiled: Compiled<O>
   readonly #statement: StatementMode | undefined
+  readonly #runOptions: QueryRunOptions | undefined
 
   constructor(
     ctx: BuilderCtx,
     compiled: Compiled<O>,
     name: string | undefined,
     opts: PrepareOptions | undefined,
+    run?: QueryRunOptions | undefined,
   ) {
     this.#ctx = ctx
     this.#compiled = compiled
     this.name = name
     this.#statement = opts?.statement
+    this.#runOptions = run
     Object.freeze(this)
+  }
+
+  #with(patch: QueryRunOptions): PreparedQueryImpl<O> {
+    return new PreparedQueryImpl(
+      this.#ctx,
+      this.#compiled,
+      this.name,
+      this.#statement === undefined ? undefined : { statement: this.#statement },
+      withRunOption(this.#runOptions, patch),
+    )
+  }
+
+  signal(signal: AbortSignal): PreparedQueryImpl<O> {
+    return this.#with({ signal })
+  }
+
+  timeout(ms: number): PreparedQueryImpl<O> {
+    return this.#with({ timeoutMs: ms })
+  }
+
+  outsideTransaction(): PreparedQueryImpl<O> {
+    return this.#with({ outsideTransaction: true })
+  }
+
+  withExecMode(mode: StatementMode): PreparedQueryImpl<O> {
+    return this.#with({ statement: mode })
   }
 
   get sql(): string {
@@ -133,9 +179,17 @@ export class PreparedQueryImpl<O> implements PreparedQuery<Values, O> {
     return toSQLOf(this.#compiled as Compiled<unknown>, params)
   }
 
-  #run(params: Values): { params: Values; statement?: StatementMode } {
+  #run(params: Values): QueryRunOptions {
     assertNoExtraPlaceholders(this.#compiled.meta.placeholders, params)
-    return this.#statement === undefined ? { params } : { params, statement: this.#statement }
+    // `.prepare({ statement })` is the *artifact's* mode and `.withExecMode()` is the caller's
+    // later word on the same statement, so the setter wins — same precedence as everywhere else.
+    const base = this.#runOptions
+    if (base === undefined) {
+      return this.#statement === undefined ? { params } : { params, statement: this.#statement }
+    }
+    return this.#statement === undefined || base.statement !== undefined
+      ? { ...base, params }
+      : { ...base, params, statement: this.#statement }
   }
 
   // `async`, and the three of them deliberately so: a bad `params` object is a *rejected
@@ -151,7 +205,7 @@ export class PreparedQueryImpl<O> implements PreparedQuery<Values, O> {
   }
 
   async *stream(params: Values, opts?: StreamOptions): AsyncIterable<O> {
-    yield* streamWith(this.#ctx, this.#compiled, { ...opts, ...this.#run(params) })
+    yield* streamWith(this.#ctx, this.#compiled, mergeRun(this.#run(params), opts))
   }
 
   async explain(params: Values, opts?: ExplainOptions): Promise<ExplainResult> {
@@ -165,6 +219,7 @@ export function prepareFrom<O>(
   compiled: Compiled<O>,
   name?: string,
   opts?: PrepareOptions,
+  run?: QueryRunOptions | undefined,
 ): PreparedQueryImpl<O> {
-  return new PreparedQueryImpl(ctx, compiled, name, opts)
+  return new PreparedQueryImpl(ctx, compiled, name, opts, run)
 }

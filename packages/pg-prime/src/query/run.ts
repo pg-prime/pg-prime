@@ -286,6 +286,25 @@ export function pgPrime<Sc extends AnySchema>(config: PgPrimeOptions<Sc>): Db<Sc
   }
 
   const spanContext: SpanContext = {}
+  // `07` §3.6's mechanism, resolved per connection source:
+  //
+  //  - `connection:` — we built the pool, so `07` §3.6's own fallback applies: one `set_config`
+  //    batch per **physical** connection. Not the startup packet's `options=`, which PgBouncer
+  //    rejects with a FATAL — measured; see `src/session/pg-lazy.ts`. `application_name` is
+  //    dropped from the batch because it rides the startup packet as pg's own field.
+  //  - `pool:` / `driver:` — we did not build it, so we do not touch the session **unless the
+  //    caller passed `session:` explicitly**. Reaching into somebody's Pool to `SET` things they
+  //    did not ask for is exactly the surprise `02` §4.7 forbids ("pg-prime never SETs session
+  //    GUCs; configure it on your own Pool"), and it would put a statement on the wire before
+  //    every user's first query.
+  //  - any transaction profile — always empty; `resolveSessionSettings` already refused, and the
+  //    `info` line above named the settings and the `ALTER ROLE` fix.
+  const connectSettings: readonly (readonly [string, string])[] =
+    source === 'connection'
+      ? settings.filter(([n]) => n !== 'application_name')
+      : config.session === undefined
+        ? EMPTY_SETTINGS
+        : settings
   const state: SessionState = {
     driver,
     schema: config.schema,
@@ -310,12 +329,10 @@ export function pgPrime<Sc extends AnySchema>(config: PgPrimeOptions<Sc>): Db<Sc
     //    every user's first query.
     //  - any transaction profile — always empty; `resolveSessionSettings` already refused, and the
     //    `info` line above named the settings and the `ALTER ROLE` fix.
-    connectSettings:
-      source === 'connection'
-        ? settings.filter(([n]) => n !== 'application_name')
-        : config.session === undefined
-          ? EMPTY_SETTINGS
-          : settings,
+    connectSettings,
+    // Read off the same list, so "what a `SET LOCAL` restores" can never disagree with "what we
+    // installed" (`07` §3.6, and design/12 §4 D finding b).
+    sessionStatementTimeout: connectSettings.find(([n]) => n === 'statement_timeout')?.[1],
     transaction: config.transaction,
     signal: config.signal,
     spanContext,
@@ -452,12 +469,35 @@ function notesFor(state: SessionState): readonly string[] {
 }
 
 /**
- * `07` §5.4's dev-mode startup check: **once, asynchronously, non-blocking**, and never in
- * production.
+ * How long to wait between "the pool is busy" checks before the startup probe tries again, and how
+ * many times. 20 × 250 ms bounds a hopeless wait at five seconds of a permanently busy pool, after
+ * which the check gives up in silence — it is a diagnostic, and a diagnostic that keeps a timer
+ * alive forever is a leak.
+ */
+const PROBE_IDLE_POLL_MS = 250
+const PROBE_IDLE_ATTEMPTS = 20
+
+/** An unref'd timer: a pending diagnostic must never be the reason a process does not exit. */
+function later(f: () => void, ms: number): void {
+  const t = setTimeout(f, ms)
+  ;(t as unknown as { unref?: () => void }).unref?.()
+}
+
+/**
+ * `07` §5.4's dev-mode startup check: **once, asynchronously, non-blocking**, never in production,
+ * and — amending §5.4 — **never while the application is using the pool**.
  *
- * Blocking the first query on a heuristic would be startup latency for a guess (§8 rejection 25).
- * So this fires on the next tick after something has already connected, and only says something
- * when the probe and the configuration disagree.
+ * `diagnosePooler()` acquires a connection and, because it has to create contention to avoid
+ * §5.4's measured false negative, up to three more. Fired on the next macrotask after the first
+ * acquire, that left one checked out *between* two awaited statements: `pgPrime({ connection })`
+ * plus two sequential selects read `{ total: 2, idle: 1 }`, which looks exactly like a leaked
+ * handle and was reported as one (design/12 §4 D, finding e). Worse than the misreading, on a
+ * one-backend bridge (PGlite, `08` F8) the extra socket makes the transaction a *different*
+ * transaction — a diagnostic quietly changing the semantics of the code it watches.
+ *
+ * One rule fixes both, and it is checkable: the probe re-arms until `poolStats` says nothing is
+ * checked out and nobody is queued. It therefore cannot interleave with an open transaction
+ * either, because a transaction holds its connection for its whole life.
  */
 function maybeWarnAtStartup(
   state: SessionState,
@@ -474,30 +514,47 @@ function maybeWarnAtStartup(
   const sizeWarning = poolSizeWarning(max, undefined)
   if (sizeWarning !== undefined) state.warn(sizeWarning)
 
+  const run = async (): Promise<void> => {
+    try {
+      const r = await diagnosePooler(state.driver, state.poolerMode, {
+        host: lazy.host ?? hostOfConfig(config),
+      })
+      if (r.agrees) return
+      state.warn(
+        `pg-prime: poolerMode is '${r.configuredPoolerMode}' but this connection looks like ` +
+          `'${r.verdict}' (confidence ${r.confidence}); the profile that matches is ` +
+          `'${r.recommendedPoolerMode}'. A profile only ever RESTRICTS, so the risk of being too ` +
+          `permissive is real and the risk of being too conservative is only performance — run ` +
+          `await db.diagnosePooler() for the signals. This warning is dev-mode only (07 §5.4).`,
+      )
+      state.hooks.internal({
+        kind: 'pooler-mismatch',
+        message: `configured '${r.configuredPoolerMode}', probe says '${r.recommendedPoolerMode}'`,
+      })
+    } catch {
+      // A diagnostic must never be the thing that breaks a process.
+    }
+  }
+
   // §5.4: one `warn` when the probe and the configuration disagree, never in production, never
-  // blocking, and never a reconfiguration. `acquire()` fires it after the first connection.
+  // blocking, and never a reconfiguration. `acquire()` arms it after the first connection; the
+  // gate below decides *when* it may run.
   state.startupProbe = () => {
-    void (async () => {
-      try {
-        const r = await diagnosePooler(state.driver, state.poolerMode, {
-          host: lazy.host ?? hostOfConfig(config),
-        })
-        if (r.agrees) return
-        state.warn(
-          `pg-prime: poolerMode is '${r.configuredPoolerMode}' but this connection looks like ` +
-            `'${r.verdict}' (confidence ${r.confidence}); the profile that matches is ` +
-            `'${r.recommendedPoolerMode}'. A profile only ever RESTRICTS, so the risk of being too ` +
-            `permissive is real and the risk of being too conservative is only performance — run ` +
-            `await db.diagnosePooler() for the signals. This warning is dev-mode only (07 §5.4).`,
-        )
-        state.hooks.internal({
-          kind: 'pooler-mismatch',
-          message: `configured '${r.configuredPoolerMode}', probe says '${r.recommendedPoolerMode}'`,
-        })
-      } catch {
-        // A diagnostic must never be the thing that breaks a process.
+    let attempts = 0
+    const tick = (): void => {
+      if (state.ended) return
+      const stats = state.poolStats()
+      // Unknown stats (a `pool:` that reports none) means we cannot prove the pool is at rest, so
+      // we do not probe at all. Silence beats a diagnostic that might rewrite a transaction.
+      if (stats === undefined) return
+      if (stats.waiting !== 0 || stats.idle !== stats.total) {
+        if (++attempts >= PROBE_IDLE_ATTEMPTS) return
+        later(tick, PROBE_IDLE_POLL_MS)
+        return
       }
-    })()
+      void run()
+    }
+    later(tick, PROBE_IDLE_POLL_MS)
   }
 }
 

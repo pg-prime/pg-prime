@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest'
 import { int8Codec, numericCodec } from '../../src/codec/index.js'
 import { compileOnly } from '../../src/query/run.js'
+import { defineSchema, pgTable } from '../../src/schema/index.js'
 import * as q from '../../src/query/types.js'
 import { schema } from './_schema.js'
 
@@ -143,5 +144,89 @@ describe('§2.6 — bulk update by key', () => {
     expect(() => db.update(schema.h.posts).fromValues([], codecs)).toThrowError(
       /would match no rows/,
     )
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `.$onUpdate()` — design/05 §6.2, and design/12 §4 D finding a
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Local, for the same reason `insert.test.ts`'s `defaulted` is: `_schema.ts` is a twin. */
+const STAMP = new Date('2020-01-02T03:04:05.000Z')
+let stamps = 0
+const touched = pgTable('touched', (t) => ({
+  id: t.integer().primaryKey(),
+  title: t.text(),
+  updatedAt: t.timestamptz().$onUpdate(() => {
+    stamps += 1
+    return STAMP
+  }),
+}))
+const uSchema = defineSchema({ touched })
+const uDb = compileOnly(uSchema)
+
+describe('`.$onUpdate()` is applied on update (05 §6.2; design/12 §4 D finding a)', () => {
+  it('appends the column the caller did not set', () => {
+    stamps = 0
+    const built = uDb
+      .update(uSchema.h.touched)
+      .set(() => ({ title: 'x' }))
+      .where(({ touched: t }) => q.eq(t.id, 1))
+    expect(sqlOf(built)).toBe(
+      [
+        'update "public"."touched" as "touched"',
+        'set "title" = $1, "updated_at" = $2',
+        'where "touched"."id" = $3',
+      ].join('\n'),
+    )
+    expect(vals(built)).toStrictEqual(['x', '2020-01-02 03:04:05.000Z', '1'])
+    expect(stamps).toBe(1)
+  })
+
+  it('an explicit assignment wins — and is not assigned twice (42701)', () => {
+    // Doing this in `.set()` rather than at `toAst()` would have produced two assignments to one
+    // column, which is exactly the error `.set()` raises by hand for a `$if` that overlaps.
+    stamps = 0
+    const built = uDb
+      .update(uSchema.h.touched)
+      .set(() => ({ updatedAt: new Date('1999-01-01T00:00:00.000Z') }))
+      .allRows()
+    expect(sqlOf(built)).toBe(
+      ['update "public"."touched" as "touched"', 'set "updated_at" = $1'].join('\n'),
+    )
+    expect(vals(built)).toStrictEqual(['1999-01-01 00:00:00.000Z'])
+    expect(stamps).toBe(0)
+  })
+
+  it('runs once per builder however many times it is compiled', () => {
+    stamps = 0
+    const built = uDb
+      .update(uSchema.h.touched)
+      .set(() => ({ title: 'x' }))
+      .allRows()
+    built.toAst()
+    built.compile()
+    built.toSQL()
+    expect(stamps).toBe(1)
+  })
+
+  it('does not create an UPDATE out of nothing: `.set({})` is still refused', () => {
+    expect(() =>
+      uDb
+        .update(uSchema.h.touched)
+        .set(() => ({}))
+        .allRows()
+        .toAst(),
+    ).toThrowError(/needs a \.set\(\{\.\.\.\}\)/)
+  })
+
+  it('is NOT applied to onConflict().doUpdate(): that list is the caller’s conflict action', () => {
+    stamps = 0
+    const built = uDb
+      .insertInto(uSchema.h.touched)
+      .values({ id: 1, title: 'x', updatedAt: STAMP })
+      .onConflict((c) => c.columns(({ id }) => id).doUpdate((_t, ex) => ({ title: ex.title })))
+    expect(sqlOf(built)).toContain('do update set "title" = "excluded"."title"')
+    expect(stamps).toBe(0)
   })
 })

@@ -109,6 +109,7 @@ export declare const SqlSyntaxError: Unsupported
 export declare const StringDataRightTruncationError: Unsupported
 export declare const TABLES: Unsupported
 export declare const TimeoutError: Unsupported
+export declare const TlsError: Unsupported
 export declare const TooManyConnectionsError: Unsupported
 export declare const TooManyParametersError: Unsupported
 export declare const TransactionAbandonedError: Unsupported
@@ -666,6 +667,7 @@ export type Tables = Unsupported
 export type TextOperand = Unsupported
 export type TextPg = Unsupported
 export type TimeoutError = Unsupported
+export type TlsError = Unsupported
 export type TooManyConnectionsError = Unsupported
 export type TooManyParametersError = Unsupported
 export type TransactionAbandonedError = Unsupported

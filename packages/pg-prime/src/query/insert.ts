@@ -56,11 +56,11 @@ import { inInternalNodes, isAstNode } from '../compile/nodes.js'
 import { isFragment, toNode } from '../sql/fragment.js'
 import { BuilderError } from '../sql/errors.js'
 import type { BulkOpts, BuilderCtx, InsertState } from './builder-state.js'
-import type { ExplainOptions, ExplainResult } from './executor.js'
+import type { ExplainOptions, ExplainResult, StatementMode } from './executor.js'
 import type { PrepareOptions, PreparedQueryImpl } from './prepared.js'
 import { prepareFrom } from './prepared.js'
 import type { SqlSnapshot } from './terminals.js'
-import { explainWith, runnerOf, takeFirst, toSQLOf } from './terminals.js'
+import { explainWith, runnerOf, takeFirst, toSQLOf, withRunOption } from './terminals.js'
 import { metaOf } from './meta.js'
 import type { TableCodecMeta } from './meta.js'
 import type { RefScope } from './ref.js'
@@ -168,14 +168,46 @@ export class InsertBuilder {
     bulk: BulkOpts | undefined,
     castFirstRow: boolean,
   ): InsertBuilder {
-    const columns = this.#columnsFor(rows)
+    const filled = this.#withClientDefaults(rows, this.#keysFor(rows))
     return this.#next({
-      columns,
-      rows,
+      columns: this.#columnsByKey(filled.keys, 'values()'),
+      rows: filled.rows,
       bulk,
       castFirstRow: castFirstRow && rows.length > 1,
       source: undefined,
     })
+  }
+
+  /**
+   * `05` §6.2's `.$default(fn)`, applied — one call per row, at `.values()` / `.valuesMany()` time.
+   *
+   * **At `.values()` time, not at `.compile()` time**, and that is the whole decision: `toAst()`
+   * and `compileAll()` both build from `this.s.rows`, so a factory evaluated there runs twice for
+   * a builder that is inspected *and* executed, and `.compile()` stops being the pure function
+   * `03` §1.3 promises.
+   *
+   * A key present with the value `undefined` counts as absent: `Insertable` marks the column
+   * optional, that is how a caller spells "I have nothing for this", and binding NULL into a
+   * `NOT NULL` column is the `23502` this item exists to remove.
+   */
+  #withClientDefaults(
+    rows: readonly Record<string, unknown>[],
+    keys: readonly string[],
+  ): { rows: readonly Record<string, unknown>[]; keys: readonly string[] } {
+    const defaults = this.#meta.clientDefaults
+    if (defaults === undefined) return { rows, keys }
+    const names = Object.keys(defaults)
+    const out = rows.map((row) => {
+      let copy: Record<string, unknown> | undefined
+      for (const k of names) {
+        if (Object.hasOwn(row, k) && row[k] !== undefined) continue
+        copy ??= { ...row }
+        copy[k] = (defaults[k] as () => unknown)()
+      }
+      return copy ?? row
+    })
+    const extra = names.filter((k) => !keys.includes(k))
+    return { rows: out, keys: extra.length === 0 ? keys : [...keys, ...extra] }
   }
 
   /** `insert into … default values`. */
@@ -269,10 +301,32 @@ export class InsertBuilder {
     return this.#all
   }
 
+  // ── per-statement options (07 §6.1, §6.2, §1.5, §2.3) ─────────────────────
+
+  /** See `SelectBuilder.signal` — the same four setters over the same `RunOptions` bag. */
+  signal(signal: AbortSignal): InsertBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { signal }) })
+  }
+
+  timeout(ms: number): InsertBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { timeoutMs: ms }) })
+  }
+
+  outsideTransaction(): InsertBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { outsideTransaction: true }) })
+  }
+
+  withExecMode(mode: StatementMode): InsertBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { statement: mode }) })
+  }
+
   async execute(): Promise<unknown[]> {
     const all = this.compileAll()
     const runner = runnerOf(this.s.ctx)
-    return all.length === 1 ? runner.run(all[0] as Compiled<unknown>) : runner.runChunked(all)
+    const run = this.s.run
+    return all.length === 1
+      ? runner.run(all[0] as Compiled<unknown>, run)
+      : runner.runChunked(all, run)
   }
 
   /**
@@ -301,12 +355,12 @@ export class InsertBuilder {
           `row count.`,
       )
     }
-    return prepareFrom(this.s.ctx, all[0] as Compiled<unknown>, name, opts)
+    return prepareFrom(this.s.ctx, all[0] as Compiled<unknown>, name, opts, this.s.run)
   }
 
   /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE INSERT` inserts (07 §7.5). */
   explain(opts?: ExplainOptions): Promise<ExplainResult> {
-    return explainWith(this.s.ctx, this.compile(), opts)
+    return explainWith(this.s.ctx, this.compile(), opts, this.s.run)
   }
 
   toSQL(): SqlSnapshot {
@@ -453,15 +507,16 @@ export class InsertBuilder {
   }
 
   /**
-   * The columns to insert: table-declaration order, filtered to the keys the first row supplies,
-   * and every other row must supply exactly the same set.
+   * The keys the caller wrote, checked: every row must supply exactly the set the first one does.
    *
    * A row missing a key is rejected rather than filled with NULL. PostgreSQL's `DEFAULT` keyword
    * would be the other answer, but "this row said nothing about `created_at`" and "this row wants
    * the column default" are different intentions, and quietly picking one is how a bulk insert
-   * writes NULLs over a `defaultNow()`.
+   * writes NULLs over a `defaultNow()`. A column carrying a `.$default()` is the *stated* third
+   * intention and is added afterwards, by `#withClientDefaults`, so the rectangularity rule here
+   * keeps talking about what the caller actually wrote.
    */
-  #columnsFor(rows: readonly Record<string, unknown>[]): readonly ColumnMeta[] {
+  #keysFor(rows: readonly Record<string, unknown>[]): readonly string[] {
     const first = rows[0] as Record<string, unknown>
     const keys = Object.keys(first)
     for (const k of keys) assertSafeKey(k, 'insert value')
@@ -490,7 +545,7 @@ export class InsertBuilder {
         )
       }
     }
-    return this.#columnsByKey(keys, 'values()')
+    return keys
   }
 
   /**
@@ -800,6 +855,7 @@ export function makeInsert(
     rows: undefined,
     bulk: undefined,
     owner,
+    run: undefined,
   })
 }
 

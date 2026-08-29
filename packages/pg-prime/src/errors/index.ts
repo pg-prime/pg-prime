@@ -56,6 +56,7 @@ export {
   SqlSyntaxError,
   StringDataRightTruncationError,
   TimeoutError,
+  TlsError,
   TooManyConnectionsError,
   TransactionAbandonedError,
   TransactionClosedError,

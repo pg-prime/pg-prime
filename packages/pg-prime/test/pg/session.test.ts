@@ -12,6 +12,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import pg from 'pg'
+import { textCodec } from '../../src/codec/index.js'
 import type { PgDriver, PgLikePool } from '../../src/driver/index.js'
 import { pgDriver } from '../../src/driver/index.js'
 import {
@@ -21,6 +22,7 @@ import {
   QueryCanceledError,
   QueryTimeoutError,
   SerializationFailureError,
+  UniqueViolationError,
   mapError,
   resolveErrorOptions,
 } from '../../src/errors/index.js'
@@ -489,3 +491,319 @@ describe('AbortSignal cancels in flight and the connection is destroyed (07 §6.
 function sqlName(): ReturnType<typeof sql.ident> {
   return sql.ident(NS, 'counters')
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3.6 / §6.2 — what a per-statement timeout restores
+// (design/12 §4 D finding b; R18: SHOW is the oracle)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('a per-statement timeout restores the SESSION value pg-prime set (07 §3.6, finding b)', () => {
+  requiresConcurrency()(
+    'session 30s → in-tx 250ms → the rest of the transaction is 30s again',
+    async () => {
+      // `set_config(name, NULL, true)` restores the GUC's RESET value, and a session-level `SET`
+      // does not become the reset value — so the restore used to land on the server's default,
+      // which for `statement_timeout` is `0`: no timeout for the remainder of the transaction.
+      // Measured here on the server itself, which is the only place that fact is visible.
+      const app = pgPrime({
+        connection: liveTarget().url,
+        schema,
+        session: { statementTimeout: '30s' },
+        devGuard: false,
+        poolOptions: { max: 2 },
+      })
+      try {
+        const seen = await app.transaction(async (tx) => {
+          const before = await show(tx)
+          await tx.withOptions({ timeoutMs: 250 }).sql`select 1`.execute()
+          const after = await show(tx)
+          return [before, after]
+        })
+        expect(seen).toStrictEqual(['30s', '30s'])
+        // …and the session value is untouched outside the transaction, which is what "LOCAL" means.
+        expect(await show(app)).toBe('30s')
+      } finally {
+        await app.end()
+      }
+    },
+    60_000,
+  )
+
+  requiresConcurrency()(
+    'a transaction that set its own timeoutMs still restores to ITS baseline, not the session’s',
+    async () => {
+      const app = pgPrime({
+        connection: liveTarget().url,
+        schema,
+        session: { statementTimeout: '30s' },
+        devGuard: false,
+        poolOptions: { max: 2 },
+      })
+      try {
+        const seen = await app.transaction(
+          async (tx) => {
+            const before = await show(tx)
+            await tx.withOptions({ timeoutMs: 250 }).sql`select 1`.execute()
+            return [before, await show(tx)]
+          },
+          { timeoutMs: 9_000 },
+        )
+        expect(seen).toStrictEqual(['9s', '9s'])
+      } finally {
+        await app.end()
+      }
+    },
+    60_000,
+  )
+
+  requiresConcurrency()(
+    'the timeout it restores is still enforced — a 3 s sleep after a 250 ms statement is killed',
+    async () => {
+      // The regression was silent: the statement after the timed one simply ran forever. The
+      // oracle for "the timeout came back" is a statement that trips it.
+      const app = pgPrime({
+        connection: liveTarget().url,
+        schema,
+        session: { statementTimeout: '900ms' },
+        devGuard: false,
+        poolOptions: { max: 2 },
+      })
+      try {
+        const err = await app
+          .transaction(async (tx) => {
+            await tx.withOptions({ timeoutMs: 250 }).sql`select 1`.execute()
+            await tx.sql`select pg_sleep(3)`.execute()
+          })
+          .catch((e: unknown) => e)
+        expect(sqlState(err)).toBe('57014')
+      } finally {
+        await app.end()
+      }
+    },
+    60_000,
+  )
+})
+
+/** `SHOW statement_timeout` through whichever handle is asked. The server is the oracle (R18). */
+async function show(handle: {
+  sql: (t: TemplateStringsArray) => { execute(): Promise<Record<string, unknown>[]> }
+}): Promise<unknown> {
+  const rows = await handle.sql`show statement_timeout`.execute()
+  return (rows[0] as Record<string, unknown>)['statement_timeout']
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4.3 — paramCount on a real 23505 (design/12 §4 D finding c)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('QueryError.paramCount is the real count on a real error (07 §4.3, finding c)', () => {
+  requiresConcurrency()(
+    'a duplicate key reports three parameters and publishes none of them',
+    async () => {
+      await db.sql`insert into pgprime_pg_session.counters (id, n) values (900, 0)
+                   on conflict do nothing`.execute()
+      const err = await db
+        .insertInto(schema.h.counters)
+        .values({ id: 900, n: 1 })
+        .execute()
+        .catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(UniqueViolationError)
+      expect((err as UniqueViolationError).paramCount).toBe(2)
+      expect((err as UniqueViolationError).params).toBeUndefined()
+      expect((err as UniqueViolationError).paramTypes).toHaveLength(2)
+    },
+    60_000,
+  )
+
+  requiresConcurrency()(
+    'includeParams: true adds the encoded binds, and nothing else changes',
+    async () => {
+      const loud = pgPrime({
+        driver,
+        schema,
+        errors: { includeParams: true },
+      })
+      const err = await loud
+        .insertInto(schema.h.counters)
+        .values({ id: 900, n: 7 })
+        .execute()
+        .catch((e: unknown) => e)
+      expect((err as UniqueViolationError).paramCount).toBe(2)
+      expect((err as UniqueViolationError).params).toStrictEqual(['900', '7'])
+    },
+    60_000,
+  )
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §1.2 — the pool holds nothing between statements (design/12 §4 D finding e)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('a `connection:` handle holds no backend between statements (finding e)', () => {
+  requiresConcurrency()(
+    'pg_stat_activity counts one backend after two awaited statements, dev guard ON',
+    async () => {
+      // R18: `db.stats()` is our own report, so the claim is settled against the server's
+      // catalogue as well. `application_name` is the filter, because a shared matrix container
+      // has other clients on it.
+      const app = pgPrime({
+        connection: liveTarget().url,
+        schema,
+        session: { applicationName: 'pgprime_f1_leak' },
+        poolOptions: { max: 4 },
+      })
+      try {
+        await app.sql`select 1`.execute()
+        await app.sql`select 2`.execute()
+        expect(app.stats()).toStrictEqual({ total: 1, idle: 1, waiting: 0, max: 4 })
+        const [row] = await db.sql`select count(*)::int as n from pg_catalog.pg_stat_activity
+                                   where application_name = 'pgprime_f1_leak'`.execute()
+        expect((row as { n: number }).n).toBe(1)
+      } finally {
+        await app.end()
+      }
+    },
+    60_000,
+  )
+
+  requiresConcurrency()(
+    'and it opens none while a transaction is holding one, across several probe ticks',
+    async () => {
+      // The arming delay is not the mechanism; the at-rest gate is (R10 M11). Keep the pool busy
+      // long enough for the probe to have fired several times and count backends on the server.
+      const app = pgPrime({
+        connection: liveTarget().url,
+        schema,
+        session: { applicationName: 'pgprime_f1_busy' },
+        poolOptions: { max: 4 },
+      })
+      try {
+        await app.sql`select 1`.execute()
+        const seen: number[] = []
+        await app.transaction(async (tx) => {
+          for (let i = 0; i < 6; i++) {
+            await tx.sql`select 1`.execute()
+            // `.outsideTransaction()` because this read is deliberately out of band: the dev
+            // guard is right that a statement on the root handle inside a transaction runs on a
+            // different connection — that is exactly what makes it a usable oracle here.
+            const [row] = await db.outsideTransaction()
+              .sql`select count(*)::int as n from pg_catalog.pg_stat_activity
+                   where application_name = 'pgprime_f1_busy'`.execute()
+            seen.push((row as { n: number }).n)
+            await new Promise((r) => setTimeout(r, 120))
+          }
+        })
+        expect(Math.max(...seen)).toBe(1)
+      } finally {
+        await app.end()
+      }
+    },
+    60_000,
+  )
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §6.1 / §6.2 / §1.5 / §2.3 — the builder-level options, on a real server
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('the builder-level option methods on a real server (07 §6.1, §6.2, §1.5, §2.3)', () => {
+  requiresConcurrency()(
+    '.timeout(ms) inside a transaction is enforced by the backend',
+    async () => {
+      const timed = await db
+        .transaction(async (tx) =>
+          tx
+            .from(schema.h.counters)
+            .select(() => ({ slept: sql`pg_sleep(3)::text`.as(textCodec) }))
+            .timeout(250)
+            .execute(),
+        )
+        .catch((e: unknown) => e)
+      expect(timed).toBeInstanceOf(QueryCanceledError)
+      expect(sqlState(timed)).toBe('57014')
+    },
+    60_000,
+  )
+
+  requiresConcurrency()(
+    '.signal(s) aborts one statement in flight',
+    async () => {
+      const own = pgDriver({ pool: makePool(2) as unknown as PgLikePool })
+      try {
+        const solo = pgPrime({ driver: own, schema })
+        const ac = new AbortController()
+        setTimeout(() => ac.abort(), 200)
+        const started = Date.now()
+        const err = await solo
+          .from(schema.h.counters)
+          .select(() => ({ slept: sql`pg_sleep(5)::text`.as(textCodec) }))
+          .signal(ac.signal)
+          .execute()
+          .catch((e: unknown) => e)
+        // The class depends on a race the existing §6.1 case documents — the `CancelRequest` can
+        // land before our rejection does, and then the SERVER's `57014` is the honest answer. What
+        // `.signal(s)` has to prove is that the signal reached the statement at all, and a 5 s
+        // sleep that stops in under two seconds is that proof.
+        expect(err).toBeInstanceOf(Error)
+        expect(['AbortError', 'QueryCanceledError']).toContain((err as Error).name)
+        expect(Date.now() - started).toBeLessThan(2_000)
+        // The handle survives; the socket does not (§6.1).
+        expect(await solo.sql`select 1 as one`.execute()).toStrictEqual([{ one: 1 }])
+      } finally {
+        await own.destroy().catch(() => {})
+      }
+    },
+    60_000,
+  )
+
+  requiresConcurrency()(
+    '.withExecMode("named") really names the statement — pg_prepared_statements is the oracle',
+    async () => {
+      const own = pgDriver({ pool: makePool(1) as unknown as PgLikePool })
+      try {
+        const solo = pgPrime({ driver: own, schema })
+        await solo
+          .from(schema.h.counters)
+          .select(({ counters: c }) => ({ id: c.id }))
+          .withExecMode('named')
+          .execute()
+        const [row] =
+          await solo.sql`select count(*)::int as n from pg_prepared_statements`.execute()
+        expect((row as { n: number }).n).toBeGreaterThan(0)
+      } finally {
+        await own.destroy().catch(() => {})
+      }
+    },
+    60_000,
+  )
+
+  requiresConcurrency()(
+    '.outsideTransaction() is what lets the outer handle write during a transaction',
+    async () => {
+      // And the point of the escape hatch: the out-of-band row survives the rollback, because it
+      // was never in the transaction.
+      const app = pgPrime({ connection: liveTarget().url, schema, poolOptions: { max: 4 } })
+      try {
+        await app
+          .transaction(async (tx) => {
+            await tx.insertInto(schema.h.counters).values({ id: 901, n: 1 }).execute()
+            await app
+              .insertInto(schema.h.counters)
+              .values({ id: 902, n: 1 })
+              .outsideTransaction()
+              .execute()
+            throw new Error('abandon')
+          })
+          .catch(() => undefined)
+        expect(await readN(901).catch(() => 'absent')).toBe('absent')
+        expect(await readN(902)).toBe(1)
+      } finally {
+        await app.sql`delete from pgprime_pg_session.counters where id = 902`
+          .execute()
+          .catch(() => {})
+        await app.end()
+      }
+    },
+    60_000,
+  )
+})

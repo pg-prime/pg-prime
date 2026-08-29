@@ -66,7 +66,7 @@ export interface Runner {
    * {@link inTransaction} is already true — nesting `BEGIN` is a 25001 warning and, worse, a
    * commit that does not commit what the caller thinks.
    */
-  runChunked<Row>(compiled: readonly Compiled<Row>[]): Promise<Row[]>
+  runChunked<Row>(compiled: readonly Compiled<Row>[], opts?: RunOptions): Promise<Row[]>
   /** One connection for the duration of `f`, released afterwards iff this runner acquired it. */
   use<T>(f: (conn: PgConnection) => Promise<T>): Promise<T>
   /**
@@ -80,6 +80,29 @@ export interface Runner {
   readonly env: ExecEnv
   readonly inTransaction: boolean
 }
+
+/**
+ * What `07` §6.1/§6.2's builder-level option methods accumulate.
+ *
+ * Deliberately the **same** bag the handle path threads (`RunOptions` widened by two of
+ * `CallOptions`' fields), so a builder-level option is a second call site for identical behaviour
+ * and not a second execution path: each ends up in `BaseRunner.merged(opts)` exactly as
+ * `db.run(q, opts)`'s would. Declared here rather than imported from `src/session/types.ts`
+ * because the builder layer must not depend on the session layer — `Runner` is the seam.
+ */
+export interface QueryRunOptions extends RunOptions {
+  /** §6.2. `SET LOCAL statement_timeout` inside a transaction, a client timer outside one. */
+  readonly timeoutMs?: number | undefined
+  /** §1.5 layer 3's per-statement opt-out from the dev guard. */
+  readonly outsideTransaction?: boolean | undefined
+}
+
+/**
+ * The two helpers that fold one of these into another live in `./terminals.ts`, not here.
+ * This module is **types only** at runtime, and the tree-shake goldens are the enforcement: a
+ * single exported value would put `builder-state.js` into the module set of every bundle that
+ * builds a query (design/08 §2.4 step 3 — measured, +305 B min+gz on `connect-one-select`).
+ */
 
 /** Everything a builder carries that is not part of the statement being built. */
 export interface BuilderCtx {
@@ -118,6 +141,8 @@ export interface SelectState {
    */
   readonly sources: Readonly<Record<string, object>>
   readonly scope: Readonly<Record<string, RefScope>>
+  /** `07` §6.1/§6.2's builder-level options, threaded into the same `RunOptions` the handle path uses. */
+  readonly run: QueryRunOptions | undefined
 }
 
 export interface SetOpState {
@@ -128,6 +153,8 @@ export interface SetOpState {
   readonly offset: Expr | undefined
   /** Result refs, by output key — what an `ORDER BY` on a set-op result may name. */
   readonly resultRefs: Readonly<Record<string, Expr>>
+  /** `07` §6.1/§6.2's builder-level options, threaded into the same `RunOptions` the handle path uses. */
+  readonly run: QueryRunOptions | undefined
 }
 
 export interface InsertState {
@@ -151,6 +178,8 @@ export interface InsertState {
    * naming `Executor` here would close an import cycle for no type-safety gain at this seam.
    */
   readonly owner: unknown
+  /** `07` §6.1/§6.2's builder-level options, threaded into the same `RunOptions` the handle path uses. */
+  readonly run: QueryRunOptions | undefined
 }
 
 /** `03` §2.6's two strategies and the automatic switch between them. */
@@ -175,6 +204,8 @@ export interface UpdateState {
   readonly scope: Readonly<Record<string, RefScope>>
   /** `03` §2.5 has no unconditional UPDATE; `.allRows()` is the opt-in. */
   readonly allRows: boolean
+  /** `07` §6.1/§6.2's builder-level options, threaded into the same `RunOptions` the handle path uses. */
+  readonly run: QueryRunOptions | undefined
 }
 
 export interface DeleteState {
@@ -189,4 +220,6 @@ export interface DeleteState {
   readonly scope: Readonly<Record<string, RefScope>>
   /** `03` §2.5 has no unconditional DELETE; `.allRows()` is the opt-in. */
   readonly allRows: boolean
+  /** `07` §6.1/§6.2's builder-level options, threaded into the same `RunOptions` the handle path uses. */
+  readonly run: QueryRunOptions | undefined
 }

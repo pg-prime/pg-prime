@@ -54,6 +54,7 @@ import {
   SerializationFailureError,
   SqlSyntaxError,
   StringDataRightTruncationError,
+  TlsError,
   TooManyConnectionsError,
   UndefinedColumnError,
   UndefinedFunctionError,
@@ -1514,12 +1515,80 @@ describe('AbortSignal and per-statement timeouts (07 §6.1, §6.2)', () => {
     })
     const texts = driver.texts()
     expect(texts.filter((t) => t.startsWith('select set_config'))).toHaveLength(2)
-    // The restore is `set_config(…, NULL, true)`, which puts back the value the session would
-    // otherwise have. `'0'` would DISABLE the timeout for the rest of the transaction instead.
+    // Nothing of ours was installed on this connection (no `session:`, and `driver:` never gets a
+    // batch it did not ask for), so `NULL` is the right restore: it puts back the GUC's reset
+    // value, which here IS the session's. `'0'` would DISABLE the timeout for the rest of the
+    // transaction instead.
     expect(
       driver.log.filter((r) => r.text.startsWith('select set_config')).map((r) => r.params),
     ).toStrictEqual([
       ['statement_timeout', '1000'],
+      ['statement_timeout', null],
+    ])
+  })
+
+  it('the restore puts back the SESSION value pg-prime itself installed, not NULL', async () => {
+    // design/12 §4 D finding b. `set_config(name, NULL, true)` restores the GUC's *reset* value,
+    // and a value applied at session level does not become the reset value — so `NULL` here
+    // landed on the server's default (`0`, no timeout) for the rest of the transaction. The
+    // server is the oracle for that claim (`test/pg/session.test.ts`); the wire is the oracle for
+    // this one.
+    const { driver, db } = setup({ session: { statementTimeout: '30s' } })
+    driver.rows.push([['1']], [['1']], [['1']])
+    await db.transaction(async (tx) => {
+      await tx.withOptions({ timeoutMs: 250 }).sql`select 1`.execute()
+      await tx.sql`select 1`.execute()
+    })
+    const configs = driver.log
+      .filter((r) => r.text.startsWith('select set_config'))
+      .map((r) => r.params)
+    // The first is the once-per-physical-connection session batch (`local => false`).
+    expect(configs[0]).toContain('statement_timeout')
+    expect(configs.slice(1)).toStrictEqual([
+      ['statement_timeout', '250'],
+      ['statement_timeout', '30s'],
+    ])
+  })
+
+  it('…and NULL again when the session batch could not be applied', async () => {
+    // A restricted role that cannot change `statement_timeout` un-records the connection, so there
+    // is nothing of ours to restore and the reset value is once again the right answer.
+    const { driver, db } = setup({ session: { statementTimeout: '30s' } })
+    driver.failOn = (q) =>
+      q.text.startsWith('select set_config') ? serverError('42501') : undefined
+    driver.rows.push([['1']], [['1']])
+    await db.transaction(async (tx) => {
+      driver.failOn = (q) =>
+        q.params[0] === 'statement_timeout' && q.params[1] === '30s'
+          ? serverError('42501')
+          : undefined
+      await tx.withOptions({ timeoutMs: 250 }).sql`select 1`.execute()
+      await tx.sql`select 1`.execute()
+    })
+    driver.failOn = undefined
+    expect(
+      driver.log
+        .filter((r) => r.text.startsWith('select set_config'))
+        .map((r) => r.params)
+        .at(-1),
+    ).toStrictEqual(['statement_timeout', null])
+  })
+
+  it('a transaction profile installs nothing, so the restore is NULL under a pooler', async () => {
+    const { driver, db } = setup({
+      session: { statementTimeout: '30s' },
+      poolerMode: 'pgbouncer-transaction',
+      log: { level: 'silent' },
+    })
+    driver.rows.push([['1']], [['1']])
+    await db.transaction(async (tx) => {
+      await tx.withOptions({ timeoutMs: 250 }).sql`select 1`.execute()
+      await tx.sql`select 1`.execute()
+    })
+    expect(
+      driver.log.filter((r) => r.text.startsWith('select set_config')).map((r) => r.params),
+    ).toStrictEqual([
+      ['statement_timeout', '250'],
       ['statement_timeout', null],
     ])
   })
@@ -1772,5 +1841,262 @@ describe('the per-statement fast path still reports everything (design/12 §4 P 
     const q = db.from(schema.h.users).select(({ users: u }) => ({ id: u.id }))
     await scoped.run(q)
     expect((ends[0] as Record<string, unknown>)['label']).toBe('kept')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4.3 — paramCount is always present, params only under includeParams
+// (design/12 §4 D finding c)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('QueryError.paramCount and params (07 §4.3; design/12 §4 D finding c)', () => {
+  /** The §2.5 insert, run against a scripted failure, with three binds. */
+  async function failing(opts: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const { driver, db } = setup(opts)
+    driver.failOn = (q) => (q.text.startsWith('insert') ? pgError('23505') : undefined)
+    const err = await db
+      .insertInto(schema.h.users)
+      .values({ email: 'a@b.c', name: 'Ada', role: 'admin' })
+      .execute()
+      .catch((e: unknown) => e as Record<string, unknown>)
+    driver.failOn = undefined
+    return err as Record<string, unknown>
+  }
+
+  it('paramCount is the real count, with redaction ON — it read 0 for every statement', async () => {
+    // `runner.ts` passed `params: undefined` unconditionally and `paramCount` was derived from it,
+    // so the field `07` §4.3 calls "always present" was a constant zero in the default
+    // configuration. It is now its own argument, and its own thing.
+    const err = await failing({})
+    expect(err['paramCount']).toBe(3)
+    expect(err['params']).toBeUndefined()
+    expect(err['paramTypes']).toHaveLength(3)
+  })
+
+  it('includeParams: true publishes the encoded binds — the wire values', async () => {
+    const err = await failing({ errors: { includeParams: true } })
+    expect(err['paramCount']).toBe(3)
+    expect(err['params']).toStrictEqual(['a@b.c', 'Ada', 'admin'])
+  })
+
+  it('a raw db.sql statement reports its own count too', async () => {
+    const { driver, db } = setup({ errors: { includeParams: true } })
+    driver.failOn = (q) => (q.text.includes('$1') ? pgError('22P02') : undefined)
+    const err = (await db.sql`select ${'x'}`.execute().catch((e: unknown) => e)) as Record<
+      string,
+      unknown
+    >
+    driver.failOn = undefined
+    expect(err['paramCount']).toBe(1)
+    expect(err['params']).toStrictEqual(['x'])
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4.2 — TlsError is reachable by name (design/12 §4 D finding d)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('TlsError is exported (07 §4.2; design/12 §4 D finding d)', () => {
+  it('a TLS failure is catchable by class, not only by e.name', () => {
+    // It was declared in `errors/classes.ts` and thrown by `errors/map.ts`, and exported from
+    // neither barrel — so it was not in the api-snapshot and the only way to match it was
+    // `e instanceof ConnectionError && e.name === 'TlsError'`.
+    const raw = new Error('unable to verify the first certificate') as Error & {
+      pgPrime: Record<string, unknown>
+    }
+    raw.pgPrime = {
+      kind: 'connection',
+      message: 'unable to verify the first certificate',
+      connectionUnusable: true,
+      adapter: 'pg',
+      cause: { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' },
+    }
+    const mapped = mapError(raw, {
+      context: { handle: 'db' },
+      errors: resolveErrorOptions(undefined, true),
+    })
+    expect(mapped).toBeInstanceOf(TlsError)
+    expect(mapped).toBeInstanceOf(ConnectionError)
+    expect((mapped as TlsError).name).toBe('TlsError')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §6.1 / §6.2 / §1.5 / §2.3 — the builder-level option methods
+//
+// design/12 §3 S shipped these handle-level (`run(q, opts)` / `handle.withOptions(opts)`) because
+// `Query` was another workstream's file that round. `07` §6.1 spells them on the builder; here
+// they are, as thin setters over the same `RunOptions` — same behaviour, same code path, one more
+// call site.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('per-statement options on the builder (07 §6.1, §6.2, §1.5, §2.3)', () => {
+  it('the SQL is byte-identical with and without them', async () => {
+    const only = compileOnly(schema)
+    const plain = only.from(schema.h.users).select(({ users: u }) => ({ id: u.id }))
+    const decorated = only
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .signal(new AbortController().signal)
+      .timeout(250)
+      .outsideTransaction()
+      .withExecMode('named')
+    expect(decorated.compile().sql).toBe(plain.compile().sql)
+    expect(decorated.compile().binds).toStrictEqual(plain.compile().binds)
+    // …and a compile-only executor still refuses to run one, with the same sentence.
+    await expect(decorated.execute()).rejects.toThrow(/no executor/)
+  })
+
+  it('.withExecMode(mode) reaches the wire as the statement mode', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['1']], [['1']])
+    await db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .execute()
+    expect(driver.log[0]!.mode).toBe('unnamed')
+    await db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .withExecMode('named')
+      .execute()
+    expect(driver.log[1]!.mode).toBe('named')
+    expect(driver.log[1]!.statementName).toMatch(/^pgprime_/)
+  })
+
+  it('.timeout(ms) inside a transaction is the same SET LOCAL the handle path emits', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['1']], [['1']])
+    await db.transaction(async (tx) => {
+      await tx
+        .from(schema.h.users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .timeout(250)
+        .execute()
+      await tx
+        .from(schema.h.users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .execute()
+    })
+    expect(
+      driver.log.filter((r) => r.text.startsWith('select set_config')).map((r) => r.params),
+    ).toStrictEqual([
+      ['statement_timeout', '250'],
+      ['statement_timeout', null],
+    ])
+  })
+
+  it('.signal(s) is the signal the driver is handed', async () => {
+    const { driver, db } = setup()
+    const ac = new AbortController()
+    let seen: AbortSignal | undefined
+    driver.failOn = (q) => {
+      seen = (q as { signal?: AbortSignal }).signal
+      return undefined
+    }
+    driver.rows.push([['1']])
+    await db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .signal(ac.signal)
+      .execute()
+    driver.failOn = undefined
+    expect(seen).toBe(ac.signal)
+  })
+
+  it('.outsideTransaction() is the same opt-out db.outsideTransaction() is', async () => {
+    resetGuardForTests()
+    const { driver, db } = setup()
+    await db.transaction(async () => {
+      // The dev guard refuses the OUTER handle inside a transaction (§1.5 layer 3)…
+      await expect(
+        db
+          .from(schema.h.users)
+          .select(({ users: u }) => ({ id: u.id }))
+          .execute(),
+      ).rejects.toThrow(/DIFFERENT connection/)
+      // …and this is the per-statement "yes, I mean it".
+      driver.rows.push([['1']])
+      await db
+        .from(schema.h.users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .outsideTransaction()
+        .execute()
+    })
+  })
+
+  it('a call-level option still wins over the builder’s', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['1']])
+    await db.run(
+      db
+        .from(schema.h.users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .timeout(250),
+      { timeoutMs: 50, timeoutStrategy: 'transaction' },
+    )
+    expect(
+      driver.log.filter((r) => r.text.startsWith('select set_config')).map((r) => r.params),
+    ).toStrictEqual([['statement_timeout', '50']])
+  })
+
+  it('the four survive .prepare() and are overridable on the artifact', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['1']], [['1']])
+    const p = db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .withExecMode('named')
+      .prepare('opts_probe')
+    await p.execute({})
+    expect(driver.log[0]!.mode).toBe('named')
+    await p.withExecMode('unnamed').execute({})
+    expect(driver.log[1]!.mode).toBe('unnamed')
+  })
+
+  it('an insert, an update and a delete carry them too', async () => {
+    const { driver, db } = setup()
+    await db
+      .insertInto(schema.h.users)
+      .values({ email: 'a', name: 'b', role: 'c' })
+      .withExecMode('named')
+      .execute()
+    await db
+      .update(schema.h.posts)
+      .set(() => ({ title: 'x' }))
+      .allRows()
+      .withExecMode('named')
+      .execute()
+    await db.deleteFrom(schema.h.posts).allRows().withExecMode('named').execute()
+    expect(driver.log.map((r) => r.mode)).toStrictEqual(['named', 'named', 'named'])
+  })
+
+  it('two setters in a chain both arrive — the bag merges, it does not replace', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['1']])
+    await db.transaction(async (tx) => {
+      await tx
+        .from(schema.h.users)
+        .select(({ users: u }) => ({ id: u.id }))
+        .timeout(250)
+        .withExecMode('named')
+        .execute()
+    })
+    expect(
+      driver.log.filter((r) => r.text.startsWith('select set_config'))[0]?.params,
+    ).toStrictEqual(['statement_timeout', '250'])
+    expect(driver.log.find((r) => r.text.startsWith('select "users"'))?.mode).toBe('named')
+  })
+
+  it('a set operation keeps the option its left branch carried', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['1']])
+    await db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .withExecMode('named')
+      .union(db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })))
+      .execute()
+    expect(driver.log[0]!.mode).toBe('named')
   })
 })

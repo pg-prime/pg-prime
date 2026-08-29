@@ -16,7 +16,18 @@
  */
 
 import { expectTypeOf } from 'expect-type'
-import type { Db, Queryable, Session, Tx } from '../../../src/query/types.js'
+import type {
+  Db,
+  DeleteQuery,
+  InsertQuery,
+  PreparedQuery,
+  Query,
+  Queryable,
+  Session,
+  SetQuery,
+  Tx,
+  UpdateQuery,
+} from '../../../src/query/types.js'
 import type { NoHandleEscape, SavepointOptions, TxOptions } from '../../../src/session/types.js'
 import { defineSchema, pgTable } from '../../../src/schema/index.js'
 import type { Assert, Eq } from './kit.js'
@@ -151,3 +162,42 @@ void db.setLocal
 /** `withOptions` preserves the handle type, so a scoped `Tx` is still a `Tx`. */
 type _ScopedTx = Assert<Eq<ReturnType<Tx<S>['withOptions']>, Tx<S>>>
 type _ScopedDb = Assert<Eq<ReturnType<Db<S>['withOptions']>, Queryable<S>>>
+
+// ── the builder-level option methods (07 §6.1, §6.2, §1.5, §2.3) ─────────────
+//
+// `07` §6.1 spells `db.select(...).signal(s)` and §6.2 `.timeout(ms)`. design/12 §3 S shipped both
+// handle-level because `Query` was another workstream's file that round; these four probes are the
+// assertion that the builder now carries them AND that they change nothing about the row type,
+// which is the only way a "thin setter" can be wrong at the type level.
+
+type H = (typeof schema)['h']['users']
+declare const q: Query<{ users: H }, { id: bigint }>
+declare const ins: InsertQuery<H, { id: bigint }>
+declare const upd: UpdateQuery<H, { id: bigint }, never>
+declare const del: DeleteQuery<H, { id: bigint }>
+declare const setq: SetQuery<{ id: bigint }, readonly [unknown]>
+declare const prep: PreparedQuery<{ email: string }, { id: bigint }>
+declare const signal: AbortSignal
+
+type _QuerySignal = Assert<Eq<ReturnType<typeof q.signal>, typeof q>>
+type _QueryTimeout = Assert<Eq<ReturnType<typeof q.timeout>, typeof q>>
+type _QueryOutside = Assert<Eq<ReturnType<typeof q.outsideTransaction>, typeof q>>
+type _QueryExecMode = Assert<Eq<ReturnType<typeof q.withExecMode>, typeof q>>
+type _InsertSignal = Assert<Eq<ReturnType<typeof ins.signal>, typeof ins>>
+type _UpdateTimeout = Assert<Eq<ReturnType<typeof upd.timeout>, typeof upd>>
+type _DeleteOutside = Assert<Eq<ReturnType<typeof del.outsideTransaction>, typeof del>>
+type _SetExecMode = Assert<Eq<ReturnType<typeof setq.withExecMode>, typeof setq>>
+type _PreparedSignal = Assert<Eq<ReturnType<typeof prep.signal>, typeof prep>>
+
+/** The row type is untouched, which is the whole claim of "thin setter". */
+expectTypeOf(q.signal(signal).timeout(50).outsideTransaction().execute()).toEqualTypeOf<
+  Promise<{ id: bigint }[]>
+>()
+expectTypeOf(prep.timeout(50).execute({ email: 'a' })).toEqualTypeOf<Promise<{ id: bigint }[]>>()
+
+// @ts-expect-error `.timeout()` takes milliseconds, not a Duration string — `07` §6.2's `timeoutMs`.
+void q.timeout('30s')
+// @ts-expect-error the exec mode is `07` §2.1's two protocol modes, not free text.
+void q.withExecMode('prepared')
+// @ts-expect-error `.outsideTransaction()` is a statement of intent and takes nothing.
+void q.outsideTransaction(true)

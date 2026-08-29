@@ -20,7 +20,8 @@ import {
   UniqueViolationError,
   isUniqueViolation,
 } from '../../src/errors/index.js'
-import { pgPrime } from '../../src/query/run.js'
+import { eq } from '../../src/query/ops.js'
+import { compileOnly, pgPrime } from '../../src/query/run.js'
 import type { Db } from '../../src/query/types.js'
 import { defineSchema, pgTable } from '../../src/schema/index.js'
 import {
@@ -39,11 +40,33 @@ const widgets = pgTable(
   undefined,
   { schema: NS },
 )
-const schema = defineSchema({ widgets })
+
+/**
+ * The `$` law's two runtime members (design/05 §6.2): neither emits DDL, so the table below has
+ * **no** default and **no** trigger — every value in those two columns comes from this process.
+ * A counter rather than `Date.now()` for the slug, because a per-row assertion needs to be able
+ * to say which row got which call.
+ */
+let slugs = 0
+const stamped = pgTable(
+  'stamped',
+  (t) => ({
+    id: t.integer().primaryKey(),
+    slug: t.text().$default(() => `slug-${(slugs += 1)}`),
+    touched: t
+      .timestamptz()
+      .$default(() => new Date())
+      .$onUpdate(() => new Date()),
+  }),
+  undefined,
+  { schema: NS },
+)
+const schema = defineSchema({ widgets, stamped })
 
 const DDL = `
 create schema ${NS};
 create table ${NS}.widgets (id integer primary key, name text not null, qty integer not null default 0);
+create table ${NS}.stamped (id integer primary key, slug text not null, touched timestamptz not null);
 insert into ${NS}.widgets (id, name) values (1, 'one'), (2, 'two'), (3, 'three');
 `
 
@@ -457,3 +480,98 @@ describe('db.diagnose() (07 §5.4)', () => {
 
 /** Kept honest under `noUnusedLocals`. */
 void liveTarget
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `.$default()` / `.$onUpdate()` round trip (05 §6.2; design/12 §4 D finding a)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('client-side defaults reach the database (05 §6.2)', () => {
+  it('a NOT NULL column whose only default is a `$default` inserts', async () => {
+    // Before the fix this was a `23502`: the column was optional in `Insertable` and absent from
+    // the statement, so the server had nothing to write and no DDL default to fall back on.
+    slugs = 0
+    await db.insertInto(schema.h.stamped).values({ id: 1 }).execute()
+    const rows = await raw(`select id, slug from ${NS}.stamped where id = 1`)
+    expect(rows).toStrictEqual([['1', 'slug-1']])
+  })
+
+  it('every row of a bulk insert gets its own value', async () => {
+    slugs = 0
+    await db
+      .insertInto(schema.h.stamped)
+      .valuesMany([{ id: 10 }, { id: 11 }])
+      .execute()
+    const rows = await raw(`select slug from ${NS}.stamped where id in (10, 11) order by id`)
+    expect(rows).toStrictEqual([['slug-1'], ['slug-2']])
+  })
+
+  it('`$onUpdate` writes on an UPDATE and only then', async () => {
+    slugs = 0
+    await db.insertInto(schema.h.stamped).values({ id: 2 }).execute()
+    const before = await raw(`select touched from ${NS}.stamped where id = 2`)
+    await db
+      .update(schema.h.stamped)
+      .set(() => ({ slug: 'renamed' }))
+      .where(({ stamped: s }) => eq(s.id, 2))
+      .execute()
+    const after = await raw(`select slug, touched from ${NS}.stamped where id = 2`)
+    expect((after[0] as readonly unknown[])[0]).toBe('renamed')
+    expect((after[0] as readonly unknown[])[1]).not.toBe((before[0] as readonly unknown[])[0])
+  })
+
+  it('the compile-only path produces the same statement a live one runs', () => {
+    slugs = 0
+    const offline = compileOnly(schema).insertInto(schema.h.stamped).values({ id: 3 })
+    expect(offline.compile().sql).toBe(
+      `insert into "${NS}"."stamped" ("id", "slug", "touched") values ($1, $2, $3)`,
+    )
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §1.2 — a pooled handle holds nothing between statements
+// (design/12 §4 D finding e)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('a `connection:` handle checks its connection back in (07 §1.2; finding e)', () => {
+  it('two awaited statements leave the pool at rest, with the dev guard ON', async () => {
+    // The reported symptom was `{ total: 2, idle: 1 }` here: `07` §5.4's dev-mode startup probe
+    // fired on the macrotask after the FIRST acquire and held a pooled connection across the
+    // caller's second statement. On this tier that also means a second socket on the PGlite
+    // bridge, which is one backend — so the diagnostic did not merely look like a leak, it
+    // changed what the code it was watching could observe (`08` F8).
+    //
+    // The `connection:` shape is the one that reproduces it and the one no other live test uses:
+    // `test/live/**` is written against `driver:`, where we build no pool and report no stats.
+    const app = pgPrime({ connection: liveTarget().url, schema, poolOptions: { max: 4 } })
+    try {
+      await app.sql`select 1`.execute()
+      const afterOne = app.stats()
+      await app.sql`select 2`.execute()
+      const afterTwo = app.stats()
+      expect(afterOne).toStrictEqual({ total: 1, idle: 1, waiting: 0, max: 4 })
+      expect(afterTwo).toStrictEqual({ total: 1, idle: 1, waiting: 0, max: 4 })
+    } finally {
+      await app.end()
+    }
+  }, 30_000)
+
+  // The at-rest GATE itself is a tier-2 claim, and deliberately not one here. On this tier the
+  // probe's connection is refused by the PGlite bridge before `pg` ever emits `connect`, so a
+  // test written against it passes with the gate removed — measured, three runs out of three
+  // (design/12 §4 F1 R10 M11). `test/pg/session.test.ts` counts the backends in
+  // `pg_stat_activity` while a transaction holds one, which is R18's answer anyway.
+
+  it('and a transaction gives its connection back at COMMIT', async () => {
+    const app = pgPrime({ connection: liveTarget().url, schema, poolOptions: { max: 4 } })
+    try {
+      await app.transaction(async (tx) => {
+        await tx.sql`select 1`.execute()
+        expect(app.stats()).toStrictEqual({ total: 1, idle: 0, waiting: 0, max: 4 })
+      })
+      expect(app.stats()).toStrictEqual({ total: 1, idle: 1, waiting: 0, max: 4 })
+    } finally {
+      await app.end()
+    }
+  }, 30_000)
+})

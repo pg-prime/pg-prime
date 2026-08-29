@@ -18,11 +18,11 @@ import type { Compiled } from '../compile/contract.js'
 import { and as andNode, del as deleteNode, table as tableFrom } from '../compile/nodes.js'
 import { BuilderError } from '../sql/errors.js'
 import type { BuilderCtx, DeleteState } from './builder-state.js'
-import type { ExplainOptions, ExplainResult } from './executor.js'
+import type { ExplainOptions, ExplainResult, StatementMode } from './executor.js'
 import type { PrepareOptions, PreparedQueryImpl } from './prepared.js'
 import { prepareFrom } from './prepared.js'
 import type { SqlSnapshot } from './terminals.js'
-import { explainWith, runnerOf, takeFirst, toSQLOf } from './terminals.js'
+import { explainWith, runnerOf, takeFirst, toSQLOf, withRunOption } from './terminals.js'
 import { metaOf } from './meta.js'
 import type { RefScope } from './ref.js'
 import { registerBuilder } from './nominal.js'
@@ -132,8 +132,27 @@ export class DeleteBuilder {
     return this.#compiled
   }
 
+  // ── per-statement options (07 §6.1, §6.2, §1.5, §2.3) ─────────────────────
+
+  /** See `SelectBuilder.signal` — the same four setters over the same `RunOptions` bag. */
+  signal(signal: AbortSignal): DeleteBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { signal }) })
+  }
+
+  timeout(ms: number): DeleteBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { timeoutMs: ms }) })
+  }
+
+  outsideTransaction(): DeleteBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { outsideTransaction: true }) })
+  }
+
+  withExecMode(mode: StatementMode): DeleteBuilder {
+    return this.#next({ run: withRunOption(this.s.run, { statement: mode }) })
+  }
+
   async execute(): Promise<unknown[]> {
-    return runnerOf(this.s.ctx).run(this.compile())
+    return runnerOf(this.s.ctx).run(this.compile(), this.s.run)
   }
 
   /** `rows[0]` of the RETURNING list. See `terminals.ts` for why this is not `maxRows: 1` — on a
@@ -143,12 +162,12 @@ export class DeleteBuilder {
   }
 
   prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
-    return prepareFrom(this.s.ctx, this.compile(), name, opts)
+    return prepareFrom(this.s.ctx, this.compile(), name, opts, this.s.run)
   }
 
   /** `analyze: true` here is wrapped and rolled back unless you say `rollback: false` (07 §7.5). */
   explain(opts?: ExplainOptions): Promise<ExplainResult> {
-    return explainWith(this.s.ctx, this.compile(), opts)
+    return explainWith(this.s.ctx, this.compile(), opts, this.s.run)
   }
 
   toSQL(): SqlSnapshot {
@@ -181,6 +200,7 @@ export function makeDelete(
     sources,
     scope: rebuildScope(sources, ctx),
     allRows: false,
+    run: undefined,
   })
 }
 
