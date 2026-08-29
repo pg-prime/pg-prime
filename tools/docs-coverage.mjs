@@ -375,6 +375,7 @@ function checkNoRunReasons(allPages, sink, noteSink) {
   }
 
   noteSink.push(
-    `R22: ${explained} no-run block(s) state why` + (unexplained > 0 ? `, ${unexplained} do not` : ''),
+    `R22: ${explained} no-run block(s) state why` +
+      (unexplained > 0 ? `, ${unexplained} do not` : ''),
   )
 }

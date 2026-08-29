@@ -92,7 +92,8 @@ function main() {
     const setups = pageSetupsOf(page)
     for (const block of page.blocks) {
       if (!['ts', 'tsx'].includes(block.lang)) continue
-      if (block.attrs['skip-check'] || block.attrs['expect-error'] || block.attrs.signature) continue
+      if (block.attrs['skip-check'] || block.attrs['expect-error'] || block.attrs.signature)
+        continue
       const tier = PG ? isPgExample(block) : isExample(block) ? 'pglite' : null
       if (tier === null) continue
       if (typeof block.attrs.title !== 'string') {
@@ -167,9 +168,7 @@ async function runAll(examples) {
   const started = Date.now()
   const server = await startPglite()
   const bootMs = Date.now() - started
-  console.log(
-    `${LABEL}: ${server.version.split(' on ')[0]} at ${server.url} (boot ${bootMs} ms)`,
-  )
+  console.log(`${LABEL}: ${server.version.split(' on ')[0]} at ${server.url} (boot ${bootMs} ms)`)
 
   const pg = await loadPg()
   const admin = new pg.Client({ connectionString: server.url })
