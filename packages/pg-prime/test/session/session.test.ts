@@ -79,6 +79,7 @@ import { compileOnly, pgPrime } from '../../src/query/run.js'
 import { defineSchema, pgTable } from '../../src/schema/index.js'
 import { resolveSessionSettings } from '../../src/session/gucs.js'
 import { resetGuardForTests } from '../../src/session/guard.js'
+import { captureCallSite } from '../../src/errors/redact.js'
 import {
   advisoryFn,
   advisoryKey,
@@ -1613,5 +1614,160 @@ describe('src/** never STATICALLY imports pg or node:async_hooks (decision 2, 07
     expect(offenders.map(([f]) => f)).toStrictEqual([])
     const guard = sources.find(([f]) => f.endsWith('guard.ts'))?.[1] ?? ''
     expect(guard).toContain("await import('node:async_hooks')")
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7.4 — call-site capture, and the per-statement fast path (design/12 §4 P item 0)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('call-site capture (07 §7.4)', () => {
+  it('returns the caller frame and elides our own', () => {
+    const site = captureCallSite(captureCallSite)
+    expect(site).toBeDefined()
+    // THIS file, not `src/errors/redact.ts` — eliding our frames is the whole feature.
+    expect(site).toMatch(/session\.test\.ts/)
+    expect(site).toMatch(/^at /)
+  })
+
+  it('leaves Error.prepareStackTrace and Error.stackTraceLimit exactly as it found them', () => {
+    // It sets both to read structured frames instead of a formatted string, so a capture that
+    // failed to restore them would silently change every OTHER library's stack traces for the
+    // rest of the process. Nothing is awaited between the two, so this is the whole window.
+    const E = Error as unknown as { prepareStackTrace?: unknown; stackTraceLimit: number }
+    const marker = (): undefined => undefined
+    E.prepareStackTrace = marker
+    E.stackTraceLimit = 42
+    try {
+      captureCallSite(captureCallSite)
+      expect(E.prepareStackTrace).toBe(marker)
+      expect(E.stackTraceLimit).toBe(42)
+    } finally {
+      E.prepareStackTrace = undefined
+      E.stackTraceLimit = 10
+    }
+  })
+
+  it('survives frames that carry no file name', () => {
+    // `getFileName()` is `null` for a native frame, and `Array.prototype.map`'s frame is one.
+    // Skipping such a frame rather than throwing on it is what keeps the feature a debugging aid
+    // instead of a new failure mode.
+    const sites = [0].map(() => captureCallSite(undefined))
+    expect(sites[0]).toMatch(/^at /)
+  })
+})
+
+describe('the dev guard captures a call site only when it throws (design/12 §4 P item 0)', () => {
+  it('the HandleMisuseError still names the statement call site', async () => {
+    resetGuardForTests()
+    const { db } = setup()
+    const err = await db
+      .transaction(async () => {
+        await db.sql`select 1`.execute()
+      })
+      .catch((e: unknown) => e)
+    // `assertNotInsideTransaction` takes a BOOLEAN now and captures inside itself; if it ever
+    // stops, this line reads "at an unknown call site" and nothing else in the suite notices.
+    expect((err as Error).message).toMatch(/the statement was issued at .*session\.test\.ts/)
+    expect((err as { callSite?: string }).callSite).toMatch(/session\.test\.ts/)
+  })
+
+  it('errors.captureCallSite: false leaves the guard working and the site unknown', async () => {
+    resetGuardForTests()
+    const { db } = setup({ errors: { captureCallSite: false } })
+    const err = await db
+      .transaction(async () => {
+        await db.sql`select 1`.execute()
+      })
+      .catch((e: unknown) => e)
+    expect((err as Error).name).toBe('HandleMisuseError')
+    expect((err as Error).message).toMatch(/the statement was issued at an unknown call site/)
+  })
+})
+
+describe('the per-statement fast path still reports everything (design/12 §4 P item 0)', () => {
+  /**
+   * The pass made `waitedForConnectionMs`, `startedAt` and the pool events conditional on
+   * *somebody listening*. The condition has to be the same one the end event uses, or a
+   * slow-query log with no hooks registered would report a pool wait of zero — which is
+   * precisely the confusion `07` §7.1 separates the field out to prevent.
+   */
+  it('a slow-query sink with NO hooks still gets the timing fields', async () => {
+    const records: Record<string, unknown>[] = []
+    const { driver, db } = setup({
+      log: { slowQueryMs: 0, sink: (r: Record<string, unknown>) => records.push(r) },
+    })
+    driver.rows.push([['1']])
+    await db.sql`select 1`.execute()
+    expect(records.length).toBe(1)
+    const r = records[0] as Record<string, unknown>
+    expect(typeof r['durationMs']).toBe('number')
+    expect(typeof r['waitedForConnectionMs']).toBe('number')
+    expect(typeof r['serverMs']).toBe('number')
+    expect(typeof r['decodeMs']).toBe('number')
+  })
+
+  it('onQueryEnd carries a queryId, the timing split and the pool wait', async () => {
+    const ends: Record<string, unknown>[] = []
+    const pool: string[] = []
+    const { driver, db } = setup({
+      hooks: {
+        onQueryEnd: (e: Record<string, unknown>) => ends.push(e),
+        onPool: (e: { kind: string }) => pool.push(e.kind),
+      },
+    })
+    driver.rows.push([['1']])
+    await db.sql`select 1`.execute()
+    const e = ends[0] as Record<string, unknown>
+    expect(typeof e['queryId']).toBe('string')
+    expect((e['queryId'] as string).length).toBeGreaterThan(0)
+    expect(typeof e['startedAt']).toBe('number')
+    expect(typeof e['waitedForConnectionMs']).toBe('number')
+    // The frozen `{ kind: 'release' }` is shared across every statement; it must still say so.
+    expect(pool).toStrictEqual(['acquire', 'release'])
+  })
+
+  it('with nothing listening a statement still runs, decodes and releases', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['7', 'ada@x']])
+    const rows = await db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id, email: u.email }))
+      .execute()
+    expect(rows).toStrictEqual([{ id: 7n, email: 'ada@x' }])
+    expect(driver.acquired).toBe(driver.released)
+  })
+
+  it('the lazy descriptor still gives the error mapper its paramTypes', async () => {
+    const { driver, db } = setup({ errors: { includeSql: true } })
+    driver.failOn = () => serverError('23505', 'dup')
+    const err = await db
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id }))
+      .execute()
+      .catch((e: unknown) => e)
+    driver.failOn = undefined
+    // `paramTypes` is lazy now, and `07` §4.3 calls it "always present, always safe" — an OID
+    // names no user value, so it survives redaction and is the one field that tells you which
+    // type the server was handed. A lazy accessor that nobody forced would drop it silently.
+    expect((err as { paramTypes?: readonly number[] }).paramTypes).toStrictEqual([])
+    expect((err as { sql?: string }).sql).toContain('select')
+  })
+
+  it('run(q) with no options does not lose the handle defaults', async () => {
+    // `runOptions(undefined)` returns `undefined` rather than `{}` so `merged` keeps the fast
+    // path; a scoped handle's defaults must still reach the statement.
+    const { driver, db } = setup()
+    driver.rows.push([['1']])
+    const scoped = db.withOptions({ label: 'kept' })
+    const ends: Record<string, unknown>[] = []
+    db.observe({
+      onQueryEnd: (e) => {
+        ends.push(e as unknown as Record<string, unknown>)
+      },
+    })
+    const q = db.from(schema.h.users).select(({ users: u }) => ({ id: u.id }))
+    await scoped.run(q)
+    expect((ends[0] as Record<string, unknown>)['label']).toBe('kept')
   })
 })

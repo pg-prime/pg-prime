@@ -27,7 +27,7 @@
  * per-call opt-out (`outsideTransaction`) rather than an argument about it.
  */
 
-import { HandleMisuseError } from '../errors/index.js'
+import { HandleMisuseError, captureCallSite } from '../errors/index.js'
 
 /**
  * `Symbol.asyncDispose`, or the registry key every polyfill uses when the runtime has none.
@@ -110,10 +110,16 @@ export function withoutFrames<R>(fn: () => R): R {
 /**
  * The check, on the **root** `Db` handle only. A `Tx` or `Session` statement is by definition on
  * the right connection.
+ *
+ * `captureSite` is a **boolean, not a captured call site**, and that is the point: this runs on
+ * every root-handle statement and throws on approximately none, so taking a captured stack — which
+ * is what it took before — paid `07` §7.4's price a second time per statement for a string that
+ * was then discarded (design/12 §4 P item 0).
  */
-export function assertNotInsideTransaction(callSite: string | undefined): void {
+export function assertNotInsideTransaction(captureSite: boolean): void {
   const frames = store?.getStore()
   if (frames === undefined || frames.length === 0) return
+  const callSite = captureSite ? captureCallSite(assertNotInsideTransaction) : undefined
   const top = frames[frames.length - 1] as GuardFrame
   throw new HandleMisuseError(
     `a statement was issued on the root db handle while transaction ${top.txId}` +

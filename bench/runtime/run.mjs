@@ -59,9 +59,34 @@ import {
   handMapRowsChecked,
   handMapRowsPlain,
 } from './hand-mapper.mjs'
-import { bytesPerOp, calibrate, sample, samplePaired } from './sampler.mjs'
+import {
+  bytesPerOp,
+  bytesPerOpAsync,
+  calibrate,
+  sample,
+  sampleAsync,
+  samplePaired,
+} from './sampler.mjs'
+import { statementPathArms } from './statement-path.mjs'
 import { probeEmitterStructure } from './structure.mjs'
 import { sameValue } from './e2e.mjs'
+
+// ─── Which MODE is measured, and why it is stated rather than assumed ───────
+//
+// `07` §7.4 turns call-site capture on when `NODE_ENV !== 'production'`, and `07` §1.5 does the
+// same for the dev guard. Both are debugging aids and both cost a stack capture per statement, so
+// a bench that leaves `NODE_ENV` unset measures **the development configuration** and gates it as
+// though it were the deployed one. That is exactly what happened: design/12 §3 S's merge moved
+// `point select by PK` from 1.286 to 1.603 on the nightly, and ~90 % of the move was two call-site
+// captures per statement that no production process performs.
+//
+// So the gated ratios run in production mode, set here, before the package is imported — `07`'s
+// own defaults read `NODE_ENV` once and memoise it. The development configuration is measured too,
+// on the cheapest case, and PRINTED rather than gated: its cost is a documented trade
+// (`07` §7.4: "the single highest-value debugging feature in the whole runtime layer"), and a
+// budget on it would be a budget on a feature nobody deploys.
+const NODE_ENV_BEFORE = process.env['NODE_ENV']
+process.env['NODE_ENV'] = 'production'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const argv = process.argv.slice(2)
@@ -91,7 +116,7 @@ const S = QUICK
   ? { samples: 15, iters: 500, warmup: 1000 }
   : { samples: 60, iters: 2000, warmup: 5000 }
 
-const { api, compiler, decode, fixture } = await loadPackage({ rebuild: REBUILD })
+const { api, compiler, decode, executor, fixture } = await loadPackage({ rebuild: REBUILD })
 const fx = fixture.makeFixture(BENCH_NS)
 const h = fx.schema.h
 const compileDb = api.compileOnly(fx.schema)
@@ -131,6 +156,12 @@ const compileResults = {
 let allocSink = null
 const keep = (f) => () => {
   allocSink = f()
+}
+
+/** The same sink, for the async arms of section 2b. */
+let asyncSink = null
+const keep2 = (f) => async () => {
+  asyncSink = await f()
 }
 
 const compileAlloc = {
@@ -254,7 +285,44 @@ const decodePairs = {
 }
 calibs.push(calibrateNow())
 
+// ── 2b. the statement path (design/12 §4 P item 0) ───────────────────────────
+// What one `execute()` costs on the client with the database removed: the lease, the events, the
+// timing, the guard and the error boundary that `07` puts between a compiled query and the driver
+// seam. Deterministic and I/O-free, so it gates on every PR — which is the point, because the one
+// regression this repository has shipped in that code was found by the *nightly*, a day late, in
+// the only e2e case cheap enough to show a constant. `statement-path.mjs` explains the arms.
+const arms = await statementPathArms(api, fixture, BENCH_NS)
+const stmtPreSession = await arms.preSession(executor.runOn, executor.makeEnv)
+const stmtProduction = arms.production()
+const stmtDev = arms.dev()
+
+const SS = QUICK
+  ? { iters: 50, samples: 15, warmup: 200 }
+  : { iters: 400, samples: 40, warmup: 4000 }
+const statementTiming = {
+  preSession: await sampleAsync(stmtPreSession, SS),
+  production: await sampleAsync(stmtProduction, SS),
+  dev: await sampleAsync(stmtDev, SS),
+}
+const statementAlloc = {
+  preSession: await bytesPerOpAsync(keep2(stmtPreSession), { warmup: QUICK ? 500 : 4000 }),
+  production: await bytesPerOpAsync(keep2(stmtProduction), { warmup: QUICK ? 500 : 4000 }),
+  dev: await bytesPerOpAsync(keep2(stmtDev), { warmup: QUICK ? 500 : 4000 }),
+}
+if (asyncSink === null) throw new Error('bench/runtime: the statement sink was never written to')
+const statement = {
+  timing: statementTiming,
+  allocation: statementAlloc,
+  overPreSessionP50: statementTiming.production.p50 / statementTiming.preSession.p50,
+  devOverPreSessionP50: statementTiming.dev.p50 / statementTiming.preSession.p50,
+  overPreSessionBytes: statementAlloc.production.median - statementAlloc.preSession.median,
+}
+
+calibs.push(calibrateNow())
+
 // ── 3. end-to-end (design/08 §5's nine pairs) ────────────────────────────────
+/** The case the dev-mode line is measured on. Named once so the lookup cannot drift. */
+const POINT_SELECT = 'point select by PK'
 let e2e = null
 let e2eSkipped = null
 if (COMPILE_ONLY) {
@@ -296,6 +364,16 @@ async function runE2E() {
   await driver.release(conn)
 
   const db = api.pgPrime({ driver, schema: fx.schema, registry })
+  // The same handle with `07` §7.4's and §1.5's development defaults turned back on explicitly.
+  // `NODE_ENV` is already `production` for the process (see the top of this file) and the memo
+  // behind it is per-process, so the two configurations cannot both come from the environment.
+  const devDb = api.pgPrime({
+    driver,
+    schema: fx.schema,
+    registry,
+    errors: { captureCallSite: true },
+    devGuard: true,
+  })
   /**
    * The raw side, configured exactly as the driver configures itself.
    *
@@ -317,16 +395,42 @@ async function runE2E() {
 
   const version = (await rawQuery('show server_version', []))[0][0]
   const out = []
+  let devPoint = null
   try {
     const cases = await buildCases({ db, api, pool: rawPool, rawQuery, rawTypes, ns: BENCH_NS, h })
     for (const c of cases) out.push(await runCase(QUICK ? { ...c, samples: 10, warmup: 3 } : c))
+    // The dev-mode line. One case, the cheapest one — a constant per-statement cost is only
+    // legible where the round trip is smallest — and a read, so running it twice changes nothing.
+    const devCases = await buildCases({
+      db: devDb,
+      api,
+      pool: rawPool,
+      rawQuery,
+      rawTypes,
+      ns: BENCH_NS,
+      h,
+    })
+    const point = devCases.find((c) => c.name === POINT_SELECT)
+    if (point === undefined) {
+      throw new Error(`bench/runtime: the dev-mode line needs a case named "${POINT_SELECT}"`)
+    }
+    devPoint = await runCase(QUICK ? { ...point, samples: 10, warmup: 3 } : point)
   } finally {
     await admin.query(fx.drop).catch(() => {})
     await admin.end().catch(() => {})
     await driver.destroy().catch(() => {})
     await rawPool.end().catch(() => {})
   }
-  return { serverVersion: version, url: url.replace(/:[^:@/]*@/, ':***@'), cases: out }
+  return {
+    serverVersion: version,
+    url: url.replace(/:[^:@/]*@/, ':***@'),
+    // Stated in the artifact, not only in the log: a ratio whose mode is unknown is a ratio
+    // nobody can compare with the next run's.
+    mode: 'production',
+    nodeEnvBefore: NODE_ENV_BEFORE ?? null,
+    cases: out,
+    devPointSelect: devPoint,
+  }
 }
 
 calibs.push(calibrateNow())
@@ -487,6 +591,36 @@ check(
   round(decodePairs.codegenVsUnchecked.a.p50 / decodePairs.vsUnchecked.a.p50, 3),
   B.decode.codegen.fractionOfClosureTree,
 )
+
+// ── the statement path (design/12 §4 P item 0) ───────────────────────────────
+//
+// Two gates and one report. The **ratio to the pre-session path** is the important one and it is
+// the one that is machine-independent: both arms run in the same process against the same null
+// driver on the same compiled statement, so the quotient is a statement about the session layer
+// and about nothing else. `overPreSessionBytes` is the allocation twin of it, tight for the reason
+// design/08 §5 gives — allocation is where ORM overhead hides and a byte count does not care how
+// fast the machine is. The absolute time is gated only as a ratio to the reference workload, and
+// loosely, because it is the line a busy runner moves.
+check(
+  'statement · production / pre-session path',
+  round(statement.overPreSessionP50, 3),
+  B.statement.overPreSessionP50,
+)
+check(
+  'statement · production bytes over the pre-session path',
+  statement.overPreSessionBytes,
+  B.statement.overPreSessionBytes,
+  { unit: 'B' },
+)
+check(
+  'statement · production / reference workload',
+  round(statementTiming.production.p50 / refUs, 2),
+  B.statement.productionRefRatio,
+)
+// Reported, never gated: `07` §7.4 and §1.5 are debugging aids that are ON outside production by
+// design, and a budget on them would be a budget on a feature nobody deploys. It is printed so
+// that a change which makes development four times slower is visible on the run that caused it.
+check('statement · dev / pre-session path (reported)', round(statement.devOverPreSessionP50, 3), 99)
 
 if (e2e) {
   // Per case, not one line for all nine: the overhead is a roughly constant amount of client-side
@@ -652,11 +786,32 @@ console.log(
     `   codegen ${perSec(decodePairs.codegenVsUnchecked.a.p50)} rows/sec · ${cellsPerSec(decodePairs.codegenVsUnchecked.a.p50)} cells/sec`,
 )
 
+console.log('\n── statement path, null driver (design/12 §4 P item 0) ──────────────────')
+console.log(
+  `  ${'arm'.padEnd(38)} ${'p50 µs'.padStart(9)} ${'min µs'.padStart(9)} ${'B/op'.padStart(8)} ${'/ pre-S'.padStart(8)}`,
+)
+for (const [k, label] of [
+  ['preSession', 'pre-session: acquire + runOn + release'],
+  ['production', 'production: no capture, no guard, no hooks'],
+  ['dev', 'dev defaults: call site + guard (reported)'],
+]) {
+  const t = statementTiming[k]
+  const a = statementAlloc[k]
+  console.log(
+    `  ${label.padEnd(38)} ${fmt(t.p50, 3).padStart(9)} ${fmt(t.min, 3).padStart(9)} ` +
+      `${String(a.median).padStart(8)} ${fmt(t.p50 / statementTiming.preSession.p50, 3).padStart(8)}` +
+      `${a.stable === true ? '' : '   (bytes: a floor, not a measurement)'}`,
+  )
+}
+
 console.log('\n── end-to-end vs raw pg (design/08 §5) ──────────────────────────────────')
 if (e2e === null) {
   console.log(`  SKIPPED — ${e2eSkipped}`)
 } else {
-  console.log(`  server ${e2e.serverVersion} at ${e2e.url}`)
+  console.log(
+    `  server ${e2e.serverVersion} at ${e2e.url} — measured with NODE_ENV=production ` +
+      `(07 §7.4 call-site capture OFF, 07 §1.5 dev guard OFF), which is what these budgets gate`,
+  )
   console.log(
     `  ${'case'.padEnd(36)} ${'orm p50'.padStart(9)} ${'raw p50'.padStart(9)} ${'p50 ×'.padStart(7)} ` +
       `${'p95 ×'.padStart(7)} ${'p99 ×'.padStart(7)} ${'Δ p50'.padStart(8)}`,
@@ -667,6 +822,22 @@ if (e2e === null) {
         `${fmt(c.ratioP50, 3).padStart(7)} ${fmt(c.ratioP95, 3).padStart(7)} ${fmt(c.ratioP99, 3).padStart(7)} ` +
         `${`+${fmt(c.a.p50 - c.b.p50, 3)}`.padStart(8)}   (ms)`,
     )
+  }
+  const dp = e2e.devPointSelect
+  if (dp !== null && dp !== undefined) {
+    const prod = e2e.cases.find((c) => c.name === dp.name)
+    console.log(
+      `  ${`${dp.name} — DEV MODE (reported, not gated)`.padEnd(36)} ${fmt(dp.a.p50, 3).padStart(9)} ` +
+        `${fmt(dp.b.p50, 3).padStart(9)} ${fmt(dp.ratioP50, 3).padStart(7)} ${fmt(dp.ratioP95, 3).padStart(7)} ` +
+        `${fmt(dp.ratioP99, 3).padStart(7)} ${`+${fmt(dp.a.p50 - dp.b.p50, 3)}`.padStart(8)}   (ms)`,
+    )
+    if (prod !== undefined) {
+      console.log(
+        `      call-site capture (07 §7.4) + the dev guard (07 §1.5) cost ` +
+          `${fmt((dp.a.p50 - prod.a.p50) * 1000, 1)} µs per statement here — on by default outside ` +
+          `production, one config line each to turn off.`,
+      )
+    }
   }
 }
 
@@ -739,6 +910,13 @@ const threeWay = [
     fmt(decodePairs.codegenDispatchOnly.ratioP50, 3),
     'reported',
   ],
+  [
+    'statement path, production / pre-session',
+    '1.0',
+    fmt(statement.overPreSessionP50, 3),
+    `${B.statement.overPreSessionP50}`,
+  ],
+  ['statement path, dev / pre-session', '1.0', fmt(statement.devOverPreSessionP50, 3), 'reported'],
   [
     'e2e overhead p50 (nine cases, worst)',
     `${design.e2eP50}`,
@@ -816,6 +994,7 @@ const report = {
     simplePerSecBestNorm,
   },
   structure,
+  statement,
   decode: { rows: rows.length, columns: DECODE_KEYS.length, pairs: decodePairs },
   e2e: e2e ?? { skipped: e2eSkipped },
   budget,

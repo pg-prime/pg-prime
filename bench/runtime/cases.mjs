@@ -49,8 +49,13 @@ export async function loadPackage({ rebuild = false } = {}) {
   const api = await import(pathToUrl(barrel))
   const compiler = await import(pathToUrl(join(OUT, 'src', 'compile', 'compiler.js')))
   const decode = await import(pathToUrl(join(OUT, 'src', 'compile', 'decode.js')))
+  // Past the barrel: `runOn` and `makeEnv` are the executor's own entry points and are what the
+  // statement path looked like before design/12 §3 S's session layer wrapped it. `run.mjs`'s
+  // section 2b measures against them, so they have to be reachable without being re-exported to
+  // users (design/08 §2.1: the public surface is the export map, and this is not on it).
+  const executor = await import(pathToUrl(join(OUT, 'src', 'query', 'executor.js')))
   const fixture = await import(pathToUrl(join(OUT, 'test', 'live', 'fixture.js')))
-  return { api, compiler, decode, fixture }
+  return { api, compiler, decode, executor, fixture }
 }
 
 const pathToUrl = (p) => new URL(`file://${p.replace(/\\/g, '/')}`).href

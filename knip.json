@@ -24,7 +24,7 @@
       "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "bench/runtime": {
-      "entry": ["run.mjs", "profile.mjs"],
+      "entry": ["run.mjs", "profile.mjs", "statement.mjs"],
       "project": ["**/*.mjs"]
     },
     "bench/types": {

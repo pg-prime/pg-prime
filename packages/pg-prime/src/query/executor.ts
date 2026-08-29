@@ -718,8 +718,11 @@ export async function runOn<Row>(
   compiled: Compiled<Row>,
   env: ExecEnv,
   opts?: RunOptions,
+  knownParamTypes?: readonly number[],
 ): Promise<Row[]> {
-  const paramTypes = paramTypesOf(compiled.binds)
+  // The session layer's descriptor hands over the array it already built. Without it this line
+  // built a second copy per statement — 3 000 elements on a 1 000-row batch insert.
+  const paramTypes = knownParamTypes ?? paramTypesOf(compiled.binds)
   const base = queryFor(compiled as Compiled<unknown>, opts, paramTypes)
   const wantNamed = (opts?.statement ?? env.statement) === 'named' && !env.named.downgraded
   const key = wantNamed ? statementKey(compiled.sql, paramTypes) : ''

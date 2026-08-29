@@ -149,6 +149,77 @@ export async function samplePairedAsync(a, b, { iters = 1, samples = 60, warmup 
 }
 
 /**
+ * {@link sample}, for a thunk that returns a promise.
+ *
+ * `await` inside the timed loop is the point rather than a compromise: the thing being measured —
+ * the statement path over the null driver (`statement-path.mjs`) — *is* a chain of awaits, and its
+ * per-statement cost includes the microtask ticks the session layer adds. Timing it any other way
+ * would measure a different function.
+ */
+export async function sampleAsync(fn, { iters = 200, samples = 40, warmup = 500 } = {}) {
+  for (let i = 0; i < warmup; i++) await fn()
+  const us = []
+  for (let s = 0; s < samples; s++) {
+    const t0 = performance.now()
+    for (let i = 0; i < iters; i++) await fn()
+    us.push(((performance.now() - t0) * 1000) / iters)
+  }
+  us.sort((a, b) => a - b)
+  return {
+    iters,
+    samples,
+    p50: percentile(us, 50),
+    p95: percentile(us, 95),
+    p99: percentile(us, 99),
+    min: us[0],
+    max: us[us.length - 1],
+  }
+}
+
+/**
+ * {@link bytesPerOp}, for a thunk that returns a promise.
+ *
+ * Same method, same three lies in the docblock below, and one more that is specific to `await`: a
+ * promise chain keeps its intermediate objects alive until it settles, so a batch must be short
+ * enough that the whole batch's chain fits in the nursery. The batch is sized from the same probe,
+ * and `stable` still reports whether a quarter-sized batch agrees.
+ */
+export async function bytesPerOpAsync(
+  fn,
+  { targetBatchBytes = 262144, batches = 25, warmup = 2000, maxBatch = 2000 } = {},
+) {
+  for (let i = 0; i < warmup; i++) await fn()
+  const overhead = harnessOverhead()
+  globalThis.gc?.()
+  const probe = await batchMedianAsync(fn, 4, 9, overhead)
+  const batch = Math.max(1, Math.min(maxBatch, Math.round(targetBatchBytes / Math.max(probe, 64))))
+  const main = await batchMedianAsync(fn, batch, batches, overhead)
+  const quarter =
+    batch > 4
+      ? await batchMedianAsync(fn, Math.max(1, batch >> 2), Math.ceil(batches / 2), overhead)
+      : main
+  const worst = Math.max(main, quarter)
+  return {
+    median: Math.round(worst),
+    batch,
+    stable: worst === 0 ? true : Math.abs(main - quarter) / worst <= 0.03,
+    exact: typeof globalThis.gc === 'function',
+  }
+}
+
+async function batchMedianAsync(fn, batch, batches, overhead) {
+  const xs = []
+  for (let s = 0; s < batches; s++) {
+    const before = process.memoryUsage().heapUsed
+    for (let i = 0; i < batch; i++) await fn()
+    const after = process.memoryUsage().heapUsed
+    xs.push((after - before - overhead) / batch)
+  }
+  xs.sort((a, b) => a - b)
+  return percentile(xs, 50)
+}
+
+/**
  * Bytes allocated per call, as the median of `batches` batches.
  *
  * `heapUsed` before and after a batch, with no GC in between, is the total the batch allocated

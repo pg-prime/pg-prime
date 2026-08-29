@@ -100,8 +100,13 @@ function compiledOf<O>(q: Runnable<O>): Compiled<O> {
   )
 }
 
-function runOptions(o: RunCallOptions | undefined): RunOptions {
-  return (o ?? {}) as RunOptions
+/**
+ * `undefined` rather than `{}` when the caller passed nothing: `BaseRunner.merged` returns its
+ * defaults unchanged for `undefined` and builds a seven-way spread for anything else, so the empty
+ * object this used to mint cost two allocations per `run(q)` to say "no options".
+ */
+function runOptions(o: RunCallOptions | undefined): RunOptions | undefined {
+  return o as RunOptions | undefined
 }
 
 /** Define a method that does not show up in `Object.keys(db)` — handles stay printable. */

@@ -100,27 +100,74 @@ export interface StatementDescriptor<Row> {
   readonly operation: QueryOperation
   readonly tables: readonly string[] | undefined
   /** Runs it. `timing` is filled when somebody is listening. */
-  perform(
-    conn: PgConnection,
-    env: ExecEnv,
-    opts: RunOptions,
-  ): Promise<{ rows: Row[]; rowCount: number }>
+  perform(conn: PgConnection, env: ExecEnv, opts: RunOptions): Promise<StatementResult<Row>>
+}
+
+/** What {@link StatementDescriptor.perform} resolves with. */
+export interface StatementResult<Row> {
+  readonly rows: Row[]
+  readonly rowCount: number
+}
+
+/** `rows` → `{ rows, rowCount }`, hoisted so `perform` allocates no closure per statement. */
+function asStatementResult<Row>(rows: Row[]): StatementResult<Row> {
+  return { rows, rowCount: rows.length }
+}
+
+/**
+ * A compiled builder query as a descriptor.
+ *
+ * **Everything but the SQL is lazy, and that is measured.** `paramTypes` is read by the error
+ * mapper and `tables` by the `07` §7.1 events; a statement that neither fails nor is observed paid
+ * for both anyway, and `paramTypes` was then built a *second* time inside `runOn` — two
+ * 3 000-element arrays per statement on a 1 000-row batch insert (design/12 §4 P). A class rather
+ * than an object literal so `perform` is a shared method, not a per-statement closure.
+ */
+class CompiledStatement<Row> implements StatementDescriptor<Row> {
+  readonly compiled: Compiled<Row>
+  #paramTypes: readonly number[] | undefined
+  #tables: readonly string[] | undefined
+  #tablesDone = false
+
+  constructor(compiled: Compiled<Row>) {
+    this.compiled = compiled
+  }
+
+  get sql(): string {
+    return this.compiled.sql
+  }
+
+  get paramCount(): number {
+    return this.compiled.binds.length
+  }
+
+  get paramTypes(): readonly number[] {
+    return (this.#paramTypes ??= paramTypesOf(this.compiled.binds))
+  }
+
+  get operation(): QueryOperation {
+    return operationOf(this.compiled as unknown as Compiled<unknown>)
+  }
+
+  get tables(): readonly string[] | undefined {
+    if (!this.#tablesDone) {
+      this.#tables = tablesOf(this.compiled as unknown as Compiled<unknown>)
+      this.#tablesDone = true
+    }
+    return this.#tables
+  }
+
+  perform(conn: PgConnection, env: ExecEnv, opts: RunOptions): Promise<StatementResult<Row>> {
+    // `paramTypes` forced rather than lazy: `runOn` needs it for `Parse` anyway, so this is ONE
+    // `paramTypesOf` per statement that the error mapper reuses, instead of the two it was. Not
+    // `async`: a `.then` is one promise, an `async` frame is a promise plus two closures.
+    return runOn(conn, this.compiled, env, opts, this.paramTypes).then(asStatementResult)
+  }
 }
 
 /** A compiled builder query as a descriptor. */
 export function compiledStatement<Row>(compiled: Compiled<Row>): StatementDescriptor<Row> {
-  const c = compiled as unknown as Compiled<unknown>
-  return {
-    sql: compiled.sql,
-    paramCount: compiled.binds.length,
-    paramTypes: paramTypesOf(compiled.binds),
-    operation: operationOf(c),
-    tables: tablesOf(c),
-    async perform(conn, env, opts) {
-      const rows = await runOn(conn, compiled, env, opts)
-      return { rows, rowCount: rows.length }
-    },
-  }
+  return new CompiledStatement(compiled)
 }
 
 /** What the two runners share. Not exported: `Runner` is the seam, this is the implementation. */
@@ -365,9 +412,9 @@ export class PoolRunner extends BaseRunner {
     if (!this.state.devGuard) return
     if (this.#handle !== 'db') return
     if (o.outsideTransaction === true) return
-    assertNotInsideTransaction(
-      this.state.errors.captureCallSite ? captureCallSite(this.guard) : undefined,
-    )
+    // A boolean, not a captured stack: `assertNotInsideTransaction` captures only on the path
+    // that throws, which is approximately never. See its docblock.
+    assertNotInsideTransaction(this.state.errors.captureCallSite)
   }
 
   private mapped(e: unknown, sql: string | undefined): unknown {
@@ -587,20 +634,35 @@ export interface Lease {
   readonly waitedMs: number
 }
 
+/**
+ * Is anybody going to read what this statement reports? One predicate for `acquire` and `execute`
+ * both, because `waitedForConnectionMs` must be *measured* whenever the end event or the
+ * slow-query record will carry it (`07` §7.1 separates "pool exhausted" from "slow query", and a
+ * zero there merges them again) and must cost nothing when neither will.
+ */
+function observed(state: SessionState): boolean {
+  const log = state.log
+  return state.hooks.enabled || log.logAllQueries || log.slowQueryMs !== null
+}
+
+/** `{ kind: 'release' }` has no fields; one frozen object serves every release. */
+const RELEASE_EVENT = Object.freeze({ kind: 'release' as const })
+
 export async function acquire(
   state: SessionState,
   signal: AbortSignal | undefined,
   route?: 'default' | 'direct',
 ): Promise<Lease> {
-  const started = performance.now()
+  const hooks = state.hooks
+  // With no observer, `waitedMs` is 0 and no event object is built: two `performance.now()` calls
+  // and two allocations per statement that used to be paid whether or not anything read them.
+  const timed = observed(state)
+  const started = timed ? performance.now() : 0
   let conn: PgConnection
   try {
-    conn = await state.driver.acquire({
-      ...(signal === undefined ? {} : { signal }),
-      ...(route === undefined ? {} : { route }),
-    })
+    conn = await state.driver.acquire(acquireOptions(signal, route))
   } catch (e) {
-    state.hooks.pool({ kind: 'timeout', waitedMs: performance.now() - started })
+    if (timed) hooks.pool({ kind: 'timeout', waitedMs: performance.now() - started })
     throw mapError(e, {
       context: { handle: 'db' },
       errors: state.errors,
@@ -608,9 +670,12 @@ export async function acquire(
       poolStats: state.poolStats(),
     })
   }
-  const waitedMs = performance.now() - started
-  state.hooks.pool({ kind: 'acquire', waitedMs })
-  await applyConnectSettings(state, conn)
+  const waitedMs = timed ? performance.now() - started : 0
+  if (timed) hooks.pool({ kind: 'acquire', waitedMs })
+  // The `length` test is at the call site, because `await`ing an `async` function that returns
+  // immediately is not free: a promise, two reaction closures and an await context. The three such
+  // frames this file added per statement — this one, `release`, `perform` — measured ~1.6 kB.
+  if (state.connectSettings.length !== 0) await applyConnectSettings(state, conn)
   const probe = state.startupProbe
   if (probe !== undefined) {
     state.startupProbe = undefined
@@ -620,9 +685,24 @@ export async function acquire(
   return { conn, waitedMs }
 }
 
-export async function release(state: SessionState, lease: Lease, dispose: boolean): Promise<void> {
-  state.hooks.pool({ kind: 'release' })
-  await state.driver.release(lease.conn, dispose ? { dispose: true } : undefined)
+/** Not `async`: it has nothing to do after the driver's promise, so it hands that promise back. */
+export function release(state: SessionState, lease: Lease, dispose: boolean): Promise<void> {
+  if (state.hooks.enabled) state.hooks.pool(RELEASE_EVENT)
+  return state.driver.release(lease.conn, dispose ? DISPOSE : undefined)
+}
+
+const DISPOSE = Object.freeze({ dispose: true as const })
+
+/**
+ * The driver's acquire options, or `undefined` — the seam's parameter is optional precisely so the
+ * common case can skip it, where the two-spread literal allocated an object to say nothing.
+ */
+function acquireOptions(
+  signal: AbortSignal | undefined,
+  route: 'default' | 'direct' | undefined,
+): { signal?: AbortSignal; route?: 'default' | 'direct' } | undefined {
+  if (signal === undefined) return route === undefined ? undefined : { route }
+  return route === undefined ? { signal } : { signal, route }
 }
 
 /**
@@ -719,17 +799,16 @@ export async function execute<Row>(
   tx: TxRuntime | undefined,
 ): Promise<Row[]> {
   const hooks = state.hooks
-  const wantEvents = hooks.enabled || state.log.logAllQueries || state.log.slowQueryMs !== null
+  const wantEvents = observed(state)
   const callSite = state.errors.captureCallSite ? captureCallSite(execute) : undefined
-  const started = performance.now()
-  const queryId = wantEvents ? nextQueryId() : ''
-  const paramCount = desc.paramCount
+  // No observer, no clock: `started` only ever reaches an event or a log record.
+  const started = wantEvents ? performance.now() : 0
 
   const start: QueryStartEvent | undefined = wantEvents
     ? {
-        queryId,
+        queryId: nextQueryId(),
         sql: desc.sql,
-        paramCount,
+        paramCount: desc.paramCount,
         execMode: o.statement ?? state.env.statement,
         handle,
         depth,
@@ -746,25 +825,17 @@ export async function execute<Row>(
   const noticeSink =
     hooks.enabled && lease.conn.on !== undefined
       ? lease.conn.on('notice', ((n: PgNoticeData) =>
-          hooks.notice({ notice: n, queryId })) as never)
+          hooks.notice({ notice: n, queryId: start?.queryId ?? '' })) as never)
       : undefined
 
   const timing: RunTiming | undefined = wantEvents ? { serverMs: 0, decodeMs: 0 } : undefined
   const timer = startClientTimeout(lease.conn, o, handle)
-  const runOpts: RunOptions = {
-    ...(o.params === undefined ? {} : { params: o.params }),
-    ...(o.statement === undefined ? {} : { statement: o.statement }),
-    ...(timer.signal === undefined ? {} : { signal: timer.signal }),
-  }
+  const runOpts = runOptionsFor(o, timer.signal, timing)
 
   try {
-    const out = await desc.perform(
-      lease.conn,
-      state.env,
-      timing === undefined ? runOpts : { ...runOpts, timing },
-    )
-    const durationMs = performance.now() - started
+    const out = await desc.perform(lease.conn, state.env, runOpts)
     if (start !== undefined) {
+      const durationMs = performance.now() - started
       const serverMs = timing?.serverMs ?? durationMs
       const decodeMs = timing?.decodeMs ?? 0
       hooks.queryEnd({
@@ -780,10 +851,10 @@ export async function execute<Row>(
     }
     return out.rows
   } catch (raw) {
-    const durationMs = performance.now() - started
     const error = mapStatementError(state, raw, desc, o, handle, tx, callSite, timer.fired())
     if (tx !== undefined && isPoisoning(error)) tx.poison.error ??= error
     if (start !== undefined) {
+      const durationMs = performance.now() - started
       hooks.queryError({
         ...start,
         durationMs,
@@ -839,6 +910,48 @@ function logQuery(
  * `QueryTimeoutError` rather than `QueryCanceledError`, because *we* gave up and the server may
  * still be working.
  */
+/**
+ * The options `runOn` gets, built without spreads. The literal this replaces made an object out of
+ * three conditional spreads and then *copied* it to add `timing`: four shapes and two allocations
+ * per statement, where the common case is all four undefined and now allocates nothing.
+ */
+const NO_RUN_OPTIONS: RunOptions = Object.freeze({})
+
+function runOptionsFor(
+  o: StatementOptions,
+  signal: AbortSignal | undefined,
+  timing: RunTiming | undefined,
+): RunOptions {
+  if (
+    o.params === undefined &&
+    o.statement === undefined &&
+    signal === undefined &&
+    timing === undefined
+  ) {
+    return NO_RUN_OPTIONS
+  }
+  const out: {
+    params?: Readonly<Record<string, unknown>>
+    statement?: StatementOptions['statement']
+    signal?: AbortSignal
+    timing?: RunTiming
+  } = {}
+  if (o.params !== undefined) out.params = o.params
+  if (o.statement !== undefined) out.statement = o.statement
+  if (signal !== undefined) out.signal = signal
+  if (timing !== undefined) out.timing = timing
+  return out as RunOptions
+}
+
+const NEVER_FIRED = (): boolean => false
+const NO_CLEAR = (): void => {}
+/** No timer and no caller signal — the common case, so it allocates nothing. */
+const NO_TIMER = Object.freeze({
+  signal: undefined,
+  fired: NEVER_FIRED,
+  clear: NO_CLEAR,
+})
+
 function startClientTimeout(
   conn: PgConnection,
   o: StatementOptions,
@@ -847,7 +960,9 @@ function startClientTimeout(
   const base = o.signal
   const useTimer =
     o.timeoutMs !== undefined && handle !== 'tx' && o.timeoutStrategy !== 'transaction'
-  if (!useTimer) return { signal: base, fired: () => false, clear: () => {} }
+  if (!useTimer) {
+    return base === undefined ? NO_TIMER : { signal: base, fired: NEVER_FIRED, clear: NO_CLEAR }
+  }
   const ac = new AbortController()
   let fired = false
   const t = setTimeout(() => {

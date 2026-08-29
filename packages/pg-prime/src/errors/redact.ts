@@ -151,11 +151,63 @@ const CAPTURE = (Error as { captureStackTrace?: (t: object, f?: unknown) => void
 const INTERNAL =
   /[/\\](?:src|dist)[/\\](?:query|session|errors|driver|observe|pooler|compile|codec|sql)[/\\]/
 
+/**
+ * How deep to look for the caller's frame. At most four of our own frames sit between the boundary
+ * and user code on any path that captures, so eight is generous; lowering it is the one change
+ * that makes the feature silently return `undefined`, which is why it is a named constant.
+ */
+const CAPTURE_FRAMES = 8
+
+/** V8's structured-frame hook: return the CallSite array instead of formatting a string. */
+function rawFrames(_e: unknown, frames: readonly CallSiteLike[]): readonly CallSiteLike[] {
+  return frames
+}
+
+interface CallSiteLike {
+  getFileName?: () => string | null | undefined
+  toString: () => string
+}
+
+/**
+ * **It does not read `.stack`.** That makes V8 format every captured frame into a string and this
+ * function then discards all but one of the lines. With `prepareStackTrace` handing back the raw
+ * `CallSite[]`, the search runs over structured frames and exactly one is formatted: the one
+ * returned. Measured (design/12 §4 P item 0): the two captures a pooled statement used to make
+ * cost 42 µs and now cost 13, which is what makes `07` §7.4's "a few microseconds per query" true.
+ * Both globals are restored in a `finally` with nothing awaited between, so nothing can observe
+ * them changed.
+ */
 export function captureCallSite(boundary?: unknown): string | undefined {
-  const holder: { stack?: string | undefined } = {}
-  if (CAPTURE !== undefined) CAPTURE(holder, boundary)
-  else holder.stack = new Error('call-site').stack
-  const stack = holder.stack
+  if (CAPTURE === undefined) return fromStackString(new Error('call-site').stack)
+  const E = Error as unknown as {
+    prepareStackTrace?: unknown
+    stackTraceLimit: number
+  }
+  const prevPrepare = E.prepareStackTrace
+  const prevLimit = E.stackTraceLimit
+  const holder: { stack?: unknown } = {}
+  try {
+    E.prepareStackTrace = rawFrames
+    E.stackTraceLimit = CAPTURE_FRAMES
+    CAPTURE(holder, boundary)
+    const frames = holder.stack
+    if (!Array.isArray(frames)) return fromStackString(frames as string | undefined)
+    for (const f of frames as readonly CallSiteLike[]) {
+      const file = f.getFileName?.()
+      if (file === undefined || file === null) continue
+      if (file.startsWith('node:')) continue
+      if (INTERNAL.test(file)) continue
+      return `at ${f.toString()}`
+    }
+    return undefined
+  } finally {
+    E.prepareStackTrace = prevPrepare
+    E.stackTraceLimit = prevLimit
+  }
+}
+
+/** The fallback: a formatted stack, scanned line by line. */
+function fromStackString(stack: string | undefined): string | undefined {
   if (stack === undefined) return undefined
   const lines = stack.split('\n')
   for (const line of lines) {
