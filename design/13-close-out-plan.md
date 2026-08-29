@@ -943,8 +943,11 @@ Done when, on one `main` commit:
       why (R22).
 - [x] The scaffold e2e (decision 9) is green on the `pg` job and on every nightly leg.
 - [x] `bench/runtime/budget.json` carries Q's result either way, with the five-run numbers.
-- [ ] CI green, nightly green, and the *what is still open* list of `12` §5 is reduced to the
-      three operator switches.
+- [x] CI green, nightly green, and the *what is still open* list of `12` §5 is reduced to the
+      three operator switches. — CI 33275218461 on `1b2d9ec` (the record commit; the run on
+      `711594e` itself, 33275093200, was cancelled by the push that superseded it), nightly
+      33275093271 on `711594e` 8/8 with `docs:examples:pg` and the two new tier-2 suites on every
+      leg. Open after this plan: the three operator switches, and the fix round F3 (below).
 
 ### Integration — 2026-08-30
 
