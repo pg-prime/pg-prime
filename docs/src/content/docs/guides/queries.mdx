@@ -1029,20 +1029,20 @@ server-side prepared statement, with its per-connection cache and its pooler con
 works under transaction pooling). Back-pressure is your `await`: the next `FETCH` is issued when the
 current batch is exhausted.
 
-{/* docs: use=blog */}
-```ts
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="stream.ts"
 import { asc } from 'pg-prime'
 
 const q = db.from(db.h.posts, 'p').select((t) => ({ title: t.p.title })).orderBy((t) => asc(t.p.id))
 
 // one row at a time
 for await (const row of q.stream({ batchSize: 500 })) {
-  console.log(row.title)
+  console.log(row.title) // → Hello, Draft, Notes, Bob writes
 }
 
 // one array per FETCH, which is what a batched writer wants
 for await (const batch of db.streamBatches(q, { batchSize: 500 })) {
-  console.log(batch.length)
+  console.log(batch.length) // → 4 — the four rows arrived in one FETCH
 }
 ```
 

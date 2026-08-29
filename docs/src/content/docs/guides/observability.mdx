@@ -310,13 +310,12 @@ Six signals, one of them opt-in:
 | `named-statement-survives` | The decisive one: prepare a named statement, execute it by name in a separate exchange. `26000` means a transaction pooler without prepared-statement tracking — the only probe that distinguishes `pgbouncer-transaction` from `transaction`. |
 | `application-name-sticky` | Opt-in (`{ probeSessionState: true }`), because it writes session state, which under a pooler leaks onto a shared server connection. |
 
-{/* docs: use=blog no-run */}
-```ts title="diagnose-pooler.ts" no-run
-// no-run: the pid probe deliberately creates contention with three concurrent pooled connections,
-// and PGlite is a single backend. It needs a real PostgreSQL.
+{/* docs: use=blog */}
+```ts title="diagnose-pooler.ts" pg-only
 const p = await db.diagnosePooler()
 
 console.log(p.verdict, p.confidence, p.recommendedPoolerMode, p.agrees)
+// → direct medium none true   (this handle is connected straight to PostgreSQL)
 for (const s of p.signals) console.log(`  ${s.name}: ${s.result} — ${s.detail}`)
 for (const w of p.warnings) console.warn(w)
 ```

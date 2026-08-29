@@ -57,7 +57,7 @@ erroring.
 ### Changing them
 
 {/* docs: use=blog-schema */}
-```ts title="db.ts" no-run
+```ts title="db.ts"
 import { pgPrime } from 'pg-prime'
 
 export const db = pgPrime({
@@ -70,13 +70,17 @@ export const db = pgPrime({
   },
   schema,
 })
+
+// The database is the oracle, on the first use of each physical connection:
+const [row] = await db.sql`select current_setting('statement_timeout') as v`.execute()
+console.log(row?.['v']) // → 10s
 ```
 
 `null` disables a setting explicitly, and that is different from omitting it — omitting takes the
 default, `null` sends nothing:
 
 {/* docs: use=blog-schema */}
-```ts title="no-statement-timeout.ts" no-run
+```ts title="no-statement-timeout.ts"
 import { pgPrime } from 'pg-prime'
 
 export const db = pgPrime({
@@ -84,6 +88,11 @@ export const db = pgPrime({
   session: { statementTimeout: null },   // no statement_timeout on this pool
   schema,
 })
+
+// Not "30s", which is what omitting `statementTimeout` would have given: whatever the server's own
+// default is. Here nothing was sent, so it is PostgreSQL's `0` — unbounded.
+const [row] = await db.sql`select current_setting('statement_timeout') as v`.execute()
+console.log(row?.['v']) // → 0
 ```
 
 Durations are what a GUC accepts: a string like `'30s'` or `'5min'`, or a number of milliseconds.

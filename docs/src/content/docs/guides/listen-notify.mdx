@@ -90,10 +90,8 @@ a diagnostic.
 
 The shape to copy:
 
-{/* docs: use=blog no-run */}
-```ts title="invalidate-cache.ts" no-run
-// no-run: delivery needs two backend sessions. PGlite multiplexes every socket onto one backend,
-// so a NOTIFY published here is never delivered to the listener — this pattern needs a real server.
+{/* docs: use=blog,blog-ddl */}
+```ts title="invalidate-cache.ts" pg-only
 import { eq } from 'pg-prime'
 
 const cache = new Map<string, string>()
@@ -128,6 +126,29 @@ sub.on('gap', (info) => {
 })
 
 sub.on('error', (e) => console.error('subscription error', e))
+
+// Everything above is the shape to copy. The rest is this page proving it: a write on a pooled
+// connection, published from there, arriving on the subscription's own backend. The gate waits for
+// the handler with a deadline rather than sleeping — an example that passes only on a fast machine
+// is worse than no example at all.
+const [author] = await db
+  .insertInto(db.h.users)
+  .values({ email: 'ann@example.com', name: 'Ann' })
+  .returning((t) => ({ id: t.users.id }))
+  .execute()
+const [post] = await db
+  .insertInto(db.h.posts)
+  .values({ authorId: author!.id, title: 'Hello', body: '…', published: true })
+  .returning((t) => ({ id: t.posts.id }))
+  .execute()
+await db.notify('post_changed', String(post!.id))
+
+const deadline = Date.now() + 5_000
+while (cache.size === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+if (cache.size === 0) throw new Error('no notification arrived within 5 s')
+console.log([...cache.values()]) // → [ 'Hello' ]
+
+await sub.close()
 ```
 
 `reconnect` is the same moment reported for metrics rather than correctness: `attempt` tells you
@@ -145,19 +166,36 @@ That is usually what you want: PostgreSQL **queues** notifications until commit,
 the notification only if the transaction that sent it committed, and never see one from a
 transaction that rolled back.
 
-{/* docs: use=blog,blog-ddl no-run */}
-```ts title="notify-on-commit.ts" no-run
-// no-run: as above — the listener would be the same backend on PGlite, so nothing is delivered.
+{/* docs: use=blog,blog-ddl */}
+```ts title="notify-on-commit.ts" pg-only
+let received: string | undefined
+const sub = await db.listen('post_changed', (payload) => void (received = payload))
+
+const [author] = await db
+  .insertInto(db.h.users)
+  .values({ email: 'ann@example.com', name: 'Ann' })
+  .returning((t) => ({ id: t.users.id }))
+  .execute()
+
 await db.transaction(async (tx) => {
   const [post] = await tx
     .insertInto(tx.h.posts)
-    .values({ authorId: 1n, title: 'Hello', body: '…', published: true })
+    .values({ authorId: author!.id, title: 'Hello', body: '…', published: true })
     .returning((t) => ({ id: t.posts.id }))
     .execute()
 
   // Queued here; delivered at COMMIT. If this transaction rolls back, nothing is ever sent.
   await tx.notify('post_changed', String(post!.id))
+
+  console.log(received) // → undefined — the COMMIT has not happened yet
 })
+
+const deadline = Date.now() + 5_000
+while (received === undefined && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+if (received === undefined) throw new Error('no notification arrived within 5 s')
+console.log(received) // → '1'
+
+await sub.close()
 ```
 
 ### The payload limit is 8000 bytes, exclusive

@@ -214,19 +214,16 @@ and `TransactionTimeoutError`; `QueryCanceledError` extends `QueryError`, becaus
 the server sent. Neither is ever retried: `AbortError` is excluded from the retry policy by name,
 and a `57014` is not in the default retry set.
 
-{/* docs: use=blog no-run */}
-```ts title="two-classes.ts"
+{/* docs: use=blog */}
+```ts title="two-classes.ts" pg-only
 import { QueryCanceledError, QueryTimeoutError } from 'pg-prime'
-
-// no-run: `pg_sleep` plus a real CancelRequest needs a server that honours one. PGlite is a
-// single WASM backend and ignores CancelRequest, so this pair is proved against a real PostgreSQL.
 
 // The server gave up — 57014, and it says why.
 const canceled = await db
   .transaction(async (tx) => tx.withOptions({ timeoutMs: 200 }).sql`select pg_sleep(3)`.execute())
   .catch((e: unknown) => e)
-console.log(canceled instanceof QueryCanceledError)
-console.log((canceled as QueryCanceledError).context.reason) // 'statement_timeout'
+console.log(canceled instanceof QueryCanceledError) // → true
+console.log((canceled as QueryCanceledError).context.reason) // → statement_timeout
 
 // We gave up — the timer fired first, and the message says the server may not have stopped.
 const timedOut = await db
@@ -234,7 +231,7 @@ const timedOut = await db
   .sql`select pg_sleep(5)`.execute()
   .catch((e: unknown) => e)
 console.log(timedOut instanceof QueryTimeoutError, timedOut instanceof QueryCanceledError)
-// true false
+// → true false
 ```
 
 ## The session default, and why there is one
@@ -248,7 +245,7 @@ Thirty seconds, not Prisma's five: five is tight enough that ordinary reporting 
 which is a recurring production surprise. Thirty is generous enough that no normal OLTP query
 notices and tight enough to bound the damage.
 
-{/* docs: use=blog-schema no-run */}
+{/* docs: use=blog-schema */}
 ```ts title="session-defaults.ts"
 import { pgPrime } from 'pg-prime'
 

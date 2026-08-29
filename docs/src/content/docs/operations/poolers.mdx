@@ -53,7 +53,7 @@ The two transaction profiles differ in **exactly one** capability: whether named
 survive. Everything else a transaction pooler breaks, it breaks in both.
 
 {/* docs: use=blog-schema */}
-```ts title="pooled-db.ts" no-run
+```ts title="pooled-db.ts" pg-only="pgbouncer"
 import { pgPrime } from 'pg-prime'
 
 export const db = pgPrime({
@@ -61,6 +61,13 @@ export const db = pgPrime({
   poolerMode: 'pgbouncer-transaction',
   schema,
 })
+
+// The docs gate runs this block with `DATABASE_URL` pointed at a real PgBouncer in transaction
+// mode. One statement is one transaction, which is the unit a transaction pooler preserves, so a
+// query is the whole proof that the profile above is the right one for this endpoint. It also
+// prints the one `info` line the matrix promises: the session GUCs were skipped, and why.
+const [row] = await db.sql`select 1 as n`.execute()
+console.log(row?.['n']) // → 1
 ```
 
 ## The compatibility matrix
@@ -108,7 +115,7 @@ non-pooled URL, and the rule for using it is **route by feature, not by call sit
 a connection by hand.
 
 {/* docs: use=blog-schema */}
-```ts title="direct-db.ts" no-run
+```ts title="direct-db.ts" pg-only="pgbouncer"
 import { pgPrime } from 'pg-prime'
 
 export const db = pgPrime({
@@ -117,6 +124,13 @@ export const db = pgPrime({
   poolerMode: 'transaction',
   schema,
 })
+
+// The routing, proved rather than asserted: under `poolerMode: 'transaction'` this call would
+// throw `UnsupportedInPoolerModeError` with no `directConnection`, and with one it simply opens
+// the subscription on the direct URL. Nothing at the call site says which connection it is on.
+const sub = await db.listen('post_changed', () => {})
+console.log(sub.channel) // → post_changed
+await sub.close()
 ```
 
 What that buys you, precisely:
@@ -141,8 +155,8 @@ too.
 Presets are plain functions returning a partial config, so they compose and are inspectable rather
 than being magic strings:
 
-{/* docs: use=blog-schema */}
-```ts title="neon-db.ts" no-run
+{/* docs: use=blog-schema no-run="the endpoint is Neon's; the docs gate has PostgreSQL and PgBouncer, and pointing a Neon preset at PgBouncer would prove nothing about Neon" */}
+```ts title="neon-db.ts"
 import { pgPrime, presets } from 'pg-prime'
 
 export const db = pgPrime({
@@ -172,13 +186,17 @@ correctness. Prisma #21799 is the case study in what happens when a client-side 
 outlives the pooler bug it worked around.
 
 {/* docs: use=blog-schema */}
-```ts title="check-pooler.ts" no-run
+```ts title="check-pooler.ts" pg-only="pgbouncer"
 import { pgPrime } from 'pg-prime'
 
 const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema })
 
 const report = await db.diagnosePooler()
 console.log(report.verdict, report.confidence, report.recommendedPoolerMode, report.agrees)
+// → likely-transaction-pooled medium pgbouncer-transaction false
+// …measured against a real PgBouncer with `max_prepared_statements=200`. The verdict names what
+// was *observed* and `recommendedPoolerMode` names what to declare; `agrees` is false because this
+// handle declared nothing and the default is `none` — the too-permissive direction.
 for (const signal of report.signals) {
   console.log(`  ${signal.name}: ${signal.result} — ${signal.detail}`)
 }

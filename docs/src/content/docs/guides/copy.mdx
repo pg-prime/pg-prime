@@ -18,27 +18,38 @@ Which to use is answered by a measurement further down, and the answer is probab
 expect.
 
 <Aside type="note">
-Every `COPY` block on this page is marked `no-run`. PGlite — which is what executes this site's
-examples in CI — cannot host COPY: its socket bridge exits the WASM backend on a COPY message,
-taking the instance with it. pg-prime proves COPY against a real PostgreSQL instead. The
-`insertMany` example below is executed.
+Every `COPY` block on this page is marked `pg-only`: it is executed in CI, against a real
+PostgreSQL, rather than against the PGlite that runs the rest of this site's examples. PGlite
+cannot host COPY — its socket bridge exits the WASM backend on a COPY message, taking the instance
+with it — so these blocks ride the docs gate's second tier (`pnpm docs:examples:pg`), one scratch
+database each. The `insertMany` example below runs on both.
 </Aside>
 
 ## `copyFrom` — typed rows in
 
-{/* docs: use=blog,blog-ddl no-run */}
-```ts title="copy-from.ts" no-run
-// no-run: PGlite's socket bridge cannot carry COPY. This runs against a real PostgreSQL.
+{/* docs: use=blog,blog-ddl */}
+```ts title="copy-from.ts" pg-only
+const [author] = await db
+  .insertInto(db.h.users)
+  .values({ email: 'ann@example.com', name: 'Ann' })
+  .returning((t) => ({ id: t.users.id }))
+  .execute()
+
 const rows = Array.from({ length: 100_000 }, (_, i) => ({
-  authorId: 1n,
+  authorId: author!.id,
   title: `post ${i}`,
   body: 'x'.repeat(64),
   published: i % 2 === 0,
   createdAt: new Date(),
 }))
 
-const result = await db.copyFrom(posts, rows)
-console.log(result.rowCount) // 100000
+// `columns` is not optional here, and the reason is measured: it defaults to every *declared*
+// column, and `posts.id` is `generated always as identity`. The default list would send `\N` for
+// it and PostgreSQL answers `23502`, not-null violation. Name the columns you are writing.
+const result = await db.copyFrom(posts, rows, {
+  columns: ['authorId', 'title', 'body', 'published', 'createdAt'],
+})
+console.log(result.rowCount) // → 100000
 ```
 
 `rows` may be an array, any iterable, or an **async** iterable — so a file, an HTTP response or a
@@ -57,7 +68,7 @@ than an insert.
 | Option | Default | What it does |
 |---|---|---|
 | `format` | `'text'` | `'csv'` is the other. Binary COPY is not offered — pg-prime's codecs are text. |
-| `columns` | every declared column, in declaration order | The columns to write, in order. The same order `insert into t (…)` uses, so the two paths cannot disagree. |
+| `columns` | every declared column, in declaration order | The columns to write, in order. The same order `insert into t (…)` uses, so the two paths cannot disagree. **A table with a generated column needs this**: the default list includes it, and `COPY` sends `\N` for a key your rows do not have. |
 | `highWaterMark` | 65 536 | Bytes buffered before backpressure is applied to your source. |
 | `signal` | — | Aborts the load; see [cancellation](/pg-prime/guides/cancellation/). |
 
@@ -70,10 +81,15 @@ When you already have the bytes — a CSV on disk, a `pg_dump` fragment, a forma
 do not produce — write the `COPY` statement yourself and hand over a byte stream. Nothing is
 encoded for you.
 
-{/* docs: use=blog no-run */}
-```ts title="copy-from-raw.ts" no-run
-// no-run: PGlite's socket bridge cannot carry COPY.
+{/* docs: use=blog,blog-ddl */}
+```ts title="copy-from-raw.ts" pg-only
 import { createReadStream } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
+
+await db.insertInto(db.h.users).values({ email: 'ann@example.com', name: 'Ann' }).execute()
+
+// The CSV you already have, written here so the example is one you can run.
+await writeFile('posts.csv', 'author_id,title,body\n1,First,a\n1,Second,b\n1,Third,c\n')
 
 const bytes = createReadStream('posts.csv') as AsyncIterable<Uint8Array>
 
@@ -81,7 +97,7 @@ const result = await db.copyFrom.raw(
   `copy "posts" ("author_id","title","body") from stdin with (format csv, header true)`,
   bytes,
 )
-console.log(result.rowCount)
+console.log(result.rowCount) // → 3
 ```
 
 A source that throws mid-load sends `CopyFail`, so the connection is not left stuck in copy-in mode
@@ -92,13 +108,21 @@ and nothing is written.
 `db.copyTo(sql)` gives an `AsyncIterable<Uint8Array>`; `db.copyTo.lines(sql)` gives the same stream
 split into lines of text, which is the shape people actually want for CSV.
 
-{/* docs: use=blog no-run */}
-```ts title="copy-to.ts" no-run
-// no-run: PGlite's socket bridge cannot carry COPY.
+{/* docs: use=blog,blog-ddl */}
+```ts title="copy-to.ts" pg-only
+await db.insertInto(db.h.users).values({ email: 'ann@example.com', name: 'Ann' }).execute()
+await db
+  .insertInto(db.h.posts)
+  .valuesMany([
+    { authorId: 1n, title: 'First', body: 'a', published: true },
+    { authorId: 1n, title: 'Draft', body: 'b', published: false },
+  ])
+  .execute()
+
 const stmt = db.sql`copy (select id, title from posts where published) to stdout with (format csv)`
 
 for await (const line of db.copyTo.lines(stmt)) {
-  console.log(line)
+  console.log(line) // → 1,First
 }
 ```
 
