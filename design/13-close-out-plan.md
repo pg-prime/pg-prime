@@ -223,7 +223,156 @@ why, what was found and not fixed.
 
 #### T — RESULT
 
-_(pending)_
+**Branch** `worktree-agent-a4c4a0ddf5c75cfb5`, five commits on top of `c2d9649`:
+`b1945d6` (the package) · `c07daa7` (the gates) · `cdddded` (the docs) · `18f2524` (the
+changeset) · `f23d225` (a vitest-config fix the integration run found).
+
+**What was built.** `packages/pg-prime-testing/` — six modules behind one entry point, 19 value
+exports and 19 type exports.
+
+- `src/mock-pool.ts` — `createMockPool(options?)`. Records `{ text, values, mode, binary, rowMode,
+  name, client, config }` off the `pg` query config, so `mode` recovers `02` §5.3's three protocol
+  paths from the wire rather than being asserted separately. Replays a script of result sets (wire
+  rows: arrays of the text PostgreSQL would send, decoded by the caller's own codecs) or duck-typed
+  SQLSTATE errors, and a step may be a **function of the statement it is answering**, which is how
+  a script survives the code under test emitting one more query. Two behaviours are worth naming:
+  the `pg_settings` handshake is answered from `DEFAULT_SERVER_PARAMETERS` and neither consumes a
+  step nor is recorded — it is a handshake, not a statement anyone wrote — and it refuses `pg`'s
+  Submittable seam (COPY, cursors) with a sentence pointing at `startPglite()`, because a script
+  cannot honestly stand in for a protocol conversation.
+- `src/expect-sql.ts` — `expectSql(query, { text, values? })`, whitespace-normalised, throwing an
+  `Error` whose message is a unified diff (hand-rolled LCS: the package ships zero runtime
+  dependencies and a SQL golden is a handful of lines). `values` are compared as the **encoded wire
+  values** `Compiled.binds` carries; an unfilled prepared slot renders `:name`.
+- `src/guards.ts` — `requiresRealPostgres(it, reason)` / `requiresConcurrency(it)`, plus
+  `onRealPostgres()` and `TEST_URL_ENV`. `TestDecl` is `{ (name, fn, timeout?): void; readonly
+  skip: TestDecl }` — `skip` recursive, so a guard can return `it.skip` where a `TestDecl` is
+  expected and guards compose. That vitest's own `it` satisfies it is asserted by the compiler in
+  `test/unit/guards.test.ts` (`const vitestIt: TestDecl = it`), which is the only place a
+  regression in "runner-agnostic" could be caught before somebody else's repository.
+- `src/pglite-bridge.ts` — moved from `packages/pg-prime/test/live/`, decision 2. One behavioural
+  change: the PGlite handle is duck-typed (`PgliteLike`, two methods) instead of
+  `import type { PGlite }`, for the reason `src/driver/pg-like.ts` duck-types `pg` — a `.d.ts` that
+  named the optional peer would make the optionality a lie for every consumer's type-checker. The
+  emitted declarations of the whole package name exactly one external module, `pg-prime`, and
+  `check-dts` prints that list on every run.
+- `src/pglite.ts` — `startPglite()` → `{ url, versionNum, version, kind: 'pglite', stop() }`, TZ
+  pinned and restored exactly as `test/live/_pglite.ts` does it, version probed through PGlite's
+  own `query()` so the fixture needs no wire client (decision 2).
+- `src/postgres.ts` — `startPostgres(options?)` through `@testcontainers/postgresql`,
+  `scratchDatabase(adminUrl)`, `dropScratchDatabase`, `isScratchDatabase`, `scratchDatabaseName`,
+  `SCRATCH_PREFIX`, `probe`, `databaseUrl`, `dockerAvailable()`. The refusal is mechanical and runs
+  **before** a connection is opened, because the drop path terminates sessions first.
+
+`packages/pg-prime/test/live/_pglite-bridge.ts` is now `export * from
+'../../../pg-prime-testing/src/pglite-bridge.js'`. `_pglite.ts` was **not** touched: it needs `pg`
+for the real-server branch of `probe()` anyway, and leaving it alone is what keeps tier 1's count
+identical. `tools/docs-examples.mjs`'s esbuild bundle resolves through the re-export unchanged —
+90 examples ran.
+
+**Gate numbers**, all from one run of the §2 chain with `&&`, on `f23d225`
+(`PG_PRIME_TEST_URL=postgres://pgorm:pgorm@127.0.0.1:54331/postgres`):
+
+| Gate | Number |
+|---|---|
+| `pnpm lint` | clean (oxlint 0 errors, **0 findings of any kind in the new package**; sherif, knip clean) |
+| `pnpm format:check` | clean, 425 files |
+| `pnpm typecheck` | clean — 3 packages, `@pg-prime/testing` two projects (`src`, `test`) |
+| `pnpm test` (tier 0) | pg-prime **1 013** in **4.06 s** (unchanged) + `@pg-prime/testing` **23** in 0.53 s |
+| `pnpm test:live` (tier 1) | pg-prime **1 790 + 6 skipped** — *the same as `9be7192`, with the bridge served from the package* — + `@pg-prime/testing` **28** |
+| `pnpm test:pg` (tier 2) | pg-prime **1 851 + 11 skipped** (no PgBouncer URL) · kit **420 + 6 skipped** · `@pg-prime/testing` **36** (5 files: 3 unit + 1 live + 1 pg; Docker answered, so `startPostgres` ran) |
+| `pnpm build` | 3 packages; `@pg-prime/testing` 29 files, 109.0 KB of `dist`, 137 ms |
+| `pnpm package:check` | **10/10 size gates**; `@pg-prime/testing` **111.0 KB unpacked / 31 files / 34.8 KB tarball** against design's 300 KB, `0 dependencies / 1 required peer (+2 optional)`; api-snapshot no drift; emit parity 27/29 byte-identical, 2 maps differ only in `mappings`; `check:dts` clean on 5.9.3 and 7.0.2 with `skipLibCheck: false`, external specifiers `pg-prime` only; `publint --strict` and `attw --profile esm-only` both clean; pack-smoke ok |
+| `pnpm bench:types` / `bench:compile` | OK, unchanged (reports reverted — they are generated) |
+| `pnpm docs:check` | typecheck **575 blocks / 46 pages** (was 526 / 45) · examples **90 from 26 pages** (was 83) · coverage **1 221/1 221 names, 100.0 %**, `@pg-prime/testing` **38/38** · build 47 pages |
+
+**Docs.** `guides/testing.mdx` rewritten and retitled *Testing* (it is no longer only about
+PGlite): a three-tier table, tier 0 in full, `expectSql` with its diff, the PGlite fixture, both
+limits, the transaction-per-test fixture, tier 2. The three blocks the contract names are all
+executed now — `guards.ts` builds a two-line `it` (which doubles as the demonstration that
+`TestDecl` is runner-agnostic), `namespace.ts` really creates the schema and reads
+`current_schema()` back, and `test-db.ts` lost its `no-run` because constructing the handle
+validates the whole config eagerly, so running it standalone is a real assertion (it is still the
+`setup=` file `user-repository.test.ts` imports). The one `skip-check` on the page — the
+`@electric-sql/pglite-socket` setup, which could not compile because that package is not a
+dependency here — is replaced by a `startPglite()` example that **runs**, booting a second PGlite
+inside the example process. `TEST_DATABASE_URL` → `PG_PRIME_TEST_URL`; the "reserved package name"
+aside is gone; the `no-run` paragraph says those blocks now run on the docs gate's real-server tier
+(`pg-only`), and the three `no-run` blocks left on the page carry their reason in the attribute per
+R22. New `reference/testing.mdx`, 38 anchors, one sidebar entry.
+
+**Divergences from the contract, and why.**
+
+1. **`tools/size-budget.mjs` gained three lines, not zero.** The `zeroDependencies` block asserts
+   "0 runtime deps AND 0 required peers", and `@pg-prime/testing` has one required peer by decision
+   3. Setting `zeroDependencies: false` would have been the no-edit option and would have asserted
+   *nothing at all* — not even that the package has no runtime dependencies. Instead the block
+   takes a `requiredPeers` allowlist defaulting to `[]`, which leaves `pg-prime`'s own gate byte-
+   for-byte unchanged, and the budget entry names all three peers so an optional one quietly
+   becoming required is a red job. The reason is in `budgets.json._whyPeers` and in the tool.
+2. **The `unpackedBytes` budget is design's 307 200, not the measurement.** The contract says
+   "design 300 KB beside the measured budget"; the measurement is 113 623 B and
+   `ceil(measured/1024)*1024` would leave **41 bytes** of headroom. That rule belongs to the
+   treeshake lines, which are *minified*; this line counts the comments tsc keeps, and this package
+   is about half docblock by line, so a 41-byte budget would make a paragraph edit a red CI job
+   while telling nobody anything. Both existing `packages.*` entries use design's number the same
+   way, and the log prints `design / measured / budget` on every run. Reason in `budgets.json`.
+3. **`tools/api-snapshot.mjs`'s closing line** said "the two types@<5.9 stubs"; it now counts
+   `PACKAGES.length`. One line, and it would otherwise have been wrong on every run.
+4. **`docs/package.json` gains `@pg-prime/testing`** as a workspace devDependency (the docs gates
+   resolve through `docs/node_modules`) and `knip.json`'s docs `ignoreDependencies` gains it (it is
+   used only from `.mdx`, which knip's docs project excludes).
+5. **`reference/testing.mdx` declares two `apiEntry` values**, `@pg-prime/testing#.` and
+   `pg-prime#.`, so a signature that says `extends PgLikePool` or `config: PgLikeQueryConfig`
+   resolves. That is the shape `reference/driver.mdx` already uses; coverage per entry is a union
+   across the pages that claim it, so nothing else moves.
+6. **`packages/pg-prime/test/live/_pglite.ts` was not touched.** Decision 2 permits it "only if
+   needed"; it is not — the moved bridge's only signature change is `PGlite` → `PgliteLike`, which
+   a real `PGlite` satisfies structurally.
+7. **The real-server fixtures talk to the admin database through `pg-prime` itself**, statically
+   imported. Decision 3's lazy-import-with-a-sentence rule is applied to the two OPTIONAL peers
+   only; making the REQUIRED one lazy would have bought nothing and cost every type in
+   `postgres.ts` an `as unknown as` cast. Recorded because it is the reason `dist/mock-pool.d.ts`
+   names `pg-prime`.
+
+**Found and not fixed.**
+
+- **`pgPrime({ connection })` never attaches an `error` listener to the `pg.Pool` it builds**
+  (`packages/pg-prime/src/session/pg-lazy.ts` `buildPool`, ~L141). pg-pool re-emits an **idle**
+  client's error on the pool, and an `EventEmitter` `error` with no listener throws — so a
+  `pg_terminate_backend` against an idle pooled connection takes the process down with an uncaught
+  `57P01`, not a rejected promise. Found by the first draft of
+  `packages/pg-prime-testing/test/pg/postgres.test.ts`, which left a handle open across a
+  scratch-database drop; the committed version holds an open **transaction** instead, where the
+  adapter's own per-client `error` listener (`pg-adapter.ts` L220) does handle it. A one-line
+  `pool.on('error', …)` in `buildPool` would close it; it is `pg-prime` source and out of T's scope.
+- **`packages/pg-prime-kit/test/cli/envelope.test.ts` timed out in a hook (10 s) once** under
+  `pnpm -r test:pg`, with three packages' tier-2 suites and a testcontainer sharing one server. It
+  passed on the immediate re-run and on every run since (420 + 6 both times). A load flake, not a
+  regression — but the hook timeout is the repo default and this plan adds a third concurrent
+  tier-2 suite, so it will be hit again.
+- **Local-environment note, not a bug.** `packages/pg-prime-kit/test/support/pgdump.ts` falls back
+  to `docker exec <PG_PRIME_SPIKE_CONTAINER ?? 'pgorm-spike-diff'> pg_dump` when no `pg_dump` is on
+  PATH, and pins port 5432 *inside* that container. Pointing `PG_PRIME_TEST_URL` at any container
+  other than `pgorm-spike-diff` therefore fails 41 kit tests with `role "…" does not exist` until
+  `PG_PRIME_SPIKE_CONTAINER` is set to match. Every kit number above was taken with
+  `PG_PRIME_SPIKE_CONTAINER=pgorm-spike-sql`.
+
+**For the integrator.** (a) The **lockfile changed**: `@pg-prime/testing` gains
+`@testcontainers/postgresql@^12.1.0` and `@electric-sql/pglite@^0.5.7` as devDependencies, and
+`docs` gains `@pg-prime/testing`. testcontainers brings `cpu-features`, `protobufjs` and `ssh2`,
+whose install scripts pnpm reports as ignored — the same warning `esbuild` already produces, and
+nothing needs them built. (b) The **shared-list one-liners** T adds, for conflict resolution:
+`tools/api-snapshot.mjs` PACKAGES, `tools/check-dts.mjs` PACKAGES, `tools/emit-parity.mjs`'s
+default package list, `tools/pack-smoke.mjs` PACKAGES (plus the consumer body — X does not touch
+this file), `tools/budgets.json` `packages`, `knip.json` (a workspace entry **and** the docs
+`ignoreDependencies` line), `tools/docs-coverage.mjs` and `tools/docs-typecheck.mjs` golden lists,
+`docs/astro.config.mjs` (two lines: the Reference entry, and the Guides label
+`Testing with PGlite` → `Testing`). (c) `tools/size-budget.mjs`'s `requiredPeers` allowlist
+(divergence 1) is a real behaviour change to a shared tool, not a list line. (d) Nothing under
+`.github/workflows/**` needs editing: the package's `test` / `test:live` / `test:pg` ride the
+existing `unit`, `live` and `pg` jobs through decision 13's recursive root scripts, which the three
+runs above verify.
 
 #### X — RESULT
 
