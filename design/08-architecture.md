@@ -710,6 +710,45 @@ Harness: **`mitata@1.0.34`** for the no-I/O microbenchmarks (best-in-class for s
 distributions rather than a single mean), plain `perf_hooks` percentile collection for the DB cases
 where the distribution shape *is* the result.
 
+> **AS BUILT (design/09 §3.7 and its 2026-08-27 follow-up; design/12 §4 P, 2026-08-29).** Every
+> line of this section exists. `bench/runtime/` is the PR half and the nightly ratio half in one
+> runner (`run.mjs`, gated by `budget.json`), `bench/compare/` is the comparison run, and
+> `tools/bench-regression.mjs` is the last sentence. Six corrections and additions the section did
+> not anticipate, each measured:
+>
+> 1. **`mitata` is not used.** `bench/runtime/sampler.mjs` is ~200 lines of `perf_hooks` doing what
+>    this paragraph asks for — percentiles, a machine-speed reference workload every ratio is
+>    divided by, and an allocation counter that sizes its batch from a probe so a scavenge inside
+>    the batch cannot be read as "nothing was allocated". The reason it is ours is the last of
+>    those: the numbers this section calls the ones "where ORM overhead actually hides" are bytes
+>    per operation, and no general harness measures them the way `bytesPerOp` does.
+> 2. **The gate is p50 ≤ 1.15× / p99 ≤ 1.30× and it is not met on all nine.** It is met on the two
+>    relation loads and missed on the other seven by a roughly constant amount of client-side work
+>    per statement — 10–30 % of a point select, ~1 % of a relation load. Every budget is per case,
+>    measured on the fixed runner, and printed three-way beside this section's number on every run;
+>    the gaps are enumerated in `budget.json._overDesign`, which is itself a gate.
+> 3. **A p95 line was added**, because p99 over 40–100 samples of a sub-millisecond round trip is
+>    one scheduler stall wide. Both are gated; p95 is the tail gate that holds.
+> 4. **The ratios are measured with `NODE_ENV=production`, and the development configuration is
+>    measured beside them and reported.** This mattered: §7.4's call-site capture and §1.5's dev
+>    guard are on outside production, and a bench that left `NODE_ENV` unset gated the development
+>    configuration — which is how a +24.6 % per-statement regression reached `main` (design/12 §4 P
+>    item 0).
+> 5. **The PR half gained a third gate**, `statement-path.mjs`: the client-side cost of one
+>    statement over a null driver, in three arms (the pre-session-layer path, production, dev). The
+>    two gates this section names cannot see the session layer at all, and the nine e2e pairs that
+>    can need a server and therefore run once a night.
+> 6. **Prisma is not in the comparison run.** `bench/compare/PRISMA.md` is the measurement:
+>    `prisma generate` is 0.87 s and fits easily, but the install is 8 min 44 s / 296 MB and every
+>    job in both workflow files pays it, because they all begin with a root `pnpm install`. The
+>    ~11× / ~27× anti-target above keeps its place and its source.
+>
+> The comparison run, PostgreSQL 17.11, geometric mean of the nine p50 ratios over raw `pg`:
+> **pg-prime 1.105× · drizzle-orm 0.45.2 1.217× · kysely 0.29.5 1.071×**. It also found that both
+> competitors lose `bigint` precision past 2^53 in a relation load, from `JSON.parse` over
+> `json_agg`, where pg-prime's `::text` round trip through the codec is exact — the extra work this
+> comparison charges us for.
+
 ---
 
 ## 6. Release discipline

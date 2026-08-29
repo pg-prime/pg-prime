@@ -1503,6 +1503,424 @@ issue via `gh` with both tables, once per regression (dedup by title).
 measured amount (or recorded as at its floor with the profile); the comparison table appears in the nightly
 summary; `bench:compile` gates unchanged.
 
+### P — RESULT (2026-08-29)
+
+**Branch** `worktree-agent-aead1f875616011e4`, six commits on top of `79edac9` (plus the two
+integration cherry-picks `a613570` / `d21ffe6`). Every item of the §4 P brief ships, including the
+tier-0 one that was optional. Everything below is measured; where a number is from the design
+machine rather than the runner it says so, because R21 is the rule this workstream exists to obey.
+
+**Environment.** PostgreSQL 17.11 in Docker on `:54334` with PgBouncer 1.25 on `:56434`, MacBook
+Pro 18,1 (M1 Pro), Node 24.14.1. The runner numbers are the six nightly `bench-runtime-report-*`
+artifacts and eleven `types`-job logs, downloaded rather than re-run.
+
+#### Item 0 — the per-statement regression
+
+**What it was, found by profiling and not by guessing.** `bench/runtime/statement.mjs` is new: it
+interleaves raw `pg`, four `pgPrime` configurations and the pre-session path — `driver.acquire()` →
+`runOn` → `release`, transcribed from `fb723f4` — so the difference between two rows is exactly the
+feature named in the row. The first version measured the variants sequentially and put "without the
+dev guard" 7 % *above* the dev default that includes it, which is a statement about the machine;
+round-robin sampling fixed that and is what the file now does.
+
+Per statement on the point-select pair, before the pass:
+
+| variant | Δ over raw `pg` | ratio |
+|---|---|---|
+| raw `pg` + hand mapper | 0 | 1.000 |
+| dev default — guard + call site | **+56.0 µs** | 1.274 |
+| …without call-site capture | +13.2 µs | 1.064 |
+| …without the dev guard | +31.4 µs | 1.153 |
+| production (neither) | +17.7 µs | 1.086 |
+| **pre-session path** (`acquire` + `runOn` + `release`) | **+10.8 µs** | 1.053 |
+
+So **~42 µs of the 45 µs the session layer added was two call-site captures per pooled statement**
+— one in `execute()`, which is `07` §7.4's feature, and one evaluated eagerly as the argument to
+the dev guard's `assertNotInsideTransaction(...)`, which throws on approximately no statement and
+discarded the string on all the others. The runner's arithmetic agrees: point select 1.286 → 1.603
+is +92 µs on a machine roughly 2.2× slower, and the 5-statement transaction moved half as much per
+statement (+42 µs) because a `Tx` statement is not guarded and therefore captures once.
+
+**(a) The production overhead is back in the pre-S neighbourhood.** Five changes, all
+design-preserving — the features stay and cost only when on:
+
+1. `captureCallSite` reads structured `CallSite[]` through `Error.prepareStackTrace` and formats
+   exactly the one frame it returns, under a bounded `stackTraceLimit`, instead of reading `.stack`
+   (which makes V8 format all ten frames so that nine can be discarded). Both globals restored in a
+   `finally` with nothing awaited between.
+2. the dev guard takes a **boolean** and captures inside itself, on the path that throws.
+3. the no-hooks/no-log fast path stops paying for observers that do not exist: no `performance.now()`
+   pair, no pool-event objects, no `QueryStartEvent`. The predicate is `observed(state)` and it is
+   deliberately the *same* one the end event uses, because `waitedForConnectionMs` must be measured
+   whenever a slow-query record will carry it — `07` §7.1 separates "pool exhausted" from "slow
+   query" and a zero there merges them again.
+4. three `async` frames per statement removed — `applyConnectSettings` behind its own length test,
+   `release` handing back the driver's promise, the descriptor's `perform` as a `.then` — the
+   `runOn` options built without spreads and shared frozen when empty, and `run(q)` no longer mints
+   `{}` to say "no options".
+5. the statement descriptor is a class with lazy `paramTypes` / `tables` that hands `paramTypes` to
+   `runOn` instead of both building the same array.
+
+After, same instrument, same session:
+
+| variant | before | after |
+|---|---|---|
+| dev default | +56.0 µs · 1.274 | **+25.2 µs · 1.120** |
+| production | +17.7 µs · 1.086 | **+8.5 µs · 1.040** |
+| pre-session path | +10.8 µs · 1.053 | +8.9 µs · 1.043 |
+| the same, per statement inside a transaction (`--case=tx`) | — | production **+11.5 µs** vs pre-session **+11.1 µs** |
+
+**Production is at the pre-session path, inside the measurement's own resolution, on both cases.**
+
+With the socket removed entirely — `bench/runtime/statement-path.mjs`'s null driver, which is where
+the numbers are exact:
+
+| arm | before | after |
+|---|---|---|
+| pre-session | 0.585 µs · 2 649 B | 0.552 µs · 2 658 B |
+| production | 1.465 µs · 8 794 B | **1.119 µs · 5 778 B** |
+| dev | 15.872 µs · 18 713 B | **4.268 µs · 6 954 B** |
+| production / pre-session | 2.503 | **1.917–2.077** |
+| dev / pre-session | 27.13 | **7.7–9.5** |
+
+The null-driver figure *understates* the dev saving relative to a real application, and that is
+worth knowing rather than glossing: `Error.captureStackTrace`'s cost grows with the depth of the
+async stack, and the null driver's stack is short. The live pair is the honest number for dev.
+
+**(b) The bench states which mode it measures.** `bench:runtime` sets `NODE_ENV=production` before
+the package is imported — `07`'s defaults read it once and memoise — so the nine gated ratios are
+what a deployed process pays, which is the number `08` §5 is about. The **development**
+configuration is measured too, on the point select, with an explicit `{ errors: { captureCallSite:
+true }, devGuard: true }` handle, and printed as a reported line with the per-statement difference
+spelled out. `report.json` carries `e2e.mode` so a ratio's mode is in the artifact and not only in
+a log. Local production 1.087–1.14 against dev 1.113 on the same run.
+
+**And a third thing, which is the one that stops this recurring.** The regression was found by the
+*nightly*, a day after the merge, in the only e2e case cheap enough for a constant per-statement
+cost to be visible against a network round trip. `bench/runtime/statement-path.mjs` puts the
+statement path in the **PR** half of `08` §5 — no I/O, no database, deterministic — as three arms
+over a null driver with two gates: `production / pre-session` (1.917–2.077, budget 2.40) and its
+byte twin (+3 121 B, budget 3 400). Both are quotients of two arms measured in the same process on
+the same compiled statement, which is why sizing them off the design machine does not violate R21
+and why `budget.json.statement._whyLocallySized` says so at length. The dev arm is printed and
+never gated: `07` §7.4 and §1.5 are debugging aids that are on outside production by design.
+
+Budgets moved by this item, each at the measurement with the account in the JSON: `.js` bytes
+890 880 → 898 048 (and → 902 144 by item 2), tree-shake `connect-one-select` 71 680 → 72 704 and
+`root-import-all` 78 848 → 79 872. The tree-shake fixtures are minified, so those +346 / +344 B are
+code and not comments; the `.js` line is both, and the note says which is which.
+
+#### Item 1 — every budget re-cut from the runner (R21)
+
+**The distribution.** Seventeen runs on `ubuntu-latest`: the six nightly `bench` artifacts after
+the 2026-08-27 perf pass (33113108895, 33152893089, 33162124589, 33162423166, 33184536648,
+33215061332) and eleven `types`-job logs from `ci.yml` — including, deliberately, the **failed**
+first attempt of 33207272663, the run C's merge record describes as tripping 2.816/2.8 and
+1.663/1.65 on inert bench changes. A budget sized only from the runs that passed is a budget sized
+to fail.
+
+**The rules**, written into `budget.json._sizedFromTheRunner` so the next re-cut is the same
+re-cut: e2e p50 = max + 0.15 (absolute, because the p50 ratios reproduce to ±0.03 on the runner);
+p95 = max × 1.40; p99 = max × 2.00; decode and the reference ratios = max × 1.05; floors = min ×
+0.90; byte counts = max × 1.02. The two tail factors were themselves measured: cut at 1.30 and 1.60
+first, the design machine — a second machine on identical code — read `delete by PK` p99 at 3.98
+against a runner-sized 3.20, so they widened until both machines clear every line.
+
+The post-S run's five cheap-statement ratios are the regression and are excluded from those five
+cases' sizing; it is included for the four the regression could not reach.
+
+| gate | old | new | runner distribution |
+|---|---|---|---|
+| e2e p50 · point select | 1.45 | **1.45** | 1.261–1.286 |
+| e2e p50 · select 1 000 rows | 1.55 | **1.40** | 1.181–1.219 |
+| e2e p50 · insert one | 1.65 | **1.40** | 1.200–1.241 |
+| e2e p50 · insert 1 000 (batch) | 1.90 | **1.50** | 1.201–1.337 |
+| e2e p50 · update by PK | 1.50 | **1.35** | 1.129–1.167 |
+| e2e p50 · delete by PK | 1.60 | **1.35** | 1.136–1.162 |
+| e2e p50 · 5-statement transaction | 1.40 | **1.50** ↑ | 1.157–1.320 |
+| e2e p50 · relation loads | 1.25 | **1.20** | 0.977–1.037 |
+| e2e p95 · all nine | 1.8–6.0 | **1.50–2.75** | worst 1.037–1.943 |
+| e2e p99 · all nine | 12.0 uniform | **2.10–6.95** | worst 1.032–3.469 |
+| decode vs unchecked | 2.8 | **2.95** ↑ | 2.374–2.816 |
+| decode vs same-checks | 1.65 | **1.75** ↑ | 1.478–1.663 |
+| decode rows/sec | 1 000 000 | **1 150 000** | 1 270 426–1 444 888 |
+| decode codegen rows/sec | 1 400 000 | **1 500 000** | 1 645 540–1 859 078 |
+| codegen fraction of closure | 0.85 | **0.82** | 0.708–0.786 |
+| `emitRefRatio` | 1.4 | **1.25** | 0.92–1.08 |
+| `buildAndCompileRefRatio` | 12.0 | **8.0** | 3.87–5.50 |
+| `simpleRefRatio` | 2.0 | **1.5** | 0.78–1.05 |
+| `buildAndCompileBytes` | 32 500 | **32 000** | 31 290–31 469 |
+| `simpleBytes` | 7 600 | **7 500** | 7 012–7 284 |
+
+**Twenty-eight of the thirty-one lines came down; three went up, and the three are the honest
+part.** The 5-statement transaction had 6 % of margin on a case whose own runner range is 14 %
+wide, and a gate with less margin than the thing it measures is a coin flip. The two decode ratios
+had their budgets *inside* the observed range and the run that proved it is in the sample.
+
+**What was tried first on the decode ratios and did not work: changing the statistic.** Across the
+six nightly runs the min/min quotient spreads 5.4 % where p50/p50 spreads 4.4 % — no better. What
+should help is pairing the *quotient* rather than the timings, since `samplePaired` already
+interleaves the two sides: `median(aᵢ/bᵢ)` cancels drift inside each pair where `median(a)/median(b)`
+cannot. `ratioP50Paired` is now measured and printed on every run and deliberately **not gated** —
+it has no runner distribution, and sizing a new gate off the design machine is what R21 forbids. It
+is the candidate to gate five nightlies from now and the two widened numbers are the candidates to
+bring back down.
+
+**No `_overDesign` entry closed, including the one the brief named.**
+`decode.codegen.ratioVsCheckedMapperP50` was the candidate: the previous note said the measurement
+met design at 1.126–1.146 and was waiting for a runner distribution. It has one now — **1.098–1.218
+against design's 1.15, six of seventeen above it** — so the opt-in generated decoder meets Appendix
+B on a quiet machine and does not on the runner. The budget stays at 1.30. That is the mechanism
+working: an entry leaves by measurement, and the measurement said no. All seven survivors now carry
+their runner range and their reason.
+
+#### Item 2 — the batch-insert encode path
+
+Profiled with `--cpu-prof` and `bytesPerOp`, not guessed. Before, the self time of one `.compile()`
+of 1 000 rows × 3 columns: **`mkNode` 27.7 %**, the `#valuesSource` inner arrow 16.4 %, the garbage
+collector 12.4 %, `bindValue` 8.9 %.
+
+All of `mkNode`'s 27.7 % was `WeakSet.add` — a runtime call with no fast path — for 3 000 parameter
+nodes the D7 registry will never be asked about. `#valuesSource` now runs inside `inInternalNodes`,
+which is `compile/nodes.ts`'s own mechanism with its own argument: the registry answers "did this
+library build this value or did it arrive as data" at one boundary, where a caller hands a value
+back, and a `param` minted from the caller's own datum goes straight into the AST. If one ever did
+come back the registry would classify it as data and *parameterise* it, which is the safe
+direction. Plus: an indexed row loop instead of `rows.map(row => columns.map(…))`, `keys`/`codecs`
+hoisted into parallel arrays, a shared lazily-grown `$1`, `$2`, … table in the emitter, and an
+indexed per-row key check.
+
+| stage | before | after |
+|---|---|---|
+| `valuesMany(...)`, no compile | 36.2 µs · 129 402 B | **30.1 µs · 73 414 B** |
+| `+ .toAst()` | 1 159.8 µs · 563 643 B | **192.0 µs · 308 408 B** |
+| `+ .compile()` | 1 680.2 µs · 1 834 616 B | **631.4 µs · 1 444 939 B** |
+
+**−62 % time and −21 % allocation** for the compile; −83 % for the AST build. The same 6-second
+profiling loop goes 4 012 → 9 775 iterations.
+
+**What is left is at its floor or out of scope, in profile order:** `bindValue` 20.9 % (the codec
+`encode` plus two array pushes), `compile()`'s own 13.8 % (the 15 000-chunk `join` and the result
+assembly), `utcTimestampText` + `encode` + `pad2` ≈ 17 % — codec encoding of 1 000 `Date`s, exactly
+the work the brief says not to cut — and `mkNode` 10.5 %, now only the `Object.freeze` that makes a
+node structurally shareable and is pinned by design/09 §3.7's R10 M1. One further idea was measured
+and rejected: `Object.freeze(em.binds)` on the 3 000-element array costs ~1 µs and makes every later
+indexed read *faster* (12.70 µs vs 16.29 µs per 3 000-element walk).
+
+The e2e ratio for this case is too noisy on the design machine to resolve a 1 ms change — three
+consecutive runs read 1.151, 1.421 and 1.452 with the raw side steady — which is why `08` §5 puts
+it on a fixed runner. The offline numbers above are the measurement; the runner's is the gate.
+
+#### Item 3 — `bench/compare`
+
+A new private workspace `@pg-prime/bench-compare`. `drizzle-orm@0.45.2` and `kysely@0.29.5` appear
+in its `package.json` and nowhere else; `bench/*` was already a workspace glob so
+`pnpm-workspace.yaml` is untouched, and `pnpm lint`'s sherif and knip steps are green.
+
+All four arms run through **one shared `pg.Pool`** — not four identical pools, because a pool is a
+queue with a `max` and four of them is four queues — against `test/live/fixture.ts`'s own DDL and
+seed, in one process, interleaved sample by sample, in production mode. Every arm's answer is
+compared with pg-prime's before anything is timed.
+
+Full run, PostgreSQL 17.11, design machine (p50 / p99 ms):
+
+| case | raw | pg-prime | drizzle | kysely |
+|---|---|---|---|---|
+| point select by PK | 0.233 / 1.666 | 0.264 / 0.454 | 0.266 / 0.470 | 0.248 / 0.409 |
+| select 1 000 rows (12 cols, 2 joins) | 3.764 / 5.320 | 4.226 / 6.572 | 4.637 / 7.349 | 3.895 / 6.562 |
+| insert one | 0.398 / 1.081 | 0.452 / 0.607 | 0.452 / 1.103 | 0.447 / 0.869 |
+| insert 1 000 (batch) | 7.096 / 7.913 | 8.154 / 9.163 | **17.672 / 20.192** | 8.454 / 9.251 |
+| update by PK | 0.374 / 0.504 | 0.422 / 0.655 | 0.429 / 0.618 | 0.399 / 0.671 |
+| delete by PK | 0.325 / 0.481 | 0.384 / 0.614 | 0.364 / 0.484 | 0.358 / 0.558 |
+| 5-statement transaction | 1.259 / 4.167 | 1.387 / 3.738 | 1.407 / 2.864 | 1.327 / 10.716 |
+| relation load, one level | 294.4 / 305.5 | 295.3 / 338.3 | 298.4 / 341.3 | 296.2 / 311.8 |
+| relation load, two levels | 364.0 / 411.8 | 368.3 / 434.0 | 369.3 / 412.4 | 368.9 / 422.5 |
+
+Geometric mean of the nine p50 ratios over raw `pg`: **pg-prime 1.105× (worst 1.182) · drizzle
+1.217× (worst 2.490) · kysely 1.071× (worst 1.191)**.
+
+**The answer check found something, which is why it exists.** Both competitors lose `bigint`
+precision in the two relation-load cases, from different APIs for the same reason: they aggregate
+children as JSON and `JSON.parse` rounds an id past 2^53 before anything types it. Drizzle's
+relational query returns 9007199254740992 / …994 / …996 / …996 / …996 for post ids
+9007199254740993..997 — the right *type*, `bigint`, the wrong value, in the right order — while the
+same drizzle query written as a flat `select` returns all five correctly, so it is the relational
+builder specifically. Kysely's `jsonArrayFrom` returns a `number`. pg-prime emits `id::text` inside
+`json_build_object` and decodes through the column's codec, which is why its column is exact and
+also extra work this comparison charges it for. The fixture starts post ids at 2^53+1 exactly so a
+bench can see this.
+
+Rather than abort — which is what `e2e.mjs` does for its pairs, where a disagreement is a bug in
+the bench — a case may declare a `knownDivergence` per arm with the reason. Declared ones are
+printed under the table on every run; an undeclared one still throws. Four are declared.
+
+**Prisma is not an arm and `bench/compare/PRISMA.md` is the measurement that decided it.** The
+generate step is a red herring — 0.87 s wall, 37 ms of generation, for a three-field model. The
+install is the problem, and not the compare job's install alone: `pnpm add prisma @prisma/client`
+is **8 min 44 s and 296 MB** on a cold store (npm, resolving the 8.0.0-rc, is 21 min and 1.0 GB),
+and every job in both workflow files begins with `pnpm install --frozen-lockfile` at the root, so
+the tier-2 matrix, the 1M fuzz job and every PR job would pay it. The second reason is R5: a
+`schema.prisma` is a fifth spelling of the fixture that nothing here can compare with
+`information_schema`, and Prisma 7 refuses `datasource { url }` outright (measured, `P1012`) so the
+arm is a `.prisma` file plus a `prisma.config.ts` plus `@prisma/adapter-pg`. `08` §5's ~11× / ~27×
+anti-target stands in the design document with its source.
+
+#### Item 4 — the > 25 % regression rule
+
+`tools/bench-regression.mjs` compares the nightly's report with the previous successful run's
+artifact and prints a Markdown body naming every gate that worsened by more than the threshold;
+exit 3 means "open an issue". The nightly `bench` job fetches the previous artifact *before* it
+runs the bench, so a download failure cannot be mistaken for "no regression", and files the issue
+with `permissions: issues: write` on that job and nowhere else in the file.
+
+**It reports on an allow-list, and the list was measured.** A > 25 % rule only means something on a
+line whose run-to-run spread is comfortably under 25 %, and across the six runner artifacts the
+families divide sharply: bytes/op 0.1–3.9 %, e2e p50 2–14 %, decode ratios 10–19 % — reportable —
+against e2e p95 27–57 %, e2e p99 up to 3.5×, absolute µs and the reference ratios 35–46 %, and
+`simple selects/sec` 51 %. Run over two consecutive **green** nightlies of unchanged code
+(33162423166 → 33184536648) with the tails included, it reports `insert 1 000 (batch) · p95` up
+56.7 % and `insert one · p95` up 36.8 %. Those lines stay gated; they are not regression material.
+Written as an allow-list rather than a deny-list it fails safe: a new gate is silent until somebody
+decides it reproduces.
+
+Over **all five consecutive pairs of real runner artifacts: zero issues.**
+
+**And the honest limit, recorded in the file.** design/12 §3 S's own regression — point select
+1.286 → 1.603 — is **+24.6 %**, and this rule would not have opened an issue for it. 25 % is `08`
+§5's number and lowering it to catch one case would be fitting a rule to a sample of one. It is why
+both mechanisms are needed: the per-case budget caught that one, on the same night, and this
+catches the one that stays inside its budget.
+
+The dedup key is the issue title and the title names the worst gate and nothing else — no count, no
+percentage, because both move from night to night while the regression stays the same.
+`--self-test` runs eleven controls with no database, no artifacts and no network.
+
+The `compare` job is `continue-on-error: true` and never fails the nightly: a competitor's next
+minor release breaking one of its own APIs must not take the matrix and the fuzz job down with it.
+
+#### Item 5 — the tier-0 ceiling, and why the three named candidates were all wrong
+
+The integration record put `pnpm test` at 5.29–5.57 s and attributed it to "transform 4.0–4.4 s +
+import 11.5–12.4 s … file count, not test bodies". Those are sums across ten workers. Measured
+**per file**, the 46 files that are not the two `typecheck.test.ts` run in **3.18 s** and hold
+**972 of the 980 tests**; the two that are run in **5.49 s** and hold eight.
+
+Each spawns `tsc` four times — TypeScript 5.9.3 and 7.0.2, each `--noEmit` and then a declaration
+emit — with `execFileSync`, which blocks the worker thread, so the four ran end to end. One 5.9.3
+invocation over the query probes is 1.97 s and one 7.0.2 invocation is 0.29 s. `execFile` +
+`it.concurrent` makes the file's floor the max instead of the sum: same four invocations, same
+assertions, four independent child processes.
+
+| | before | after |
+|---|---|---|
+| the two typecheck files alone | 5.49 s | **3.07 s** |
+| `pnpm test`, quiet runs | 5.18 / 5.35 / 5.36 / 5.56 s | **3.82 / 4.05 / 4.10 / 4.16 s** |
+
+**The three candidates the brief named, each measured, each rejected.**
+
+- **`isolate: false`** is faster and **flaky**: 3.16–3.38 s on threads, and three consecutive runs
+  of the *same code* gave 0, 3 and 1 failures; on forks, 3.39 s with a reproducible failure in
+  `test/query/prepared.test.ts`. Tier 0 shares `defaultRegistry()` and three module-level memos, so
+  files that share a worker share state and which files share a worker depends on scheduling. 0.7 s
+  for a suite whose result depends on file ordering is a bad trade.
+- **The threads pool**, isolation kept: 3.86 s against forks' 3.82–4.16. Inside the noise.
+- **Moving `test/session/session.test.ts` (146 cases) to tier 1**: that file costs **66 ms**. It was
+  the obvious suspect because it is the biggest by case count, and case count is not what tier 0
+  costs. Moving it would buy 1.6 % and lose 146 tier-0 cases.
+- Vitest has no on-disk transform cache to enable; runs 2–4 of the baseline are warm already.
+
+Final: **981 tests / 48 files / 3.82–4.73 s** across seven runs in two windows, against decision
+11's 5 s ceiling.
+
+#### Numbers, end to end
+
+| Gate | Result |
+|---|---|
+| `pnpm test` (tier 0) | **981 passed / 48 files, 3.82–4.73 s** (baseline 980 / 5.18–5.56) |
+| `pnpm test:live` (tier 1) | **1 752 passed + 6 skipped / 82 files, 28.7 s** |
+| tier 2, PG 17.11 + PgBouncer 1.25 | **1 812 passed, zero skips / 90 files, 12 s** |
+| `pnpm lint` | green — 0 errors |
+| `pnpm format:check` | green |
+| `pnpm typecheck` | green |
+| `pnpm build` + `api-snapshot:check` | green, no drift |
+| `pnpm package:check` | **8/8 size gates, 4/4 tree-shake, emit parity 0 FAIL, `check:dts`, publint, attw, pack smoke** |
+| `pnpm bench:compile` | green on every gate including the four new `statement` lines and the budget-gate controls |
+| `pnpm bench:runtime` | green on all 27 e2e gates plus compile, decode and statement |
+| `pnpm bench:compare` | nine cases, four arms, four declared divergences |
+| `actionlint` | clean on `ci-nightly.yml` apart from the pre-existing SC2034 in the PgBouncer wait loop |
+| `pnpm install --frozen-lockfile` | green with the new workspace |
+
+#### Divergences from the brief, with reasons
+
+| Brief | Built | Why |
+|---|---|---|
+| "close the ones the measurement clears (the codegen 1.30 budget is the named candidate)" | **Nothing closed**; all seven re-sized | Seventeen runner runs put that ratio at 1.098–1.218 against design's 1.15, six of them above it. The entry leaves by measurement and the measurement said no. |
+| Item 1 implies budgets tighten | Three went **up** (5-statement tx p50, the two decode ratios) | Each had its budget inside the observed runner range. R21 moves budgets by measurement in both directions; a coin-flip gate is the failure R9 exists to stop. |
+| Item 5's three candidates | None of them taken; a fourth found and taken | Measured per file, the ceiling was two `tsc`-spawning test files, not transform, not the session file. `isolate: false` was measured as *flaky* (0/3/1 failures on identical code), which is stronger evidence than its 0.7 s. |
+| Prisma "if its generate/engine step fits" | Excluded, on the **install** rather than generate | Generate is 0.87 s. The install is 8 min 44 s / 296 MB and is paid by every job in both workflow files, because they all run a root `pnpm install`. |
+| — | `bench/runtime/statement-path.mjs` as a new **PR** gate | Not asked for. The regression reached `main` because nothing in the PR half of `08` §5 could see the session layer; a nightly-only gate finds a constant per-statement cost a day late. |
+| — | `bench/runtime/budget-gate.mjs` extracted with ten controls | Three R10 mutations of the `_overDesign` gate survived *every check in the repository*. A gate whose own logic is untested is a gate that can stop gating in silence. |
+| P owns `bench/runtime/**`, `budget.json`, the nightly, `src/{codec,compile/decode.ts}` and `src/query/insert.ts` | Also `src/session/{runner,guard,handles}.ts`, `src/errors/redact.ts`, `src/compile/compiler.ts`, `src/query/executor.ts`, two test files under `test/{query,schema}` | Item 0's regression is in the session layer and item 5's is in two typecheck tests; neither can be fixed from the files P owns. Round A is merged and round B's other workstream (D) owns `docs/**`, so the conflict surface is small — it is listed for the integrator below. |
+
+#### R10 — fifteen mutations, six of which survived the first pass
+
+`node packages/pg-prime/test/session/perf-mutations.mjs`. First pass **9 caught, 6 survived**;
+all six fixed; second pass **15 caught, 0 survived**. The six that survived are the record's value:
+
+| # | Mutation | Caught by |
+|---|---|---|
+| M1 | a throughput floor compared in the wrong direction | `bench-regression --self-test` |
+| M2 | the reportable allow-list dropped, so the noisy tails report | `--self-test` |
+| M3 | the threshold stops being `08` §5's 25 % | `--self-test` — **survived**: the controls passed `0.25` as a literal instead of the parsed default |
+| M4 | the issue title grows a count and a percentage, so dedup never matches and one regression files an issue a night | `--self-test` — **survived**: nothing tested the dedup key. `titleFor()` is now a function with two controls |
+| M5 | an `_overDesign` waiver deleted with its budget left over design | `bench:compile` |
+| M6 | every budget counts as waived | `bench:compile` — **survived every check in the repository** |
+| M7 | a per-case map read on its first entry, so widening one of nine is invisible | `bench:compile` — **survived** |
+| M8 | a floor treated as a ceiling | `bench:compile` — **survived** |
+| M9 | the fast-path predicate forgets the slow-query log, so a sink with no hooks loses `waitedForConnectionMs` | tier 0 · session |
+| M10 | the capture leaves `Error.prepareStackTrace` installed for the process | tier 0 · session |
+| M11 | the dev guard never captures, so `HandleMisuseError` stops naming the statement | tier 0 · session |
+| M12 | the lazy `paramTypes` accessor returns nothing | tier 0 · session — **survived**: the case used a query with no parameters, so `[]` was right either way |
+| M13 | the release pool event stops firing | tier 0 · session |
+| M14 | the `$n` table off by one | tier 0 · insert |
+| M15 | the VALUES loop shares one cell array across rows | tier 0 · insert — **survived**: the SQL text of a multi-row insert is the same whatever the values are, so no golden could see it |
+
+M6–M8 are why `budget-gate.mjs` exists and why its ten controls run inside `bench:compile`.
+
+#### Not done, and uncertain
+
+- **No number in this section is from the runner on this branch.** Every gate here was set from
+  runner artifacts of `main`, and every measurement of the *changes* is from the design machine.
+  The nightly can only be dispatched on `main`, so **a runner measurement of this branch before
+  merge would be worth having** — the lines most likely to want a second look are the nine e2e p99
+  budgets (first time these have ever had per-case numbers) and `statement.overPreSessionP50`.
+- **`ratioP50Paired` is measured and not gated.** It needs five runner runs before it can replace
+  the p50 quotient, and that is the path back down for the two decode budgets that went up.
+- **The e2e `insert 1 000 (batch)` improvement is not visible in the e2e ratio on this machine.**
+  Three runs read 1.151, 1.421, 1.452. The compile-side measurement is unambiguous; the ratio needs
+  the runner.
+- **The comparison run has no historical series.** It is nightly from now; the first table in a
+  `$GITHUB_STEP_SUMMARY` will be the first runner data it has.
+- **The regression rule has never fired on the runner**, by construction — it is validated against
+  five archived pairs and eleven synthetic controls.
+- **The two `bigint`-precision divergences are reported, not filed upstream.** They are facts about
+  drizzle 0.45.2 and kysely 0.29.5 measured here on 2026-08-29; whether to report them is not this
+  workstream's call.
+- **`bench/compare` is not in `pnpm lint`'s typecheck.** It is `.mjs` like the other benches and has
+  no tsconfig; oxlint covers it (`lint:oxlint` includes `bench`), tsgo does not.
+- **The dev-mode statement cost is still ~3.2 µs per statement over production** (null driver) and
+  ~17 µs on a live pair. That is `07` §7.4's documented trade at a third of its previous size, and
+  going further means not capturing at query start, which is the feature.
+
+#### Conflict surface for the integrator
+
+Changed here and also changed by D: `tools/budgets.json` (`.js` 902 144, tree-shake 72 704 /
+79 872 — D re-baselined the same three lines, so the merge needs the ceil-to-1 KB rule applied to
+the merged tree's measurement once more), `knip.json` (one line: the `bench/compare` workspace and
+`statement.mjs` as a `bench/runtime` entry), `package.json` (one script, `bench:compare`),
+`pnpm-lock.yaml` (the `bench/compare` importer only). Not touched here: `src/query/types.ts`,
+`src/driver/**`, `.oxfmtrc.json`, `ci.yml`. `ci-nightly.yml` is P's alone.
+
 ---
 
 ## 5. Definition of done — v1 completion

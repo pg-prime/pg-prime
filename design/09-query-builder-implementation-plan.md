@@ -2176,6 +2176,35 @@ and §3.7 already records that ratio as the noisiest line here), **39 086–39 1
 41 500, and the WS7 measurement was 39 084–39 137). Bytes/op is the tight gate on that path and it
 did not move. The digest pass is behind a three-condition guard — `distinct`, not `distinct on`, and
 a non-empty `orderBy` — so an ordinary compile does not reach it.
+#### Follow-up · 2026-08-29 · design/12 §4 P, and what it changed about the numbers below
+
+Three things in this section have been superseded and the full account is **design/12 §4 P —
+RESULT**; they are named here so nobody re-derives them from stale figures.
+
+1. **Every budget in `bench/runtime/budget.json` was re-cut from the fixed nightly runner** (R21),
+   from seventeen runs. Twenty-eight of thirty-one lines came down — the e2e p99 line went from a
+   uniform 12× catastrophe guard to per-case 2.10–6.95, and p95 from 1.8–6.0 to 1.50–2.75 — and
+   three went **up**, because their budgets sat inside the observed runner range: the 5-statement
+   transaction's p50 (1.40 → 1.50) and the two closure-tree decode ratios (2.8 → 2.95 and
+   1.65 → 1.75). The last two are the pair this section's follow-up tightened on design-machine
+   evidence; the runner disagreed, and the run that proved it (ci 33207272663 attempt 1, red at
+   2.816 and 1.663 on a change touching no decoding code) is in the sample. `ratioP50Paired` — the
+   median of the per-sample quotients rather than the quotient of the medians — is now measured and
+   printed and is the candidate to gate once it has a runner distribution.
+2. **`decode.codegen.ratioVsCheckedMapperP50` did not close.** This section's `_overDesign` entry
+   said the measurement met design at 1.126–1.146 and the budget would come down "when the fixed
+   nightly runner has a distribution to size it from". It has one: **1.098–1.218 against 1.15, six
+   of seventeen above it.** So the generated decoder meets Appendix B on a quiet machine and does
+   not on the runner, and the budget stays at 1.30.
+3. **The e2e batch-insert numbers below are superseded.** design/12 §4 P item 2 profiled the path
+   this section left alone: `mkNode` was 27.7 % of one `.compile()` of a 1 000-row insert, all of it
+   `WeakSet.add` for parameter nodes the D7 registry is never asked about. With `#valuesSource`
+   inside `inInternalNodes`, an indexed row loop and a shared `$n` table, that compile went
+   **1 680 → 631 µs and 1.835 → 1.445 MB**, and its e2e p50 budget came down 1.90 → 1.50.
+
+The compile and decode figures in the rest of this section are unchanged and were re-measured on
+the runner as part of item 1.
+
 #### Follow-up · 2026-08-27 · the perf pass, and the two numbers §3.7 recorded as missed
 
 WS7 above gated everything and closed nothing: finding 1 left the builder chain at 33.7–46.0 µs
