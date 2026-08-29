@@ -116,7 +116,8 @@ type MaybePoolEmitter = {
  * Build the pool `07` §1.2 describes, with the two `pg-pool` defaults §1.2 argues are hostile
  * overridden and everything else passed through untouched.
  *
- * `onIdleError` is not optional decoration — see the listener's own comment below.
+ * The `error` listener below is attached whether or not `onIdleError` is supplied; the callback
+ * only decides whether the failure is reported. See its comment for why both halves matter.
  */
 export async function buildPool(
   connection: string | ConnectionParams,

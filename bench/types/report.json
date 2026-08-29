@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-29T21:59:56.220Z",
+  "generatedAt": "2026-08-29T22:07:06.268Z",
   "node": "v24.14.1",
   "compilers": [
     "5.9.3",
@@ -487,15 +487,15 @@
         "types": 7188,
         "symbols": 45224,
         "checkTime": 0.22,
-        "totalTime": 0.52,
-        "memoryMb": 111
+        "totalTime": 0.4,
+        "memoryMb": 110
       },
       "7.0.2": {
         "instantiations": 10026,
         "types": 10428,
         "symbols": 49958,
-        "checkTime": 0.021,
-        "totalTime": 0.055,
+        "checkTime": 0.015,
+        "totalTime": 0.04,
         "memoryMb": 38
       }
     },
@@ -504,16 +504,16 @@
         "instantiations": 9222,
         "types": 7413,
         "symbols": 46386,
-        "checkTime": 0.24,
-        "totalTime": 0.42,
-        "memoryMb": 113
+        "checkTime": 0.23,
+        "totalTime": 0.41,
+        "memoryMb": 114
       },
       "7.0.2": {
         "instantiations": 10632,
         "types": 10804,
         "symbols": 51230,
         "checkTime": 0.015,
-        "totalTime": 0.041,
+        "totalTime": 0.04,
         "memoryMb": 38
       }
     },
@@ -522,16 +522,16 @@
         "instantiations": 9762,
         "types": 7638,
         "symbols": 47526,
-        "checkTime": 0.25,
-        "totalTime": 0.44,
-        "memoryMb": 119
+        "checkTime": 0.22,
+        "totalTime": 0.41,
+        "memoryMb": 99
       },
       "7.0.2": {
         "instantiations": 11187,
         "types": 11029,
         "symbols": 52415,
-        "checkTime": 0.016,
-        "totalTime": 0.042,
+        "checkTime": 0.014,
+        "totalTime": 0.04,
         "memoryMb": 39
       }
     },
@@ -540,7 +540,7 @@
         "instantiations": 12462,
         "types": 8763,
         "symbols": 53226,
-        "checkTime": 0.26,
+        "checkTime": 0.25,
         "totalTime": 0.46,
         "memoryMb": 129
       },
@@ -549,7 +549,7 @@
         "types": 12154,
         "symbols": 58340,
         "checkTime": 0.015,
-        "totalTime": 0.04,
+        "totalTime": 0.041,
         "memoryMb": 42
       }
     },
@@ -577,15 +577,15 @@
         "types": 10253,
         "symbols": 58695,
         "checkTime": 0.29,
-        "totalTime": 0.48,
+        "totalTime": 0.49,
         "memoryMb": 106
       },
       "7.0.2": {
         "instantiations": 21645,
         "types": 13837,
         "symbols": 64321,
-        "checkTime": 0.021,
-        "totalTime": 0.046,
+        "checkTime": 0.023,
+        "totalTime": 0.049,
         "memoryMb": 45
       }
     },
@@ -595,7 +595,7 @@
         "types": 8453,
         "symbols": 49585,
         "checkTime": 0.25,
-        "totalTime": 0.43,
+        "totalTime": 0.42,
         "memoryMb": 94
       },
       "7.0.2": {
@@ -603,7 +603,7 @@
         "types": 12472,
         "symbols": 56592,
         "checkTime": 0.016,
-        "totalTime": 0.04,
+        "totalTime": 0.041,
         "memoryMb": 41
       }
     },
@@ -612,16 +612,16 @@
         "instantiations": 54359,
         "types": 11753,
         "symbols": 61135,
-        "checkTime": 0.31,
-        "totalTime": 0.5,
+        "checkTime": 0.32,
+        "totalTime": 0.52,
         "memoryMb": 107
       },
       "7.0.2": {
         "instantiations": 60528,
         "types": 16747,
         "symbols": 72717,
-        "checkTime": 0.026,
-        "totalTime": 0.053,
+        "checkTime": 0.024,
+        "totalTime": 0.049,
         "memoryMb": 49
       }
     },
@@ -630,17 +630,17 @@
         "instantiations": 144959,
         "types": 20553,
         "symbols": 91935,
-        "checkTime": 0.49,
-        "totalTime": 0.75,
+        "checkTime": 0.47,
+        "totalTime": 0.69,
         "memoryMb": 175
       },
       "7.0.2": {
         "instantiations": 160328,
         "types": 28147,
         "symbols": 115717,
-        "checkTime": 0.069,
-        "totalTime": 0.099,
-        "memoryMb": 70
+        "checkTime": 0.068,
+        "totalTime": 0.094,
+        "memoryMb": 69
       }
     },
     "q25": {
@@ -648,15 +648,15 @@
         "instantiations": 27323,
         "types": 8916,
         "symbols": 52872,
-        "checkTime": 0.28,
-        "totalTime": 0.47,
+        "checkTime": 0.27,
+        "totalTime": 0.45,
         "memoryMb": 89
       },
       "7.0.2": {
         "instantiations": 41896,
         "types": 14414,
         "symbols": 63276,
-        "checkTime": 0.027,
+        "checkTime": 0.026,
         "totalTime": 0.052,
         "memoryMb": 44
       }
@@ -667,14 +667,14 @@
         "types": 9016,
         "symbols": 53772,
         "checkTime": 0.28,
-        "totalTime": 0.47,
-        "memoryMb": 98
+        "totalTime": 0.46,
+        "memoryMb": 97
       },
       "7.0.2": {
         "instantiations": 43896,
         "types": 14514,
         "symbols": 64176,
-        "checkTime": 0.026,
+        "checkTime": 0.027,
         "totalTime": 0.052,
         "memoryMb": 45
       }
@@ -684,15 +684,15 @@
         "instantiations": 61298,
         "types": 12217,
         "symbols": 64497,
-        "checkTime": 0.35,
-        "totalTime": 0.55,
-        "memoryMb": 124
+        "checkTime": 0.32,
+        "totalTime": 0.52,
+        "memoryMb": 129
       },
       "7.0.2": {
         "instantiations": 87726,
         "types": 20720,
         "symbols": 86076,
-        "checkTime": 0.041,
+        "checkTime": 0.04,
         "totalTime": 0.066,
         "memoryMb": 55
       }
@@ -703,8 +703,8 @@
         "types": 12317,
         "symbols": 65397,
         "checkTime": 0.34,
-        "totalTime": 0.54,
-        "memoryMb": 142
+        "totalTime": 0.58,
+        "memoryMb": 141
       },
       "7.0.2": {
         "instantiations": 89726,
@@ -720,15 +720,15 @@
         "instantiations": 151898,
         "types": 21017,
         "symbols": 95497,
-        "checkTime": 0.52,
-        "totalTime": 0.75,
-        "memoryMb": 152
+        "checkTime": 0.51,
+        "totalTime": 0.73,
+        "memoryMb": 146
       },
       "7.0.2": {
         "instantiations": 209926,
         "types": 37520,
         "symbols": 146876,
-        "checkTime": 0.082,
+        "checkTime": 0.08,
         "totalTime": 0.109,
         "memoryMb": 83
       }
@@ -738,8 +738,8 @@
         "instantiations": 153898,
         "types": 21117,
         "symbols": 96397,
-        "checkTime": 0.6,
-        "totalTime": 0.82,
+        "checkTime": 0.52,
+        "totalTime": 0.76,
         "memoryMb": 175
       },
       "7.0.2": {
@@ -747,7 +747,7 @@
         "types": 37620,
         "symbols": 147776,
         "checkTime": 0.085,
-        "totalTime": 0.113,
+        "totalTime": 0.111,
         "memoryMb": 84
       }
     },
@@ -757,16 +757,16 @@
         "types": 12567,
         "symbols": 66847,
         "checkTime": 0.34,
-        "totalTime": 0.54,
+        "totalTime": 0.53,
         "memoryMb": 138
       },
       "7.0.2": {
         "instantiations": 101151,
         "types": 21470,
         "symbols": 88851,
-        "checkTime": 0.039,
-        "totalTime": 0.064,
-        "memoryMb": 55
+        "checkTime": 0.041,
+        "totalTime": 0.067,
+        "memoryMb": 56
       }
     },
     "headline": {
@@ -774,8 +774,8 @@
         "instantiations": 82073,
         "types": 13566,
         "symbols": 74247,
-        "checkTime": 0.39,
-        "totalTime": 0.6,
+        "checkTime": 0.38,
+        "totalTime": 0.59,
         "memoryMb": 137
       },
       "7.0.2": {
@@ -783,7 +783,7 @@
         "types": 23264,
         "symbols": 97101,
         "checkTime": 0.052,
-        "totalTime": 0.079,
+        "totalTime": 0.077,
         "memoryMb": 61
       }
     },
@@ -792,16 +792,16 @@
         "instantiations": 43297,
         "types": 25285,
         "symbols": 119057,
-        "checkTime": 0.65,
-        "totalTime": 1.09,
-        "memoryMb": 183
+        "checkTime": 0.63,
+        "totalTime": 1.05,
+        "memoryMb": 182
       },
       "7.0.2": {
         "instantiations": 56489,
         "types": 38493,
         "symbols": 138203,
-        "checkTime": 0.053,
-        "totalTime": 0.087,
+        "checkTime": 0.052,
+        "totalTime": 0.086,
         "memoryMb": 108
       }
     },
@@ -810,16 +810,16 @@
         "instantiations": 45647,
         "types": 25720,
         "symbols": 121932,
-        "checkTime": 0.65,
-        "totalTime": 1.09,
-        "memoryMb": 192
+        "checkTime": 0.66,
+        "totalTime": 1.04,
+        "memoryMb": 228
       },
       "7.0.2": {
         "instantiations": 58839,
         "types": 38934,
         "symbols": 141103,
-        "checkTime": 0.058,
-        "totalTime": 0.093,
+        "checkTime": 0.056,
+        "totalTime": 0.091,
         "memoryMb": 109
       }
     },
@@ -828,16 +828,16 @@
         "instantiations": 170347,
         "types": 37385,
         "symbols": 161682,
-        "checkTime": 0.98,
-        "totalTime": 1.42,
+        "checkTime": 0.97,
+        "totalTime": 1.39,
         "memoryMb": 241
       },
       "7.0.2": {
         "instantiations": 228089,
         "types": 61593,
         "symbols": 224278,
-        "checkTime": 0.148,
-        "totalTime": 0.182,
+        "checkTime": 0.149,
+        "totalTime": 0.183,
         "memoryMb": 147
       }
     },
@@ -847,15 +847,15 @@
         "types": 37820,
         "symbols": 164557,
         "checkTime": 1.1,
-        "totalTime": 1.52,
-        "memoryMb": 275
+        "totalTime": 1.56,
+        "memoryMb": 269
       },
       "7.0.2": {
         "instantiations": 230439,
         "types": 62034,
         "symbols": 227178,
-        "checkTime": 0.188,
-        "totalTime": 0.225,
+        "checkTime": 0.173,
+        "totalTime": 0.212,
         "memoryMb": 148
       }
     },
@@ -864,16 +864,16 @@
         "instantiations": 49274,
         "types": 26596,
         "symbols": 121945,
-        "checkTime": 0.65,
+        "checkTime": 0.66,
         "totalTime": 1.08,
-        "memoryMb": 200
+        "memoryMb": 199
       },
       "7.0.2": {
         "instantiations": 62517,
         "types": 39857,
         "symbols": 141120,
-        "checkTime": 0.061,
-        "totalTime": 0.093,
+        "checkTime": 0.06,
+        "totalTime": 0.095,
         "memoryMb": 109
       }
     },
@@ -882,16 +882,16 @@
         "instantiations": 53699,
         "types": 27421,
         "symbols": 126270,
-        "checkTime": 0.72,
-        "totalTime": 1.13,
+        "checkTime": 0.69,
+        "totalTime": 1.09,
         "memoryMb": 232
       },
       "7.0.2": {
         "instantiations": 66942,
         "types": 40682,
         "symbols": 145470,
-        "checkTime": 0.07,
-        "totalTime": 0.105,
+        "checkTime": 0.069,
+        "totalTime": 0.103,
         "memoryMb": 111
       }
     },
@@ -900,16 +900,16 @@
         "instantiations": 176324,
         "types": 38696,
         "symbols": 164570,
-        "checkTime": 1.13,
-        "totalTime": 1.56,
+        "checkTime": 1.15,
+        "totalTime": 1.57,
         "memoryMb": 244
       },
       "7.0.2": {
         "instantiations": 234117,
         "types": 62957,
         "symbols": 227195,
-        "checkTime": 0.179,
-        "totalTime": 0.214,
+        "checkTime": 0.185,
+        "totalTime": 0.221,
         "memoryMb": 148
       }
     },
@@ -918,16 +918,16 @@
         "instantiations": 180749,
         "types": 39521,
         "symbols": 168895,
-        "checkTime": 1.41,
-        "totalTime": 1.85,
+        "checkTime": 1.36,
+        "totalTime": 1.79,
         "memoryMb": 232
       },
       "7.0.2": {
         "instantiations": 238542,
         "types": 63782,
         "symbols": 231545,
-        "checkTime": 0.231,
-        "totalTime": 0.266,
+        "checkTime": 0.24,
+        "totalTime": 0.277,
         "memoryMb": 150
       }
     },
@@ -936,16 +936,16 @@
         "instantiations": 53133,
         "types": 28240,
         "symbols": 122835,
-        "checkTime": 0.68,
-        "totalTime": 1.08,
-        "memoryMb": 219
+        "checkTime": 0.7,
+        "totalTime": 1.12,
+        "memoryMb": 217
       },
       "7.0.2": {
         "instantiations": 66445,
         "types": 41584,
         "symbols": 142091,
         "checkTime": 0.069,
-        "totalTime": 0.103,
+        "totalTime": 0.102,
         "memoryMb": 110
       }
     },
@@ -954,16 +954,16 @@
         "instantiations": 59433,
         "types": 30225,
         "symbols": 128210,
-        "checkTime": 0.78,
-        "totalTime": 1.17,
+        "checkTime": 0.77,
+        "totalTime": 1.2,
         "memoryMb": 231
       },
       "7.0.2": {
         "instantiations": 72745,
         "types": 43575,
         "symbols": 147516,
-        "checkTime": 0.095,
-        "totalTime": 0.132,
+        "checkTime": 0.1,
+        "totalTime": 0.137,
         "memoryMb": 113
       }
     },
@@ -972,16 +972,16 @@
         "instantiations": 180190,
         "types": 40342,
         "symbols": 165464,
-        "checkTime": 1.63,
-        "totalTime": 2.05,
-        "memoryMb": 225
+        "checkTime": 1.59,
+        "totalTime": 2.01,
+        "memoryMb": 262
       },
       "7.0.2": {
         "instantiations": 238057,
         "types": 64687,
         "symbols": 228170,
-        "checkTime": 0.293,
-        "totalTime": 0.328,
+        "checkTime": 0.296,
+        "totalTime": 0.331,
         "memoryMb": 150
       }
     },
@@ -990,16 +990,16 @@
         "instantiations": 186490,
         "types": 42327,
         "symbols": 170839,
-        "checkTime": 2.37,
-        "totalTime": 2.79,
-        "memoryMb": 233
+        "checkTime": 2.38,
+        "totalTime": 2.8,
+        "memoryMb": 229
       },
       "7.0.2": {
         "instantiations": 244357,
         "types": 66678,
         "symbols": 233595,
-        "checkTime": 0.48,
-        "totalTime": 0.515,
+        "checkTime": 0.446,
+        "totalTime": 0.483,
         "memoryMb": 152
       }
     },
@@ -1009,15 +1009,15 @@
         "types": 28017,
         "symbols": 122134,
         "checkTime": 0.72,
-        "totalTime": 1.13,
-        "memoryMb": 236
+        "totalTime": 1.14,
+        "memoryMb": 232
       },
       "7.0.2": {
         "instantiations": 94529,
         "types": 41243,
         "symbols": 141331,
-        "checkTime": 0.073,
-        "totalTime": 0.108,
+        "checkTime": 0.072,
+        "totalTime": 0.107,
         "memoryMb": 110
       }
     },
@@ -1026,16 +1026,16 @@
         "instantiations": 125469,
         "types": 31688,
         "symbols": 129773,
-        "checkTime": 0.83,
-        "totalTime": 1.22,
-        "memoryMb": 209
+        "checkTime": 0.86,
+        "totalTime": 1.25,
+        "memoryMb": 210
       },
       "7.0.2": {
         "instantiations": 138253,
         "types": 44914,
         "symbols": 149080,
-        "checkTime": 0.095,
-        "totalTime": 0.13,
+        "checkTime": 0.098,
+        "totalTime": 0.134,
         "memoryMb": 114
       }
     },
@@ -1044,16 +1044,16 @@
         "instantiations": 208820,
         "types": 40117,
         "symbols": 164759,
-        "checkTime": 1.73,
+        "checkTime": 1.7,
         "totalTime": 2.15,
-        "memoryMb": 262
+        "memoryMb": 263
       },
       "7.0.2": {
         "instantiations": 266129,
         "types": 64343,
         "symbols": 227406,
-        "checkTime": 0.254,
-        "totalTime": 0.29,
+        "checkTime": 0.251,
+        "totalTime": 0.287,
         "memoryMb": 149
       }
     },
@@ -1063,15 +1063,15 @@
         "types": 43788,
         "symbols": 172398,
         "checkTime": 2.52,
-        "totalTime": 2.94,
-        "memoryMb": 226
+        "totalTime": 2.93,
+        "memoryMb": 285
       },
       "7.0.2": {
         "instantiations": 309853,
         "types": 68014,
         "symbols": 235155,
-        "checkTime": 0.391,
-        "totalTime": 0.427,
+        "checkTime": 0.403,
+        "totalTime": 0.441,
         "memoryMb": 152
       }
     },
@@ -1080,16 +1080,16 @@
         "instantiations": 42914,
         "types": 25520,
         "symbols": 116968,
-        "checkTime": 0.67,
-        "totalTime": 1.09,
+        "checkTime": 0.66,
+        "totalTime": 1.07,
         "memoryMb": 191
       },
       "7.0.2": {
         "instantiations": 55618,
         "types": 38835,
         "symbols": 136118,
-        "checkTime": 0.059,
-        "totalTime": 0.095,
+        "checkTime": 0.058,
+        "totalTime": 0.093,
         "memoryMb": 107
       }
     },
@@ -1098,8 +1098,8 @@
         "instantiations": 47599,
         "types": 26425,
         "symbols": 119463,
-        "checkTime": 0.71,
-        "totalTime": 1.11,
+        "checkTime": 0.72,
+        "totalTime": 1.12,
         "memoryMb": 213
       },
       "7.0.2": {
@@ -1107,7 +1107,7 @@
         "types": 39745,
         "symbols": 138678,
         "checkTime": 0.07,
-        "totalTime": 0.102,
+        "totalTime": 0.104,
         "memoryMb": 108
       }
     },
@@ -1116,16 +1116,16 @@
         "instantiations": 169964,
         "types": 37620,
         "symbols": 159593,
-        "checkTime": 1.36,
-        "totalTime": 1.8,
-        "memoryMb": 242
+        "checkTime": 1.45,
+        "totalTime": 1.88,
+        "memoryMb": 241
       },
       "7.0.2": {
         "instantiations": 227218,
         "types": 61935,
         "symbols": 222193,
-        "checkTime": 0.258,
-        "totalTime": 0.298,
+        "checkTime": 0.279,
+        "totalTime": 0.312,
         "memoryMb": 146
       }
     },
@@ -1134,16 +1134,16 @@
         "instantiations": 174649,
         "types": 38525,
         "symbols": 162088,
-        "checkTime": 1.91,
-        "totalTime": 2.34,
-        "memoryMb": 233
+        "checkTime": 1.9,
+        "totalTime": 2.32,
+        "memoryMb": 221
       },
       "7.0.2": {
         "instantiations": 231928,
         "types": 62845,
         "symbols": 224753,
-        "checkTime": 0.351,
-        "totalTime": 0.385,
+        "checkTime": 0.354,
+        "totalTime": 0.388,
         "memoryMb": 148
       }
     }
@@ -1279,7 +1279,7 @@
     }
   },
   "dts": {
-    "total": 553617,
+    "total": 553721,
     "files": {
       "query/types.d.ts": 76323,
       "compile/ast.d.ts": 19502,
@@ -1326,8 +1326,8 @@
       "session/guard.d.ts": 4474,
       "query/ref.d.ts": 4372,
       "errors/redact.d.ts": 4212,
+      "session/pg-lazy.d.ts": 4152,
       "query/window.d.ts": 4109,
-      "session/pg-lazy.d.ts": 4048,
       "query/update.d.ts": 3958,
       "errors/base.d.ts": 3901,
       "session/listen.d.ts": 3809,
@@ -1490,7 +1490,7 @@
     {
       "name": "headline check time (s)",
       "version": "5.9.3",
-      "actual": 0.39,
+      "actual": 0.38,
       "limit": 2,
       "ok": true
     },
@@ -1714,7 +1714,7 @@
     {
       "name": "package .d.ts bytes",
       "version": "—",
-      "actual": 553617,
+      "actual": 553721,
       "limit": 553984,
       "ok": true
     }
