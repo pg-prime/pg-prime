@@ -41,7 +41,8 @@
     "emit-parity": "node tools/emit-parity.mjs",
     "check:dts": "node tools/check-dts.mjs",
     "pack-smoke": "node tools/pack-smoke.mjs",
-    "package:check": "pnpm size-budget && pnpm api-snapshot:check && pnpm emit-parity && pnpm check:dts && pnpm treeshake && pnpm pack-smoke"
+    "create-smoke": "node tools/create-smoke.mjs",
+    "package:check": "pnpm size-budget && pnpm api-snapshot:check && pnpm emit-parity && pnpm check:dts && pnpm treeshake && pnpm pack-smoke && pnpm create-smoke"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
