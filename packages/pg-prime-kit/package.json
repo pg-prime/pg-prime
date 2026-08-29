@@ -29,7 +29,6 @@
   "scripts": {
     "build": "node ../../tools/build-package.mjs",
     "clean": "node ../../tools/build-package.mjs --clean",
-    "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
     "test:pg": "vitest run"
   },

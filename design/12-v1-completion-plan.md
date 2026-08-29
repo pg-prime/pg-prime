@@ -2282,6 +2282,9 @@ now); `@pg-prime/testing` and `@pg-prime/create` are still README-only; the D-fo
 is a Node ≥ 22.15 `module.registerHooks` dependency worth a floor note; `streamBatches`/COPY/LISTEN have
 no executed docs example (tier-2 claims, `no-run` by design).
 
+> Picked up in `13-close-out-plan.md` (2026-08-30): everything on this list except the three operator
+> switches.
+
 ## 6. Risks and fallbacks
 
 | Risk | Signal | Fallback |
