@@ -1,0 +1,15 @@
+{
+  "name": "@pg-prime/bench-compare",
+  "version": "0.0.0",
+  "private": true,
+  "description": "design/08 §5's comparison run: the nine end-to-end cases against drizzle-orm and kysely, on the same PostgreSQL and through the SAME `pg` pool, in one interleaved process. Nightly only — a wall-clock comparison on a shared runner competing with a test suite measures the suite. The competitors' dependencies live HERE and nowhere else: they must not reach the root or `packages/*`, which is what `pnpm lint`'s sherif and knip steps check.",
+  "type": "module",
+  "scripts": {
+    "bench": "node --expose-gc run.mjs"
+  },
+  "devDependencies": {
+    "drizzle-orm": "^0.45.2",
+    "kysely": "^0.29.5",
+    "pg": "^8.23.0"
+  }
+}

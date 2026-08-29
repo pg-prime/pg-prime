@@ -27,6 +27,10 @@
       "entry": ["run.mjs", "profile.mjs", "statement.mjs"],
       "project": ["**/*.mjs"]
     },
+    "bench/compare": {
+      "entry": ["run.mjs"],
+      "project": ["**/*.mjs"]
+    },
     "bench/types": {
       "entry": ["arms/*.ts"],
       "project": ["**/*.mjs", "**/*.ts"]

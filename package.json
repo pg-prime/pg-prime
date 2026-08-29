@@ -30,6 +30,7 @@
     "bench:runtime": "pnpm --filter @pg-prime/bench-runtime bench",
     "bench:compile": "pnpm --filter @pg-prime/bench-runtime bench:compile",
     "bench:profile": "pnpm --filter @pg-prime/bench-runtime profile",
+    "bench:compare": "pnpm --filter @pg-prime/bench-compare bench",
     "type-errors": "node tools/type-errors/record.mjs",
     "type-errors:check": "node tools/type-errors/record.mjs --check",
     "size-budget": "node tools/size-budget.mjs",

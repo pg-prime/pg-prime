@@ -169,8 +169,23 @@ jobs:
     # design/08 §5's nine pairs, on a runner with nothing else on it. The gate is a RATIO per case
     # (`bench/runtime/budget.json`), because absolute milliseconds from a shared runner say nothing;
     # the absolutes are still in the report, because a ratio without absolutes is marketing.
+    #
+    # Since design/12 §4 P this job does two more things. The e2e section runs with
+    # NODE_ENV=production — `07` §7.4's call-site capture and `07` §1.5's dev guard are on outside
+    # production, and gating the development configuration is how a 24 % per-statement regression
+    # reached `main` — and the job compares its report with the previous successful run's artifact
+    # and opens an issue when a reproducible gate moves by more than 25 % (`08` §5's last sentence).
     name: bench · runtime (design/08 §5)
     runs-on: ubuntu-latest
+    permissions:
+      # `issues: write` is on THIS job and nowhere else in this file: it is the only step that
+      # writes anything to the repository, and a workflow-level grant would hand it to the fuzz job
+      # and the matrix too. `actions: read` is what `gh run download` needs for a sibling run's
+      # artifact; `contents: read` is the default and is restated because naming one permission
+      # drops every other to none.
+      contents: read
+      actions: read
+      issues: write
     services:
       postgres:
         image: postgres:17
@@ -195,6 +210,32 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The previous successful nightly's report, for the >25% rule below. Fetched BEFORE the bench
+      # runs so that a download failure cannot be mistaken for "no regression": the step records
+      # what it found, and the comparison step skips loudly when there is nothing to compare with.
+      - name: Fetch the previous nightly's bench report
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/previous
+          prev=$(gh run list --workflow ci-nightly.yml --status success \
+                   --branch "${{ github.event.repository.default_branch }}" \
+                   --limit 20 --json databaseId,conclusion \
+                   --jq "[.[] | select(.databaseId != ${{ github.run_id }})] | .[0].databaseId")
+          if [ -z "$prev" ] || [ "$prev" = "null" ]; then
+            echo "no previous successful nightly to compare with"
+            echo "id=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh run download "$prev" -n "bench-runtime-report-$prev" -D /tmp/previous 2>/dev/null; then
+            echo "using run $prev"
+            echo "id=$prev" >> "$GITHUB_OUTPUT"
+          else
+            echo "run $prev has no bench-runtime-report artifact (expired, or the job did not run)"
+            echo "id=" >> "$GITHUB_OUTPUT"
+          fi
       - run: pnpm bench:runtime
       - name: Upload the bench report
         if: always()
@@ -202,6 +243,91 @@ jobs:
         with:
           name: bench-runtime-report-${{ github.run_id }}
           path: bench/runtime/report.json
+          if-no-files-found: warn
+      # design/08 §5: "a >25% regression opens an issue automatically."
+      #
+      # `if: always()` because a run that BREACHED a budget is exactly the run whose regression is
+      # worth naming, and `pnpm bench:runtime` exits non-zero on a breach. The two are different
+      # questions: the budget says "this is out of bounds", this says "this moved".
+      #
+      # Deduplicated by title, and the title is the worst gate's name with no count and no
+      # percentage in it — both of those move from night to night while the regression stays the
+      # same, and a title that moves opens a new issue every night until somebody mutes the
+      # automation. An open issue with that title means this one is already known.
+      - name: Open an issue if a gate regressed by more than 25 %
+        if: always() && steps.previous.outputs.id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          node tools/bench-regression.mjs \
+            --before /tmp/previous/report.json \
+            --after bench/runtime/report.json \
+            --out /tmp/regression.md > /tmp/regression.out
+          code=$?
+          if [ $code -eq 0 ]; then
+            echo "no gate regressed by more than 25 % against run ${{ steps.previous.outputs.id }}"
+            exit 0
+          fi
+          if [ $code -ne 3 ]; then
+            echo "bench-regression.mjs failed with $code"; cat /tmp/regression.out; exit $code
+          fi
+          title=$(grep -m1 '^::title::' /tmp/regression.out | sed 's/^::title:://')
+          echo "regression: $title"
+          existing=$(gh issue list --state open --search "$title in:title" \
+                       --json title,number --jq "[.[] | select(.title == \"$title\")] | .[0].number")
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            echo "already open as #$existing — not filing a duplicate"
+            exit 0
+          fi
+          gh issue create --title "$title" --body-file /tmp/regression.md --label perf || {
+            echo 'the perf label may not exist in this repository; filing without it'
+            gh issue create --title "$title" --body-file /tmp/regression.md
+          }
+
+  compare:
+    # design/08 §5's other nightly half: "a comparison run against drizzle-orm, kysely and
+    # @prisma/client on identical queries". Prisma is not in it and `bench/compare/PRISMA.md` is the
+    # measurement that decided so.
+    #
+    # It is NOT a gate and it never fails the nightly: it compares four libraries, which is a
+    # statement about four libraries and about the runner they ran on. `continue-on-error` is
+    # deliberate — a competitor's next minor release breaking one of its own APIs must not take the
+    # matrix and the fuzz job down with it.
+    name: bench · compare (drizzle, kysely)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: pgprime
+          POSTGRES_PASSWORD: pgprime
+          POSTGRES_DB: pgprime
+          TZ: UTC
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pgprime"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_PRIME_TEST_URL: postgres://pgprime:pgprime@127.0.0.1:5432/pgprime
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm bench:compare
+      - name: Upload the comparison report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-compare-report-${{ github.run_id }}
+          path: bench/compare/report.json
           if-no-files-found: warn
 
   types:

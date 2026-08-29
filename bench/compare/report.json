@@ -1,0 +1,345 @@
+{
+  "generatedAt": "2026-08-29T07:23:51.911Z",
+  "platform": "darwin/arm64",
+  "serverVersion": "17.11 (Debian 17.11-1.pgdg13+2)",
+  "versions": {
+    "node": "v24.14.1",
+    "pg-prime": "0.0.0",
+    "drizzle-orm": "0.45.2",
+    "kysely": "0.29.5",
+    "pg": "8.23.0"
+  },
+  "quick": false,
+  "arms": [
+    "raw",
+    "pg-prime",
+    "drizzle",
+    "kysely"
+  ],
+  "cases": [
+    {
+      "name": "point select by PK",
+      "iters": 30,
+      "samples": 100,
+      "arms": {
+        "raw": {
+          "p50": 0.23335140000000745,
+          "p95": 0.3424388666666687,
+          "p99": 1.6661902999999862,
+          "min": 0.2020277999999962
+        },
+        "pg-prime": {
+          "p50": 0.2635985999999927,
+          "p95": 0.37435140000000044,
+          "p99": 0.4542250000000005,
+          "min": 0.19140416666665866
+        },
+        "drizzle": {
+          "p50": 0.2663249999999986,
+          "p95": 0.38330556666666477,
+          "p99": 0.4701541666666647,
+          "min": 0.21592640000000454
+        },
+        "kysely": {
+          "p50": 0.24777776666666493,
+          "p95": 0.34234166666666777,
+          "p99": 0.4091124999999996,
+          "min": 0.20753613333333001
+        }
+      }
+    },
+    {
+      "name": "select 1 000 rows (12 cols, 2 joins)",
+      "iters": 2,
+      "samples": 60,
+      "arms": {
+        "raw": {
+          "p50": 3.763582999999926,
+          "p95": 4.357146000000284,
+          "p99": 5.319541500000014,
+          "min": 3.497146000000157
+        },
+        "pg-prime": {
+          "p50": 4.225895999999921,
+          "p95": 5.197291999999834,
+          "p99": 6.572437499999978,
+          "min": 3.9563334999998006
+        },
+        "drizzle": {
+          "p50": 4.6365835000001425,
+          "p95": 5.474312499999996,
+          "p99": 7.348624999999629,
+          "min": 4.387396000000081
+        },
+        "kysely": {
+          "p50": 3.8954374999998436,
+          "p95": 4.556041499999992,
+          "p99": 6.5623335000000225,
+          "min": 3.632791499999712
+        }
+      }
+    },
+    {
+      "name": "insert one",
+      "iters": 10,
+      "samples": 100,
+      "arms": {
+        "raw": {
+          "p50": 0.39815419999995355,
+          "p95": 0.5196042000000489,
+          "p99": 1.0806875000000218,
+          "min": 0.29744999999993527
+        },
+        "pg-prime": {
+          "p50": 0.45169999999998256,
+          "p95": 0.601733299999978,
+          "p99": 0.6070834000000105,
+          "min": 0.3149083000000246
+        },
+        "drizzle": {
+          "p50": 0.4515083000000232,
+          "p95": 0.612383299999965,
+          "p99": 1.1028124999999818,
+          "min": 0.3280999999999949
+        },
+        "kysely": {
+          "p50": 0.4473917000000256,
+          "p95": 0.6035874999999578,
+          "p99": 0.8689542000000074,
+          "min": 0.3299250000000029
+        }
+      }
+    },
+    {
+      "name": "insert 1 000 (batch)",
+      "iters": 1,
+      "samples": 40,
+      "arms": {
+        "raw": {
+          "p50": 7.096250000000509,
+          "p95": 7.89587500000016,
+          "p99": 7.912624999999025,
+          "min": 6.6330830000006245
+        },
+        "pg-prime": {
+          "p50": 8.154333000000406,
+          "p95": 8.978666999999405,
+          "p99": 9.16308299999946,
+          "min": 7.359000000000378
+        },
+        "drizzle": {
+          "p50": 17.67158399999971,
+          "p95": 19.728832999999213,
+          "p99": 20.19158299999981,
+          "min": 16.221208000000843
+        },
+        "kysely": {
+          "p50": 8.453999999999724,
+          "p95": 9.155042000000321,
+          "p99": 9.251458000000639,
+          "min": 7.692332999999053
+        }
+      }
+    },
+    {
+      "name": "update by PK",
+      "iters": 10,
+      "samples": 100,
+      "arms": {
+        "raw": {
+          "p50": 0.3744834000000992,
+          "p95": 0.4702291999999943,
+          "p99": 0.5042499999999563,
+          "min": 0.2951541000000361
+        },
+        "pg-prime": {
+          "p50": 0.42228749999994764,
+          "p95": 0.5326624999999694,
+          "p99": 0.655237500000112,
+          "min": 0.3143374999999651
+        },
+        "drizzle": {
+          "p50": 0.42905829999999695,
+          "p95": 0.563354099999924,
+          "p99": 0.6182625000001281,
+          "min": 0.32299589999984163
+        },
+        "kysely": {
+          "p50": 0.3994665999998688,
+          "p95": 0.5462542000001122,
+          "p99": 0.6711667000001398,
+          "min": 0.2912000000000262
+        }
+      }
+    },
+    {
+      "name": "delete by PK",
+      "iters": 8,
+      "samples": 60,
+      "arms": {
+        "raw": {
+          "p50": 0.32455737500004034,
+          "p95": 0.46854687500012915,
+          "p99": 0.48138537499994527,
+          "min": 0.25220312500005093
+        },
+        "pg-prime": {
+          "p50": 0.38372400000002926,
+          "p95": 0.4949375000001055,
+          "p99": 0.6139636249999967,
+          "min": 0.28475524999998925
+        },
+        "drizzle": {
+          "p50": 0.3637292500000058,
+          "p95": 0.46077074999993783,
+          "p99": 0.48407812499999636,
+          "min": 0.2870573749999039
+        },
+        "kysely": {
+          "p50": 0.35837500000002365,
+          "p95": 0.5223802500001966,
+          "p99": 0.5583228750001581,
+          "min": 0.2893384999999853
+        }
+      }
+    },
+    {
+      "name": "5-statement transaction",
+      "iters": 4,
+      "samples": 100,
+      "arms": {
+        "raw": {
+          "p50": 1.2593855000000076,
+          "p95": 1.5321979999998803,
+          "p99": 4.166927000000214,
+          "min": 0.9041980000001786
+        },
+        "pg-prime": {
+          "p50": 1.3868750000001455,
+          "p95": 1.671333499999946,
+          "p99": 3.73824999999988,
+          "min": 1.1374479999999494
+        },
+        "drizzle": {
+          "p50": 1.4071562500002983,
+          "p95": 1.7648960000001352,
+          "p99": 2.8635417499999676,
+          "min": 1.2400519999996504
+        },
+        "kysely": {
+          "p50": 1.3266665000001012,
+          "p95": 2.189843749999909,
+          "p99": 10.71552100000008,
+          "min": 0.9594584999999825
+        }
+      }
+    },
+    {
+      "name": "relation load, one level",
+      "iters": 2,
+      "samples": 40,
+      "arms": {
+        "raw": {
+          "p50": 294.3665625000067,
+          "p95": 305.0771664999993,
+          "p99": 305.46662500000093,
+          "min": 238.361833500001
+        },
+        "pg-prime": {
+          "p50": 295.294249999999,
+          "p95": 311.4122500000012,
+          "p99": 338.2534375000032,
+          "min": 241.14400000000023
+        },
+        "drizzle": {
+          "p50": 298.4390205000018,
+          "p95": 321.1078540000017,
+          "p99": 341.31731249999575,
+          "min": 240.68006249999962
+        },
+        "kysely": {
+          "p50": 296.1670000000013,
+          "p95": 310.64583349999884,
+          "p99": 311.77579149999656,
+          "min": 242.32752050000272
+        }
+      }
+    },
+    {
+      "name": "relation load, two levels",
+      "iters": 2,
+      "samples": 40,
+      "arms": {
+        "raw": {
+          "p50": 363.9841250000027,
+          "p95": 392.15410399998655,
+          "p99": 411.78479200000584,
+          "min": 360.4021875000035
+        },
+        "pg-prime": {
+          "p50": 368.284249999997,
+          "p95": 390.9419584999996,
+          "p99": 434.03456249999,
+          "min": 361.10981249999895
+        },
+        "drizzle": {
+          "p50": 369.2800830000051,
+          "p95": 401.1528959999996,
+          "p99": 412.4138125000027,
+          "min": 364.84345799998846
+        },
+        "kysely": {
+          "p50": 368.8653539999941,
+          "p95": 407.5453540000017,
+          "p99": 422.484375,
+          "min": 360.8353539999953
+        }
+      }
+    }
+  ],
+  "summary": {
+    "pg-prime": {
+      "geomeanOverRaw": 1.1053949553614295,
+      "worstOverRaw": 1.18229943164897
+    },
+    "drizzle": {
+      "geomeanOverRaw": 1.2170742947004412,
+      "worstOverRaw": 2.490270776818523
+    },
+    "kysely": {
+      "geomeanOverRaw": 1.071466517090136,
+      "worstOverRaw": 1.1913334507661253
+    }
+  },
+  "divergences": [
+    {
+      "case": "relation load, one level",
+      "arm": "drizzle",
+      "why": "the nested `bigint` ids come back through a float64. Drizzle's relational query aggregates children as JSON and parses them with `JSON.parse`, so a value past 2^53 is rounded before the column’s `mode: ’bigint’` ever sees it: for post ids 9007199254740993..997 it returns 9007199254740992, ...994, ...996, ...996, ...996 — the right TYPE, the wrong value, in the right order. The same drizzle query as a FLAT `select` returns all five correctly, so this is the relational builder specifically. Measured here on 2026-08-29 against drizzle-orm 0.45.2; the fixture starts post ids at 2^53+1 exactly so that a bench can see it.",
+      "got": "[{\"id\":\"1\",\"posts\":[{\"id\":\"9007199254740992\",\"title\":\"fifth\"},{\"id\":\"9007199254740994\",\"title\":\"draft\"},{\"id\":\"9007199254740996\",\"title\":\"tie-b\"},{\"id\":\"9007199254740996\",\"title\":\"tie-a\"},{\"id\":\"9007199254740996\",\"title\":\"first\"}]},{\"id\":\"2\",\"posts\":[{\"id\":\"9007199254740998\",\"title\":\"bobs\"}]},{\"id\":",
+      "want": "[{\"id\":\"1\",\"posts\":[{\"id\":\"9007199254740993\",\"title\":\"fifth\"},{\"id\":\"9007199254740994\",\"title\":\"draft\"},{\"id\":\"9007199254740995\",\"title\":\"tie-b\"},{\"id\":\"9007199254740996\",\"title\":\"tie-a\"},{\"id\":\"9007199254740997\",\"title\":\"first\"}]},{\"id\":\"2\",\"posts\":[{\"id\":\"9007199254740998\",\"title\":\"bobs\"}]},{\"id\":"
+    },
+    {
+      "case": "relation load, one level",
+      "arm": "kysely",
+      "why": "the nested `bigint` ids come back through a float64, for the same reason as drizzle and from a different API: `jsonArrayFrom` aggregates children with `json_agg` and the result arrives as JSON, so `JSON.parse` turns an id past 2^53 into the nearest double before anything types it. It returns a `number`, not even a wrong `bigint`. pg-prime emits `id::text` INSIDE `json_build_object` and decodes it through the column’s codec, which is why its column is exact — and which is also extra work this comparison charges it for. Measured 2026-08-29 against kysely 0.29.5.",
+      "got": "[{\"id\":\"1\",\"posts\":[{\"id\":\"9007199254740992\",\"title\":\"fifth\"},{\"id\":\"9007199254740994\",\"title\":\"draft\"},{\"id\":\"9007199254740996\",\"title\":\"tie-b\"},{\"id\":\"9007199254740996\",\"title\":\"tie-a\"},{\"id\":\"9007199254740996\",\"title\":\"first\"}]},{\"id\":\"2\",\"posts\":[{\"id\":\"9007199254740998\",\"title\":\"bobs\"}]},{\"id\":",
+      "want": "[{\"id\":\"1\",\"posts\":[{\"id\":\"9007199254740993\",\"title\":\"fifth\"},{\"id\":\"9007199254740994\",\"title\":\"draft\"},{\"id\":\"9007199254740995\",\"title\":\"tie-b\"},{\"id\":\"9007199254740996\",\"title\":\"tie-a\"},{\"id\":\"9007199254740997\",\"title\":\"first\"}]},{\"id\":\"2\",\"posts\":[{\"id\":\"9007199254740998\",\"title\":\"bobs\"}]},{\"id\":"
+    },
+    {
+      "case": "relation load, two levels",
+      "arm": "drizzle",
+      "why": "the nested `bigint` ids come back through a float64. Drizzle's relational query aggregates children as JSON and parses them with `JSON.parse`, so a value past 2^53 is rounded before the column’s `mode: ’bigint’` ever sees it: for post ids 9007199254740993..997 it returns 9007199254740992, ...994, ...996, ...996, ...996 — the right TYPE, the wrong value, in the right order. The same drizzle query as a FLAT `select` returns all five correctly, so this is the relational builder specifically. Measured here on 2026-08-29 against drizzle-orm 0.45.2; the fixture starts post ids at 2^53+1 exactly so that a bench can see it.",
+      "got": "[{\"id\":\"1\",\"posts\":[{\"comments\":[{\"body\":\"disposable 1966\",\"id\":\"1969\"},{\"body\":\"disposable 1967\",\"id\":\"1970\"},{\"body\":\"disposable 1968\",\"id\":\"1971\"},{\"body\":\"disposable 1969\",\"id\":\"1972\"},{\"body\":\"disposable 1970\",\"id\":\"1973\"}],\"id\":\"9007199254740992\",\"title\":\"fifth\"},{\"comments\":[],\"id\":\"900719925",
+      "want": "[{\"id\":\"1\",\"posts\":[{\"comments\":[{\"body\":\"disposable 1966\",\"id\":\"1969\"},{\"body\":\"disposable 1967\",\"id\":\"1970\"},{\"body\":\"disposable 1968\",\"id\":\"1971\"},{\"body\":\"disposable 1969\",\"id\":\"1972\"},{\"body\":\"disposable 1970\",\"id\":\"1973\"}],\"id\":\"9007199254740993\",\"title\":\"fifth\"},{\"comments\":[],\"id\":\"900719925"
+    },
+    {
+      "case": "relation load, two levels",
+      "arm": "kysely",
+      "why": "the nested `bigint` ids come back through a float64, for the same reason as drizzle and from a different API: `jsonArrayFrom` aggregates children with `json_agg` and the result arrives as JSON, so `JSON.parse` turns an id past 2^53 into the nearest double before anything types it. It returns a `number`, not even a wrong `bigint`. pg-prime emits `id::text` INSIDE `json_build_object` and decodes it through the column’s codec, which is why its column is exact — and which is also extra work this comparison charges it for. Measured 2026-08-29 against kysely 0.29.5.",
+      "got": "[{\"id\":\"1\",\"posts\":[{\"comments\":[{\"body\":\"disposable 1966\",\"id\":\"1969\"},{\"body\":\"disposable 1967\",\"id\":\"1970\"},{\"body\":\"disposable 1968\",\"id\":\"1971\"},{\"body\":\"disposable 1969\",\"id\":\"1972\"},{\"body\":\"disposable 1970\",\"id\":\"1973\"}],\"id\":\"9007199254740992\",\"title\":\"fifth\"},{\"comments\":[],\"id\":\"900719925",
+      "want": "[{\"id\":\"1\",\"posts\":[{\"comments\":[{\"body\":\"disposable 1966\",\"id\":\"1969\"},{\"body\":\"disposable 1967\",\"id\":\"1970\"},{\"body\":\"disposable 1968\",\"id\":\"1971\"},{\"body\":\"disposable 1969\",\"id\":\"1972\"},{\"body\":\"disposable 1970\",\"id\":\"1973\"}],\"id\":\"9007199254740993\",\"title\":\"fifth\"},{\"comments\":[],\"id\":\"900719925"
+    }
+  ],
+  "prisma": "not measured — see bench/compare/PRISMA.md"
+}
