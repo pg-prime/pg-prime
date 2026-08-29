@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-29T09:37:47.838Z",
+  "generatedAt": "2026-08-29T19:58:03.993Z",
   "node": "v24.14.1",
   "platform": "darwin/arm64",
   "quick": false,
@@ -9,76 +9,76 @@
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 3.8754416000000216,
-        "p95": 4.405266599999959,
-        "p99": 4.551949999999988,
-        "min": 3.747083399999974,
-        "max": 4.551949999999988
+        "p50": 3.8702249999999827,
+        "p95": 4.456624999999986,
+        "p99": 4.98945819999999,
+        "min": 3.7320334,
+        "max": 4.98945819999999
       },
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 6.361100000000079,
-        "p95": 13.639191799999754,
-        "p99": 17.49849159999976,
-        "min": 4.929058200000145,
-        "max": 17.49849159999976
+        "p50": 6.519541600000229,
+        "p95": 13.386949999999706,
+        "p99": 14.699191599999903,
+        "min": 5.041500000000087,
+        "max": 14.699191599999903
       },
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 6.196175000000221,
-        "p95": 13.780116800000178,
-        "p99": 15.652974999999788,
-        "min": 5.132683199999883,
-        "max": 15.652974999999788
+        "p50": 7.956524999999965,
+        "p95": 16.57238319999997,
+        "p99": 17.918183399999908,
+        "min": 5.007150000000183,
+        "max": 17.918183399999908
       },
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 6.6068166000000925,
-        "p95": 13.573058400000082,
-        "p99": 16.445641800000157,
-        "min": 4.9990168000003905,
-        "max": 16.445641800000157
+        "p50": 6.811650000000372,
+        "p95": 14.197258400000283,
+        "p99": 14.337225000000036,
+        "min": 5.387508399999933,
+        "max": 14.337225000000036
       }
     ],
-    "referenceUs": 3.747083399999974,
-    "driftFraction": 0.36978088077781224
+    "referenceUs": 3.7320334,
+    "driftFraction": 0.4435852583741433
   },
   "compile": {
     "timing": {
       "heavyBuildAndCompile": {
         "iters": 2000,
         "samples": 60,
-        "p50": 20.007478999999876,
-        "p95": 34.39800000000014,
-        "p99": 44.894874999999956,
-        "min": 15.223687500000096,
-        "max": 44.894874999999956
+        "p50": 20.53381249999984,
+        "p95": 30.946354000000156,
+        "p99": 36.093521000000244,
+        "min": 15.524458500000037,
+        "max": 36.093521000000244
       },
       "heavyEmit": {
         "iters": 2000,
         "samples": 60,
-        "p50": 3.9525414999998247,
-        "p95": 4.2996250000001055,
-        "p99": 5.252979000000323,
-        "min": 3.823124999999891,
-        "max": 5.252979000000323
+        "p50": 3.9140625,
+        "p95": 4.388083499999993,
+        "p99": 5.2462289999998575,
+        "min": 3.848916999999801,
+        "max": 5.2462289999998575
       },
       "simpleBuildAndCompile": {
         "iters": 4000,
         "samples": 60,
-        "p50": 4.251291750000064,
-        "p95": 7.854323000000022,
-        "p99": 23.667656249999933,
-        "min": 3.36590625000008,
-        "max": 23.667656249999933
+        "p50": 4.412666749999971,
+        "p95": 10.121583249999958,
+        "p99": 23.12020849999999,
+        "min": 3.4603750000001128,
+        "max": 23.12020849999999
       }
     },
     "allocation": {
       "heavyBuildAndCompile": {
-        "median": 31475,
+        "median": 31469,
         "batch": 8,
         "stable": true,
         "exact": true
@@ -96,7 +96,7 @@
         "exact": true
       },
       "simpleBuildAndCompile": {
-        "median": 7206,
+        "median": 7204,
         "batch": 36,
         "stable": true,
         "exact": true
@@ -104,14 +104,14 @@
     },
     "allocBySource": {
       "builderChain": 10040,
-      "planner": 12369,
+      "planner": 12363,
       "emitter": 9066,
-      "total": 31475
+      "total": 31469
     },
-    "simplePerSec": 235222.62380604318,
-    "simplePerSecNorm": 235039.67705815015,
-    "simplePerSecBest": 297096.80713774374,
-    "simplePerSecBestNorm": 296865.7371250222
+    "simplePerSec": 226620.3311183666,
+    "simplePerSecNorm": 225534.57196074762,
+    "simplePerSecBest": 288986.0203012585,
+    "simplePerSecBestNorm": 287601.4613059666
   },
   "structure": {
     "heavy": {
@@ -151,34 +151,34 @@
       "preSession": {
         "iters": 400,
         "samples": 40,
-        "p50": 0.5458325000017794,
-        "p95": 0.6439599999976053,
-        "p99": 39.46697750000112,
-        "min": 0.4327100000000428,
-        "max": 39.46697750000112
+        "p50": 0.5210424999995666,
+        "p95": 0.6255224999995335,
+        "p99": 37.756664999997156,
+        "min": 0.44343749999825377,
+        "max": 37.756664999997156
       },
       "production": {
         "iters": 400,
         "samples": 40,
-        "p50": 1.0528125000018917,
-        "p95": 1.2646875000018554,
-        "p99": 1.799477500003377,
-        "min": 0.8567700000003242,
-        "max": 1.799477500003377
+        "p50": 1.0498974999973143,
+        "p95": 1.2167725000017526,
+        "p99": 1.8687500000032742,
+        "min": 0.8534374999999272,
+        "max": 1.8687500000032742
       },
       "dev": {
         "iters": 400,
         "samples": 40,
-        "p50": 4.426042499999312,
-        "p95": 4.794167499999276,
-        "p99": 5.095417500001531,
-        "min": 4.15385249999872,
-        "max": 5.095417500001531
+        "p50": 4.325415000002977,
+        "p95": 4.745625000000473,
+        "p99": 5.3514575000008335,
+        "min": 4.0859374999990905,
+        "max": 5.3514575000008335
       }
     },
     "allocation": {
       "preSession": {
-        "median": 2657,
+        "median": 2658,
         "batch": 99,
         "stable": true,
         "exact": true
@@ -196,9 +196,9 @@
         "exact": true
       }
     },
-    "overPreSessionP50": 1.9288197386532675,
-    "devOverPreSessionP50": 8.108792532479988,
-    "overPreSessionBytes": 3113
+    "overPreSessionP50": 2.0149939784147888,
+    "devOverPreSessionP50": 8.30146293249893,
+    "overPreSessionBytes": 3112
   },
   "decode": {
     "rows": 10000,
@@ -206,127 +206,127 @@
     "pairs": {
       "vsUnchecked": {
         "a": {
-          "p50": 8289.040999999997,
-          "p95": 8886.16600000023,
-          "p99": 9234.083999999712,
-          "min": 8174.791999999798
+          "p50": 8191.917000000103,
+          "p95": 8782.374999998865,
+          "p99": 8959.083999998256,
+          "min": 8090.833000000202
         },
         "b": {
-          "p50": 3169.832999999926,
-          "p95": 3583.9590000005046,
-          "p99": 3711.750000000393,
-          "min": 3114.9160000004485
+          "p50": 3164.167000000816,
+          "p95": 3567.6670000011654,
+          "p99": 3683.082999999897,
+          "min": 3101.542000000336
         },
-        "ratioP50": 2.614977192804855,
-        "ratioP95": 2.4794273595202903,
-        "ratioP99": 2.4877979389772302,
-        "ratioP50Paired": 2.623901748209543,
-        "ratioP95Paired": 2.794446832427845,
+        "ratioP50": 2.5889648049543497,
+        "ratioP95": 2.4616577163720708,
+        "ratioP99": 2.432495819398723,
+        "ratioP50Paired": 2.607013778810286,
+        "ratioP95Paired": 2.751494315740466,
         "iters": 1,
         "samples": 60
       },
       "vsChecked": {
         "a": {
-          "p50": 8270.958999999493,
-          "p95": 10335.291999999754,
-          "p99": 12855.917000000773,
-          "min": 8132.041000000754
+          "p50": 8214.540999999372,
+          "p95": 10217.459000001327,
+          "p99": 12631.583000000319,
+          "min": 8080.167000000074
         },
         "b": {
-          "p50": 5502.49999999869,
-          "p95": 5705.332999999882,
-          "p99": 7475.167000000511,
-          "min": 5446.667000000161
+          "p50": 5415.16700000102,
+          "p95": 5656.417000000147,
+          "p99": 8125.458000000435,
+          "min": 5358.165999999983
         },
-        "ratioP50": 1.5031274875059448,
-        "ratioP95": 1.8115142446549513,
-        "ratioP99": 1.7198166943962447,
-        "ratioP50Paired": 1.4990303223893786,
-        "ratioP95Paired": 1.857749456831494,
+        "ratioP50": 1.5169506314390349,
+        "ratioP95": 1.806348258977558,
+        "ratioP99": 1.554568739386708,
+        "ratioP50Paired": 1.5160176106942103,
+        "ratioP95Paired": 1.8546519970408324,
         "iters": 1,
         "samples": 60
       },
       "dispatchOnly": {
         "a": {
-          "p50": 1874.415999998746,
-          "p95": 1967.2089999985474,
-          "p99": 3996.9579999997222,
-          "min": 1858.3340000004682
+          "p50": 1872.7079999989655,
+          "p95": 1973.082999998951,
+          "p99": 2111.957999999504,
+          "min": 1858.83400000057
         },
         "b": {
-          "p50": 66.66699999914272,
-          "p95": 85.91700000033597,
-          "p99": 255.6670000012673,
-          "min": 64.58299999940209
+          "p50": 66.04200000037963,
+          "p95": 80.95799999864539,
+          "p99": 2004.5829999999114,
+          "min": 63.91699999949196
         },
-        "ratioP50": 28.116099419845643,
-        "ratioP95": 22.896621157522432,
-        "ratioP99": 15.63345288981335,
-        "ratioP50Paired": 28.183170849199147,
-        "ratioP95Paired": 28.94724617958576,
+        "ratioP50": 28.35631870609916,
+        "ratioP95": 24.371686553916415,
+        "ratioP99": 1.0535647563605983,
+        "ratioP50Paired": 28.275663030885323,
+        "ratioP95Paired": 29.109601604870704,
         "iters": 1,
         "samples": 60
       },
       "codegenVsUnchecked": {
         "a": {
-          "p50": 6209.83299999898,
-          "p95": 6706.457999998747,
-          "p99": 7200.665999998819,
-          "min": 6153.999999998632
+          "p50": 6161.957999998776,
+          "p95": 6580.541999999696,
+          "p99": 6737.541999998939,
+          "min": 6063.292000000729
         },
         "b": {
-          "p50": 3131.3329999993584,
-          "p95": 3381.04199999907,
-          "p99": 3709.9159999997937,
-          "min": 3083.0409999998665
+          "p50": 3149.6660000011616,
+          "p95": 3565.582999999606,
+          "p99": 3824.958000001061,
+          "min": 3101.334000000861
         },
-        "ratioP50": 1.983127632864423,
-        "ratioP95": 1.9835476755392545,
-        "ratioP99": 1.9409242689050694,
-        "ratioP50Paired": 1.9924101597771504,
-        "ratioP95Paired": 2.1040692395453005,
+        "ratioP50": 1.9563845817291432,
+        "ratioP95": 1.84557251927677,
+        "ratioP99": 1.7614682305000657,
+        "ratioP50Paired": 1.9543905613061476,
+        "ratioP95Paired": 2.0646184911826753,
         "iters": 1,
         "samples": 60
       },
       "codegenVsChecked": {
         "a": {
-          "p50": 6254.708000000392,
-          "p95": 8770.375000000058,
-          "p99": 10782.249999998385,
-          "min": 6164.291999999477
+          "p50": 6197.540999999546,
+          "p95": 9087.041999999201,
+          "p99": 15250.833000000057,
+          "min": 6072.374999999738
         },
         "b": {
-          "p50": 5543.042000001151,
-          "p95": 7621.417000000292,
-          "p99": 34273.99999999943,
-          "min": 5453.874999999243
+          "p50": 5464.41699999923,
+          "p95": 5930.2909999987605,
+          "p99": 12471.416999998837,
+          "min": 5356.040999999095
         },
-        "ratioP50": 1.1283890686736802,
-        "ratioP95": 1.1507538558774204,
-        "ratioP99": 0.3145897765069313,
-        "ratioP50Paired": 1.1322731458315207,
-        "ratioP95Paired": 1.5121165552768823,
+        "ratioP50": 1.1341632602344256,
+        "ratioP95": 1.5323096286507862,
+        "ratioP99": 1.2228628871924883,
+        "ratioP50Paired": 1.1379595488534737,
+        "ratioP95Paired": 1.6447375955239418,
         "iters": 1,
         "samples": 60
       },
       "codegenDispatchOnly": {
         "a": {
-          "p50": 132.2920000002341,
-          "p95": 274.5839999988675,
-          "p99": 1905.5000000007567,
-          "min": 125.3340000002936
+          "p50": 140.0000000012369,
+          "p95": 258.95800000034797,
+          "p99": 1108.0000000001746,
+          "min": 126.45799999882001
         },
         "b": {
-          "p50": 68.58299999839801,
-          "p95": 76.79100000132166,
-          "p99": 161.66699999848788,
-          "min": 65.58299999960582
+          "p50": 77.91600000018661,
+          "p95": 90.58399999958056,
+          "p99": 753.167000000758,
+          "min": 65.29200000113633
         },
-        "ratioP50": 1.9289328259674299,
-        "ratioP95": 3.5757315309625035,
-        "ratioP99": 11.78657363604557,
-        "ratioP50Paired": 1.9406376950368303,
-        "ratioP95Paired": 3.902273381318681,
+        "ratioP50": 1.796806817610011,
+        "ratioP95": 2.8587609290994775,
+        "ratioP99": 1.4711212785465368,
+        "ratioP50Paired": 1.8725797101625543,
+        "ratioP95Paired": 3.6017660723498484,
         "iters": 1,
         "samples": 60
       }
@@ -370,13 +370,14 @@
     "statement": {
       "_why": "The statement path over the null driver (`statement-path.mjs`), added by design/12 §4 P item 0 because nothing in the PR half of design/08 §5 could see the session layer: `bench:compile` measured the builder and the decoder, and the only thing that measured acquire -> execute -> release needed a server and therefore ran once a night. The regression that motivated it -- point select 1.286 -> 1.603 after design/12 §3 S -- was found by the nightly, a day after the merge, in the one e2e case cheap enough for a constant per-statement cost to be visible in a ratio whose denominator is a network round trip. These lines see it directly. There is NO design figure for them: design/08 §5 gates ratios against `pg`, not against our own previous code, so the design column prints 1.0 -- 'the session layer should be free' -- and they are deliberately absent from `_designLinked`, because a budget cannot be over design against a number no document states.",
       "_whyLocallySized": "Unlike every other line in this file these were sized on the design machine rather than from the runner's distribution (R21), and that is legitimate for exactly two of the three. `overPreSessionP50` and `overPreSessionBytes` are a RATIO and a DIFFERENCE BETWEEN TWO ARMS MEASURED IN THE SAME PROCESS -- same compiled statement, same null driver, interleaved sample runs -- so the machine cancels. R21 exists because a wall-clock number from a laptop is not a statement about a runner; a quotient of two numbers taken on one machine is. `productionRefRatio` IS machine-dependent, so it is a catastrophe guard at ~2x the measurement rather than a regression detector. The first nightly to run this says whether the quotients hold, and they come down if it has a tighter distribution.",
-      "overPreSessionP50": 2.4,
+      "overPreSessionP50": 2.3,
       "overPreSessionBytes": 3400,
       "productionRefRatio": 0.6,
+      "_runnerSized": "design/13 §4 Q, 2026-08-30, from the first five nightly samples (33242675982, 33246087296, 33246453272, 33246810860, 33271626165, same code): `overPreSessionP50` 2.008 / 2.184 / 2.051 / 1.320 / 2.127 -> budget 2.4 -> 2.3, i.e. max × 1.05 rounded up to 0.05 over the four ordinary readings, the same rule the reference ratios use. The 1.320 is the one to read: it is not a better build, it is the same commit on a faster night, and the tool that compares consecutive nightlies (tools/bench-regression.mjs) reported the return to 2.127 as a 61 % regression — so the TIME line left that tool's allow-list and only the bytes line (3 112–3 120 B, 0.3 % spread) stays reportable. A ratio of two in-process arms cancels the machine less than `_whyLocallySized` hoped; the budget is a catastrophe guard sized from the runner, and the regression detector for this path is `overPreSessionBytes`.",
       "_measured": "After design/12 §4 P item 0, on the design machine, over four runs: production/pre-session 1.967-2.077 (before the pass: 2.503), bytes over the pre-session path 3 120-3 122 B (6 145), production/reference 0.28-0.29 (0.39). The dev arm is reported and never gated -- 7.7-9.5x the pre-session path, against 27.1x before -- because `07` §7.4's call-site capture and §1.5's dev guard are debugging aids that are ON outside production by design, and a budget on them would gate a feature nobody deploys."
     },
     "decode": {
-      "_why": "design/03 Appendix B says 'within 15% of a hand-written positional mapper' and does not say what the mapper may skip. Measured (design/09 §3.7), that is the whole question, so three pairs are gated per builder instead of one. The default closure tree does not reach 1.15 and cannot: a closure tree cannot write an object LITERAL, because the keys are only known at run time, and the dynamic-key row loop alone is ~24x a literal copy (see `_notGated`). The opt-in `{ decoder: 'codegen' }` builder does reach it -- 1.126-1.168 against the same-checks mapper -- which is exactly the disposition src/compile/decode.ts recorded in advance: 'if benchmarks later disagree, codegen becomes an opt-in flag, never the default'. Both builders are gated, and the design number is printed beside every one of them (R9).\n\nRE-SIZED FROM THE RUNNER, design/12 §4 P item 1, and two of these four went UP. Across seventeen runner observations the closure tree measures 2.374-2.816 against the unchecked mapper and 1.478-1.663 against the same-checks one; the budgets were 2.8 and 1.65, i.e. INSIDE the observed range, and the run that proved it is in the sample — ci.yml 33207272663 attempt 1 went red at 2.816 and 1.663 on a change that touched no decoding code at all, and was green on a re-run. A gate that a re-run fixes is not a gate. They are now 2.95 and 1.75, which is max × 1.05.\n\nWidening a budget deserves more suspicion than tightening one, so: what was tried and did not help is switching the STATISTIC. The report carries `min`, `p50` and `p95` for both sides of every pair, and across the six nightly runs the min/min quotient spreads 5.4 % where the p50/p50 one spreads 4.4 % — no better. What SHOULD help is pairing the quotient rather than the timings: `samplePaired` already interleaves the two sides sample by sample, so `median(a_i / b_i)` cancels drift inside each pair where `median(a) / median(b)` cannot. That statistic is now measured and PRINTED on every run (`ratioP50Paired` in report.json) and is deliberately NOT gated yet: it has no runner distribution, and sizing a new gate off the design machine is exactly what R21 forbids. Five nightly runs from now it is the candidate to gate, and these two numbers are the candidates to bring back down.\n\nThe two throughput floors are raised on the same evidence (min × 0.90 of the runner's range): closure 1 000 000 -> 1 150 000 rows/s from a measured 1 270 426-1 444 888, codegen 1 400 000 -> 1 500 000 from 1 645 540-1 859 078. `fractionOfClosureTree` 0.85 -> 0.82 from a measured 0.708-0.786.",
+      "_why": "design/03 Appendix B says 'within 15% of a hand-written positional mapper' and does not say what the mapper may skip. Measured (design/09 §3.7), that is the whole question, so three pairs are gated per builder instead of one. The default closure tree does not reach 1.15 and cannot: a closure tree cannot write an object LITERAL, because the keys are only known at run time, and the dynamic-key row loop alone is ~24x a literal copy (see `_notGated`). The opt-in `{ decoder: 'codegen' }` builder does reach it -- 1.126-1.168 against the same-checks mapper -- which is exactly the disposition src/compile/decode.ts recorded in advance: 'if benchmarks later disagree, codegen becomes an opt-in flag, never the default'. Both builders are gated, and the design number is printed beside every one of them (R9).\n\nRE-SIZED FROM THE RUNNER, design/12 §4 P item 1, and two of these four went UP. Across seventeen runner observations the closure tree measures 2.374-2.816 against the unchecked mapper and 1.478-1.663 against the same-checks one; the budgets were 2.8 and 1.65, i.e. INSIDE the observed range, and the run that proved it is in the sample — ci.yml 33207272663 attempt 1 went red at 2.816 and 1.663 on a change that touched no decoding code at all, and was green on a re-run. A gate that a re-run fixes is not a gate. They are now 2.95 and 1.75, which is max × 1.05.\n\nWidening a budget deserves more suspicion than tightening one, so: what was tried and did not help is switching the STATISTIC. The report carries `min`, `p50` and `p95` for both sides of every pair, and across the six nightly runs the min/min quotient spreads 5.4 % where the p50/p50 one spreads 4.4 % — no better. What SHOULD help is pairing the quotient rather than the timings: `samplePaired` already interleaves the two sides sample by sample, so `median(a_i / b_i)` cancels drift inside each pair where `median(a) / median(b)` cannot. That statistic is now measured and PRINTED on every run (`ratioP50Paired` in report.json) and is deliberately NOT gated yet: it has no runner distribution, and sizing a new gate off the design machine is exactly what R21 forbids. Five nightly runs from now it is the candidate to gate, and these two numbers are the candidates to bring back down.\n\nFIVE RUNS LATER (design/13 §4 Q, 2026-08-30; runs 33242675982, 33246087296, 33246453272, 33246810860, 33271626165, same code): the paired quotient is NOT tighter. Spread (max/min − 1) unpaired vs paired — closure tree vs unchecked 4.2 % vs 4.3 % (2.427–2.528 vs 2.422–2.526), vs same-checks 8.7 % vs 8.4 % (1.447–1.573 vs 1.448–1.569); codegen vs unchecked 4.7 % vs 5.1 % (1.890–1.978 vs 1.882–1.979), vs same-checks 6.7 % vs 6.5 % (1.125–1.200 vs 1.126–1.199). Two of four are marginally tighter, two marginally wider, all within a point of each other: the drift the pairing was meant to cancel is not what moves these numbers between nights. So the paired statistic stays reported and ungated, the two widened lines (2.95 / 1.75) stay — the 17-observation distribution that sized them includes the PR-runner readings (2.816 / 1.663) that these five quieter nightly readings do not reach, and a gate sized from the quiet nights alone would be the re-run-until-green gate again — and the candidate to bring them down is now a longer nightly sample, not a different statistic.\n\nThe two throughput floors are raised on the same evidence (min × 0.90 of the runner's range): closure 1 000 000 -> 1 150 000 rows/s from a measured 1 270 426-1 444 888, codegen 1 400 000 -> 1 500 000 from 1 645 540-1 859 078. `fractionOfClosureTree` 0.85 -> 0.82 from a measured 0.708-0.786.",
       "ratioVsUncheckedMapperP50": 2.95,
       "ratioVsCheckedMapperP50": 1.75,
       "rowsPerSecond": 1150000,
@@ -458,7 +459,7 @@
   "checks": [
     {
       "name": "compile · emitter p50 (design/03 §1.1)",
-      "measured": 3.953,
+      "measured": 3.914,
       "limit": 25,
       "unit": "µs",
       "mode": "max",
@@ -474,7 +475,7 @@
     },
     {
       "name": "compile · build+compile / reference",
-      "measured": 5.34,
+      "measured": 5.5,
       "limit": 8,
       "unit": "",
       "mode": "max",
@@ -482,7 +483,7 @@
     },
     {
       "name": "compile · simple select / reference",
-      "measured": 1.13,
+      "measured": 1.18,
       "limit": 1.5,
       "unit": "",
       "mode": "max",
@@ -490,7 +491,7 @@
     },
     {
       "name": "compile · simple selects/sec (machine-normalised, best-case)",
-      "measured": 296866,
+      "measured": 287601,
       "limit": 200000,
       "unit": "/s",
       "mode": "min",
@@ -498,7 +499,7 @@
     },
     {
       "name": "compile · bytes/op, build+compile",
-      "measured": 31475,
+      "measured": 31469,
       "limit": 32000,
       "unit": "B",
       "mode": "max",
@@ -514,7 +515,7 @@
     },
     {
       "name": "compile · bytes/op, simple",
-      "measured": 7206,
+      "measured": 7204,
       "limit": 7500,
       "unit": "B",
       "mode": "max",
@@ -586,7 +587,7 @@
     },
     {
       "name": "decode · vs unchecked hand mapper (p50)",
-      "measured": 2.615,
+      "measured": 2.589,
       "limit": 2.95,
       "unit": "",
       "mode": "max",
@@ -594,7 +595,7 @@
     },
     {
       "name": "decode · vs same-checks hand mapper (p50)",
-      "measured": 1.503,
+      "measured": 1.517,
       "limit": 1.75,
       "unit": "",
       "mode": "max",
@@ -602,7 +603,7 @@
     },
     {
       "name": "decode · rows/sec (machine-normalised)",
-      "measured": 1205474,
+      "measured": 1214867,
       "limit": 1150000,
       "unit": "/s",
       "mode": "min",
@@ -610,7 +611,7 @@
     },
     {
       "name": "decode · codegen vs unchecked hand mapper (p50)",
-      "measured": 1.983,
+      "measured": 1.956,
       "limit": 2.15,
       "unit": "",
       "mode": "max",
@@ -618,7 +619,7 @@
     },
     {
       "name": "decode · codegen vs same-checks hand mapper (p50)",
-      "measured": 1.128,
+      "measured": 1.134,
       "limit": 1.3,
       "unit": "",
       "mode": "max",
@@ -626,7 +627,7 @@
     },
     {
       "name": "decode · codegen rows/sec (machine-normalised)",
-      "measured": 1609097,
+      "measured": 1615086,
       "limit": 1500000,
       "unit": "/s",
       "mode": "min",
@@ -634,7 +635,7 @@
     },
     {
       "name": "decode · codegen is faster than the closure tree",
-      "measured": 0.749,
+      "measured": 0.752,
       "limit": 0.82,
       "unit": "",
       "mode": "max",
@@ -642,15 +643,15 @@
     },
     {
       "name": "statement · production / pre-session path",
-      "measured": 1.929,
-      "limit": 2.4,
+      "measured": 2.015,
+      "limit": 2.3,
       "unit": "",
       "mode": "max",
       "ok": true
     },
     {
       "name": "statement · production bytes over the pre-session path",
-      "measured": 3113,
+      "measured": 3112,
       "limit": 3400,
       "unit": "B",
       "mode": "max",
@@ -666,7 +667,7 @@
     },
     {
       "name": "statement · dev / pre-session path (reported)",
-      "measured": 8.109,
+      "measured": 8.301,
       "limit": 99,
       "unit": "",
       "mode": "max",

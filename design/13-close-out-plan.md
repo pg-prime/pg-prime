@@ -245,7 +245,32 @@ spreads in `_why` and change nothing else.
 
 #### Q — RESULT
 
-_(pending)_
+**Done 2026-08-30, on the five runner samples of §0** (the fifth, 33271626165, was dispatched on
+`9be7192` for the purpose). Decision 14's test fails: the paired quotient is **not** tighter than
+the unpaired one. Spread (max/min − 1), unpaired → paired: closure tree vs unchecked 4.2 % → 4.3 %,
+vs same-checks 8.7 % → 8.4 %; codegen vs unchecked 4.7 % → 5.1 %, vs same-checks 6.7 % → 6.5 %.
+Two marginally tighter, two marginally wider, all within a point — night-to-night drift inside a
+sample is not what moves these lines. So `ratioP50Paired` stays reported and ungated, the two
+widened decode lines (2.95 / 1.75) stay — their 17-observation distribution includes PR-runner
+readings (2.816 / 1.663) these five quieter nightly readings do not reach — and the numbers are
+in `bench/runtime/budget.json` `decode._why`. The candidate to bring them down is a longer nightly
+sample, not a different statistic.
+
+**What the fifth run found instead.** It went red on the *open an issue if a gate regressed* step,
+not on a budget: `tools/bench-regression.mjs` reported `statement · production / pre-session
+path` 1.320 → 2.127 (+61 %) against the previous night, on the same commit — and then the step
+crashed with exit 3 because the runner's shell is `bash -e` and `node …; code=$?` never reaches
+the `code=`. Three fixes, one commit:
+
+1. `.github/workflows/ci-nightly.yml`: `code=0` … `|| code=$?`. The issue-filing path had never
+   executed; it now can (reproduced and proved locally under `bash -e`).
+2. `tools/bench-regression.mjs`: the statement-path **time** line leaves the allow-list — its
+   five runner readings are 2.008 / 2.184 / 2.051 / 1.320 / 2.127, a 65 % spread, and the
+   tool's own rule is "comfortably under 25 %". The bytes line (3 112–3 120 B, 0.3 %) stays and is
+   the regression detector for that path. The self-test case flipped to `false` with the reason.
+3. `bench/runtime/budget.json` `statement.overPreSessionP50` 2.4 → **2.3**, now sized from the
+   runner (max × 1.05 over the four ordinary readings, rounded up to 0.05) instead of the design
+   machine; `_runnerSized` records the five numbers and the reading of the 1.320.
 
 ## 5. Integration and definition of done
 

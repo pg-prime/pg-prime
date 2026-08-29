@@ -23,12 +23,20 @@
 //   e2e p99, all nine cases                     up to 3.5x    NOT reportable
 //   absolute µs and the …RefRatio lines         35  – 46  %   NOT reportable
 //   simple selects/sec                          51  %         NOT reportable
+//   statement · production / pre-session path   65  %         NOT reportable (see below)
 //
 // Written as a deny-list this would rot the first time a gate is added; written as an allow-list
 // it fails safe — a new gate is silent until somebody decides it reproduces. The excluded lines
 // are still GATED: `budget.json` catches a catastrophe on every one of them. What they are not is
 // *regression* material, and an automation that opens an issue on a line with a 57 % natural
 // spread is an automation somebody switches off in a fortnight.
+//
+// The statement-path TIME ratio was on this list from the day it was added (design/12 §4 P
+// item 0) with no runner distribution behind it, and the first five nightly samples took it off:
+// 2.008, 2.184, 2.051, 1.320, 2.127 (runs 33242675982, 33246087296, 33246453272, 33246810860,
+// 33271626165, all on the same code). The 1.320 is the outlier, and the run after it read the
+// ordinary 2.127 — which this tool reported as a 61 % regression, on a night nothing changed
+// (design/13 §4 Q). Its bytes line is 3 112–3 120 B across the same five, 0.3 %, and stays.
 //
 // The proof that the exclusions are needed rather than cautious: run this over two CONSECUTIVE
 // green nightlies of unchanged code (33162423166 → 33184536648) with the tails included and it
@@ -80,7 +88,6 @@ const REPORTABLE = [
   /^decode · (vs|codegen vs) .* hand mapper \(p50\)$/,
   /^decode · (codegen )?rows\/sec/,
   /^decode · codegen is faster than the closure tree$/,
-  /^statement · production \/ pre-session path$/,
   /^statement · production bytes over the pre-session path$/,
   /^structure · /,
 ]
@@ -223,7 +230,11 @@ function selfTest() {
       false,
     ],
     ['bytes/op +30 %', moved('compile · bytes/op, build+compile', 1.3), true],
-    ['statement path +30 %', moved('statement · production / pre-session path', 1.3), true],
+    [
+      'statement path TIME +30 % \u2014 not reportable, spread is 65 % (bytes is the detector)',
+      moved('statement · production / pre-session path', 1.3),
+      false,
+    ],
     [
       'an e2e TAIL +80 % \u2014 not reportable, spread is 57 %',
       moved('e2e · delete by PK · p95 orm/raw', 1.8),

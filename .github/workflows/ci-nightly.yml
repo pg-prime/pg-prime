@@ -260,11 +260,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
+          # The runner's default shell is `bash -e`, and `set -uo pipefail` does not clear `-e`: a
+          # plain `node …; code=$?` aborts the step the moment the tool exits 3, before `code` is
+          # read — which is what run 33271626165 did, the first night a regression was detected.
+          # `|| code=$?` is the form that survives `-e`.
+          code=0
           node tools/bench-regression.mjs \
             --before /tmp/previous/report.json \
             --after bench/runtime/report.json \
-            --out /tmp/regression.md > /tmp/regression.out
-          code=$?
+            --out /tmp/regression.md > /tmp/regression.out || code=$?
           if [ $code -eq 0 ]; then
             echo "no gate regressed by more than 25 % against run ${{ steps.previous.outputs.id }}"
             exit 0
