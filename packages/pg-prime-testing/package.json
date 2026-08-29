@@ -1,7 +1,14 @@
 {
   "name": "@pg-prime/testing",
   "version": "0.0.0",
-  "description": "Test helpers for pg-prime: PGlite fast tier and real-Postgres container matrix. Pre-alpha — not yet usable.",
+  "description": "Test helpers for pg-prime: a recording driver mock, PGlite and testcontainers fixtures, scratch databases, runner-agnostic skip guards and expectSql.",
+  "keywords": [
+    "pg-prime",
+    "pglite",
+    "postgres",
+    "testcontainers",
+    "testing"
+  ],
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
@@ -11,10 +18,47 @@
     "dist"
   ],
   "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "node ../../tools/build-package.mjs",
+    "clean": "node ../../tools/build-package.mjs --clean",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
+    "test": "vitest run --project unit",
+    "test:live": "vitest run --project unit --project live",
+    "test:pg": "vitest run"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.7",
+    "@testcontainers/postgresql": "^12.1.0",
+    "pg-prime": "workspace:*",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "@electric-sql/pglite": ">=0.5.0",
+    "@testcontainers/postgresql": ">=11.0.0",
+    "pg-prime": ">=0.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@electric-sql/pglite": {
+      "optional": true
+    },
+    "@testcontainers/postgresql": {
+      "optional": true
+    }
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   }
 }

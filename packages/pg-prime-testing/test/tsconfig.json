@@ -1,0 +1,15 @@
+{
+  "//": "Type-checks the tests, which the package tsconfig deliberately excludes (it emits declarations from `src` only). Run: node_modules/.bin/tsc --noEmit -p packages/pg-prime-testing/test/tsconfig.json",
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "pg-prime": ["../../pg-prime/src/index.ts"],
+      "pg-prime/schema": ["../../pg-prime/src/schema/index.ts"],
+      "pg-prime/sql": ["../../pg-prime/src/sql/index.ts"],
+      "pg-prime/codecs": ["../../pg-prime/src/codec/index.ts"],
+      "pg-prime/driver": ["../../pg-prime/src/entry/driver.ts"]
+    }
+  },
+  "include": ["../src/**/*.ts", "./**/*.ts"]
+}

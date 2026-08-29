@@ -1,0 +1,15 @@
+{
+  "//": "The publish emit (design/08 §3.1, §3.2; design/13 decision 4). `isolatedDeclarations: true` — this package is ordinary functions and data, so it is free, it buys parallel emit, and it guarantees no inferred type leaks a deep internal path into the published `.d.ts`. `paths: {}` undoes the typecheck project's source mapping for `pg-prime`, so this emit reads the peer dependency's PUBLISHED declarations; `pnpm -r build` builds pg-prime first, because it is a workspace devDependency here.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "isolatedDeclarations": true,
+    "noEmit": false,
+    "paths": {}
+  },
+  "include": ["src"]
+}
