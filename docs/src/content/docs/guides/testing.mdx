@@ -3,4 +3,285 @@ title: Testing with PGlite
 description: A real PostgreSQL in-process, per-file isolation, and what PGlite cannot tell you.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+You can run your tests against a real PostgreSQL that lives inside your test process, boots in
+about a second, needs no Docker and behaves identically on macOS, Linux and Windows. That is
+[PGlite](https://pglite.dev): PostgreSQL 18.3 compiled to WebAssembly, with zero npm dependencies
+of its own.
+
+It is not a mock, an emulator or a subset. It is the same C code, so `CREATE INDEX CONCURRENTLY`,
+generated columns, partitions, matviews, domains, ranges, triggers and row-level security with real
+roles all work. `git clone && pnpm i && pnpm test` works for a first-time contributor on any
+machine, which is the whole reason to reach for it.
+
+It also has two limits that are easy to walk into, and one of them makes a broken implementation
+test **green**. Read those before you write the fixture.
+
+## Connect to it over the wire
+
+Point pg-prime at PGlite the same way you point it at anything else: a `postgres://` URL, a socket,
+and the real `pg` driver on the other end of it. That matters — a test that goes through an
+in-process adapter proves nothing about the protocol, the codecs or the error mapping, which is
+where the bugs are.
+
+{/* docs: skip-check="@electric-sql/pglite-socket is not a dependency of this repository" */}
+```ts title="vitest-setup.ts"
+import { PGlite } from '@electric-sql/pglite'
+import { PGLiteSocketServer } from '@electric-sql/pglite-socket'
+import { afterAll } from 'vitest'
+
+// A `setupFiles` entry runs once per test FILE, which is exactly the granularity the next section
+// argues for. Pin the port per checkout so several clones and a real 5432 coexist on one machine;
+// `port: 0` lets the OS assign one, but you then need a way to read it back.
+const PORT = Number(process.env['PGLITE_PORT'] ?? 55432)
+
+const db = await PGlite.create()
+const server = new PGLiteSocketServer({ db, port: PORT, host: '127.0.0.1' })
+await server.start()
+
+process.env['DATABASE_URL'] = `postgres://postgres:postgres@127.0.0.1:${PORT}/postgres`
+
+afterAll(async () => {
+  await server.stop()
+  await db.close()
+})
+```
+
+<Aside type="note">
+pg-prime's own suites do not use `@electric-sql/pglite-socket`, for a measured reason: PGlite sends
+a **spurious `ReadyForQuery`** after an extended-protocol error, and `pg` then believes the *next*
+query has already finished — the rows arrive as `Received unexpected rowDescription message from
+backend` and the connection is dead. It reproduces on roughly half of all erroring parameterised
+queries, i.e. on most SQLSTATE assertions in a suite. The repo ships a ~130-line bridge
+(`packages/pg-prime/test/live/_pglite-bridge.ts`) that strips it, serialises messages onto the one
+backend, and refuses the case in the next section. If your suite asserts on SQLSTATEs, expect to
+need something similar.
+</Aside>
+
+Whatever port you choose, do not choose 5432. A test suite that binds the default port fights every
+local PostgreSQL and every other checkout on the machine, and the failure — "address already in
+use", or worse, a test that silently ran against your development database — is not worth the
+saved constant.
+
+## Limit 1: it is ONE backend
+
+<Aside type="caution">
+**PGlite multiplexes every socket onto a single PostgreSQL backend.** Two "connections" report the
+same `pg_backend_pid()`, `set_config` and temp tables leak between them, and
+`pg_try_advisory_lock()` on the second returns `true` where real PostgreSQL returns `false`. So a
+test for anything that needs a second session does not merely fail to be meaningful — **it passes,
+for the wrong reason.** A migration runner's advisory-lock safety tests green on PGlite while being
+completely broken.
+</Aside>
+
+Concretely, none of this can be written against PGlite:
+
+- a real `40001` serialization failure, and therefore the retry policy;
+- deadlock detection (`40P01`);
+- `SELECT … FOR UPDATE SKIP LOCKED`, and every queue built on it;
+- row- and DDL-lock waiting, and `lock_timeout` under contention;
+- advisory-lock contention, including `pg_try_advisory_lock` returning `false`;
+- a killed backend — `pg_terminate_backend` needs a second session to do the killing — and so the
+  whole `LISTEN` reconnect and `gap` story;
+- cross-session `LISTEN`/`NOTIFY`: the notification is delivered to the socket that published it;
+- connection-pool semantics, and any pooler mode;
+- `CancelRequest`, which the bridge cannot deliver to a busy single-threaded backend, and therefore
+  the client-side statement timeout;
+- `COPY`, whose protocol messages exit the WASM backend and take the instance with it.
+
+The pattern that makes this safe is a **guard that skips loudly** rather than a comment nobody
+reads. pg-prime's harness spells it `requiresConcurrency()`, which resolves to `it` against a real
+server and to `it.skip` — with the reason written to stderr — against PGlite. Two lines, and the
+skip is re-evaluatable: a skip whose reason is "PGlite" is a skip nobody can ever revisit.
+
+```ts title="guards.ts" no-run
+import { it } from 'vitest'
+
+/** Just enough of vitest's `it` that both `it` and `it.skip` are assignable to it. */
+export type TestDecl = (name: string, fn: () => void | Promise<void>, timeout?: number) => void
+
+/** Set when the suite is pointed at a real server; unset means the in-process PGlite. */
+const onRealPostgres = (): boolean => process.env['TEST_DATABASE_URL'] !== undefined
+
+/** Say WHY. A skip whose reason is "PGlite" is a skip nobody can ever re-evaluate. */
+export function requiresRealPostgres(reason: string): TestDecl {
+  if (onRealPostgres()) return it
+  // stderr, not console.*: a guard runs during collection, and vitest drops console output from
+  // that phase unless a running task owns it — so every "loud" skip would in fact be silent.
+  process.stderr.write(`[test] skip: ${reason}\n`)
+  return it.skip
+}
+
+export const requiresConcurrency = (): TestDecl =>
+  requiresRealPostgres('needs a second backend session; PGlite is one backend')
+```
+
+## Limit 2: one instance per test file
+
+The other consequence of "one backend" is that one shared PGlite makes every file's session state
+visible to every other file. `create temp table t` in one file makes `t` *already exist* in the
+next; a `set_config` leaks; a sequence keeps counting; an unfinished transaction blocks everything.
+
+So: **one PGlite per test file**, torn down when the file's last test finishes. It costs about a
+second per file, restores real isolation with no schema-namespace dance, and gives each file its
+own DDL to mutate.
+
+The setup file above is already this shape: it is a `setupFiles` entry, not a `globalSetup` one,
+and that one-word difference is the whole isolation story. Within a file PGlite is still one
+backend, so limit 1 has not gone away — `requiresConcurrency()` is still the answer there.
+
+### And on a shared server: one schema namespace per file
+
+When `DATABASE_URL` points at a real PostgreSQL, files share it, and the cheap way to keep them
+apart is a schema per file rather than a database per test. Creating a database costs ~100 ms and
+a connection; creating a schema costs neither.
+
+{/* docs: use=blog-schema */}
+```ts title="namespace.ts" no-run
+import { pgPrime, sql } from 'pg-prime'
+
+const NS = 'test_user_repository' // one per file, matching the file's name
+
+export const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema,
+  session: { searchPath: [NS, 'public'] },
+})
+
+/** `beforeAll`. `sql.ident` quotes it, so a namespace derived from a file name is safe. */
+export async function createNamespace(): Promise<void> {
+  await db.sql`drop schema if exists ${sql.ident(NS)} cascade`.execute()
+  await db.sql`create schema ${sql.ident(NS)}`.execute()
+}
+```
+
+The namespace is also what lets the suite run in parallel against one server, which is the point.
+
+## Transaction per test
+
+The fastest fixture that is still honest: run each test inside a transaction and always roll it
+back. No truncation, no re-seeding, no ordering between tests — and it exercises the same
+transaction machinery your application uses.
+
+`rollbackWith(value)` is what makes it neat. It aborts the transaction and resolves it with the
+value, fully typed and with no `| undefined` bolted on, so the fixture does not have to throw a
+sentinel error and catch it.
+
+{/* docs: setup=test-db use=blog-schema */}
+```ts title="test-db.ts" no-run
+import { pgPrime } from 'pg-prime'
+
+export const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema,
+  // A suite does not need concurrency, and on PGlite it must not have any: every extra pooled
+  // connection is the same backend, so a second one active while a fixture holds a transaction
+  // can end that transaction underneath it. One connection makes the fixture deterministic.
+  poolOptions: { max: 1 },
+})
+
+export type AppSchema = typeof schema
+```
+
+{/* docs: use=test-db,blog-ddl */}
+```ts title="user-repository.test.ts"
+import type { Tx } from 'pg-prime'
+import { db, type AppSchema } from './test-db.js'
+
+// Written with plain functions so this page compiles with no test runner installed. Under vitest
+// these three are `import { it } from 'vitest'` and an `expect`, and the bodies are unchanged.
+type Case = (tx: Tx<AppSchema>) => Promise<void>
+const cases: [string, Case][] = []
+const it = (name: string, fn: Case): void => void cases.push([name, fn])
+const expectEqual = (actual: unknown, want: unknown): void => {
+  if (actual !== want) throw new Error(`expected ${String(want)}, got ${String(actual)}`)
+}
+
+/** The fixture: every case runs in a transaction that is ALWAYS rolled back. */
+async function runCases(): Promise<string[]> {
+  const results: string[] = []
+  for (const [name, fn] of cases) {
+    const outcome = await db
+      .transaction(async (tx) => {
+        await fn(tx)
+        return tx.rollbackWith('pass' as const)
+      })
+      .catch((e: unknown) => `fail: ${(e as Error).message}`)
+    results.push(`${name} — ${outcome}`)
+  }
+  return results
+}
+
+const countUsers = async (tx: Tx<AppSchema>): Promise<number> => {
+  const [row] = await tx.sql`select count(*)::int as n from users`.execute()
+  return Number(row?.['n'])
+}
+
+it('inserts a user', async (tx) => {
+  await tx
+    .insertInto(tx.h.users)
+    .values({ email: 'ada@example.com', name: 'Ada' })
+    .execute()
+  expectEqual(await countUsers(tx), 1)
+})
+
+it('starts from an empty table, because the last case rolled back', async (tx) => {
+  expectEqual(await countUsers(tx), 0)
+})
+
+console.log(await runCases())
+// [ 'inserts a user — pass', 'starts from an empty table… — pass' ]
+```
+
+Two things this fixture cannot do, and both follow from limit 1: the case body must use the `tx`
+handle rather than the outer `db` (which pg-prime's dev guard enforces for you — the outer handle
+inside a transaction throws `HandleMisuseError`), and a test that needs a second session to observe
+the transaction's *invisibility* has to run against a real server.
+
+## How this site's examples run
+
+Every fenced TypeScript block on this site compiles, and every one with a file name in its tab
+executes — against exactly this setup. `tools/docs-examples.mjs` starts one PGlite behind the
+repo's bridge, puts its URL in `DATABASE_URL`, drops and recreates `public` between examples, and
+runs each block as its own process with a 60-second timeout. Nothing on the page is rewritten,
+because an example connects the way an application does. The full contract is in
+[`docs/README.md`](https://github.com/pg-prime/pg-prime/blob/main/docs/README.md).
+
+That is also why some blocks here are marked `no-run` with a comment saying why: COPY, cross-session
+`LISTEN`/`NOTIFY` and a real `CancelRequest` are exactly the things PGlite cannot host, so the
+pages say so rather than showing an example that quietly does not run.
+
+## When you need a real PostgreSQL
+
+Run one — a container, `@testcontainers/postgresql`, or a local server — and point `DATABASE_URL`
+at it, for:
+
+- **Everything in limit 1's list.** These are not edge cases; they are the concurrency behaviour
+  your application depends on.
+- **Version-gated behaviour.** PGlite is PostgreSQL 18.3, above pg-prime's PostgreSQL 15 floor, so
+  it cannot catch a `pg_catalog` shape that differs between 15 and 18. pg-prime's own CI runs the
+  full suite on 15, 16, 17 and 18 plus a PgBouncer container for exactly this reason.
+- **Extensions.** PGlite takes them at construction
+  (`new PGlite({ extensions: { pg_trgm } })`); a bare `CREATE EXTENSION` fails. `postgis` and
+  `pgvector` need the real thing.
+- **Anything about the pooler.** A pooler is a second process between you and the database, and
+  there is nowhere to put it.
+
+The split that works is the one this repo uses: PGlite is the **default local target**, so the
+common loop is fast and needs no Docker, and a real-server tier owns the ban list and the version
+matrix. On pull requests run PostgreSQL 17 only; on `main` and nightly run the matrix.
+
+<Aside type="note">
+`@pg-prime/testing` is a reserved package name, not yet a package: the version on npm is a
+placeholder with no code in it. Everything on this page is written with what `pg-prime`,
+`@electric-sql/pglite` and your own test runner already give you, which is all it needs.
+</Aside>
+
+## Where to go next
+
+- [Handles](/pg-prime/concepts/handles/) — why the fixture hands the case a `Tx` and not a `Db`.
+- [Transactions and sessions](/pg-prime/guides/transactions/) — `rollbackWith`, savepoints, and the
+  retry policy the second session is needed to test.
+- [Migrations in CI/CD](/pg-prime/operations/ci-cd/) — where `migrate check` belongs in the same
+  pipeline.

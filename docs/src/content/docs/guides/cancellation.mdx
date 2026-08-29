@@ -40,12 +40,12 @@ await app.listen('cache', () => {}, { signal: ac.signal })
 ```
 
 <Aside type="note">
-`07` §6.1 spells the per-statement form as builder methods — `.signal(s)` and `.timeout(ms)`. As
-built they are `run(q, { signal, timeoutMs })` and `handle.withOptions({ … })` instead, because
-`Query` and the select builder belong to a different workstream than the session layer. The
-behaviour is the same; only the call site moved. `withOptions` on a `Db` returns a `Queryable`, so
-it carries the query surface but not `transaction()` — a signal for a whole transaction goes in
-`TxOptions`.
+There is no `.signal(s)` or `.timeout(ms)` **on the query builder**. The design notes spell them
+that way, and the shipped API does not: they are `run(q, { signal, timeoutMs })` and
+`handle.withOptions({ … })`, one level up, because the builder's own type is owned by a different
+part of the library than the session layer. The behaviour is identical; only the call site moved.
+`withOptions` on a `Db` returns a `Queryable`, so it carries the query surface but not
+`transaction()` — a signal for a whole transaction goes in `TxOptions`.
 </Aside>
 
 ## What an abort does depends on when it lands
@@ -71,8 +71,8 @@ opens a replacement.
 control client from the same configuration you already gave it, so a cancel works even when the
 pool is exhausted — which is exactly when a cancel matters most. With `pool:` or `driver:` there is
 no such client, and the fallback is `pg_cancel_backend(pid)` issued from a *second pooled*
-connection; if the pool has nothing spare within 5 s that fallback fails, the statement's promise
-is rejected anyway, and the connection is retired. Behind a transaction pooler a cancel is
+connection; if the pool has nothing spare within two seconds that fallback fails, the statement's
+promise is rejected anyway, and the connection is retired. Behind a transaction pooler a cancel is
 best-effort in a deeper sense: the `BackendKeyData` you hold belongs to the pooler, and the mapping
 can be stale by the time the cancel arrives. That is the whole reason timeouts prefer the server.
 
@@ -214,7 +214,7 @@ and a `57014` is not in the default retry set.
 import { QueryCanceledError, QueryTimeoutError } from 'pg-prime'
 
 // no-run: `pg_sleep` plus a real CancelRequest needs a server that honours one. PGlite is a
-// single WASM backend and ignores CancelRequest, so this pair is a tier-2 test, not a docs example.
+// single WASM backend and ignores CancelRequest, so this pair is proved against a real PostgreSQL.
 
 // The server gave up — 57014, and it says why.
 const canceled = await db

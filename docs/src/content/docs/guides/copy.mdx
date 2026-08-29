@@ -20,7 +20,7 @@ expect.
 <Aside type="note">
 Every `COPY` block on this page is marked `no-run`. PGlite — which is what executes this site's
 examples in CI — cannot host COPY: its socket bridge exits the WASM backend on a COPY message,
-taking the instance with it. The COPY suites are tier 2 and run against a real PostgreSQL. The
+taking the instance with it. pg-prime proves COPY against a real PostgreSQL instead. The
 `insertMany` example below is executed.
 </Aside>
 
@@ -47,8 +47,8 @@ generator streams straight through without ever being an array in memory.
 Values are encoded through **the same codecs the insert path uses**, into COPY *text* format. That
 matters more than it sounds: a `numeric` goes out as the precision-exact string and a `timestamptz`
 as the ISO instant, where a naive `String(value)` would round the first and localise the second.
-Five characters are escaped (`\`, tab, newline, carriage return) and `null` is `\N`; that is the
-whole format. Rows are batched into ~64 KiB frames rather than one protocol message per row,
+Backslash, tab, newline and carriage return are escaped, and `null` is `\N`; that is the whole
+format. Rows are batched into ~64 KiB frames rather than one protocol message per row,
 because 100 000 `CopyData` messages is most of the reason a naive COPY implementation is no faster
 than an insert.
 
@@ -129,8 +129,8 @@ also exempt from the session `statement_timeout` for its duration, like a stream
 ## The measurement: there is no crossover
 
 The design predicted a crossover "around 5–10 k rows" below which `insertMany` would win on speed.
-It was measured — PG 17.11, local TCP socket, five sizes, four columns, printed on every tier-2
-run — and there is none. `copyFrom` is faster at **every** size from ten rows up:
+It was measured — PG 17.11, local TCP socket, five sizes, four columns, printed on every run of the
+real-PostgreSQL suite — and there is none. `copyFrom` is faster at **every** size from ten rows up:
 
 | Rows | `insertMany` | `copyFrom` | Ratio |
 |---:|---:|---:|---:|

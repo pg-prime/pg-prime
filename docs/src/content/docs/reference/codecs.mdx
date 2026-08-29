@@ -9,8 +9,9 @@ apiEntry:
 import { Aside } from '@astrojs/starlight/components'
 
 A **codec** is the one place a PostgreSQL type meets a TypeScript type. Nothing below it interprets
-a value: an adapter hands back raw wire text (or `null`, or bytes), and the codec turns that into
-the JavaScript value you see — and turns your value back into a parameter on the way out.
+a value: an [adapter](/pg-prime/reference/driver/) hands back raw wire text (or `null`, or bytes),
+and the codec turns that into the JavaScript value you see — and turns your value back into a
+parameter on the way out.
 
 Every codec carries five things:
 
@@ -42,6 +43,7 @@ It needs no cooperation from how you constructed your `Pool`.
 
 Four of the defaults are deliberately not what a driver would pick on its own. Each is a sign-off
 decision, and each has a named alternate if it is wrong for you.
+[Codecs and decode defaults](/pg-prime/concepts/codecs/) is the longer version of this section.
 
 - **`int8` → `bigint`.** `int8` is the type of every `bigserial` primary key and of `count(*)`, and
   `number` silently loses precision above 2<sup>53</sup> — `9007199254740993` is a real, storable
@@ -71,14 +73,15 @@ preserved by keeping the text.
 
 Every codec below is registered by OID *and* by name, and every scalar also contributes an array
 codec derived from its `arrayOid` — so `text[]` decodes to `(string | null)[]` with no extra
-registration. `Decodes to` is what a `select` of that column yields; the encode side usually accepts
-a wider set.
+registration. The **PostgreSQL type** column is the codec's `sqlName`, which is what it emits in DDL
+and in a `::type` cast; **Decodes to** is what a `select` of that column yields, and the encode side
+usually accepts a wider set.
 
 | Codec | PostgreSQL type | OID | Decodes to | Notes |
 |---|---|---|---|---|
 | <a id="bitCodec"/> `bitCodec` | `bit` | 1560 | `string` | The digit string, e.g. `101`. `null::bit` is `bit(1)`. |
 | <a id="boolCodec"/> `boolCodec` | `boolean` | 16 | `boolean` | Only `t` and `f` are accepted; anything else is a decode error rather than a silent `false`. |
-| <a id="bpcharCodec"/> `bpcharCodec` | `char(n)` | 1042 | `string` | PostgreSQL **space-pads** `bpchar` — measured, `"ab   "`. Not trimmed. |
+| <a id="bpcharCodec"/> `bpcharCodec` | `char` | 1042 | `string` | `char(n)`. PostgreSQL **space-pads** it — measured, `"ab   "` — and this codec does not trim. |
 | <a id="byteaCodec"/> `byteaCodec` | `bytea` | 17 | `Uint8Array` | Not `Buffer`: that would leak a Node-only type. Encodes in binary format, which avoids the 2× size of `\x` hex. |
 | <a id="charCodec"/> `charCodec` | `"char"` | 18 | `string` | The one-byte internal type. **Not** `char(n)`, which is `bpchar`. |
 | <a id="cidrCodec"/> `cidrCodec` | `cidr` | 650 | `string` | |
@@ -113,7 +116,7 @@ a wider set.
 | <a id="tstzrangeCodec"/> `tstzrangeCodec` | `tstzrange` | 3910 | `string` | |
 | <a id="tsvectorCodec"/> `tsvectorCodec` | `tsvector` | 3614 | `string` | Normalised lexemes with positions, e.g. `'bodi':2 'one':1`. |
 | <a id="uuidCodec"/> `uuidCodec` | `uuid` | 2950 | `string` | Encode validates the shape and lower-cases; PostgreSQL normalises case on output anyway. |
-| <a id="varbitCodec"/> `varbitCodec` | `bit varying` | 1562 | `string` | |
+| <a id="varbitCodec"/> `varbitCodec` | `varbit` | 1562 | `string` | `bit varying`, in the spelling the DDL emits. |
 | <a id="varcharCodec"/> `varcharCodec` | `varchar` | 1043 | `string` | |
 | <a id="xmlCodec"/> `xmlCodec` | `xml` | 142 | `string` | |
 
@@ -179,7 +182,7 @@ const [byAlternate] = await relaxed.sql`
 console.log(byAlternate) // { amount: 1.1, id: '9007199254740993' }
 ```
 
-The second row is the whole argument for the defaults in one line: `1.10` became `1.1` — the scale a
+The second `console.log` is the whole argument for the defaults in one line: `1.10` became `1.1` — the scale a
 `numeric(10,2)` column exists to carry is gone — while the `int8` survived only because
 `int8:string` keeps it as text. `int8NumberCodec` would have thrown on that value rather than round
 it, which is the other half of the same policy.
@@ -237,8 +240,8 @@ function builtinCodecs(): readonly AnyCodec[]
 ```
 
 Every default scalar codec plus the array codec derived from each one's `arrayOid`. This is what
-`new Registry()` registers when you give it no list; pass your own list to build a registry that
-knows only the types you want.
+`new Registry()` registers when you give it no list — it then adds the four alternates and
+`unknownCodec` by name. Pass your own list to build a registry that knows only the types you want.
 
 ### `ALTERNATE_CODECS`
 

@@ -239,8 +239,8 @@ await sendWelcomeEmail(user.email)
 Full jitter means `sleep(random(0, min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1))))` — uniform
 over the interval, not a fixed backoff. Plain exponential is wrong here because serialization
 failures are *inherently correlated*: the two conflicting transactions failed at the same instant
-and would otherwise retry in lockstep, reproducing the conflict. The worst case at the defaults is
-under 1.4 s across four retries.
+and would otherwise retry in lockstep, reproducing the conflict. The ceiling clamps, so the worst
+case at the defaults is 25 + 50 + 100 + 200 = 375 ms of sleeping across four retries.
 
 ### The exclusions, which nothing can override
 
@@ -465,9 +465,9 @@ console.log(staged) // [ 'one', 'two' ]
 ```
 
 A `Session` has the full `Queryable` surface plus three things of its own: `set(name, value)` (the
-session-scoped sibling of `setLocal`, i.e. `set_config($1, $2, false)`), `advisoryLock(key, opts?)`
-returning a lock object you release yourself, and `backendPid`. `s.transaction(fn)` opens a real
-transaction on the pinned connection.
+session-scoped sibling of `setLocal`, i.e. `set_config($1, $2, false)`), `advisoryLock(key, opts?)`,
+which resolves to an `AdvisoryLock` you release yourself — `unlock()`, or `await using` — and
+`backendPid`. `s.transaction(fn)` opens a real transaction on the pinned connection.
 
 `db.session()` is **refused** under a transaction-pooler profile, with a message naming the fix. A
 transaction pooler reassigns the server connection between transactions, so "the same backend for
@@ -480,8 +480,7 @@ released under you and a temp table would vanish. See
 `db.advisoryLock(key, opts?)` on a `Tx` is `pg_advisory_xact_lock` and its `try`/`shared`
 relatives. The transaction-scoped family is the **only** one that is safe behind a pooler, because
 the lock is released by the transaction ending rather than by a call you have to make on the same
-backend — which is the guarantee a transaction pooler does not give you. It is also the only family
-that cannot leak a lock when a process dies mid-callback.
+backend — which is the guarantee a transaction pooler does not give you.
 
 {/* docs: use=blog */}
 ```ts title="advisory-lock.ts"
@@ -503,9 +502,11 @@ rather than waiting) and `shared` (the `_shared` variant). Without `try`, the ca
 resolves `true`. A `bigint` key is used as-is, clamped into the signed 64-bit range PostgreSQL's
 `bigint` uses.
 
-The session-scoped family lives on `Session.advisoryLock`, returns an `AdvisoryLock` with
-`unlock()` and `[Symbol.asyncDispose]`, and is refused under a transaction pooler for the same
-reason `db.session()` is.
+The session-scoped family lives on `Session.advisoryLock`. It returns an `AdvisoryLock` carrying
+`unlock()` and `[Symbol.asyncDispose]` — or `false`, when `try` was asked for and the lock was
+already held — and it is refused under a transaction pooler for the same reason `db.session()` is:
+the lock lives on a server connection the pooler will hand to somebody else at the next transaction
+boundary, and it also pins an RDS Proxy connection.
 
 ## The dev guard
 
@@ -514,7 +515,7 @@ statement issued on the **root** `Db` handle while one is open throws `HandleMis
 both call sites — where the transaction was opened, and where the stray statement was issued.
 
 ```text
-HandleMisuseError: a statement was issued on the root db handle while transaction tx_3 is open on
+HandleMisuseError: a statement was issued on the root db handle while transaction t3 is open on
 this async context. It would run on a DIFFERENT connection, outside your transaction, and can
 deadlock against it …
   Fix: name the callback parameter `db` so it shadows the outer handle, or — if you really mean an

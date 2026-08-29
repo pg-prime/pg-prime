@@ -3,4 +3,244 @@ title: Kysely
 description: What Kysely does, what it does not, and what pg-prime took from it.
 ---
 
-TODO
+Kysely is a query builder, not an ORM, and it is deliberate about that. It is also the single
+largest influence on pg-prime's type layer: the survey in
+[`research/kysely.md`](https://github.com/pg-prime/pg-prime/blob/main/research/kysely.md) — written
+in 2026-08 against `kysely@0.29.5`, by unpacking the package and compiling probe files against it
+on TypeScript 5.9.3 and 7.0.2 — concluded that its type architecture is *"the right foundation and
+is largely portable"*, and the recommendation was to **copy the architecture, not take the
+dependency**.
+
+## What it does well
+
+**Zero dependencies and zero peer dependencies**, verified rather than claimed, with a structural
+`PostgresPool` interface instead of an import of `pg` — which is exactly the mechanism pg-prime's
+driver seam uses, for exactly the same reason.
+
+**The most careful type architecture in the ecosystem.** `ColumnType<Select, Insert, Update>` gives
+one declaration three operation-specific types; `never` in a slot erases the key, so a
+`GENERATED ALWAYS` column is un-insertable at compile time; optionality is derived from the insert
+type instead of declared; tuple-wrapped conditionals stop enum columns distributing;
+`DrainOuterGeneric` keeps instantiation depth flat. The `ControlledTransaction` savepoint stack is
+tracked as a **type-level tuple**, so rolling back to a released savepoint does not compile — the
+survey had not seen that anywhere else.
+
+**`jsonArrayFrom` / `jsonObjectFrom`**, which the survey rated the single most important idea to
+port: nested relational results in one round trip, no row explosion, exact types, and
+`coalesce(json_agg(…), '[]')` for the empty case, which is easy to get wrong.
+
+**A safe escape hatch.** The `sql` tag always parameterises, its untyped default is `unknown`
+rather than `any`, and a raw fragment is a first-class expression everywhere — so the escape hatch
+is a gradient rather than a cliff.
+
+**And good judgement elsewhere:** a real operation-node IR rather than string concatenation,
+`ON CONFLICT` coverage that is essentially complete for PostgreSQL including the `excluded`
+pseudo-table, `kysely/readonly` as a type-level capability narrowing built out of `Pick`, ESM-only
+with npm provenance, and a migrator that takes a session-level advisory lock with a `lock_timeout`
+in one round trip — the correct primitive, copied here verbatim in shape.
+
+Adoption is real and named: Bluesky, Mozilla, Maersk, Deno, Cal.com, tldraw, Cypress and others
+were on the project's own proof wall at the time of the survey.
+
+## Where pg-prime differs
+
+### There is a schema
+
+This is the fundamental divergence and everything else follows from it. Kysely has no runtime
+schema — it has a `Database` interface you write by hand or generate. Its maintainer put the
+consequence plainly on Hacker News in 2026-05: *"`kysely-ctl` doesn't generate migrations for you,
+and `kysely`, not being an ORM, doesn't provide declarative schema design."*
+
+So there is no diffing, no drift detection, no relation graph, no defaults, no validation, and the
+types are only as true as whatever produced them. The survey went through the three ecosystem
+answers and found each wanting: `kysely-codegen` needs a live database (there is no offline mode),
+emits views identically to tables so `insertInto(some_view)` typechecks, has no `GeneratedAlways`
+at all, and its `--verify` asserts "committed file equals this database" when what you want asserted
+is "committed file equals my migrations" — and it exited `0` on drift until 0.18.0, so every drift
+gate written before that was a no-op. Its share of Kysely installs fell from about 22.8% to 9.3%
+over the surveyed twelve months.
+
+A runtime schema is what makes the migration engine here possible at all, and it is the reason
+`tsc` never depends on a database being in the right state.
+
+### The dialect tax, itemised
+
+The survey measured this rather than asserting it, and it is the clearest illustration anywhere of
+what PostgreSQL-only buys:
+
+- **Ten methods on `InsertQueryBuilder` are invalid on PostgreSQL and autocomplete anyway** —
+  `ignore`, `orIgnore`, `orAbort`, `orFail`, `orReplace`, `orRollback` (SQLite), `top`, `output`,
+  `outputAll` (SQL Server) and `onDuplicateKeyUpdate` (MySQL). Each one produces SQL your database
+  rejects at runtime rather than at compile time.
+- **Aggregate results are a union.** `eb.fn.count('id')` is `string | number | bigint` because
+  Kysely cannot know your driver, so you assert a type you already know. Here `count()` is
+  `Expr<bigint, 'int8'>`, `sum(int4)` is `bigint` and `sum(int8)` is `numeric`, `avg` is `numeric`
+  for exact operands and `float8` for the two inexact ones — read off the server by an OID
+  differential test rather than off the documentation, and correct because one database has one
+  answer.
+- **`SqlBool = boolean | 0 | 1`**, a concession to SQLite and MySQL. PostgreSQL has real booleans.
+- **Operands are typed from the column, not the operator.** `eb('span', '&&', 'whatever')` is
+  rejected because `'whatever'` is not the column's type, which happens to be right for `@>` on an
+  array and is wrong in general: `jsonb ? key` takes **text**, `tsvector @@ tsquery` takes a
+  `tsquery`, range `&&` takes a range. A per-operator operand table is finite and writable for one
+  dialect, so `42883 operator does not exist` becomes a compile error here.
+
+### Reusable expression fragments
+
+The survey calls this Kysely's single worst ergonomic gap. A helper generic over the table
+parameter does not typecheck at all, because `ReferenceExpression<DB, TB>` cannot be evaluated for
+an unresolved `TB`, so no string literal satisfies it; and generic helpers that do compile emit
+about 800 characters of unresolved conditional types into your `.d.ts`.
+
+{/* docs: skip-check="kysely is not a dependency of this repository" */}
+```ts
+// Kysely 0.29.5. This does not compile.
+export function activeOnly<TB extends keyof DB>(eb: ExpressionBuilder<DB, TB & 'table_0'>) {
+  return eb('table_0.status', '=', 'active')
+}
+// error TS2345: Argument of type 'string' is not assignable to parameter of type
+//   'ReferenceExpression<DB, TB & "table_0">'
+```
+
+Here a column reference is a *value*, so a fragment generic over "any scope that has this column"
+is ordinary structural typing and needs no schema generic anywhere:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="reusable-fragments.ts"
+import { and, eq, fn, isNotNull } from 'pg-prime'
+import type { AnyRef, Expr, Query, Sources } from 'pg-prime'
+
+/** An expression-level fragment: any scope with a `title` ref will do. */
+const titled = <T extends { title: AnyRef }>(t: T): Expr<boolean> => isNotNull(t.title)
+
+/** A builder-level transform, type-preserving in the row type. */
+const page =
+  (n: number, size: number) =>
+  <S extends Sources, O, N>(q: Query<S, O, N>): Query<S, O, N> =>
+    q.limit(size).offset(n * size)
+
+const [ada] = await db
+  .insertInto(db.h.users)
+  .values({ email: 'ada@example.com', name: 'Ada' })
+  .returning((t) => ({ id: t.users.id }))
+  .execute()
+
+await db
+  .insertInto(db.h.posts)
+  .valuesMany([
+    { authorId: ada!.id, title: 'First', body: 'one', published: true },
+    { authorId: ada!.id, title: 'Second', body: 'two', published: false },
+  ])
+  .execute()
+
+const rows = await db
+  .from(db.h.posts, 'p')
+  .where((t) => and(titled(t.p), eq(t.p.published, true)))
+  .select((t) => ({ title: t.p.title }))
+  .$call(page(0, 10))
+  .execute()
+
+const [counts] = await db
+  .from(db.h.posts, 'p')
+  .select((t) => ({ all: fn.count(), authored: fn.count(t.p.authorId) }))
+  .execute()
+
+console.log(rows, counts)
+// [ { title: 'First' } ] { all: 2n, authored: 2n }
+```
+
+`all` and `authored` are `bigint`, not `string | number | bigint`, and `titled` works against a
+`posts` scope, a `users` scope or a relation sub-query's scope without a type parameter naming any
+of them. `$call` is Kysely's own composition primitive, kept as it is.
+
+### Two type-level holes, closed
+
+The survey compiled probe files and found two places where Kysely's types are silently wrong rather
+than merely awkward. Both are fixed here, and both fixes were prototyped in that same document
+before they were built.
+
+**Silent column loss.** Because Kysely's output type sits only in a covariant position, the
+idiomatic imperative build-up compiles clean and *discards columns from the result type*, giving
+you `undefined` at runtime with no diagnostic. pg-prime's query type mentions its row type in both
+variance positions, so the same code is a compile error:
+
+{/* docs: use=blog expect-error */}
+```ts
+let q = db.from(db.h.posts, 'p').select((t) => ({ id: t.p.id }))
+
+// Refused: the row type is invariant, so a widened query is not assignable to the narrow one.
+q = db.from(db.h.posts, 'p').select((t) => ({ id: t.p.id, title: t.p.title }))
+```
+
+Use `$if` or `$call` instead, both of which preserve the type exactly.
+
+**`$if` with a literal condition.** Kysely's `$if` always returns `Partial`, which is correct when
+the condition is a runtime `boolean` and needlessly lossy when it is `true` or `false`. Here the
+literal overloads come first, so `$if(true, …)` is not `Partial` and `$if(false, …)` is the
+original query.
+
+### Type-check cost
+
+The survey's synthetic benchmark is the one number to carry away: **743 495 instantiations at 80
+tables and 60 queries; 4 569 234 at 300 tables and 200 queries** — 3.3× the queries but 6.1× the
+cost, because `AnyColumn`, `AnyColumnWithTable` and the alias parsers distribute over the whole
+`Database` interface, so every query pays for the size of the entire schema. On TypeScript 5.9.3
+the 300-table workload took 30.13 s; on TypeScript 7 it took 4.52 s, which makes the "Kysely types
+are unbearable" reputation substantially stale — but only for teams who have moved to TS 7, and the
+instantiation count is identical on both compilers. The compiler got faster; the type complexity
+did not change.
+
+pg-prime is designed against precisely that property. No whole-schema type parameter is threaded
+through the builder, and the CI gate is the ratio rather than the absolute: the marginal cost of one
+more query at 300 tables over the same query at 25 tables is **1.00** against a 1.15 limit, and a
+select with a relation projection costs 252 instantiations at either size.
+
+### The sanitizers
+
+Three high-severity advisories in 2026 affected Kysely 0.28.16 and earlier: SQL injection through
+unsanitized JSON-path keys, JSON-path traversal through unescaped path metacharacters, and a MySQL
+injection through insufficient backslash escaping in `sql.lit`. The response was fast and 0.28.17
+and 0.29.x audit clean; the survey's judgement was that the lesson is design-level rather than
+process-level — **the `sql` tag's parameterisation guarantee does not extend to positions that are
+compiled into the SQL string by construction.**
+
+So two of those three positions are designed out here rather than patched: JSON paths are bind
+parameters and never text in the SQL, and `sql.lit` refuses strings outright. That leaves identifier
+quoting as the one sanitizer in the library — about fifteen lines, which always quote, never split
+a dotted string into two identifiers, escape by doubling `"`, and **reject** at the 63-byte
+`NAMEDATALEN` limit rather than truncating, because two names sharing a 63-byte prefix would
+silently address the same object. It is fuzzed against a live PostgreSQL with a dual oracle:
+`format('%I')` and a `CREATE TEMP TABLE` round-trip.
+
+### Project shape
+
+Two facts the survey establishes and that are fair to weigh in either direction. Kysely has
+**publicly and permanently refused a 1.0** — the roadmap issue was opened and closed the same day,
+and when pushed again the answer was "because we don't feel like it, at this point" — so `0.x` is a
+posture rather than a phase, and 0.29.0 delivered a hard break (ESM-only, plus the migration API
+moved out of the root entry point) in a minor bump. And it **refuses donations on principle**:
+`FUNDING.md` says "We do not accept donations", with about 90% of recent human commits from one
+person. That cuts both ways, and the survey says so: Kysely cannot be rug-pulled or relicensed by
+an investor, which is a genuine advantage over VC-backed alternatives, but it is also structurally
+incapable of scaling maintenance because it has declined the mechanism.
+
+pg-prime's answer to the same question is different and equally checkable: MPL-2.0, so forks of
+these files stay open while applications that merely import are untouched; and a 1.0 that means the
+type API is stable, with no preview flags.
+
+## Choose Kysely if
+
+You do not want an ORM. That is the honest version, and it is a completely respectable position:
+no schema DSL to learn, no relation graph, no migration engine, and SQL you can read in
+`pg_stat_statements` because you wrote it. Choose it if the database is the source of truth and you
+inherited it, or share it across languages, and introspected types are exactly what you want.
+Choose it if you need MySQL, SQLite or SQL Server. Choose it if hand-written migrations that force
+you to think are a feature rather than a chore — the survey concedes that argument, and notes that
+auto-generated PostgreSQL migrations are where data loss happens. And choose it if 12.5M weekly
+downloads and a tidy issue tracker matter more to you than a schema.
+
+One more thing the survey found and this page should not bury: **ZenStack v3 built a full ORM on
+Kysely and shipped it**, by owning its own schema, deriving the `Database` type from it, and driving
+Kysely's node IR directly. Wrapping Kysely works. The reason pg-prime does not is that at that
+point you already own the schema layer, the type-derivation layer and the transformation layer, and
+what you have rented is a compiler that still carries four dialects you cannot opt out of.

@@ -118,13 +118,20 @@ the seam. That is deliberate: `pg`, PGlite and postgres.js each get `DATE` wrong
 so all three of their parsers are neutralised and the codec registry is the only thing that reads a
 value.
 
-<Aside type="caution" title="`pg.Pool` needs a structural cast, for now">
-The example writes `pool as unknown as PgLikePool`. `pg.Pool` *does* have the right shape — that is
-the whole point of the seam — but with `@types/pg@8.21.0` the assignment does not typecheck:
-`PoolClient` inherits `removeListener` from Node's `EventEmitter`, whose listener parameter is
-`(...args: any[]) => void`, and `PgLikeClient` declares `(arg: never) => void`. `any` is not
-assignable to `never`, so the check fails on that one member. The repo's own live test harness does
-the same cast, and the runtime behaviour is unaffected.
+<Aside type="caution" title="`pg.Pool` needs a structural cast, and the reason is upstream">
+The example writes `pool as unknown as PgLikePool`. `pg.Pool` really does have the right shape —
+that is the whole point of the seam — but with `@types/pg@8.21.0` the assignment does not
+typecheck, and what stops it is a declaration that is wrong about pg rather than about pg-prime:
+`@types/pg` types `QueryParse.types` as **`string[]`**, where pg passes parameter type OIDs as
+numbers. Matching it here would mean writing a signature we know to be false, so the cast stays
+until that is fixed upstream. The repository's own live test harness does the same cast, and
+`packages/pg-prime/test/driver/pg-types.probe.ts` pins exactly which members do and do not assign,
+so the day it starts working, a test says so.
+
+Two members that used to fail here no longer do, and both were pg-prime's fault: `on` /
+`removeListener` declared their listener `(arg: never) => void` against `EventEmitter`'s
+`(...args: any[]) => void` (`any` is assignable to everything except `never`), and
+`getTransactionStatus()` omitted the `null` pg returns before the first `ReadyForQuery`.
 </Aside>
 
 ### `PgDriverConfig`
@@ -159,9 +166,11 @@ interface PgDriverConfig {
 ## The pool seam
 
 These four structural interfaces are the reason `pg.Pool`, `@neondatabase/serverless`'s `Pool` and a
-Hyperdrive-fed `pg.Pool` all satisfy the adapter with no wrapper. pg-prime deliberately does **not**
-`import type { Pool } from 'pg'`: that would force `@types/pg` on every consumer, and nominal
-identity with it is already gone anyway, because Neon ships its own declarations.
+Hyperdrive-fed `pg.Pool` all satisfy the adapter with no wrapper — no adapter code, no subclass, and
+nothing to keep in sync, though `@types/pg` currently costs the one cast noted above. pg-prime
+deliberately does **not** `import type { Pool } from 'pg'`: that would force `@types/pg` on every
+consumer, and nominal identity with it is already gone anyway, because Neon ships its own
+declarations.
 
 ### `PgLikePool`
 
@@ -341,7 +350,8 @@ interface PgAcquireOptions {
 
 `route: 'direct'` is a **hint, not a guarantee**. It asks for a connection that bypasses any
 transaction pooler, which is required for `LISTEN`, session advisory locks, `WITH HOLD` cursors,
-replication and migrations. An adapter with no second URL ignores it, and that is a legal
+replication and migrations — see [poolers](/pg-prime/operations/poolers/) for which profile needs
+which. An adapter with no second URL ignores it, and that is a legal
 implementation — routing is decided by feature, not by call site, and the caller never picks a
 connection by hand.
 
@@ -595,7 +605,7 @@ interface PgCopyResult {
 `copyIn` resolves with the row count parsed from the `CommandComplete` tag; `copyOut` yields raw
 `CopyData` payloads and the caller owns the framing, whether that is text, CSV or binary.
 `highWaterMark` is how many bytes are buffered before backpressure is applied to the source, and
-defaults to 64 KiB.
+defaults to 64 KiB. [COPY and bulk loading](/pg-prime/guides/copy/) is the level above this one.
 
 Two details in the bundled implementation are worth knowing if you are writing your own. The `COPY`
 statement goes out over the **simple** query protocol, because COPY carries no bind parameters and
@@ -795,7 +805,7 @@ else is required; everything optional degrades with a message rather than failin
 | `PgConnection.execute` | `describe` — typed raw SQL and `migrate verify` fall back to a shadow schema |
 | `PgConnection.stream` | `closeStatement` — needed only for `mode: 'named'` |
 | `backendPid`, `serverParameters`, `transactionStatus`, `usable` | `copyIn` / `copyOut` — `db.copyFrom` and `db.copyTo` refuse without them |
-| exec mode `'unnamed'` | `cancel` — set `capabilities.cancel: false` and abort signals stop the client only |
+| exec mode `'unnamed'` | `cancel` — with `cancel: false`, an aborted statement rejects the caller and keeps running on the server |
 | `resultFormat: 'text'` | `on` — no `LISTEN`, and no asynchronous notices |
 | | `route: 'direct'` — ignore it if you have no second URL |
 
@@ -878,5 +888,8 @@ export const httpDriver: PgDriver = {
 ```
 
 Hand it to `pgPrime({ driver: httpDriver, schema })` and every query, every codec and every error
-message works — with `multipleStatementsPerSession: false`, transactions are refused up front and
-with a sentence, rather than half-working.
+message works. What does not is anything the capabilities say no to: `db.copyFrom` refuses with a
+sentence naming `capabilities.copyIn`, and `db.listen()` refuses naming `capabilities.listenNotify`.
+`multipleStatementsPerSession: false` is a **statement of fact for a reader, not a guard** — the
+runtime does not consult it, so a one-shot HTTP transport still has to make `acquire`/`release`
+hand back something a `BEGIN … COMMIT` can run on, or reject when it cannot.

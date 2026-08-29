@@ -53,8 +53,8 @@ subscription, and closed when the last one goes away. Two channels are one extra
 That connection comes from an optional driver seam, `PgDriver.connect?()`. The `pg` adapter
 implements it from the same configuration your pool was built from, so `connection:` needs nothing
 extra. An adapter that does not implement it falls back to holding a pool checkout for the
-subscription's lifetime — which costs one slot and says so, because §6.5's objection was to doing
-that *silently*.
+subscription's lifetime — which costs one slot and says so out loud, because the objection was
+always to shrinking `max` *silently*.
 
 ## Behind a transaction pooler
 
@@ -93,7 +93,7 @@ The shape to copy:
 {/* docs: use=blog no-run */}
 ```ts title="invalidate-cache.ts" no-run
 // no-run: delivery needs two backend sessions. PGlite multiplexes every socket onto one backend,
-// so a NOTIFY published here is never delivered to the listener — this pattern is tier 2.
+// so a NOTIFY published here is never delivered to the listener — this pattern needs a real server.
 import { eq } from 'pg-prime'
 
 const cache = new Map<string, string>()

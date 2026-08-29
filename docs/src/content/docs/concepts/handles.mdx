@@ -197,23 +197,30 @@ No type-level construct can make an outer `db` unusable inside a closure — any
 is describing a lint rule. So the residual case is caught at runtime, by an `AsyncLocalStorage` stack
 of open transactions, and using the root handle while one is open throws `HandleMisuseError`:
 
-{/* docs: use=blog,blog-ddl */}
+{/* docs: use=blog-schema allow-drops="the guard also turns on design/07 §5.4's startup pooler probe, which opens connections of its own, and PGlite is one backend" */}
 ```ts title="dev-guard.ts"
-import { HandleMisuseError } from 'pg-prime'
+import { HandleMisuseError, pgPrime } from 'pg-prime'
+
+// The guard is on by default outside production. This page's other examples share a handle that
+// turns it OFF, because the site's examples run against a single-backend PGlite; this one is about
+// the guard, so it builds its own.
+const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema, devGuard: true })
 
 // A second name for the pool-backed handle, so it is *not* shadowed inside the callback.
 const pool = db
 
 try {
   await db.transaction(async (db) => {
-    await db.insertInto(db.h.users).values({ email: 'ada@example.com', name: 'Ada' }).execute()
+    await db.sql`select 1`.execute()
     // ✗ this would run on a DIFFERENT connection, outside the transaction.
-    await pool.from(pool.h.users).select((t) => ({ id: t.users.id })).execute()
+    await pool.sql`select 1`.execute()
   })
 } catch (err) {
   if (!(err instanceof HandleMisuseError)) throw err
   console.log(err.message)
 }
+
+await db.end()
 ```
 
 The message is four lines: what happened, where the transaction was opened, where the offending

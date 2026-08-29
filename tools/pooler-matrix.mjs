@@ -51,7 +51,7 @@ const ROWS = [
     render: {
       ok: '✅ ok',
       unsupported:
-        '❌ unsupported — routed to `directConnection`, or `ConfigError` if there is none',
+        '❌ unsupported — routed to `directConnection`; `UnsupportedInPoolerModeError` if there is none',
     },
   },
   {

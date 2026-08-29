@@ -88,6 +88,18 @@ class CopyInSubmittable implements PgLikeSubmittable {
           'the statement over the simple query protocol',
       )
     }
+    // The three COPY-IN writers are declared optional on the seam because `@types/pg` does not
+    // declare them (see `pg-like.ts`), so a drop-in without them is a sentence rather than a
+    // `TypeError` in the middle of a pump nobody can see.
+    const missing = (['sendCopyFromChunk', 'endCopyFrom', 'sendCopyFail'] as const).filter(
+      (m) => typeof connection[m] !== 'function',
+    )
+    if (missing.length > 0) {
+      return new Error(
+        `this pg-like connection does not expose connection.${missing.join('/')}, which COPY FROM ` +
+          `STDIN needs to write its data (pg's own spelling; the API pg-copy-streams drives)`,
+      )
+    }
     try {
       q.call(connection, this.text)
     } catch (e) {
@@ -102,24 +114,33 @@ class CopyInSubmittable implements PgLikeSubmittable {
   }
 
   async #pump(connection: PgLikeConnection): Promise<void> {
+    // `submit()` has already refused a connection without these three; the locals are what makes
+    // that check visible to the compiler as well as to the reader.
+    const sendChunk = connection.sendCopyFromChunk?.bind(connection)
+    const endCopy = connection.endCopyFrom?.bind(connection)
+    const failCopy = connection.sendCopyFail?.bind(connection)
+    if (!sendChunk || !endCopy || !failCopy) {
+      this.#fail(new Error('this pg-like connection cannot write COPY data'))
+      return
+    }
     try {
       for await (const chunk of this.#source) {
         if (this.#signal?.aborted === true) {
-          connection.sendCopyFail('aborted by the caller')
+          failCopy('aborted by the caller')
           return
         }
         if (chunk.byteLength === 0) continue
-        connection.sendCopyFromChunk(toWire(chunk))
+        sendChunk(toWire(chunk))
         await drain(connection)
       }
-      connection.endCopyFrom()
+      endCopy()
     } catch (e) {
       // `CopyFail` is the protocol's own way to abort a COPY: the backend answers with an
       // ErrorResponse (57014-family), which `handleError` turns into the rejection. Throwing here
       // instead would leave the connection stuck in copy-in mode forever.
       this.#sourceError = e
       try {
-        connection.sendCopyFail(e instanceof Error ? e.message : String(e))
+        failCopy(e instanceof Error ? e.message : String(e))
       } catch {
         this.#fail(e)
       }

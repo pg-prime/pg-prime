@@ -3,4 +3,259 @@ title: Checkpoints
 description: Collapsing history for fresh databases without deleting anything.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+A migration directory only grows. After two years it holds several hundred files, and every one of
+them still runs in full on every database that starts from nothing: a new developer's laptop, a
+preview environment, a test database in CI, and `migrate verify` on every single pull request.
+Nothing about that replay is wrong — it is just work that gets slower forever, and the slowest
+consumer of it is the gate you want to run most often.
+
+The usual answer is to squash: delete the old files and write one that replaces them. pg-prime does
+not do that, because a deleted migration is a deleted record of why the schema is the shape it is,
+and because the `.sql` files are the artifact a reviewer reads. A checkpoint gets the same speedup
+without deleting anything.
+
+## What `migrate checkpoint` writes
+
+```sh
+pg-prime migrate checkpoint
+```
+
+```text frame="terminal"
+migrate checkpoint
+  wrote        …/migrations/0003_checkpoint.sql
+  plan         …/migrations/0003_checkpoint.plan.json
+  ir           …/migrations/checkpoints/0003.ir.json
+  statements   7
+  fingerprint  sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+A FRESH database now applies 0003_checkpoint and everything after it; an existing one ignores it and
+continues linearly (design/06 §4.5). Nothing was deleted and nothing was recorded.
+```
+
+Three files:
+
+- **`NNNN_checkpoint.sql`** — an ordinary migration whose header carries `-- pg-prime:checkpoint`
+  and whose body is the **full schema DDL** at this point. The directive is on the file rather than
+  in the plan because it is the runner that has to see it.
+- **`checkpoints/NNNN.ir.json`** — the IR of that schema, which is what makes drift nameable
+  (below).
+- **`NNNN_checkpoint.plan.json`** — the plan, like any other migration's.
+
+```sql title="migrations/0003_checkpoint.sql (excerpt)"
+-- pg-prime:migration 0003_checkpoint
+-- pg-prime:plan      0003_checkpoint.plan.json
+-- pg-prime:from      sha256:bcb83d0e69a2603084b68c868f2ae1ffa396f30223c9b258bb6606bfa4008926
+-- pg-prime:to        sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=3s statement=per-statement
+-- pg-prime:requires-pg 150000
+-- pg-prime:checkpoint
+
+SET search_path = pg_catalog;
+
+-- pg-prime:segment 0 transactional
+-- pg-prime:stmt 0 lock=none non-idempotent
+CREATE TABLE "public"."posts" (
+  …
+```
+
+Note the `from` fingerprint: it is a **fresh database's**, not the null hash. A fresh PostgreSQL is
+not empty — it already has `public`, its comment, and whatever extensions `initdb` installed — so a
+full-schema file whose `from` was the null hash could never pass its own gate on replay.
+
+The DDL comes from the same emitter path as `migrate baseline`: a checkpoint and a baseline are the
+same artifact asked for at two different times, and one code path means a checkpoint cannot replay
+differently from the baseline of the same schema.
+
+**Nothing is deleted.** Every earlier `.sql` stays exactly where it was, still readable, still in
+`git log`. `--seq <n>` picks the number, `--by <name>` records the author, and `--dry-run` prints
+the `.sql` and writes nothing. All three files are written with `O_EXCL`: a checkpoint is history
+like any other migration, and silently overwriting one would rewrite a file that another
+developer's database has already jumped to.
+
+The command is read-only against the database. It introspects, writes three files, and records
+nothing — the `pgprime.checkpoints` row is written by `apply`, when a fresh database actually jumps
+to one. A checkpoint that was written but never applied anywhere has no business claiming a row.
+
+**Exit: 0** written or nothing to do · **1** error.
+
+## The fresh-database rule
+
+The rule is one sentence with two halves, and the halves are decided by a single question: **is
+`pgprime.migrations` empty?** That is the only definition of "fresh" available before anything has
+run, and the only one that cannot be wrong. A database with one recorded migration has a history to
+continue, whatever its catalog happens to look like.
+
+**A fresh database jumps.** It applies the newest checkpoint and then every file after it:
+
+```text frame="terminal"
+migrate apply — docs_guides_fresh @ 127.0.0.1:54333
+applied 1 migration in 127 ms:
+  0003_checkpoint  transactional  7 statements  12 ms
+  fingerprint  sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+
+warnings:
+  - fresh database: jumped to checkpoint 0003_checkpoint and recorded 3 earlier file(s) as superseded
+```
+
+That fingerprint is the point of the whole feature: it is byte-identical to the one a linear apply
+of `0000 → 0001 → 0002` produces on the same directory. One file replaced three, and the result is
+the same schema.
+
+**An existing database ignores it.** The checkpoint's `from` fingerprint is a fresh database's, so
+running it after the history it stands in for has already been applied would fail its own gate.
+`apply` therefore skips it — and records the skip:
+
+```text frame="terminal"
+migrate apply — docs_guides @ 127.0.0.1:54333
+nothing to do — the database is up to date.
+
+warnings:
+  - existing database: recorded 1 checkpoint file(s) as superseded and continued linearly (0003_checkpoint)
+```
+
+### Why "ignored" is written down
+
+"Ignores" would be enough if nothing else read the history, but plenty does. So ignoring a
+checkpoint is *recorded*, as `superseded` — the status `pgprime.migrations` already reserves — and
+so is every file a fresh database jumped over.
+
+```sql
+SELECT id, status, statements_applied FROM pgprime.migrations ORDER BY id;
+```
+
+```text frame="terminal"
+             id             |   status   | statements_applied
+----------------------------+------------+--------------------
+ 0000_init                  | applied    |                  7
+ 0001_users_email_domain    | applied    |                  1
+ 0002_backfill_email_domain | applied    |                  1
+ 0003_checkpoint            | superseded |                  0
+```
+
+The alternatives are both worse, and both break the commands you run most often.
+
+- **Left pending**, the checkpoint would make `migrate status` exit 5 on a repository that is fully
+  applied, for ever — and `migrate check`, the CI gate, would fail on every commit after the
+  checkpoint landed.
+- **Left absent**, the reconciler could not tell a file that was jumped over from a file somebody
+  deleted, and its "applied file missing from disk" check would have to stop being an error.
+
+`superseded` says exactly what happened: this file was never executed here, and it never will be.
+It is a *settled* status, so `status` reports it and moves on:
+
+```text frame="terminal"
+migrate status — docs_guides @ 127.0.0.1:54333
+  history      present (v1)
+  fingerprint  unknown
+  migrations   4 files, 0 pendings
+  lock         free
+  applied   0000_init
+  applied   0001_users_email_domain
+  applied   0002_backfill_email_domain
+  superseded 0003_checkpoint
+
+data migrations (design/06 §7):
+  - 0002_backfill_email_domain  applied  5000 row(s) in 6 batches, watermark 5000
+```
+
+Note what this implies for a fresh database: it never runs the data migrations that came before the
+checkpoint either. A checkpoint carries schema DDL, not rows, and a backfill of rows that a fresh
+database does not have is not work it needs to do.
+
+## `verify --from-checkpoint`
+
+`migrate verify` replays the whole history into an ephemeral database and asserts the result
+matches your schema. That is the command a checkpoint speeds up most, and it is also the one where
+the jump has to be asked for explicitly.
+
+```sh
+pg-prime migrate verify
+```
+
+```text frame="terminal"
+migrate verify — replayed 3 migrations into pgprime_shadow_f6c7c71d
+  replayed  sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+  desired   sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+  verdict   verified
+```
+
+```sh
+pg-prime migrate verify --from-checkpoint
+```
+
+```text frame="terminal"
+migrate verify — replayed 1 migration into pgprime_shadow_09883922
+  replayed  sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+  desired   sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+  verdict   verified
+```
+
+Three migrations replayed, or one, for the same verdict.
+
+<Aside type="caution">
+`--from-checkpoint` is **off by default**, and there is no `auto`. `verify` always replays into a
+*fresh* ephemeral database — which is precisely the condition the jump fires on. An `auto` setting
+would therefore turn **every** `verify` in a repository that had ever taken a checkpoint into a
+partial replay, silently reported as a full one. The flag exists so that the shortcut is a thing
+you asked for.
+</Aside>
+
+The same reasoning makes the flag refuse rather than degrade when there is nothing to jump to:
+
+```text frame="terminal"
+migrate verify
+
+REFUSED: --from-checkpoint was asked for and there is no NNNN_checkpoint.sql in …/migrations. Run `pg-prime migrate checkpoint` first, or drop the flag to replay from empty; a flag that silently did nothing would report a full replay as a checkpoint one.
+```
+
+Keep the un-checkpointed `verify` in the pipeline that runs before a release, and use
+`--from-checkpoint` on the per-commit one if the replay has become the slow step.
+
+## Naming drifted objects
+
+A checkpoint's `.ir.json` buys something a fingerprint alone cannot give you. A fingerprint
+mismatch says *the schema is not what history says it should be*; it cannot say **which objects**,
+because naming them needs an IR of the expected state, and pg-prime deliberately does not snapshot
+one per migration.
+
+A checkpoint IS that IR, for the position it was taken at. So when `apply` or
+`status --verify-fingerprint` hits a mismatch, it diffs the live catalog against the **newest
+checkpoint at or before the last applied migration** and lists the deltas by name. Two cases, and
+the message distinguishes them:
+
+- the checkpoint *is* the recorded position — every delta is real drift, and the list is exact;
+- migrations were applied after it — their changes are in the list too, so the message says so and
+  names them rather than presenting a superset as if it were exact. Taking a new checkpoint
+  narrows it.
+
+With no checkpoint on disk at all, every fingerprint gate that fails says so and tells you to take
+one. Here is the sentence as `verify` prints it, when the file it replayed first did not match the
+database it replayed into:
+
+```text frame="terminal"
+REPLAY_FAILED: 0000_init expects the schema to be at sha256:28c2c55c… but the live catalog is sha256:bcb83d0e… (schemas: public). Someone changed the database outside the migration history, or the runner's --schema set differs from the one the plan was generated with. No checkpoint is available to name the drifted objects — run `pg-prime migrate checkpoint` so the next mismatch can. Run `pg-prime migrate status --verify-fingerprint` to re-extract.
+```
+
+That alone is a reason to take one early, even in a repository whose replay is still fast.
+
+## When to take one
+
+- **When the replay has become the slow step.** The number that matters is how long `verify` and a
+  from-scratch `apply` take, not how many files are in the directory.
+- **After a release**, so the checkpoint sits at a boundary somebody can name. `0042_checkpoint`
+  taken the day v3 shipped is a more useful landmark than one taken mid-refactor.
+- **Once early**, so a fingerprint mismatch can name objects instead of hashes.
+- **Not while a migration is pending.** Take the checkpoint from a database that is fully applied;
+  it describes the live catalog, and a half-applied one describes a state no repository is in.
+
+Taking a second checkpoint is free — the first is not deleted, a fresh database uses the newest,
+and an existing one continues to ignore both. There is no state to clean up and nothing to undo,
+which is the whole argument for this design over squashing.
+
+## Where to go next
+
+- [Migrations end to end](/pg-prime/guides/migrations/) — `verify`, `status` and the rest.
+- [Adopting an existing database](/pg-prime/guides/adopting/) — `baseline`, the same artifact at a different time.
+- [Migrations in CI/CD](/pg-prime/operations/ci-cd/) — where `verify` belongs in a pipeline.

@@ -72,8 +72,8 @@ class DescribeSubmittable implements PgLikeSubmittable {
 
   submit(connection: PgLikeConnection): Error | null {
     this.#connection = connection
-    connection.on('parameterDescription', this.#onParameterDescription as (m: never) => void)
-    connection.on('noData', this.#onNoData as (m: never) => void)
+    connection.on('parameterDescription', this.#onParameterDescription)
+    connection.on('noData', this.#onNoData)
     try {
       connection.parse({ name: '', text: this.text, types: [] }, true)
       connection.describe({ type: 'S', name: '' }, true)
@@ -87,8 +87,8 @@ class DescribeSubmittable implements PgLikeSubmittable {
   #detach(): void {
     const c = this.#connection
     if (!c) return
-    c.removeListener('parameterDescription', this.#onParameterDescription as (m: never) => void)
-    c.removeListener('noData', this.#onNoData as (m: never) => void)
+    c.removeListener('parameterDescription', this.#onParameterDescription)
+    c.removeListener('noData', this.#onNoData)
     this.#connection = undefined
   }
 

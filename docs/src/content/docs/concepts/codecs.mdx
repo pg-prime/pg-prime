@@ -218,9 +218,9 @@ const [totals] = await db
 console.log(totals) // { n: 0, total: 0 }
 ```
 
-`n` is a `number` and `total` is a `number`, because that is what those two codecs say. A count is
-the case the default exists to make ergonomic rather than exact — `count(*)` past 2^53 is not a real
-scenario — which is why the builder's own `.count()` binds `int8:number` for you.
+`n` is a `number` and `total` is a `number`, because that is what those two codecs say. Nothing does
+this for you: `fn.count(...)` and a relation's `.count()` both bind `int8` and hand back a `bigint`,
+so opting into a `number` is always something you write, in one visible place.
 
 The wide way is a registry, handed to `pgPrime` at construction:
 
@@ -290,8 +290,9 @@ export const db = pgPrime({
 })
 ```
 
-`t.raw('numeric')` emits `numeric` in the DDL and looks the codec up under `numeric`; `$type<Decimal>()`
-is what makes `total` a `Decimal` in every query result. One registry per **physical** database:
+`t.raw('numeric')` declares the column's PostgreSQL type as `numeric`, which is both what the DDL
+emits and what the codec is looked up under; `$type<Decimal>()` is what makes `total` a `Decimal` in
+every query result. One registry per **physical** database:
 user-type OIDs are not stable across dev, prod and shadow, so `defaultRegistry().clone()` (or a fresh
 `createRegistry()`) per database is the rule, and `resolveDynamic` fills in the enum, domain,
 composite and range OIDs from that database's own catalogue on first connect.

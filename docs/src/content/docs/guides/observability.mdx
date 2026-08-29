@@ -3,4 +3,334 @@ title: Observability
 description: Hooks, OpenTelemetry span attributes, the slow-query log, and diagnose().
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+Everything pg-prime knows about a statement is available to you, through one typed hook object.
+There is no `EventEmitter`, no string event names, and no dependency on a tracing library: the
+runtime exports the events, the attribute mapping and the log record, and you wire them to whatever
+you already run.
+
+## Registering hooks
+
+Two ways, and they compose. Static, for the observers that live as long as the handle:
+
+{/* docs: use=blog-schema no-run */}
+```ts title="db.ts" no-run
+import { pgPrime } from 'pg-prime'
+
+export const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema,
+  hooks: {
+    onQueryError: (e) => console.error(e.error.code, e.sql),
+    onRetry: (e) => console.warn(`retry ${e.attempt} after ${e.delayMs} ms: ${e.err.code}`),
+  },
+  log: { slowQueryMs: 500 },
+})
+```
+
+Dynamic, for the ones that come and go — `db.observe(hooks)` returns the unsubscribe function:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="observe.ts"
+import type { QueryEndEvent } from 'pg-prime'
+
+const seen: QueryEndEvent[] = []
+const off = db.observe({ onQueryEnd: (e) => void seen.push(e) })
+
+await db.insertInto(db.h.users).values({ email: 'a@example.com', name: 'A' }).execute()
+await db
+  .from(db.h.users, 'u')
+  .select((t) => ({ id: t.u.id }))
+  .execute()
+
+off()
+await db.sql`select 1`.execute() // nobody is listening any more
+
+const e = seen[1]!
+console.log(seen.length, e.operation, e.tables, e.rowCount, e.handle, e.attempt)
+// 2 select [ 'users' ] 1 db 1
+
+// The three timings are measured, not estimated, so the parts fit inside the whole.
+console.log(e.serverMs + e.decodeMs <= e.durationMs, e.waitedForConnectionMs >= 0)
+// true true
+```
+
+Multiple registrations all fire, in registration order. `pgPrime({ hooks })` and every
+`db.observe()` are peers.
+
+## The events
+
+| Hook | Event | Fires |
+|---|---|---|
+| `onQueryStart` | `QueryStartEvent` | before a statement is written |
+| `onQueryEnd` | `QueryEndEvent` | after its rows are decoded |
+| `onQueryError` | `QueryErrorEvent` | after the error has been mapped to a class |
+| `onTransactionStart` | `TxStartEvent` | after `BEGIN` |
+| `onTransactionEnd` | `TxEndEvent` | `outcome` is `'commit'`, `'rollback'` or `'error'` |
+| `onRetry` | `RetryEvent` | a serialization failure is about to be retried, with `delayMs` |
+| `onPool` | `PoolEvent` | `acquire`, `release`, `timeout` |
+| `onNotice` | `NoticeEvent` | a PostgreSQL `NoticeResponse` — `RAISE NOTICE` from your own functions |
+| `onInternal` | `InternalEvent` | the runtime decided something on its own |
+
+`QueryStartEvent` carries `queryId` (which correlates start/end/error and spans), `sql`,
+`paramCount`, `execMode`, `handle`, `depth`, `attempt`, `label`, `txId`, and — from the compiled
+query's metadata, never a regex over the SQL — `operation` and `tables`. `QueryEndEvent` adds
+`durationMs`, `rowCount`, `command` and the three timings; `QueryErrorEvent` adds `durationMs` and
+the mapped `error`.
+
+`onPool` fires on acquire, release and timeout, but **not** on create/destroy: the pool is
+`pg-pool`'s and those two events are not on the seam.
+
+`InternalEvent.kind` is one of `downgrade`, `cache-flush`, `self-heal`, `hook-failed`,
+`pooler-mismatch`, `session-guc-skipped`, `listen-reconnect` and `concurrent-statements`. It is
+where the runtime tells you it did something you did not ask for — a `LISTEN` reconnect, a session
+GUC a pooler profile made it skip, a permanent exec-mode downgrade — and it is worth wiring even if
+you wire nothing else.
+
+### The three timings
+
+`durationMs` alone answers nothing. The split does:
+
+- **`serverMs`** — the round trip plus the server's work.
+- **`decodeMs`** — pg-prime turning wire bytes into your objects.
+- **`waitedForConnectionMs`** — how long the statement sat waiting for a pooled connection.
+
+The last one is separated deliberately: "slow query" and "pool exhausted" look identical in every
+ORM's logs today and have completely different fixes. A `waitedForConnectionMs` of 400 with a
+`serverMs` of 3 means raise `max` or lower concurrency; the reverse means add an index.
+
+### `paramCount`, not `params`
+
+Events carry the number of bind parameters, not their values, because parameters are the personally
+identifying data. Turn on `errors: { includeParams: true }` and they appear — the same redaction
+policy as errors, applied where it matters most.
+
+### Hooks are synchronous, and a throwing hook is disabled
+
+An `async` hook on the hot path is an unbounded-latency footgun and an ordering hazard, so the
+signature is `void`. Push onto your own queue if you need to do work.
+
+Every invocation is wrapped. A hook member that throws is called **once**: the failure goes to
+every *other* registration's `onInternal` as `kind: 'hook-failed'`, plus a `console.error`, and
+that one member is disabled for the life of the handle. Not the whole object — a broken
+`onQueryEnd` should not cost you your `onQueryError`. The failing registration's own `onInternal`
+is deliberately skipped, because calling it to report itself is how a crash loop starts.
+
+Observability must not be able to take down the application. When nothing is registered the hot
+path is one boolean.
+
+## OpenTelemetry, without depending on OpenTelemetry
+
+pg-prime exports the semantic-convention attribute names as data (`SEMCONV`, pinned to the database
+client conventions v1.34) and the mapping as two pure functions. Core imports nothing, so a process
+that does not trace pays nothing — not even a `.d.ts`.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="spans.ts"
+import { SEMCONV, spanAttributes, spanName } from 'pg-prime'
+import type { QueryEndEvent, QueryErrorEvent, SpanContext } from 'pg-prime'
+
+// Whatever your tracer is — `tracer.startSpan(name, { attributes })` in @opentelemetry/api.
+// This one collects, so the example can print what it produced.
+const spans: { name: string; attrs: Record<string, string | number | boolean> }[] = []
+
+const ctx: SpanContext = {
+  namespace: 'app_production',
+  serverAddress: 'db.internal',
+  serverPort: 5432,
+  poolerMode: 'none',
+}
+
+const emit = (e: QueryEndEvent | QueryErrorEvent): void => {
+  spans.push({ name: spanName(e), attrs: { ...spanAttributes(e, ctx) } })
+}
+db.observe({ onQueryEnd: emit, onQueryError: emit })
+
+await db
+  .from(db.h.users, 'u')
+  .select((t) => ({ id: t.u.id }))
+  .execute()
+// The default log sink prints this one at `error` level as well — `log.level` is `'warn'`.
+await db.sql`select * from does_not_exist`.execute().catch(() => {})
+
+const [ok, failed] = spans
+console.log(ok!.name, ok!.attrs[SEMCONV.dbNamespace], ok!.attrs[SEMCONV.dbResponseReturnedRows])
+// SELECT users app_production 0
+
+console.log(failed!.attrs[SEMCONV.errorType], failed!.attrs[SEMCONV.dbResponseStatusCode])
+// UndefinedTableError 42P01
+```
+
+`spanName` is the `"<operation> <collection>"` string the conventions ask for. `spanAttributes`
+emits `db.system.name`, `db.query.text`, `db.query.summary`, `db.operation.name`,
+`db.collection.name`, `db.response.returned_rows` (or `db.response.status_code` and `error.type` on
+a failure), plus whatever the `SpanContext` you pass supplies — `db.namespace`, `server.address`,
+`server.port`.
+
+Everything that is not a semantic convention goes under a `pg_prime.*` prefix — `pg_prime.exec_mode`,
+`pg_prime.handle`, `pg_prime.attempt`, `pg_prime.tx_depth`, `pg_prime.tx_id`, `pg_prime.query_id`,
+`pg_prime.label`, `pg_prime.pooler_mode`, and the four timings — so a future addition to the
+conventions cannot collide with one of ours. A test asserts that every emitted key is one or the
+other.
+
+Bind parameters are never attached to a span, by construction: `spanAttributes` has no branch that
+would emit them.
+
+## The log
+
+`log` is the batteries-included half: a level, a slow-query threshold, a record shape and a small
+formatter, so that everybody does not write the same twenty lines.
+
+{/* docs: setup=slow-log use=blog-schema */}
+```ts
+import { pgPrime } from 'pg-prime'
+import type { LogRecord } from 'pg-prime'
+
+const records: LogRecord[] = []
+
+const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema,
+  // 0 makes every query "slow", which is what makes this example deterministic. Use 500.
+  log: { slowQueryMs: 0, sink: (r) => void records.push(r) },
+})
+```
+
+{/* docs: use=blog-schema,slow-log,blog-ddl */}
+```ts title="slow-query-record.ts"
+await db
+  .from(db.h.users, 'u')
+  .select((t) => ({ id: t.u.id }))
+  .execute()
+
+const r = records.at(-1)!
+console.log(r.level, r.kind, r.rowCount, r.paramCount)
+// warn slow-query 0 0
+
+console.log(r.message.startsWith('slow query:'), typeof r.callSite === 'string')
+// true true
+```
+
+`LogOptions`:
+
+| Option | Default | Notes |
+|---|---|---|
+| `level` | `'warn'` | `silent` · `error` · `warn` · `info` · `debug` |
+| `slowQueryMs` | `null` (off) | 500 is a good start. A record at `warn`. |
+| `logAllQueries` | `false` | One record per statement, at `debug`. A dev tool. |
+| `force` | `false` | The acknowledgement `logAllQueries` needs in production. |
+| `sink` | a console formatter | Takes a `LogRecord`. |
+| `format` | pretty on a TTY, `json` otherwise | Only used by the default sink. |
+
+`logAllQueries` refuses to enable itself when `NODE_ENV === 'production'` unless `force: true` is
+also set, and says so once. It will happily write a gigabyte an hour.
+
+A slow-query record carries `durationMs`, `serverMs`, `decodeMs`, `waitedForConnectionMs`,
+`rowCount`, `sql`, `paramCount`, `label`, `queryId` and the **captured call site** — the line of
+*your* code that issued the query, which an async stack trace cannot tell you. Capture is on
+outside production (`errors: { captureCallSite: … }`) and costs a few microseconds per query.
+
+There is deliberately no aggregation and no sampling here. That is the metrics pipeline's job, and
+`onQueryEnd` is the seam for it.
+
+## `db.diagnose()`
+
+One call that answers "what is actually in force on this connection", for a 3 a.m. incident and for
+a startup assertion.
+
+{/* docs: use=blog */}
+```ts title="diagnose.ts"
+const d = await db.diagnose()
+
+console.log(d.effectiveSettings['statement_timeout'], d.effectiveSettings['TimeZone'])
+// 30000 UTC  — `pg_settings.setting` is in the GUC's own unit, so this is milliseconds
+
+console.log(d.poolerMode, d.statements.statement, d.statements.downgraded)
+// none unnamed false
+
+console.log(typeof d.serverVersion, typeof d.connections.maxConnections)
+// string number
+```
+
+It reports:
+
+- **`serverVersion` / `serverVersionNum`** — what you are really talking to.
+- **`effectiveSettings`** — the session GUCs read back from `pg_settings`, so these are the
+  *observed* values and not the ones you asked for. This is how you find out that a transaction
+  pooler skipped them. They are in each GUC's own unit, which for the three timeouts is
+  milliseconds.
+- **`pool`** — `total`, `idle`, `waiting`, `max`, when pg-prime built the pool.
+- **`connections`** — `maxConnections`, `superuserReserved`, `inUse`, `poolMax` and the `headroom`
+  arithmetic. The number that matters is *instances × `poolOptions.max`*, and this is the half of
+  it pg-prime can see.
+- **`statements`** — the exec mode, the self-heal count, and `downgraded`: whether this pool has
+  permanently fallen back to the unnamed extended protocol. That is a one-way door for the process
+  lifetime, and it is the kind of thing you want in a dashboard rather than in a log nobody reads.
+- **`notes`** — plain sentences for the states that need one, such as the `ALTER ROLE` fix when a
+  pooler profile made session GUCs impossible.
+
+`statementStats(db)` is the synchronous subset of `statements`, for a test or an assertion that
+should not have to open a connection:
+
+{/* docs: use=blog */}
+```ts title="statement-stats.ts"
+import { statementStats } from 'pg-prime'
+
+const s = statementStats(db)
+console.log(s.statement, s.selfHeals, s.downgraded, s.assertShape)
+// unnamed 0 false true
+```
+
+`assertShape` is on outside production. It compares each declared codec's OID against the
+`RowDescription` the server sent and throws `CodecMismatchError` **before** decoding, so a column
+whose type drifted is an error naming it rather than a value that is quietly wrong.
+
+## `db.diagnosePooler()`
+
+A behavioural probe that answers "is there a pooler in front of me, and can I use named prepared
+statements". **It reports. It never reconfigures.**
+
+<Aside type="caution">
+`confidence` is `'low' | 'medium'` — never `'high'`, and that is a property of the type rather than
+of a code path. A false negative here costs performance; a false positive that silently switched
+modes would cost correctness, which is exactly how Prisma #21799 happened. Nothing in pg-prime
+reads this verdict to change its own behaviour, and neither should your startup code without a
+human in the loop.
+</Aside>
+
+Six signals, one of them opt-in:
+
+| Signal | What it does |
+|---|---|
+| `hostname-heuristic` | Zero cost: the shapes of the four poolers people deploy (Neon `-pooler`, Supabase `:6543`, RDS Proxy). |
+| `server-version` | `version()`, recorded, never a verdict. |
+| `backend-pid-across-statements` | The same `pg_backend_pid()` twice — **and again under contention**, because through an *idle* PgBouncer the naive pair reads the same pid and the probe would be a false negative in exactly the single-client case a diagnostic is run in. |
+| `backend-pid-within-transaction` | The pair inside one transaction. They *must* be equal; if they are not, something is broken rather than pooled, and the report says so loudly. |
+| `named-statement-survives` | The decisive one: prepare a named statement, execute it by name in a separate exchange. `26000` means a transaction pooler without prepared-statement tracking — the only probe that distinguishes `pgbouncer-transaction` from `transaction`. |
+| `application-name-sticky` | Opt-in (`{ probeSessionState: true }`), because it writes session state, which under a pooler leaks onto a shared server connection. |
+
+{/* docs: use=blog no-run */}
+```ts title="diagnose-pooler.ts" no-run
+// no-run: the pid probe deliberately creates contention with three concurrent pooled connections,
+// and PGlite is a single backend. It needs a real PostgreSQL.
+const p = await db.diagnosePooler()
+
+console.log(p.verdict, p.confidence, p.recommendedPoolerMode, p.agrees)
+for (const s of p.signals) console.log(`  ${s.name}: ${s.result} — ${s.detail}`)
+for (const w of p.warnings) console.warn(w)
+```
+
+`agrees` is asymmetric on purpose: a recommendation of `none` is satisfied by any configured mode,
+because a profile only ever *restricts* — being more conservative than necessary is a performance
+choice, not a mismatch. The other direction is the one that matters.
+
+Outside production, pg-prime runs this probe **once**, asynchronously, after the first connection
+has already succeeded, and warns only when the probe and your `poolerMode` disagree. It never
+blocks a query and never changes anything.
+
+## Where to go next
+
+- [Errors](/pg-prime/guides/errors/) — the classes `onQueryError` hands you, and redaction.
+- [Poolers](/pg-prime/operations/poolers/) — what `diagnosePooler` is comparing against.
+- [Troubleshooting](/pg-prime/operations/troubleshooting/) — reading a `diagnose()` output.

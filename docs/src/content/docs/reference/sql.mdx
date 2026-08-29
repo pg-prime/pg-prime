@@ -137,12 +137,6 @@ accumulates, so invariance would only mean that calling `.as()` made a fragment 
 
 {/* docs: signature */}
 ```ts
-// The three keys are the phantom slot symbols `pg-prime/schema` exports. They are re-declared
-// here because a signature block imports types, and a computed key needs the value.
-const OUT: unique symbol
-const META: unique symbol
-const SRC: unique symbol
-
 interface TypedFragment<T, P extends string = string> extends Fragment<T> {
   readonly [OUT]: T
   readonly [META]: { readonly pg: P }
@@ -150,8 +144,9 @@ interface TypedFragment<T, P extends string = string> extends Fragment<T> {
 }
 ```
 
-A fragment that has been given a codec, and therefore a place in the operator type system. None of
-the three slots exists at runtime. `OUT` makes the fragment projectable; `META.pg` republishes the
+A fragment that has been given a codec, and therefore a place in the operator type system. The three
+keys are the phantom slot symbols `pg-prime/schema` exports, and none of the slots exists at
+runtime. `OUT` makes the fragment projectable; `META.pg` republishes the
 codec's own PostgreSQL type name, which is the same string a column's metadata carries, so a typed
 fragment is a class-specific operand exactly as a column reference is; `SRC` makes it compose
 anywhere a built expression does. A bare `` sql`…` `` has none of them, so it cannot go in a

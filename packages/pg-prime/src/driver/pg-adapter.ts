@@ -217,16 +217,16 @@ class PgConnectionImpl implements PgConnection {
   attachClientListeners(): void {
     if (this.#listening) return
     this.#listening = true
-    this.#client.on('error', this.#onClientError as (a: never) => void)
-    this.#client.on('notice', this.#onNotice as (a: never) => void)
+    this.#client.on('error', this.#onClientError)
+    this.#client.on('notice', this.#onNotice)
   }
 
   /** @internal — detached on release/destroy so pg-pool's own idle listener takes over again. */
   detachClientListeners(): void {
     if (!this.#listening) return
     this.#listening = false
-    this.#client.removeListener('error', this.#onClientError as (a: never) => void)
-    this.#client.removeListener('notice', this.#onNotice as (a: never) => void)
+    this.#client.removeListener('error', this.#onClientError)
+    this.#client.removeListener('notice', this.#onNotice)
   }
 
   /** @internal */
@@ -303,9 +303,9 @@ class PgConnectionImpl implements PgConnection {
     const conn = this.#client.connection
     if (conn && !paramStatusSubscribed.has(this.#client)) {
       paramStatusSubscribed.add(this.#client)
-      conn.on('parameterStatus', ((msg: { parameterName?: string; parameterValue?: string }) => {
+      conn.on('parameterStatus', (msg: { parameterName?: string; parameterValue?: string }) => {
         if (msg?.parameterName) out[msg.parameterName] = msg.parameterValue ?? ''
-      }) as (m: never) => void)
+      })
     }
   }
 
@@ -487,14 +487,14 @@ class PgConnectionImpl implements PgConnection {
     if (client.readyForQuery !== false || con === undefined) return Promise.resolve()
     return new Promise<void>((resolve) => {
       const done = (): void => {
-        con.removeListener('readyForQuery', done as (msg: never) => void)
-        client.removeListener('end', done as (arg: never) => void)
-        client.removeListener('error', done as (arg: never) => void)
+        con.removeListener('readyForQuery', done)
+        client.removeListener('end', done)
+        client.removeListener('error', done)
         resolve()
       }
-      con.on('readyForQuery', done as (msg: never) => void)
-      client.on('end', done as (arg: never) => void)
-      client.on('error', done as (arg: never) => void)
+      con.on('readyForQuery', done)
+      client.on('end', done)
+      client.on('error', done)
     })
   }
 
@@ -783,9 +783,9 @@ class PgConnectionImpl implements PgConnection {
               (listener as unknown as (x: unknown) => void)(
                 normaliseError(e, { adapter: ADAPTER, connectionUnusable: true }),
               )
-    this.#client.on(event, wrapped as (a: never) => void)
+    this.#client.on(event, wrapped)
     return () => {
-      this.#client.removeListener(event, wrapped as (a: never) => void)
+      this.#client.removeListener(event, wrapped)
     }
   }
 }

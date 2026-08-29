@@ -3,4 +3,252 @@ title: MikroORM
 description: What MikroORM does, what it does not, and what pg-prime took from it.
 ---
 
-TODO
+MikroORM is the one genuinely different architecture in this comparison: a Doctrine-style data
+mapper with an identity map, a unit of work and snapshot-based change tracking. Its own description
+is that it is *"the only mainstream TS ORM implementing Unit of Work + Identity Map + Data Mapper
+together"*, and that is accurate. The figures below come from the 2026-08 survey in
+[`research/mikroorm.md`](https://github.com/pg-prime/pg-prime/blob/main/research/mikroorm.md),
+against `v7.1.11`.
+
+Two of this project's foundational decisions were made by arguing with that survey, so this page is
+less "here is what is wrong with it" than the other three. It is the argument, written down.
+
+## What it does well
+
+**v7 independently reached three of this project's own constraints.** Knex is gone —
+`@mikro-orm/knex` became `@mikro-orm/sql` and MikroORM now builds its own SQL. `@mikro-orm/core`
+has **no `dependencies` field at all**. umzug is gone from migrations, replaced by an in-house
+runner, and v7 is native ESM on Node 22 and TypeScript 5.8. Three things this project treated as
+premises, the most mature data-mapper ORM in the ecosystem concluded independently.
+
+**`defineEntity` is the right authoring surface, and v7 says so.** The documentation was rewritten
+to make the fluent builder primary and decorators explicitly no longer the assumed standard. The
+survey's conclusion is blunt and pg-prime is built on it: a fluent builder producing a plain value
+beats decorators on every axis that matters — no `reflect-metadata`, no `experimentalDecorators`,
+no compiler API at runtime, works under any bundler, and *better* inference.
+
+**`Loaded<T, Hint>` is the best idea in its type system**, and it is here. Relation load state
+tracked in the type, populate hints validated against a dotted-path type, and function signatures
+that can *demand* a populate state — an entire category of runtime `undefined` converted into
+compile errors. v7 extended it to partial loading, so reading a column you did not select is a
+compile error too.
+
+**PostgreSQL support that was the best of the multi-database ORMs.** `$ilike`, `$overlap` (`&&`),
+`$contains` (`@>`), `$contained` (`<@`), `$hasKey` (`?`), `$hasSomeKeys` (`?|`), `$hasKeys` (`?&`);
+`$some` / `$none` / `$every` / `$size` compiling to `EXISTS` and `NOT EXISTS`; a complete pessimistic
+lock matrix including `FOR UPDATE SKIP LOCKED`; declarative partitioning with round-trip
+introspection; `FullTextType` with weighted `tsvector`s; and `unionWhere`, which rewrites a complex
+`$or` into `UNION ALL` branches so each can use an index — a real planner win the survey had not
+seen in another TypeScript ORM.
+
+**Filters that are actually correct.** Soft-delete and tenancy filters are applied to the
+`JOIN ON` condition rather than only to the root `WHERE`, which is the difference between a filter
+that works and one that leaks through a join.
+
+**And a careful migration story**, covered at the end of this page, because most of it was copied.
+
+## Where pg-prime differs
+
+### No unit of work
+
+This is the whole of the difference, and the survey argued both sides at length before deciding.
+The case *for* is real: write batching is a genuine performance property that hand-written
+repository code rarely achieves — 500 modified entities become one multi-row `UPDATE` — and
+foreign-key ordering falls out of a topological sort you never write.
+
+{/* docs: skip-check="@mikro-orm/core is not a dependency of this repository" */}
+```ts
+// MikroORM v7. The write is implied by the mutation; `flush()` diffs against the snapshot
+// taken at load time, sorts by FK dependency, batches, and wraps it all in one transaction.
+const authors = await em.find(Author, { active: true })
+for (const a of authors) a.name = a.name.trim()
+await em.flush()
+
+// Under the default AUTO flush mode, an ordinary read can emit that UPDATE first:
+// `em.find(Book, …)` flushes pending changes to any entity type the query touches.
+```
+
+The case *against* is that a unit of work is not a feature you add, it is an architecture that
+colonizes everything around it. The survey's list is worth reading as a single sentence, because
+every item on it exists to manage one mutable graph: `RequestContext`, `AsyncLocalStorage`,
+`em.fork()`, `@CreateRequestContext`, `@EnsureRequestContext`, `allowGlobalContext`,
+`disableIdentityMap`, `em.clear()`, `em.refresh()`, three flush modes, seven propagation modes, a
+sixteen-hook lifecycle with "you may not call `flush()` in a hook" and "collection changes do not
+fire update events", and — after a rollback — entities that are detached and out of sync with the
+database, so a retry loop **must** discard the `EntityManager`.
+
+Two consequences deserve naming. The identity map grows monotonically until `em.clear()` or the
+manager is discarded, which is why a per-request fork is mandatory rather than advisory. And
+because populate state lives on the identity-map entry, MikroORM's own documentation notes that two
+endpoints touching the same row can return different JSON depending on which ran first — an
+order-dependent bug class whose mitigation is the `AsyncLocalStorage` machinery above.
+
+For a library whose pitch is "you know what SQL runs", an `AUTO` flush emitting an `UPDATE` in the
+middle of a `find()` contradicts the product. So: **nothing writes unless you call a write method**,
+and the two things the unit of work actually buys are recovered explicitly.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="explicit-batching.ts"
+// One statement, not N. The batch is homogeneous by construction: a row with a different
+// column set is a compile error at the literal, not a runtime rejection.
+await db
+  .insertInto(db.h.users)
+  .valuesMany([
+    { email: 'ada@example.com', name: 'Ada' },
+    { email: 'grace@example.com', name: 'Grace' },
+  ])
+  .execute()
+
+// The upsert is PostgreSQL's own, with the conflict target exposed and `excluded` handed to
+// the update as a second scope.
+const upserted = await db
+  .insertInto(db.h.users)
+  .valuesMany([
+    { email: 'ada@example.com', name: 'Ada Lovelace' },
+    { email: 'alan@example.com', name: 'Alan Turing' },
+  ])
+  .onConflict((c) => c.columns((t) => t.email).doUpdate((_set, excluded) => ({ name: excluded.name })))
+  .returning((t) => ({ email: t.users.email, name: t.users.name }))
+  .execute()
+
+console.log(upserted)
+// [ { email: 'ada@example.com', name: 'Ada Lovelace' },
+//   { email: 'alan@example.com', name: 'Alan Turing' } ]
+```
+
+Bulk updates take the same shape through `UPDATE … FROM (VALUES …)`, and optimistic concurrency —
+which falls out of change tracking for free in a unit of work — is an explicit `WHERE version = $n`
+here instead. The trade is stated plainly rather than hidden: you have to *ask* for the batch. What
+you get for asking is that no query you did not write ever runs.
+
+### `Loaded` without the wrappers
+
+The type-level idea is kept; the runtime machinery around it is not. MikroORM has `Ref<T>` (a real
+`Reference` wrapper), `Collection<T>`, `ScalarRef<T>` and `LazyRef<T>`, of which only the last is
+type-only. Here a relation is a plain array or a plain object on an ordinary result row, so
+`instanceof`, `structuredClone` and `JSON.stringify` all behave, and `Loaded` is a *structural*
+contract rather than a brand — a query that projected the right columns and the right relation is
+assignable to it with no cast and no marker:
+
+{/* docs: use=blog */}
+```ts
+import type { Loaded } from 'pg-prime/schema'
+
+/** A function that will not accept a user whose posts were never loaded. */
+declare function summarise(user: Loaded<typeof db.h.users, 'posts', 'id' | 'name'>): string
+
+const [author] = await db
+  .from(db.h.users, 'u')
+  .select((t) => ({ id: t.u.id, name: t.u.name, posts: t.u.posts.all() }))
+  .execute()
+
+summarise(author!)
+```
+
+Drop the relation from the projection and the call stops compiling, which is the whole point:
+
+{/* docs: use=blog expect-error */}
+```ts
+import type { Loaded } from 'pg-prime/schema'
+
+declare function summarise(user: Loaded<typeof db.h.users, 'posts', 'id' | 'name'>): string
+
+const [bare] = await db
+  .from(db.h.users, 'u')
+  .select((t) => ({ id: t.u.id, name: t.u.name }))
+  .execute()
+
+summarise(bare!)
+```
+
+### No ambient context
+
+MikroORM's `RequestContext` exists because a mutable identity map has to survive a request; without
+one, the documentation warns, a globally injected `em` produces "weird bugs". There is no such
+thing here. A handle is passed explicitly, and the three handles are mutually non-assignable, so a
+function that declares `Tx` cannot be given the pool-backed root handle — which is the same class of
+protection an ambient context is trying to provide, obtained by typing instead of by storage.
+
+One MikroORM behaviour is an explicit anti-goal rather than a difference of taste: **its
+`QueryBuilder` does not apply filters unless you call `qb.applyFilters()`**. A tenancy filter that
+only applies when you remember to ask for it is worse than no filter, and this project treats
+opt-in filter application as a data-leak footgun that must not be reproduced.
+
+### Diffing against the catalog, and proving it
+
+The recurring MikroORM complaint the survey found is **phantom diffs**: a migration that regenerates
+the same DDL every run because the `SchemaComparator` sees a difference you do not. The root causes
+are almost always `columnType` / `default` / `defaultRaw` mismatches between the declared property
+and what PostgreSQL reports back, and enums are the worst offender. The documented remedy is a debug
+environment variable that dumps the comparator's reasoning — and the survey's comment on that is the
+line worth keeping: *the fact that a debug env var is the documented answer tells you this is a
+permanent tax on any diffing engine.*
+
+Two things reduce that tax here. The desired state is built by **creating your schema on a shadow
+clone and reading the catalog back**, so both sides of the comparison are PostgreSQL's own
+normalization of the DDL rather than one side being a model of it. And the generated plan is then
+replayed on a fresh clone, diffed against the desired state, and witnessed by `pg_dump` before the
+file is written — so a phantom diff is caught at author time by a gate rather than at review time by
+a human. See [the shadow ladder](/pg-prime/concepts/shadow-ladder/) and
+[proof and witness](/pg-prime/concepts/proof/).
+
+Renames get the other half of the answer: MikroORM's schema generator treats a rename as drop plus
+create, which the survey notes is silent data loss if you run `schema:update` in production, and its
+verdict is that nobody solves rename detection without explicit annotations. So it is annotated
+here — `renamedFrom` emits `ALTER … RENAME`, and the annotation is visible in the pull-request diff.
+
+### Relation loading
+
+v7's default strategy is `balanced` — join for to-one, `select-in` for to-many — which was the
+right change, because the previous `joined` default produced Cartesian blow-ups. Per-parent limiting
+(`populateHints: { posts: { limit: 5 } }`) is genuinely hard and MikroORM ships it, with two honest
+caveats: it **forces `select-in`**, because a plain join cannot express top-N-per-parent, and the
+resulting collection is marked partial and readonly.
+
+Being PostgreSQL-only removes both caveats. `LATERAL` expresses top-N-per-parent directly, so there
+is one strategy rather than three, the limit lives inside the lateral, and what comes back is an
+ordinary array you can do anything with. [Relations](/pg-prime/concepts/relations/) has the
+generated SQL.
+
+### The dependency you do not pay for
+
+A fresh install of `@mikro-orm/core` + `@mikro-orm/postgresql` + `@mikro-orm/migrations` measured
+**21 packages and 8.0 MB**, which is genuinely lean for an ORM with that surface area. But 3.4 MB of
+it is Kysely, used as a query *runner* — MikroORM emits its own AST and uses Kysely for
+dialect-aware compilation and execution. For a tool with one dialect, that entire layer is
+avoidable, which is why there is none here: zero runtime dependencies, and one optional peer that
+only the `connection:` form resolves.
+
+## What was copied from the migration story
+
+More than from any other tool's:
+
+- **Snapshot files.** `migration:create` writes a schema snapshot derived from entity metadata and
+  diffs against *that* rather than the live database, which correctly solves "generate migration
+  N+1 while N is still pending". pg-prime's equivalent is the same idea reached through the shadow
+  clone.
+- **`migration:check`** as a CI gate — is the code consistent with the database? — which is
+  `pg-prime migrate check` here, with an exit code per outcome.
+- **`migration:rollup`**, squashing executed migrations so a long-lived project stays sane. That is
+  what [checkpoints](/pg-prime/guides/checkpoints/) are, with the difference that a checkpoint
+  deletes nothing.
+- **`up()` with `addSql`, and no `EntityManager`.** MikroORM's own documentation discourages using
+  the entity manager inside a migration, because a migration must keep working when the metadata
+  changes underneath it. That warning is correct and universal, so it is enforced structurally here
+  rather than documented: migrations are SQL.
+- **The in-house runner**, after v7 demonstrated umzug was about two hundred lines of replaceable
+  code.
+
+## Choose MikroORM if
+
+Your domain model is the point. If you are writing DDD-style aggregates where `order.addLine(x)`
+should persist without a repository call at every mutation site, a unit of work is not overhead, it
+is the feature — and MikroORM is the well-built version of it, with a maintainer who has thought
+carefully about the trade-offs and a v7 release that removed a great deal of accidental weight.
+
+Choose it if you need more than PostgreSQL and want the best PostgreSQL support available in a
+multi-database ORM, which at the time of the survey it had. Choose it if `Loaded` hints, filters
+that reach into `JOIN ON`, `unionWhere` and the full pessimistic-lock matrix are things you would
+otherwise hand-roll. And choose it if reference equality across a request — one instance per row —
+is something your code relies on, because that is precisely what an identity map gives you and
+precisely what this library does not.

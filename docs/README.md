@@ -43,6 +43,7 @@ await db.update(db.h.posts).set({ published: true }).where((p) => eq(p.posts.id,
 | `signature` | The block is a declaration, not a program: it is compiled inside `declare namespace` with every type of the page's `apiEntry` in scope. This is how reference signatures are checked. Bodiless functions, bare `interface`s and `type` aliases belong here. |
 | `expect-error` | The block **must** fail to compile. Used where a page claims something is refused; if it starts compiling, the gate fails. |
 | `no-run` | A `title=` block that is a file rather than a program — a `pg-prime.config.ts`, a migration, a snippet of somebody else's library. Still compiled. |
+| `allow-drops="reason"` | The example is allowed to make the PGlite bridge drop a connection. Only correct when the example opens no transaction — a drop inside one silently un-does it, which is why the gate fails on it by default. |
 | `skip-check="reason"` | Not compiled. The reason is mandatory and is printed by the gate on every run. Use it only for code in another language's TypeScript (a Drizzle or Prisma snippet on a comparison page). |
 | `cli="migrate generate --help"` | The block must be, verbatim, what the built binary prints. `node tools/docs-coverage.mjs --write` regenerates it. |
 
@@ -83,6 +84,13 @@ so nothing is rewritten. A block that hard-codes a `'postgres://…'` literal is
 
 Each example is a separate process and gets a clean database (`drop schema public cascade` between
 runs), so examples never depend on each other. An example that hangs is killed after 60 s and fails.
+
+**PGlite is one backend.** The bridge deliberately drops a connection that runs a message while
+another connection holds an open transaction — on PGlite a "second session" is the same session, and
+silently allowing it is how a broken `SKIP LOCKED` or advisory lock tests green (design/08 F8). So an
+example that needs **two sessions at once** — a concurrent transaction, a real `40001`, lock
+contention, a killed backend — cannot run here. Mark it `no-run` and say so in a sentence; it still
+compiles, and the suite that proves the behaviour is `packages/pg-prime/test/pg/**`.
 
 Most examples begin `use=blog,blog-ddl`: two tables, a relation in each direction, a `db`, and the
 DDL that makes the queries real.

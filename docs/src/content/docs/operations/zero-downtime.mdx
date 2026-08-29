@@ -86,9 +86,11 @@ ALTER TABLE "public"."tickets" ALTER COLUMN "token" SET DEFAULT gen_random_uuid(
 Adding the column *and* the volatile default in one statement would rewrite the whole table under
 `ACCESS EXCLUSIVE`, because every existing row needs a distinct value. Adding the column with no
 default and setting the default afterwards is two catalog writes and no rewrite. New rows get a
-token; the rows that were already there stay `NULL`, which is precisely what the third file is for:
+token; the rows that were already there stay `NULL`, and a second file is scaffolded beside the
+migration for exactly them:
 
-```sql title="migrations/0004_tickets_token_data.sql"
+```sql title="migrations/0004_tickets_token_data_backfill_tickets_token.sql"
+-- pg-prime:migration 0004_tickets_token_data_backfill_tickets_token
 -- pg-prime:data
 -- pg-prime:txmode    none
 -- pg-prime:batch     size=1000 pause=100ms max-replica-lag=10s
@@ -113,7 +115,7 @@ SELECT count(*) FROM public.tickets WHERE token IS NULL;   -- must be 0
 
 ### Migration 2 — prove the column is never null
 
-```sql title="migrations/0005_tickets_token_check.sql" no-run
+```sql title="migrations/0005_tickets_token_check.sql"
 -- pg-prime:txmode    transactional
 
 -- pg-prime:stmt 0 lock=accessExclusive non-idempotent
@@ -143,7 +145,7 @@ export const tickets = pgTable('tickets', (t) => ({
 }))
 ```
 
-```sql title="migrations/0006_tickets_token_not_null.sql" no-run
+```sql title="migrations/0006_tickets_token_not_null.sql"
 -- pg-prime:stmt 0 lock=accessExclusive idempotent
 ALTER TABLE "public"."tickets" ALTER COLUMN "token" SET NOT NULL;
 
@@ -300,7 +302,7 @@ fails outright if the column is not already unique.
 
 pg-prime does this one for you. The generated form is four statements in a `txmode none` file:
 
-```sql title="migrations/0007_people_email_concurrently.sql" no-run
+```sql title="migrations/0007_people_email_concurrently.sql"
 -- pg-prime:txmode    none
 
 ALTER TABLE "public"."people" DROP CONSTRAINT IF EXISTS "people_email_key";

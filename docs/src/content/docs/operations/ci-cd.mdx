@@ -3,7 +3,7 @@ title: Migrations in CI/CD
 description: check as the gate, exit codes, --output json, and where apply belongs.
 ---
 
-import { Aside, Steps } from '@astrojs/starlight/components'
+import { Steps } from '@astrojs/starlight/components'
 
 There are three places a migration tool can run in a pipeline, and only two of them are correct.
 
@@ -42,7 +42,7 @@ unusable. After you run `generate` and before the deploy, the diff against the *
 non-empty by construction — that is what the pending file is for. So `check` asks whether the
 **pending** migrations account for the diff: if there is something to apply and the last file's
 `to.fingerprint` is the fingerprint of the desired state, the schema is not ahead of the
-migrations, they are simply not applied yet. That is exit **5**, not exit 4.
+migrations, they have not been applied yet. That is exit **5**, not exit 4.
 
 With everything applied, a non-empty diff means either the database moved (somebody changed it by
 hand) or the schema moved (somebody forgot to generate), and both of those are exit **4**.
@@ -94,12 +94,16 @@ work"), and exit 4 is a fact about the repository ("something is inconsistent").
 treats them the same fails every pull request that adds a migration.
 
 ```sh
-pg-prime migrate check --output json > check.json
-case $? in
-  0|5) echo "ok" ;;
+# `|| status=$?` keeps this working under `set -e`, which GitHub Actions uses.
+status=0
+pg-prime migrate check --output json > check.json || status=$?
+
+case "$status" in
+  0|5) echo "ok — nothing to fix" ;;
+  2)   echo "a rename or data-loss decision is missing; see unresolved[] in check.json"; exit 1 ;;
+  3)   echo "lint: see hazards[] in check.json"; exit 1 ;;
   4)   echo "drift: run 'pg-prime migrate generate' and commit the result"; exit 1 ;;
-  2)   echo "a rename or a data-loss decision is missing; see unresolved[] in check.json"; exit 1 ;;
-  *)   exit 1 ;;
+  *)   echo "check failed with $status"; exit 1 ;;
 esac
 ```
 

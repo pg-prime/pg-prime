@@ -3,4 +3,490 @@ title: Data migrations and seeding
 description: Batched backfills, generate --data and --empty, and db seed.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+Changing a table's shape and changing its rows are different jobs with different failure modes, so
+pg-prime keeps them in three lanes.
+
+| Lane | What it is | Written by | In the history? |
+|---|---|---|---|
+| **1 — schema DDL** | `CREATE TABLE`, `ADD COLUMN`, indexes, constraints | `migrate generate`, from your TypeScript | yes |
+| **2 — data backfills** | `UPDATE`/`INSERT` over existing rows, batched | you, from a template | yes, ordered with lane 1 |
+| **3 — seeds** | development and test rows | you | **no** |
+
+Lanes 1 and 2 share one ordered history, which is what makes the expand/contract shape
+expressible: `0007` adds a nullable column, `0008` backfills it, `0009` sets it `NOT NULL`, and a
+reviewer reads them in order. Lane 3 is outside the history entirely, because a seed is not a fact
+about the schema and re-running one must not look like re-running a migration.
+
+The separation is not bookkeeping. A backfill wants many short transactions and no lock; a DDL
+migration wants one transaction and a lock it takes for milliseconds. Putting a 50-million-row
+`UPDATE` inside a transactional DDL file gives you the worst of both — which is why the lock-safe
+rewriter emits a *stub* and tells you to generate a data migration rather than inlining the update.
+
+## Scaffolding one
+
+```sh
+pg-prime migrate generate --data --name backfill_country
+```
+
+```text frame="terminal"
+migrate generate --data
+
+  wrote  …/migrations/0001_backfill_country.sql
+```
+
+`--data` touches no database: it writes a file and stops. What it writes is a **working batched
+backfill with a guard in front of it**, not a sketch in a comment:
+
+```sql title="migrations/0001_backfill_country.sql"
+-- pg-prime:migration 0001_backfill_country
+-- pg-prime:data
+-- pg-prime:txmode    none
+-- pg-prime:batch     size=1000 pause=100ms max-replica-lag=10s
+
+-- TODO: write the data migration.
+-- design/06 §7 lane 2: one statement, re-executed by the runner until it reports 0 rows.
+--
+-- The `-- pg-prime:batch` directive above is interpreted by the RUNNER, not by a
+-- template (design/06 §7). It re-executes every statement in this file, each in its
+-- OWN transaction, until that statement reports zero rows; it pauses `pause` between
+-- iterations; it waits while replica lag exceeds `max-replica-lag`; and it commits
+-- { rows_done, watermark } to pgprime.data_progress in the SAME transaction as the
+-- batch, so a killed backfill resumes from its watermark instead of restarting.
+--
+-- The contract between this file and the runner is two settings and two columns:
+--
+--   current_setting('pgprime.batch_size')        the directive's `size`, as text
+--   current_setting('pgprime.watermark', true)    the last watermark THIS statement
+--                                              reported; '' on the first iteration
+--   … AS rows_done, … AS watermark             what the statement reports back
+--
+-- TO SHIP THIS FILE:
+--   1. check that `id` is this table's ordering key and that `::bigint` is its type;
+--   2. check the predicate — it must match exactly the rows that still need the write;
+--   3. delete statement 0 (the guard) and renumber statement 1 to 0.
+
+-- pg-prime:stmt 0 lock=none non-idempotent
+DO $pgprime$ BEGIN RAISE EXCEPTION 'pg-prime: 0001_backfill_country.sql is a generated data-migration STUB and was applied unedited'; END $pgprime$;
+
+-- pg-prime:stmt 1 lock=rowExclusive idempotent
+WITH batch AS (
+  SELECT id
+    FROM your_schema.your_table
+   WHERE your_column IS NULL
+     AND (nullif(current_setting('pgprime.watermark', true), '') IS NULL OR id > nullif(current_setting('pgprime.watermark', true), '')::bigint)
+   ORDER BY id
+   LIMIT current_setting('pgprime.batch_size')::int
+), updated AS (
+  UPDATE your_schema.your_table AS t
+     SET your_column = DEFAULT
+    FROM batch AS b
+   WHERE t.id = b.id
+  RETURNING t.id AS id
+)
+SELECT count(*)::bigint AS rows_done, max(id)::text AS watermark FROM updated;
+```
+
+Statement 0 is the guard. It is marked `non-idempotent`, so `migrate lint` reports `TX201` on it
+and `migrate apply` stops on it. A stub that applied silently would be recorded `applied` in
+`pgprime.migrations` while the rows it exists to fix stayed unfixed, and the next `generate` would
+see a converged schema and never mention it again. This is the only spelling of "TODO" a deploy
+pipeline can hear.
+
+Editing the file is three changes: point it at your table, fix the predicate, and delete the guard
+— renumbering statement 1 to statement 0. Forgetting the renumber is a `stmt_marker_out_of_order`
+error rather than a silent misordering, because the `-- pg-prime:stmt N` marker *is* the resume
+position.
+
+The same template is written automatically when the lock-safe rewriter splits an
+`ADD COLUMN … DEFAULT <volatile>` into an instant `ADD COLUMN` plus a backfill: the generated stub
+then names the real table and column, and the `TODO` says which migration left the rows `NULL`.
+
+Here is the shipping version of the same file, backfilling a derived column:
+
+```sql title="migrations/0002_backfill_email_domain.sql"
+-- pg-prime:migration 0002_backfill_email_domain
+-- pg-prime:data
+-- pg-prime:txmode    none
+-- pg-prime:batch     size=1000 pause=100ms max-replica-lag=10s
+
+-- pg-prime:stmt 0 lock=rowExclusive idempotent
+WITH batch AS (
+  SELECT id
+    FROM public.users
+   WHERE email_domain IS NULL
+     AND (nullif(current_setting('pgprime.watermark', true), '') IS NULL
+          OR id > nullif(current_setting('pgprime.watermark', true), '')::bigint)
+   ORDER BY id
+   LIMIT current_setting('pgprime.batch_size')::int
+), updated AS (
+  UPDATE public.users AS t
+     SET email_domain = split_part(t.email, '@', 2)
+    FROM batch AS b
+   WHERE t.id = b.id
+  RETURNING t.id AS id
+)
+SELECT count(*)::bigint AS rows_done, max(id)::text AS watermark FROM updated;
+```
+
+## The `-- pg-prime:batch` directive
+
+```
+-- pg-prime:batch size=1000 pause=100ms max-replica-lag=10s max-iterations=0
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `size` | `1000` | rows per iteration, published to the statement as `pgprime.batch_size` |
+| `pause` | `100ms` | slept between iterations |
+| `max-replica-lag` | unset | the replica-lag ceiling; unset means no lag check at all |
+| `max-iterations` | `0` | a hard ceiling on iterations per statement; `0` is no ceiling |
+
+A malformed value is a **diagnostic, never a silent default**: a `size=1oooo` typo that quietly
+became 1000 would run a backfill ten times longer than you asked for, and nothing would say so.
+`size=0` is refused for the same reason — it would never make progress. The directive is only legal
+in a `txmode none` file, because a batch is one transaction *per iteration*, which
+`txmode transactional` cannot express.
+
+The directive is interpreted by the **runner**, not by a template. For each statement of the file:
+
+```
+loop:
+  wait while replica lag > max-replica-lag
+  BEGIN
+    SET LOCAL pgprime.batch_size = <size>
+    SET LOCAL pgprime.watermark  = <the last one this statement reported>
+    <the statement>
+    INSERT INTO pgprime.data_progress … ON CONFLICT DO UPDATE
+  COMMIT
+  stop when the statement reported 0 rows
+  sleep <pause>
+```
+
+The batch state reaches the statement as two GUCs rather than as bind parameters, because the
+`.sql` is the executable artifact — it has to run under `psql` if the tooling ever fails you, and a
+file full of `$1`s does not. They are written with `set_config($1, $2, true)`, so nothing is
+interpolated into SQL, and under `psql` they just default: `current_setting(name, true)` is
+`NULL` for an unset name, which the template's `nullif(…, '')` guard reads as "start at the
+beginning".
+
+The statement reports its own progress back, in its own result: a trailing
+`SELECT count(*) AS rows_done, max(id)::text AS watermark`. When it does not — a plain
+`UPDATE … LIMIT`-shaped statement — the **command tag's row count** is used instead and the
+watermark stays null. The runner never parses your SQL to guess a key column: the key is a property
+of your table, and a tool that guessed would guess wrong on the first composite one.
+
+Applying it looks like this:
+
+```sh
+pg-prime migrate apply
+```
+
+```text frame="terminal"
+migrate apply — docs_guides @ 127.0.0.1:54333
+applied 1 migration in 657 ms:
+  0002_backfill_email_domain  none  1 statement  612 ms  (5000 rows in 6 batches)
+  fingerprint  sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+```
+
+Six batches for five thousand rows: five that moved a thousand each, and a sixth that reported zero
+and ended the loop.
+
+### The watermark, and why a killed backfill resumes
+
+After every batch the runner writes `{ rows_done, watermark }` to `pgprime.data_progress` — **inside
+the batch's own transaction**, not after it. Persisting it *after* the commit would be the obvious
+reading, and it is strictly weaker: the same transaction is available here — unlike for DDL —
+because a data migration's work is ordinary DML.
+
+The consequence is the property the lane exists for: a `SIGKILL` cannot lose a committed batch's
+watermark, and cannot record one whose rows rolled back. So a killed backfill **resumes** rather
+than restarting.
+
+```sql
+SELECT migration_id, rows_done, watermark FROM pgprime.data_progress;
+```
+
+```text frame="terminal"
+        migration_id        | rows_done |                                          watermark
+----------------------------+-----------+----------------------------------------------------------------------------------------------
+ 0002_backfill_email_domain |      5000 | {"done": true, "values": {"0": "5000"}, "statement": 0, "iterations": 6, "formatVersion": 1}
+```
+
+The `values` map is keyed by statement index and holds **the text the statement itself reported**.
+The runner cannot know whether your key is a `bigint`, a `uuid` or a `(tenant, created_at)` pair,
+so it carries the token opaquely and hands it back through the GUC.
+
+`migrate status` reports every `data_progress` row alongside the state of the migration it belongs
+to, so the progress of a backfill is visible while it runs as well as after it finishes:
+
+```text frame="terminal"
+migrate status — docs_guides @ 127.0.0.1:54333
+  history      present (v1)
+  fingerprint  unknown
+  migrations   3 files, 0 pendings
+  lock         free
+  applied   0000_init
+  applied   0001_users_email_domain
+  applied   0002_backfill_email_domain
+
+data migrations (design/06 §7):
+  - 0002_backfill_email_domain  applied  5000 row(s) in 6 batches, watermark 5000
+```
+
+The fingerprint is `unknown` there for a reason worth knowing: a hand-written data migration has no
+`.plan.json`, so the last applied row has no `fingerprint_to` for the fast path to read. Follow the
+backfill with a generated migration, or run `status --verify-fingerprint`, and the number comes
+back.
+
+One safety rail: a statement that keeps reporting rows without moving its watermark for **three
+consecutive batches** fails, naming the stuck value. A watermark that does not move while rows keep
+coming back is the signature of a predicate that does not narrow, and an unbounded loop is the one
+way a batch runner can wedge a deploy with no error to act on. Statements that report no watermark
+at all are bounded by `max-iterations` instead.
+
+### Why the template is a keyset batch
+
+The obvious way to write a batched update is
+`UPDATE … WHERE id IN (SELECT id FROM t WHERE … ORDER BY id LIMIT n)`. The runner supports that
+shape — a statement with no `rows_done` column falls back to its command tag — but the template
+deliberately writes a keyset batch instead, for three reasons.
+
+1. **It has no watermark.** The statement reports only a command tag, so there is nothing for the
+   runner to record and nothing to hand back: `data_progress` counts the rows and stores no
+   position, however long the backfill runs.
+2. **It re-scans from the top every time.** Each iteration starts at the beginning of the table
+   looking for rows the predicate still matches, so N rows in batches of n cost **O(N²/n)** row
+   reads and every batch is slower than the last. The keyset form reads each row once.
+3. **A crash leaves nothing to resume from.** Without a watermark the restart is the whole scan
+   again — which is exactly the failure mode a resumable backfill exists to avoid.
+
+The keyset form costs one extra CTE and gives the watermark something true to hold.
+
+## Replica lag
+
+`max-replica-lag=<duration>` makes the runner wait, before each iteration, while replication is
+behind. There are two readers, and which one runs is a configuration decision rather than a guess.
+
+**Primary-side, by default.** `pg_stat_replication.replay_lag` on the connection the migration
+already holds. It needs no replica URLs, no second credential and no extra connection; it is the
+number an operator already watches; PostgreSQL has had it since 10. The cost is that a
+non-superuser sees only its own rows there unless it is in `pg_monitor`, which is why "no rows" is
+reported as *no visible replica* rather than as *no lag* — those are different sentences, and only
+one of them is evidence.
+
+**Replica-side, opt in.** List the standbys in the config and each is asked for
+`pg_last_wal_replay_lsn()` instead:
+
+```ts title="pg-prime.config.ts" no-run
+import { defineConfig } from '@pg-prime/kit'
+
+export default defineConfig({
+  schema: './src/schema.ts',
+  url: process.env['DATABASE_URL']!,
+  replicas: [
+    'postgres://readonly@replica-1.internal:5432/app',
+    'postgres://readonly@replica-2.internal:5432/app',
+  ],
+})
+```
+
+Nothing else in the kit ever connects to these. A replica that cannot be reached contributes
+*infinite* lag rather than zero, so the loop stays paused: silently proceeding past a replica you
+cannot see is the failure the ceiling exists to prevent.
+
+With no visible replica the check is a **no-op plus exactly one `info` line**, said once per run
+rather than once per batch:
+
+```text frame="terminal"
+warnings:
+  - max-replica-lag=10000ms is set and pg_stat_replication reports no replica: the check is a no-op for this run. A non-superuser sees only its own rows there — grant pg_monitor, or list the standbys as `replicas: ['postgres://…']` in pg-prime.config.ts to query pg_last_wal_replay_lsn() on each instead.
+```
+
+<Aside type="caution">
+The wait is **unbounded**, by design. A ceiling that gave up after N minutes and ran the batch
+anyway would be a ceiling that does not hold; one that failed the migration would turn a temporary
+replica hiccup into a failed deploy needing a manual resume — while the resume is already free,
+because the watermark is committed. An operator who wants it to stop kills the process, and the
+next `apply` continues from where it stopped.
+</Aside>
+
+## `generate --empty`
+
+For everything that is neither a diff nor a backfill — a `GRANT`, a one-off `VACUUM FULL` on a
+small table, a `pg_catalog` fix — `--empty` writes a blank transactional migration and touches no
+database:
+
+```sh
+pg-prime migrate generate --empty --name manual_grants
+```
+
+```sql title="migrations/0002_manual_grants.sql"
+-- pg-prime:migration 0002_manual_grants
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=3s statement=30s
+
+-- Hand-written migration. There is no .plan.json beside it, so `apply` runs it with
+-- no fingerprint gate and no checksum gate — it is yours.
+--
+-- Number every statement: the marker IS the resume position (design/06 §4.2), and
+-- without markers the runner falls back to its SQL splitter and says so.
+
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+SELECT 1;
+```
+
+A hand-written file has no plan, so it is applied with no fingerprint gate and no checksum gate,
+and `apply` says so in its warnings. That is the trade: you get to write anything, and pg-prime
+stops vouching for it.
+
+## Seeding
+
+Seeds are lane 3: development and test rows, re-runnable, expected to be idempotent
+(`ON CONFLICT DO NOTHING`). They live in `seeds/` — `seeds/*.sql` and `seeds/*.ts` are the **base
+set** and run on every `db seed`; each subdirectory is a named set that runs only when `--set` asks
+for it.
+
+```
+seeds/
+  010_users.sql
+  020_posts.ts
+  demo/
+    100_more_users.sql
+```
+
+```sql title="seeds/010_users.sql"
+INSERT INTO users (email, name, email_domain)
+VALUES ('alice@example.com', 'Alice', 'example.com')
+ON CONFLICT (email) DO NOTHING;
+```
+
+Files run in code-unit order — never `localeCompare`, so two developers seed in the same order —
+with directories and files in one sort, and **one transaction per file**. Not one per run: a run
+that half-applies is bad, and a run that rolls back nine good seeds because the tenth has a typo is
+worse, because seeds are re-runnable by construction. The report names the file that failed and the
+ones that were skipped after it.
+
+```sh
+pg-prime db seed --list
+```
+
+```text frame="terminal"
+db seed --list — …/seeds
+  sets on disk  demo
+
+would run:
+  - seeds/010_users.sql  [sql]
+  - seeds/020_posts.ts  [ts]
+```
+
+```sh
+pg-prime db seed --set demo
+```
+
+```text frame="terminal"
+db seed — ran 3 seeds from …/seeds
+
+  seeds/010_users.sql  [sql]  1 statement  20 ms
+  seeds/020_posts.ts  [ts]  1 statement  20 ms
+  seeds/demo/100_more_users.sql  [sql]  1 statement  10 ms
+
+Nothing was recorded in pgprime.migrations — seeds are not migration history (design/06 §7).
+```
+
+`--set` is repeatable, and a `--set` naming a directory that does not exist is an **error** that
+lists the sets on disk. A typo that silently seeded nothing is the worst possible outcome for a
+command whose entire job is side effects. `--seeds <dir>` overrides the `seeds` config key for one
+run.
+
+**Nothing is recorded** — no `pgprime.migrations` row, no `pgprime.repeatables` row, and the
+history schema is never created. That last part is stronger than "no row" and it matters: a seeded
+development database that has never been migrated must not acquire a `pgprime` schema as a side
+effect, or `migrate baseline` would refuse it afterwards.
+
+### The production refusal
+
+`db seed` refuses on a production-tagged environment, using `push --dev`'s three conditions
+verbatim, evaluated before a single statement is issued:
+
+```text frame="terminal"
+db seed
+
+REFUSED: refusing to seed a production-tagged environment (PG_PRIME_ENV=production, or `production: true` in pg-prime.config.ts). Seeds are development and test data and are never recorded in the migration history, so nothing would record that they ran. Pass --force if you mean it.
+```
+
+```text frame="terminal"
+db seed
+
+REFUSED: refusing to seed 127.0.0.1:54333/docs_guides: it matches --prod-pattern /docs_/i. Seeds are development and test data and are never recorded in the migration history. Pass --force if you mean it, or narrow the pattern with --prod-pattern.
+```
+
+The pattern defaults to `prod|production|live` and is matched case-insensitively against
+`host:port/database`. `--force` is a flag and only a flag: nothing about it is written down, so
+nothing can remember it.
+
+### A `.ts` seed gets the query builder
+
+`.sql` seeds are statements. A `.ts` seed is a module whose default export is called with three
+things:
+
+{/* docs: use=blog-schema */}
+```ts title="seeds/020_posts.ts" no-run
+import { eq, type Tx } from 'pg-prime'
+
+export default async ({ db, set, env }: {
+  db: Tx<typeof schema>
+  set: string | null
+  env: string | null
+}): Promise<void> => {
+  if (env === 'production') return
+
+  const [alice] = await db
+    .from(db.h.users, 'u')
+    .where((t) => eq(t.u.email, 'alice@example.com'))
+    .select((t) => ({ id: t.u.id }))
+    .execute()
+  if (!alice) return
+
+  await db
+    .insertInto(db.h.posts)
+    .values({ authorId: alice.id, title: 'Hello', body: 'seeded', published: true })
+    .execute()
+
+  console.log(`seeded posts for set ${set ?? 'base'}`)
+}
+```
+
+`schema` there is your own schema module, the one the `schema` key in your config points at. Import
+it the way the file will actually be loaded: `db seed` imports a `.ts` seed through Node, which
+resolves the specifier **literally**, so an uncompiled project writes
+`import { schema } from '../schema.ts'` and a project that builds to JavaScript first writes
+`'../schema.js'`. Getting that wrong is a `Cannot find module …/schema.js` at seed time rather than
+a type error.
+
+`set` is the set the file belongs to (`null` for the base set) and `env` is `PG_PRIME_ENV`
+verbatim. `db` is a **real pg-prime handle** — specifically the transaction handle, so the file's
+writes are atomic by the same mechanism your own code would use — built by the kit through **your**
+copy of `pg-prime` and **your** schema modules.
+
+That matters more than it sounds. `@pg-prime/kit` imports `pg-prime` for types only everywhere
+else; one file on the `db seed` path is the single exception, and its import is *dynamic* and
+resolved from your project. So the kit still loads with no runtime peer installed, and the seed
+gets the DSL your application uses rather than a second copy with different symbol slots. If the
+peer is absent the message says so and points at `.sql`.
+
+The schema comes from the `schema` key in `pg-prime.config.ts`: a module exporting
+`defineSchema({ … })` is used directly, and a module exporting bare `pgTable(...)` values is
+wrapped for you, keyed by export name — which is the name the seed writes, `db.h.users`.
+
+**Exit: 0** seeded or nothing to do · **1** refused or failed. There is no `--dry-run`; `--list`
+prints what would run, and actually rehearsing a seed would mean opening a transaction and rolling
+it back, which is a different feature.
+
+## Where to go next
+
+- [Migrations end to end](/pg-prime/guides/migrations/) — every command, and what each one refuses.
+- [Zero-downtime patterns](/pg-prime/operations/zero-downtime/) — where a backfill sits in expand/contract.
+- [Checkpoints](/pg-prime/guides/checkpoints/) — collapsing a long history for fresh databases.
+- [Testing](/pg-prime/guides/testing/) — seeding a test database from your own code instead.

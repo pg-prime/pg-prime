@@ -54,7 +54,7 @@ export default defineConfig({
   // Standby URLs for `-- pg-prime:batch max-replica-lag=…`. Nothing else ever connects to these.
   replicas: [],
 
-  // design/06 §5.2's runner defaults, overridable per project.
+  // The runner's defaults, overridable per project.
   lockTimeout: '3s',
   statementTimeout: '30s',
   lockWaitMs: 30_000,
@@ -286,7 +286,7 @@ cannot be detected from `pg_locks` alone, while a stale `heartbeat_at` can.
 | Flag | Default | What it bounds |
 |---|---|---|
 | `--lock-timeout` | `3s` | PostgreSQL's `lock_timeout` for every statement |
-| `--statement-timeout` | config, or `30s` | PostgreSQL's `statement_timeout`, except for intentionally long builds |
+| `--statement-timeout` | `30s`, from the plan | PostgreSQL's `statement_timeout`; a `shareUpdateExclusive` statement gets none, because those are the intentionally long builds |
 | `--lock-wait` | `30s` | how long to wait for a concurrent deploy's advisory lock |
 | `--stale-lock-after` | `60s` | the lease age past which a holder is *reported* stale |
 | `--heartbeat` | `5s` | how often the lease is refreshed; keep it well under `--stale-lock-after` |
@@ -323,19 +323,30 @@ pg-prime migrate status
 ```text frame="terminal"
 migrate status — docs_guides @ 127.0.0.1:54333
   history      present (v1)
-  fingerprint  sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb (history)
-  migrations   3 files, 0 pendings
+  fingerprint  sha256:dca6c31896984951853145ac3de96c4a92366135f730f18d8cfd23eac95d61a5 (history)
+  migrations   6 files, 0 pendings
   lock         free
   applied   0000_init
   applied   0001_users_email_domain
   applied   0002_backfill_email_domain
+  superseded 0003_checkpoint
+  applied   0004_rename_name
+  applied   0005_drop_email_domain
+
+data migrations (design/06 §7):
+  - 0002_backfill_email_domain  applied  5000 row(s) in 6 batches, watermark 5000
 ```
 
 It reports applied against pending, the current fingerprint, stale leases, partially-applied rows,
-repeatable drift and any running data migration. The fingerprint line says `(history)` because the
-fast path reads it off the last applied row: that is a statement about what the runner did, not
-about what the database now contains. `--verify-fingerprint` re-extracts, and only then can
-`status` report catalog drift — which it does as exit 4.
+repeatable drift and any running data migration. `superseded` is a settled status, not a failure —
+it is what a [checkpoint](/pg-prime/guides/checkpoints/) an existing database ignored looks like.
+
+The fingerprint line says `(history)` because the fast path reads it off the last applied row: that
+is a statement about what the runner did, not about what the database now contains.
+`--verify-fingerprint` re-extracts the catalog instead, the label changes to `(catalog)`, and only
+then can `status` report drift — which it does as exit 4. The value reads `unknown` when the last
+applied file is hand-written, because a file with no plan beside it has no `fingerprint_to` to
+record.
 
 **Exit: 0** up to date · **4** drift · **5** pending.
 
@@ -424,8 +435,9 @@ default**, for a reason worth knowing before you reach for it; see
 
 ## `migrate lint`
 
-35 rules in six families, run over generated or hand-written SQL. It defaults to the unapplied
-migrations and needs no database connection when you name files.
+Thirty-nine hazard codes in seven families — 33 with a default severity and six opt-in style rules
+— run over generated or hand-written SQL. `lint` defaults to the unapplied migrations, and needs no
+database connection when you name files on the command line.
 
 | Family | Default severity | What it is about |
 |---|---|---|
@@ -556,9 +568,10 @@ helps nobody. Three reasons not to use this anywhere but a scratch database:
 
 1. **Nothing is written down.** No file, no history row, no plan, no acknowledgement. The database
    is ahead of the repository and only the person who ran it knows by how much.
-2. **Nothing is proven.** There is no clone, no replay, no `pg_dump` witness, and no lock-safe
-   rewriting to review — the statements go straight at the database in the order the differ
-   produced them.
+2. **Nothing is proven.** `push` runs the same pipeline as `generate` — shadow normalization,
+   rename resolution, lock-safe rewriting, the hazard rules — but with the proof turned off. There
+   is no replay on a clone and no `pg_dump` witness, so the one check that says *this really does
+   converge on the schema you wrote* never runs.
 3. **It is not what runs in production.** A change that only ever existed as a push has never been
    through `generate`, so nothing has ever checked that it can be expressed as a reviewable file.
 

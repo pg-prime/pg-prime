@@ -3,4 +3,183 @@ title: Hazard codes
 description: Every code migrate lint can report, with its default severity.
 ---
 
-TODO
+pg-prime ships **33 hazard codes** in six families, plus **6 style codes** that are off unless you
+ask for them. Every code on this page is checked against the kit's own tables on every build, so a
+rule that exists and a rule that is documented are the same set.
+
+A hazard is attached where the fact is known. `diff/ddl.ts` attaches one when the catalog told it
+something — this constraint is validated, that column is populated, this default calls a volatile
+function — and `lint/rules.ts` computes the rest from the assembled plan, because those are
+properties of the *file*: whether a `CONCURRENTLY` ended up inside a transaction, whether a
+`txmode none` file is safe to re-run, whether a trigger or a materialised view appears in
+hand-written SQL at all.
+
+## The families
+
+| Family | Means | Default |
+|---|---|---|
+| `DS` | Destructive. Data goes away and does not come back. | `error` |
+| `MF` | May fail on existing data. The statement is correct and the rows are not. | `error` |
+| `BC` | Backward-incompatible with running application code. | `warn` |
+| `LK` | Lock hazard. It works, and it holds a lock that stops your application while it does. | `warn` |
+| `TX` | Transaction and robustness. The file cannot run, or cannot be re-run, the way it is written. | `error` |
+| `EN` | Enum. PostgreSQL's enum DDL has two rules that are easy to trip over. | `error` |
+| `ST` | Style. Advice nobody asked for, so nobody gets it unless they do. | `off` |
+
+The codes are ours; the `DS`/`MF`/`BC` families and their severities follow Atlas and the rule
+semantics follow Squawk, so existing knowledge transfers.
+
+## Severity, and what each command does with it
+
+`migrate generate` refuses to write a migration that carries an **unacknowledged error-severity
+hazard**. Nothing reaches disk: you get exit code `2` and a list of the decisions that are missing,
+each naming the object and the fix. Acknowledging is deliberate and recorded —
+
+```sh
+pg-prime migrate generate --name drop_legacy --allow-data-loss --reason "legacy table, empty since 2026-03"
+```
+
+— and `--allow-data-loss` acknowledges every error-severity hazard in *that* plan, with `--reason`
+and `--by` written into the `.plan.json` beside them. The acknowledgement is therefore in the diff a
+reviewer reads, which is the entire point of making it a flag rather than a prompt.
+
+`migrate lint` reports findings and exits `3` when any of them is at or above `--fail-on`, which
+defaults to `error`. `--fail-on warn` promotes the whole `BC`/`LK` set to a gate, which is a
+reasonable thing to do in CI once a codebase is clean. `--rules LK101,LK103` narrows to specific
+codes, and `--style` adds the `ST` family. Severity is always re-derived from the kit's table and
+never read off the `.plan.json`: a plan on disk is evidence about what changed, not authority about
+how bad it is.
+
+`MF` codes are the one family whose severity depends on the database. When a target is reachable,
+the kit probes each subject table with `SELECT EXISTS (SELECT 1 FROM t LIMIT 1)`; a table proven
+empty cannot fail on existing data, so the hazard is dropped. With no target — a plan built
+offline — the empty set is empty and every `MF` code stays at `error`, which is the safe direction.
+
+Most `LK` codes describe a hazard pg-prime **removes** rather than reports. The lock-safe rewrites
+turn `CREATE INDEX` into `CREATE INDEX CONCURRENTLY`, and `ADD FOREIGN KEY` into `NOT VALID` plus a
+separate `VALIDATE`, by default; `LK101`, `LK105` and `LK106` are reachable only under
+`--no-safe-rewrite`, where you have asked for the literal diff. [Zero-downtime
+migrations](/pg-prime/operations/zero-downtime/) is the long version of every fix below.
+
+## DS — destructive
+
+Acknowledged with `--allow-data-loss --reason …`, or per-object in a `--hints-file`. Nothing here is
+recoverable by re-running a migration.
+
+| Code | Severity | What it is, and what to do |
+|---|---|---|
+| <a id="DS101"/>`DS101` | error | `DROP SCHEMA` takes every object in it with it. If the intent was to stop *managing* a schema rather than to delete it, remove it from the managed set (`--schema`, or `schemas` in the config) instead. |
+| <a id="DS102"/>`DS102` | error | `DROP TABLE`, and the rows go with it. Rename the table out of the way in one migration and drop it in a later one, after the code that used it has been deployed and is not coming back. |
+| <a id="DS103"/>`DS103` | error | Dropping a non-generated column loses its data. Stop writing it, deploy, and drop it in the next migration — a column nothing reads is free to keep for a week. |
+| <a id="DS104"/>`DS104` | error | Removing or reordering an enum label. PostgreSQL has no DDL for either, so the type is replaced and every table using it is rewritten under `ACCESS EXCLUSIVE`. `EN102` is raised for the same change first. |
+| <a id="DS105"/>`DS105` | error | Dropping a materialized view destroys the data it holds, and recreating it costs a full refresh. Reported from the SQL text, because a materialized view is never diffed. |
+| <a id="DS106"/>`DS106` | error | Dropping the last primary key or unique constraint on a column lets duplicates in from the next write. Adding it back later needs `MF101`'s scan, which by then may fail. |
+
+## MF — may fail on existing data
+
+Each of these is a statement PostgreSQL will reject the moment one row does not satisfy it. The
+migration fails half-applied unless the file is transactional, and the fix is always to make the
+data true first.
+
+| Code | Severity | What it is, and what to do |
+|---|---|---|
+| <a id="MF101"/>`MF101` | error | Adding a `UNIQUE` index or constraint to a populated column fails on the first duplicate. De-duplicate, then build the index `CONCURRENTLY` and attach it with `ADD CONSTRAINT … USING INDEX`. |
+| <a id="MF102"/>`MF102` | error | Turning an existing non-unique index into a unique one. Same failure, later: the duplicate is found while the index is rebuilt. |
+| <a id="MF103"/>`MF103` | error | `ADD COLUMN … NOT NULL` with no default fails outright on any table with rows in it. Give the column a default, or add it nullable, backfill, and set `NOT NULL` in a third step. |
+| <a id="MF104"/>`MF104` | error | Nullable to `NOT NULL` fails if a single row is null. Backfill, add a `NOT VALID` check constraint, `VALIDATE` it, and only then `SET NOT NULL` — PostgreSQL uses the validated constraint as proof and skips the scan. |
+| <a id="MF105"/>`MF105` | error | A narrowing type change — `varchar(n)` shrunk, numeric precision dropped, `int8` to `int4` — fails on the first value that does not fit, after having already rewritten part of the table. |
+| <a id="MF106"/>`MF106` | error | Adding a validated `CHECK` or `FOREIGN KEY` to a populated table fails on the first violating row. The `NOT VALID` plus `VALIDATE` rewrite is the fix, and the hazard rides on the `ADD` half, where the plan commits to it. |
+
+## BC — backward-incompatible
+
+These succeed. They break the code that is already running against the database, in the window
+between the migration and the deploy, which is why they are warnings and not errors: only you know
+what is deployed.
+
+| Code | Severity | What it is, and what to do |
+|---|---|---|
+| <a id="BC101"/>`BC101` | warn | Renaming a table: the old name stops resolving the instant it commits. Add a view under the old name, or expand and contract — new table, dual write, migrate readers, drop. |
+| <a id="BC102"/>`BC102` | warn | Renaming a column, with the same window. A generated column or a view under the old name buys you the deploy. |
+| <a id="BC103"/>`BC103` | warn | An in-place column type change that clients can see. Even where nothing fails, the value a running client decodes changes shape — `int8` where it expected `int4`, `numeric` where it expected `float8`. |
+| <a id="BC104"/>`BC104` | warn | Renaming an index or a constraint. Anything that names it stops matching: `ON CONFLICT ON CONSTRAINT`, an index hint, a monitoring query, a `nolint` suppression. |
+
+## LK — lock hazards
+
+Each one names the lock and what it blocks. The default configuration rewrites most of them away;
+what you see in a plan is what could not be rewritten, or what you asked for literally.
+
+| Code | Severity | What it is, and what to do |
+|---|---|---|
+| <a id="LK101"/>`LK101` | warn | `CREATE INDEX` without `CONCURRENTLY` holds `SHARE` for the whole build, blocking every write to the table. Rewritten to `CONCURRENTLY` by default, so this appears only under `--no-safe-rewrite`. |
+| <a id="LK102"/>`LK102` | warn | `DROP INDEX` without `CONCURRENTLY` takes `ACCESS EXCLUSIVE`. Brief, but it queues behind every open transaction on the table and everything else queues behind it. |
+| <a id="LK103"/>`LK103` | warn | `CONCURRENTLY` inside a transaction block, which PostgreSQL rejects with `25001`. The file needs `txmode none`, or the statement needs a segment of its own. |
+| <a id="LK104"/>`LK104` | warn | `ADD PRIMARY KEY` or `ADD UNIQUE` builds its index under `ACCESS EXCLUSIVE`, even on an empty table. Build a unique index `CONCURRENTLY` first and attach it with `ADD CONSTRAINT … USING INDEX`. |
+| <a id="LK105"/>`LK105` | warn | `ADD FOREIGN KEY` without `NOT VALID` holds `SHARE ROW EXCLUSIVE` on **both** tables for the length of the scan. The default rewrite splits it into `NOT VALID` and `VALIDATE CONSTRAINT`, which takes a weaker lock and lets writes continue. |
+| <a id="LK106"/>`LK106` | warn | `ADD CHECK` without `NOT VALID`, with the same scan and the same two-statement fix. |
+| <a id="LK107"/>`LK107` | warn | A `SET NOT NULL` whose scan runs under `ACCESS EXCLUSIVE`. Emitted for a domain's `SET NOT NULL` and for `ATTACH PARTITION`'s bound scan; the plain column case is rewritten to the validated-constraint form and no longer reports it. |
+| <a id="LK108"/>`LK108` | warn | `ALTER COLUMN … TYPE` rewrites the entire table under `ACCESS EXCLUSIVE`. On anything large, add a new column, backfill in batches, and swap. |
+| <a id="LK109"/>`LK109` | warn | `ADD COLUMN` with a **volatile** default rewrites the table. A constant default does not — PostgreSQL stores it in the catalog — and the volatility is asked of `pg_proc.provolatile` rather than guessed, so `now()` is flagged and `'pending'` is not. |
+| <a id="LK110"/>`LK110` | warn | Adding `GENERATED … STORED` or `GENERATED … AS IDENTITY` to an existing column rewrites the table. |
+| <a id="LK111"/>`LK111` | warn | `CREATE TRIGGER` takes `SHARE ROW EXCLUSIVE`, which blocks writes for the duration. Found in hand-written SQL, because triggers are never diffed. |
+| <a id="LK112"/>`LK112` | warn | `SET LOGGED` or `SET UNLOGGED` rewrites the whole table and its indexes under `ACCESS EXCLUSIVE`. |
+
+## TX — transaction and robustness
+
+Properties of the file rather than of a change. All three are errors because the migration either
+cannot run at all, or cannot survive being interrupted.
+
+| Code | Severity | What it is, and what to do |
+|---|---|---|
+| <a id="TX101"/>`TX101` | error | A statement that cannot run inside a transaction — `CREATE INDEX CONCURRENTLY`, `VACUUM`, `ALTER TYPE … ADD VALUE` on older servers — in a file whose header is not `txmode none`. Move it to its own migration. |
+| <a id="TX102"/>`TX102` | error | Transactional and non-transactional statements share a segment. They need a segment boundary between them, so the runner knows which half to wrap. |
+| <a id="TX201"/>`TX201` | error | A non-idempotent statement in a `txmode none` file. There is no transaction to roll back, so a crash leaves the file half-applied and the runner re-executes it from the top: every statement has to be safe to run twice (`IF NOT EXISTS`, `DROP … IF EXISTS`, a guard). |
+
+## EN — enum
+
+Two rules that PostgreSQL enforces and that no amount of care in a text editor catches reliably.
+The first of these is the bug that motivated writing the differ.
+
+| Code | Severity | What it is, and what to do |
+|---|---|---|
+| <a id="EN101"/>`EN101` | error | A new enum label is used before its `ADD VALUE` has committed. PostgreSQL refuses to use a label added in the same transaction, so the `ADD VALUE` and every statement that mentions the new label must be in different migrations. |
+| <a id="EN102"/>`EN102` | error | Removing or reordering enum labels, for which PostgreSQL has no DDL. The change becomes `DS104`'s type-replacement path — a new type, a rewrite of every table that uses it, and a swap. |
+
+## ST — style
+
+Off by default. `pg-prime migrate lint --style` runs the family, and `--rules ST103` runs one of them
+without a second flag. They are opinions, not hazards; none of them will ever fail a build you did
+not ask to be failed.
+
+| Code | Severity | What it is, and what to do |
+|---|---|---|
+| <a id="ST101"/>`ST101` | off | `serial` where `GENERATED … AS IDENTITY` would do. The identity form is standard SQL, owns its sequence, and cannot be written to by accident. |
+| <a id="ST102"/>`ST102` | off | `char(n)` where `text` would do. PostgreSQL pads `char(n)` with spaces and there is no performance gain to show for it. |
+| <a id="ST103"/>`ST103` | off | `timestamp without time zone`. Prefer `timestamptz`: the bare type stores a wall-clock reading with no way to know what it meant. |
+| <a id="ST104"/>`ST104` | off | An `int4` primary key. An `int4` sequence runs out at 2.1 billion, and changing the type later is `LK108`'s full rewrite. |
+| <a id="ST105"/>`ST105` | off | An identifier longer than 63 UTF-8 bytes, which PostgreSQL silently truncates — quietly making two long names the same name. |
+| <a id="ST106"/>`ST106` | off | An unqualified relation reference. The name resolves through `search_path`, which the runner does not control and a pooler may not preserve. |
+
+## Suppressing a finding
+
+```sql
+-- pg-prime:nolint LK101 "the index is on a 200-row lookup table"
+CREATE INDEX idx_currencies_code ON currencies (code);
+```
+
+The reason string is **mandatory**. A `nolint` with no reason, with an unquoted reason, or naming
+something that is not a hazard code is a directive error, and a directive error fails the lint run
+on its own with exit `3` — an unreviewable suppression that silently succeeded would be worse than
+having no escape hatch at all.
+
+Scope follows position. A directive under a `-- pg-prime:stmt N` marker applies to statement `N`; one
+in the file's header block applies to the whole file. Directives are found through the SQL lexer, so
+a `nolint` inside a string literal or a `$$ … $$` body is data and suppresses nothing. A suppressed
+finding is not deleted from the report: it is recorded with its reason in `suppressedBy`, so
+`--format json` still shows what was suppressed and why.
+
+A suppression is the right answer when the hazard is real and the cost is not: an index on a table
+you know is small, a `DS103` on a column added and abandoned in the same week, a `ST106` in a
+migration that sets `search_path` explicitly one line above. It is the wrong answer for anything in
+the `MF` family, where the finding is a prediction about your data rather than a judgement about
+your schema — silence it and you have not made the statement succeed, you have only stopped being
+told that it will not.

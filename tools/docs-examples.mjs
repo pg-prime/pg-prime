@@ -100,7 +100,28 @@ function bundleHarness() {
   }
 }
 
+/**
+ * The bridge's own alarm, made into a gate.
+ *
+ * PGlite is one backend: when a second connection runs a message while another holds an open
+ * transaction, the bridge prints `[live] PGlite is ONE backend …` and drops it (design/08 F8). The
+ * pool then reconnects and the example carries on **without its `BEGIN`** — measured here: with the
+ * default pool of 10, two `txid_current()` calls inside one `db.transaction` returned 753 and 754.
+ * An example that reads as a transaction and is not one is worse than a failing example, so a drop
+ * during an example fails it.
+ */
+function watchForDrops() {
+  const original = console.error
+  const state = { count: 0 }
+  console.error = (...args) => {
+    if (typeof args[0] === 'string' && args[0].includes('PGlite is ONE backend')) state.count++
+    else original(...args)
+  }
+  return state
+}
+
 async function runAll(examples) {
+  const drops = watchForDrops()
   const { startPglite } = await import(pathToFileURL(join(GEN, '_pglite.mjs')).href)
   const started = Date.now()
   const server = await startPglite()
@@ -141,8 +162,24 @@ async function runAll(examples) {
       }
 
       await reset(admin)
+      const before = drops.count
       const result = await runOne(dir, entry, server.url)
       ran++
+      if (result.code === 0 && drops.count > before && !ex.block.attrs['allow-drops']) {
+        failures.push({
+          where: `${ex.block.page}:${ex.block.line}`,
+          title: ex.block.attrs.title,
+          output:
+            `the PGlite bridge dropped ${drops.count - before} connection(s) while this example ran: it opened a\n` +
+            `second physical connection while a transaction was in flight, and PGlite is ONE backend\n` +
+            `(design/08 F8). The example may have passed while its transaction silently did not isolate.\n` +
+            `Fix: build the handle with poolOptions: { max: 1 } and devGuard: false (what\n` +
+            `docs/src/snippets/blog.ts does — the dev-mode pooler probe of design/07 §5.4 opens up to\n` +
+            `three connections of its own), mark the block no-run if it genuinely needs two sessions,\n` +
+            `or, if the drops are harmless here because the example opens no transaction, say so with\n` +
+            'allow-drops="the reason".',
+        })
+      }
       if (result.code !== 0) {
         failures.push({
           where: `${ex.block.page}:${ex.block.line}`,
@@ -219,6 +256,11 @@ async function reset(admin) {
   await admin.query('drop schema if exists public cascade')
   await admin.query('drop schema if exists pgprime cascade')
   await admin.query('create schema public')
+  // PGlite is one backend, so a TEMP table outlives the process that created it — `pg_temp` is not
+  // in `public` and the next example would meet a `42P07` it did not cause. `DISCARD ALL` is the
+  // one place in this repository that statement is correct: this is a test harness resetting a
+  // single shared backend, not a pooler recycling somebody's connection (design/07 §5.2).
+  await admin.query('discard all')
 }
 
 /**

@@ -12,7 +12,7 @@ interface, and [migrations end to end](/pg-prime/guides/migrations/) is the guid
 each one is for.
 
 Everything below is the **programmatic API** — the engine the binary is built out of, exported so
-that something else can drive it. The three callers that exist are a test harness that generates and
+that something else can drive it. The shapes that need it are a test harness that generates and
 applies a migration in-process, a platform's own deploy tool that wants `applyPending`'s event
 stream rather than its stdout, and a script that reads a `.plan.json` off disk and lints it. If you
 are not writing one of those, the CLI page is the page you want.
@@ -50,13 +50,13 @@ disk and never repeats any of it. The three commands that write nothing — `sta
 
 | If you want to | Start at |
 |---|---|
-| read a config file the way the CLI does | [`loadConfig`](#loadConfig), [`resolveConfig`](#resolveConfig) |
-| turn a live database into an IR | [`extractCatalog`](#extractCatalog) |
-| turn a TypeScript schema into an IR | [`loadDesired`](#loadDesired), [`provisionShadow`](#provisionShadow) |
+| read a config file the way the CLI does | [`loadConfig`](#loadconfig), [`resolveConfig`](#resolveconfig) |
+| turn a live database into an IR | [`extractCatalog`](#extractcatalog) |
+| turn a TypeScript schema into an IR | [`loadDesired`](#loaddesired), [`provisionShadow`](#provisionshadow) |
 | produce a migration end to end | [`generate`](#generate) |
-| apply what is on disk | [`applyPending`](#applyPending) |
-| report without writing | [`migrationStatus`](#migrationStatus), [`lintPlan`](#lintPlan) |
-| break a lease left by a dead deploy | [`inspectLease`](#inspectLease), [`forceUnlock`](#forceUnlock) |
+| apply what is on disk | [`applyPending`](#applypending) |
+| report without writing | [`migrationStatus`](#migrationstatus), [`lintPlan`](#lintplan) |
+| break a lease left by a dead deploy | [`inspectLease`](#inspectlease), [`forceUnlock`](#forceunlock) |
 
 `migrate checkpoint`, `db seed` and `pull` are **CLI-only** in this release: they exist as commands,
 their behaviour is documented on the CLI page, and none of their functions are exported here. Nothing
@@ -390,14 +390,14 @@ style family is not in this table — `isStyleCode` answers for those, and their
 | <a id="Stage"/> `Stage` | `"main" \| "concurrent" \| "data"` | Which emitted file a statement belongs to. `undefined` means `main`. |
 | <a id="PHASE"/> `PHASE` | a frozen record of numeric ranks, `createExtension: -1` through `dropSchema: 85` | The coarse stratum used as the ordering tie-break. Correctness comes from the graph, not from this table. |
 | <a id="orderStatements"/> `orderStatements` | `(input: readonly Statement[]) => OrderResult` | Topological order over the fact-id sets, with `phase` breaking ties, plus the transaction segments. |
-| <a id="OrderResult"/> `OrderResult` | `{ statements; segments; diagnostics }` | |
+| <a id="OrderResult"/> `OrderResult` | `{ statements; segments; diagnostics }` | The ordered stream, the segments it was cut into, and anything the sort had to report. |
 | <a id="Segment"/> `Segment` | `{ index: number; transactional: boolean; statements: number[] }` | One `BEGIN`/`COMMIT` boundary, or one bare run. |
 | <a id="splitStages"/> `splitStages` | `(input: readonly Statement[]) => StagedResult` | Orders once over the whole plan, then cuts the stream into files. A real edge that would force a `main` statement after a `concurrent` one **declines** the split rather than emitting files that cannot apply in order. |
 | <a id="StagedFile"/> `StagedFile` | `{ stage: Stage; statements; segments }` | One emitted file, re-ordered on its own so its segments describe it. |
 | <a id="StagedResult"/> `StagedResult` | `{ files; diagnostics; declined: string \| null }` | `declined` is non-null with a reason when the concurrent rewrite was refused. |
 | <a id="Plan"/> `Plan` | `{ formatVersion: 1; planId; engine; generated; migration; from; to; pg; schemas; normalized; shadowTier; txmode; segments; statements; renames; hazards; unmodeled; repeatables; acknowledged; proof }` | The `.plan.json`. `schemas` is recorded because it scopes the diff, the fingerprint *and* the lock key. |
 | <a id="PlanStatement"/> `PlanStatement` | `Statement` plus `index` and `timeouts: { lock; statement }` | What the runner executes. |
-| <a id="PlanHazard"/> `PlanHazard` | `{ code; severity; statement; subject; message; acknowledged }` | |
+| <a id="PlanHazard"/> `PlanHazard` | `{ code; severity; statement; subject; message; acknowledged }` | One hazard as it lands in `.plan.json`, carrying the index of the statement it is about. |
 | <a id="Proof"/> `Proof` | `{ status: "passed" \| "failed" \| "skipped"; reason?; shadow?; provisioning?; driftDeltas?; deltas?; stageFingerprints?; dumpOracle?; … }` | `stageFingerprints` holds the state *between* emitted files, which is the second file's `from` and cannot be predicted from the IR — only observed. |
 | <a id="Acknowledgement"/> `Acknowledgement` | `{ dataLoss: readonly string[]; by; reason; at; blanket }` | Lands in `.plan.json`, so a destructive change shows up as a diff line in the pull request. That *is* the review interface. |
 | <a id="AcknowledgeInput"/> `AcknowledgeInput` | `{ dataLoss?; by?; reason?; allowDataLoss? }` | What `--allow-data-loss --reason` becomes. |
@@ -407,18 +407,18 @@ style family is not in this table — `isStyleCode` answers for those, and their
 | <a id="planSql"/> `planSql` | `(plan: Plan) => string` | `renderSql` with the arguments taken off a finished plan. |
 | <a id="planOrderKey"/> `planOrderKey` | `(plan: Plan) => readonly [number, string]` | `(seq, name)`. Duplicate `NNNN` is legal, which is what lets one run emit `0007_x.sql`, `0007_x_concurrently.sql` and `0007_x_data.sql` in that order without a journal. |
 | <a id="ENGINE"/> `ENGINE` | `{ name; version; backend: "in-house"; irVersion: 1 }` | Stamped into every plan. |
-| <a id="formatFindings"/> `formatFindings` | `(result: LintResult, format: LintFormat) => string` | |
+| <a id="formatFindings"/> `formatFindings` | `(result: LintResult, format: LintFormat) => string` | Findings to text or JSON. The text form is what `migrate lint` prints. |
 | <a id="LintFormat"/> `LintFormat` | `"text" \| "json"` | SARIF is declared as the place it will land rather than invented twice; `formatFindings` switches exhaustively, so adding it is a compile error until it is handled. |
 | <a id="LintOptions"/> `LintOptions` | `{ rules?; failOn?: "error" \| "warn" \| "off"; style? }` | `style` is implied when `rules` names a style code, so `--rules ST103` needs no second flag. |
-| <a id="LintResult"/> `LintResult` | `{ findings; directives; directiveErrors; exitCode: 0 \| 3 }` | |
+| <a id="LintResult"/> `LintResult` | `{ findings; directives; directiveErrors; exitCode: 0 \| 3 }` | `exitCode` is already the process exit code: `0` clean, `3` a finding at or above `failOn`. |
 | <a id="LintFinding"/> `LintFinding` | `{ code; severity; statement; subject; message; acknowledged; suppressedBy }` | `statement` is `-1` for a plan-level finding. |
 | <a id="parseNolint"/> `parseNolint` | `(sqlText: string) => { directives: NolintDirective[]; errors: DirectiveError[] }` | A `nolint` without a reason is itself a lint failure. |
 | <a id="NolintDirective"/> `NolintDirective` | `{ code; reason; line; statement: number \| null }` | `null` means file-wide. |
 | <a id="DirectiveError"/> `DirectiveError` | `{ line; text; message }` | A malformed directive line. |
 | <a id="unusedDirectives"/> `unusedDirectives` | `(result: LintResult) => readonly NolintDirective[]` | Suppressions that suppressed nothing — not an error, because that is how a file stays quiet across regenerations, but worth reporting. |
 | <a id="planRules"/> `planRules` | `(plan: Plan, options: { readonly style: boolean }) => RuleHit[]` | The file-level rules over one plan, before suppression and acknowledgement. |
-| <a id="RuleHit"/> `RuleHit` | `{ code; statement; subject; message }` | |
-| <a id="isStyleCode"/> `isStyleCode` | `(code: string) => boolean` | |
+| <a id="RuleHit"/> `RuleHit` | `{ code; statement; subject; message }` | A rule finding before suppression and acknowledgement are applied to it. |
+| <a id="isStyleCode"/> `isStyleCode` | `(code: string) => boolean` | Is this one of the `ST` family, whose default severity is `off` rather than `error`? |
 | <a id="STYLE_CODES"/> `STYLE_CODES` | `readonly string[]` | `ST101`–`ST106`, kept out of `plan/plan.ts` so `hazardSeverity`'s "unknown means error" default cannot make advice fatal. |
 
 ## Generating a migration
@@ -475,8 +475,8 @@ that hands over two databases has no output-directory convention for a companion
 | <a id="GenerateStatus"/> `GenerateStatus` | `"generated" \| "up_to_date" \| "missing_hints" \| "hazards" \| "proof_failed" \| "refused"` | Maps one-to-one onto the command's exit codes. |
 | <a id="GeneratedFile"/> `GeneratedFile` | `{ stage; id; plan: Plan \| null; sql; sqlPath?; planPath? }` | `plan` is `null` for the `data` stub, which has no diff behind it and therefore no fingerprint to gate on. |
 | <a id="Unresolved"/> `Unresolved` | `{ type: "rename_or_recreate" \| "confirm_data_loss"; kind; from?; to?; confidence?; reason?; fix }` | One entry per decision a human still has to make. `fix` is the sentence to act on. |
-| <a id="DatabaseGenerateInput"/> `DatabaseGenerateInput` | `{ admin; target; desired; schemas?; seq; name; renameHints?; outDir?; prove?; dumpOracle?; acknowledge? }` | |
-| <a id="DatabaseGenerateResult"/> `DatabaseGenerateResult` | `{ plan; diff; currentIR; desiredIR; diagnostics; written?; writeRefusal? }` | |
+| <a id="DatabaseGenerateInput"/> `DatabaseGenerateInput` | `{ admin; target; desired; schemas?; seq; name; renameHints?; outDir?; prove?; dumpOracle?; acknowledge? }` | Three connections: the maintenance one, the database holding the current state, and the one holding the desired state. |
+| <a id="DatabaseGenerateResult"/> `DatabaseGenerateResult` | `{ plan; diff; currentIR; desiredIR; diagnostics; written?; writeRefusal? }` | `written` is present only when `outDir` was given and the write was not refused. |
 | <a id="annotationHints"/> `annotationHints` | `(schema: SchemaLike, defaultSchema?: string) => RenameHint[]` | Reads `.renamedFrom('old')` off the DSL's runtime metadata. Says what the annotation *claims*; it does not decide whether it fires. |
 | <a id="acceptHints"/> `acceptHints` | `(hints: readonly RenameHint[], current: SchemaIR, desired: SchemaIR) => RenameHint[]` | The firing rule: old exists, new does not. That is what makes an annotation safe to leave in the source for ever and what makes a chain `a → b → c` work across two migrations. |
 | <a id="readHintsFile"/> `readHintsFile` | `(path: string) => Promise<RenameHint[]>` | `--hints-file`: a JSON array of `{ from, to }`. |
@@ -534,20 +534,20 @@ a duplicated statement on one side is still a difference.
 |---|---|---|
 | <a id="ProveInput"/> `ProveInput` | `{ admin; source; desired; schemas; statements; segments; stages?; current?; cloneName?; keepClone?; desiredConn?; dumpOracle?; allowSkippedOracle?; pgDump?; dumpTimeoutMs? }` | `source` is cloned, never touched. Without `desiredConn` the oracle reports `skipped`, which under `strict` blocks the plan. |
 | <a id="ProveStage"/> `ProveStage` | `{ statements; segments }` | One emitted file's worth of a plan, so the proof applies the files in the order the runner will. |
-| <a id="ProofResult"/> `ProofResult` | `Proof` plus `cloneName` | |
+| <a id="ProofResult"/> `ProofResult` | `Proof` plus `cloneName` | The proof as it lands in the plan, plus the name of the clone it ran on. |
 | <a id="ShadowProvisioning"/> `ShadowProvisioning` | `"template" \| "materialized"` | Whether the clone came from `CREATE DATABASE … TEMPLATE` or was rebuilt from the IR. |
 | <a id="proveInTempSchemas"/> `proveInTempSchemas` | `(input: TempSchemaProveInput) => Promise<ProofResult>` | The tier-3 proof: the clone is a set of schemas inside the target database, created and dropped there, which is why it needs no `CREATEDB`. |
 | <a id="TempSchemaProveInput"/> `TempSchemaProveInput` | `{ target; current; desired; schemas; renameHints?; buildOptions?; diagnostics?; expectedStages?; desiredConn?; desiredSchemaMap?; dumpOracle?; … }` | `expectedStages` is the consistency check: statement count per emitted file, in order. |
 | <a id="resolvePgDump"/> `resolvePgDump` | `(explicit?: PgDumpLauncher) => Promise<ResolvedPgDump \| { readonly unavailable: string }>` | Explicit launcher, then `PG_PRIME_PG_DUMP`, then `pg_dump` on `PATH`. Returns a reason rather than throwing: a machine without client tools degrades to `skipped`, it does not fail the build. |
 | <a id="PgDumpLauncher"/> `PgDumpLauncher` | `{ argv: readonly string[]; uri?: (database: string) => string }` | `argv` can be a container command — `["docker", "exec", "-i", "pg17", "pg_dump"]` — which is the point of making it a list. |
-| <a id="ResolvedPgDump"/> `ResolvedPgDump` | `{ argv; version; major; uri? }` | |
+| <a id="ResolvedPgDump"/> `ResolvedPgDump` | `{ argv; version; major; uri? }` | A launcher that answered `--version`. `major` is what the server-version check compares. |
 | <a id="parseLauncherEnv"/> `parseLauncherEnv` | `(raw: string) => readonly string[] \| null` | `PG_PRIME_PG_DUMP` as a JSON string array or a whitespace-separated string. Returns `null` on anything malformed, because a broken environment variable is an environment gap, never a proof failure. |
 | <a id="schemaPattern"/> `schemaPattern` | `(schema: string) => string` | Double-quotes a schema name so `--schema` treats it as a literal identifier. |
 | <a id="normalizeDump"/> `normalizeDump` | `(raw: string) => string[]` | Raw dump text to a sorted statement multiset with the session preamble dropped. Sorting is deliberate: the oracle asserts equality of **state**, and emission order is a property of the plan. |
 | <a id="DumpComparison"/> `DumpComparison` | `{ equal; missing; extra; reordered; statementCount }` | `reordered` is reported and never blocking: PostgreSQL cannot reorder columns, so a plan is not at fault for failing to. |
 | <a id="DumpOracleMode"/> `DumpOracleMode` | `"off" \| "warn" \| "strict"` | `warn` is the default. |
 | <a id="DumpOracleVerdict"/> `DumpOracleVerdict` | `{ status: "passed" \| "failed" \| "skipped"; mode; reason?; pgDumpVersion?; missing?; extra?; reordered?; … }` | Recorded verbatim in `.plan.json`. `skipped` means the oracle could not **run**; a dump that ran and went wrong is `failed`. |
-| <a id="DumpRequest"/> `DumpRequest` | `{ pgDump; conn; database; schemas; timeoutMs?; signal? }` | |
+| <a id="DumpRequest"/> `DumpRequest` | `{ pgDump; conn; database; schemas; timeoutMs?; signal? }` | One dump. `signal` is aborted when the sibling dump fails, so a hung child never outlives the proof. |
 | <a id="DUMP_SAMPLE_CAP"/> `DUMP_SAMPLE_CAP` | `20` | Differing statements recorded per direction, so a wide difference cannot balloon the plan file. |
 | <a id="DUMP_TIMEOUT_MS"/> `DUMP_TIMEOUT_MS` | `120000` | A dump that has not finished by then is hung, not slow; the child is killed. |
 
@@ -562,8 +562,9 @@ a duplicated statement on one side is still a difference.
 
 ## History and locks
 
-Every history object lives in one schema, and the runner refuses to write into a database whose
-history schema it did not create.
+Every history object lives in one schema, `pgprime`: six tables and a version row. The lock is two
+things at once — a session advisory lock, which is what actually excludes a second deploy, and a
+`pgprime.lock` row with a heartbeat, which is what lets a human see *who* holds it.
 
 ### `ensureHistory`
 
@@ -572,10 +573,11 @@ history schema it did not create.
 function ensureHistory(client: CatalogClient): Promise<void>
 ```
 
-Creates the seven history objects, idempotently, **in its own transaction**. Its own transaction
-matters twice: the statements must not half-land, and they must not sit inside the caller's migration
-transaction, or a failed migration would roll the history schema away with it. `IF NOT EXISTS` makes
-it idempotent but not race-free, so it retries.
+Creates the `pgprime` schema and its six tables, idempotently, **in its own transaction**. Its own
+transaction matters twice: the statements must not half-land, and they must not sit inside the
+caller's migration transaction, or a failed migration would roll the history schema away with it.
+`IF NOT EXISTS` makes the sequence idempotent but not race-free — two sessions can both pass the
+existence check and one then gets a `23505` — so it retries.
 
 ### `historyPresent`
 
@@ -642,11 +644,11 @@ deploys. Read `inspectLease` first anyway.
 | <a id="RepeatableRow"/> `RepeatableRow` | `{ path; checksum; appliedAt; durationMs }` | One `pgprime.repeatables` row. |
 | <a id="LockRow"/> `LockRow` | `{ runId; holder; acquiredAt; heartbeatAt; heartbeatAgeMs }` | The lease. `heartbeatAgeMs` is measured on the server. |
 | <a id="readMigrationRows"/> `readMigrationRows` | `(client: CatalogClient) => Promise<MigrationRow[]>` | Ordered `(seq, name)` — the order the runner applies files in, not `finished_at`, because a resumed run finishes out of wall-clock order. |
-| <a id="readRepeatableRows"/> `readRepeatableRows` | `(client: CatalogClient) => Promise<RepeatableRow[]>` | |
+| <a id="readRepeatableRows"/> `readRepeatableRows` | `(client: CatalogClient) => Promise<RepeatableRow[]>` | Every `pgprime.repeatables` row — the `applied` map the repeatables pass plans against. |
 | <a id="currentFingerprint"/> `currentFingerprint` | `(rows: readonly MigrationRow[]) => string \| null` | `fingerprint_to` on the last applied row is the current schema fingerprint of record. |
 | <a id="advisoryLockKey"/> `advisoryLockKey` | `(database: string, schemas: readonly string[]) => bigint` | The derivation, exported so a monitoring tool can compute the same key and look it up in `pg_locks`. |
 | <a id="detectTransactionPooler"/> `detectTransactionPooler` | `(client: CatalogClient) => Promise<boolean>` | Two `pg_backend_pid()` reads in two transactions. **It can say no when the answer is yes**: against PgBouncer in `pool_mode=transaction` with one idle client it returns `false`, because the pooler hands the same server connection back. It is decisive only on a pool already serving somebody else. |
-| <a id="LeaseInspection"/> `LeaseInspection` | `{ lease: LockRow \| null; stale: boolean; staleAfterMs: number }` | |
+| <a id="LeaseInspection"/> `LeaseInspection` | `{ lease: LockRow \| null; stale: boolean; staleAfterMs: number }` | What `migrate unlock` prints: the row, whether it is stale, and the threshold that decided. |
 | <a id="LockReport"/> `LockReport` | `{ acquired; runId; waitedMs; holder; stale }` | What a run reports about the lock it did or did not get. |
 
 ## The runner
@@ -699,8 +701,8 @@ function migrationStatus(conn: ConnInfo, migrationsDir: string, options?: Status
 ```
 
 Read-only, and the only function here that is safe to run on a schedule: applied versus pending, the
-fingerprint of record, checksum drift, partially-applied rows, the lease, orphaned repeatables and
-any running backfill's `rows_done`. It creates nothing, not even the history schema. Pass
+fingerprint of record, checksum drift, partially-applied rows, the lease, repeatables that have
+drifted and any running backfill's `rows_done`. It creates nothing, not even the history schema. Pass
 `verifyFingerprint: true` to re-extract the catalog instead of trusting the recorded value; that is
 the slow, honest answer.
 
@@ -713,18 +715,18 @@ the slow, honest answer.
 | <a id="RunnerEvent"/> `RunnerEvent` | `lock \| migration \| statement \| BatchEvent \| LagEvent \| warning`, discriminated on `kind` | The progress stream. Everything the CLI prints comes from here, so an embedder can print something else. |
 | <a id="RunnerFailure"/> `RunnerFailure` | `{ code: "transaction_pooler" \| "pool_connection" \| "missing_file" \| "checksum_drift" \| "fingerprint_mismatch" \| "unknown_target" \| "plan_invalid" \| "lock_unavailable" \| "sql_error"; message; migration?; statementIndex?; sqlState?; sql?; attempts?; drift? }` | A code, not a message to match on. |
 | <a id="PreflightReport"/> `PreflightReport` | `{ invalidIndexes; notValidConstraints; ccnewLeftovers; touchedByPending }` | The last of the four is the subset a pending plan actually names, which is the only part that blocks. |
-| <a id="RepeatablesReport"/> `RepeatablesReport` | `{ applied: readonly string[]; unchanged: readonly string[] }` | |
+| <a id="RepeatablesReport"/> `RepeatablesReport` | `{ applied: readonly string[]; unchanged: readonly string[] }` | Which `sql/` files this run applied and which it left alone. |
 | <a id="IssuedQuery"/> `IssuedQuery` | `{ text: string; values?: readonly unknown[] }` | `--dry-run` returns every query the run *would* have issued, in order, including `BEGIN`, `COMMIT` and the `set_config` calls. |
 | <a id="NO_REPEATABLES"/> `NO_REPEATABLES` | `RepeatablesPass` | A pass that plans nothing and applies nothing, for a caller with no `sql/` directory. |
 | <a id="applySegments"/> `applySegments` | `(client, statements, segments, options?) => Promise<ApplyReport>` | One file's statements against one connection, with the segment framing. No history, no lock, no reconciliation. |
-| <a id="ApplyOptions"/> `ApplyOptions` | `{ lockTimeout?: string; statementTimeout?: string }` | |
-| <a id="ApplyReport"/> `ApplyReport` | `{ status: "applied" \| "failed"; appliedStatements: number; error?: ApplyError }` | |
+| <a id="ApplyOptions"/> `ApplyOptions` | `{ lockTimeout?: string; statementTimeout?: string }` | The two session GUCs. `lockTimeout` defaults to `3s`; a statement the plan leaves unbounded runs with no `statement_timeout` unless this supplies one. |
+| <a id="ApplyReport"/> `ApplyReport` | `{ status: "applied" \| "failed"; appliedStatements: number; error?: ApplyError }` | `appliedStatements` is how far it got, which is where a resume starts. |
 | <a id="ApplyError"/> `ApplyError` | `{ statementIndex; sql; message; sqlState? }` | The SQLSTATE is carried through because the retry policy is a function of it — `55P03` backs off, `40P01` retries the file once, `57014` never does — and matching on message text varies by server version and locale. |
 | <a id="migrationStatusOn"/> `migrationStatusOn` | `(client: CatalogClient, migrationsDir: string, options?: StatusOptions) => Promise<StatusReport>` | The same report on a connection you own. |
-| <a id="StatusOptions"/> `StatusOptions` | `{ schemas?; verifyFingerprint?; staleLockAfterMs?; repeatables?; repeatablesDir? }` | |
+| <a id="StatusOptions"/> `StatusOptions` | `{ schemas?; verifyFingerprint?; staleLockAfterMs?; repeatables?; repeatablesDir? }` | `verifyFingerprint` is the only one that costs a catalog extraction. |
 | <a id="StatusReport"/> `StatusReport` | `{ status; exitCode; historyPresent; historyVersion; fingerprint; fingerprintSource; fingerprintDrift; drift; recordedFingerprint; migrations; pending; partial; missingFiles; checksumDrift; lock; repeatables; data; diagnostics; durationMs }` | `drift` names *which* objects drifted, by diffing the live IR against the newest checkpoint — `null` when there is no checkpoint to compare against. |
 | <a id="StatusEntry"/> `StatusEntry` | `{ id; state; txmode; statementsTotal; statementsApplied; statementUncertain; appliedAt; appliedBy; checksumOk }` | `checksumOk: null` means there is nothing recorded to compare the file against. |
-| <a id="EntryState"/> `EntryState` | `"applied" \| "baselined" \| "superseded" \| "running" \| "failed" \| "pending" \| "orphaned"` | |
+| <a id="EntryState"/> `EntryState` | `"applied" \| "baselined" \| "superseded" \| "running" \| "failed" \| "pending" \| "orphaned"` | `orphaned` is a history row whose file is gone; `superseded` is a file that was never executed here and never will be. |
 | <a id="DataProgressEntry"/> `DataProgressEntry` | `DataProgress` plus `migrationState: EntryState` | A backfill whose migration is still `running` is the one an operator is asking about. |
 
 ## Migration files on disk
@@ -748,23 +750,24 @@ diagnostic.
 function parseMigrationSql(text: string, subject: string): ParsedSql
 ```
 
-Header directives, then statements. Statements come from `-- pg-prime:statement` markers when the
-file has them and from the lexer's top-level semicolons when it does not, and `statementSource` says
-which — a hand-written file and a generated one are not parsed the same way and pretending otherwise
-loses statement indices on resume.
+Header directives, then statements. Statements come from the file's own `-- pg-prime:stmt N` markers
+when it has them and from the lexer's top-level semicolons when it does not, and `statementSource`
+says which. The markers are the statement **index**, not a hint: a partially applied `txmode none`
+file resumes at a recorded index, and re-deriving that index with a splitter that disagrees with the
+generator by one is how a resume replays the wrong statement.
 
 | Name | Shape | What it is |
 |---|---|---|
-| <a id="ReadMigrationsResult"/> `ReadMigrationsResult` | `{ files: readonly MigrationFile[]; diagnostics }` | |
-| <a id="MigrationFile"/> `MigrationFile` | `{ id; seq; name; path; planPath; checksum; text; directives; statements; statementSource; plan; txmode; diagnostics }` | |
-| <a id="ParsedSql"/> `ParsedSql` | `{ directives; statements; statementSource; diagnostics }` | |
+| <a id="ReadMigrationsResult"/> `ReadMigrationsResult` | `{ files: readonly MigrationFile[]; diagnostics }` | Files in `(seq, name)` order, plus what the read had to say about them. |
+| <a id="MigrationFile"/> `MigrationFile` | `{ id; seq; name; path; planPath; checksum; text; directives; statements; statementSource; plan; txmode; diagnostics }` | One `NNNN_name.sql` with everything read off it: the checksum over the raw bytes, the header directives, the statements and the plan beside it. |
+| <a id="ParsedSql"/> `ParsedSql` | `{ directives; statements; statementSource; diagnostics }` | What `parseMigrationSql` gets out of one file’s text. |
 | <a id="FileDirectives"/> `FileDirectives` | `{ migration; plan; from; to; txmode; lockTimeout; statementTimeout; requiresPg; checkpoint; data; batch; all }` | `all` keeps every directive as it was written, including the ones this release ignores. |
 | <a id="FileDirective"/> `FileDirective` | `{ name; args; line }` | One raw `-- pg-prime:` line. |
-| <a id="FileStatement"/> `FileStatement` | `{ index; sql; lockClass; idempotent; hazards; segment }` | |
-| <a id="TxMode"/> `TxMode` | `"transactional" \| "none" \| "segmented"` | |
+| <a id="FileStatement"/> `FileStatement` | `{ index; sql; lockClass; idempotent; hazards; segment }` | One statement as the **file** has it. `segment` is the `-- pg-prime:segment` marker it fell under, or `null`. |
+| <a id="TxMode"/> `TxMode` | `"transactional" \| "none" \| "segmented"` | How the file is framed: one transaction, none at all, or the segments the plan declares. |
 | <a id="MIGRATION_FILE"/> `MIGRATION_FILE` | `RegExp` | `NNNN_name.sql`, with `name` restricted exactly as `MIGRATION_NAME` is. |
 | <a id="executionPlan"/> `executionPlan` | `(file: MigrationFile) => ExecutionPlan` | What the runner actually executes: the **file's** statement text carrying the **plan's** metadata. When the two disagree the file wins, and that is a warning rather than a silent preference. |
-| <a id="ExecutionPlan"/> `ExecutionPlan` | `{ statements: readonly PlanStatement[]; segments; diagnostics }` | |
+| <a id="ExecutionPlan"/> `ExecutionPlan` | `{ statements: readonly PlanStatement[]; segments; diagnostics }` | The file’s text carrying the plan’s metadata — exactly what `applySegments` is handed. |
 | <a id="findDirectives"/> `findDirectives` | `(text: string) => Hit[]` | Every `-- pg-prime:` directive with byte offsets, found through the lexer — so a `--` inside a `plpgsql` body is never mistaken for a marker. |
 | <a id="BatchDirective"/> `BatchDirective` | `{ size; pauseMs; maxReplicaLagMs; maxIterations }` | `-- pg-prime:batch size=1000 pause=100ms max-replica-lag=10s`. |
 | <a id="BATCH_DEFAULTS"/> `BATCH_DEFAULTS` | `{ size: 1000; pauseMs: 100; maxIterations: 0 }` | `maxIterations: 0` means no ceiling. |
@@ -788,29 +791,31 @@ function runBatchStatement(
 ): Promise<BatchOutcome>
 ```
 
-Runs one statement of a batch file to completion: publish `pgprime.batch_size` and
-`pgprime.watermark` as GUCs, execute, read `rows_done` and `watermark` back off the result, persist
-the progress **inside the same transaction** as the work, sleep, and repeat. `state` is threaded in
-and out so the caller can persist a whole file's progress under one `data_progress` row. Three
-iterations that report rows without moving the watermark raise `BatchStalledError`, because an
-unbounded loop is the one failure a deploy cannot recover from on its own.
+Runs one statement of a batch file to completion. Each iteration is its own transaction:
+`SET LOCAL pgprime.batch_size` and `SET LOCAL pgprime.watermark` through `set_config`, execute, read
+`rows_done` and `watermark` off the statement's own result — falling back to the command tag when it
+returns neither — write the progress row **inside that same transaction**, commit, sleep, repeat
+until the statement reports zero rows. Because the work and the bookkeeping commit together, a
+`SIGKILL` can neither lose a committed batch's watermark nor record one whose rows rolled back.
+`state` is threaded in and out so a whole file's progress lives under one `data_progress` row, and
+`STALL_LIMIT` iterations that report rows without moving the watermark raise `BatchStalledError`.
 
 | Name | Shape | What it is |
 |---|---|---|
-| <a id="BatchOptions"/> `BatchOptions` | `{ migrationId; directive; replicas?; resumeFrom?; sleep?; onEvent?; onInfo?; lockTimeout?; statementTimeout? }` | |
-| <a id="BatchOutcome"/> `BatchOutcome` | `{ rowsDone; iterations; watermark }` | |
-| <a id="BatchEvent"/> `BatchEvent` | `{ kind: "batch"; migration; statement; iteration; rows; rowsDone; watermark }` | |
-| <a id="LagEvent"/> `LagEvent` | `{ kind: "lag"; migration; statement; state: "waiting" \| "resumed" \| "absent"; lagMs; ceilingMs; reading }` | |
+| <a id="BatchOptions"/> `BatchOptions` | `{ migrationId; directive; replicas?; resumeFrom?; sleep?; onEvent?; onInfo?; lockTimeout?; statementTimeout? }` | `sleep` and `onEvent` are injected, so a resume test does not sleep for real. |
+| <a id="BatchOutcome"/> `BatchOutcome` | `{ rowsDone; iterations; watermark }` | Where one statement finished, so the next iteration — or the next run — resumes from it. |
+| <a id="BatchEvent"/> `BatchEvent` | `{ kind: "batch"; migration; statement; iteration; rows; rowsDone; watermark }` | Emitted once per iteration. This is what `migrate apply` prints a backfill’s progress from. |
+| <a id="LagEvent"/> `LagEvent` | `{ kind: "lag"; migration; statement; state: "waiting" \| "resumed" \| "absent"; lagMs; ceilingMs; reading }` | Emitted when the ceiling pauses the loop, when it resumes, and once per run when no replica is visible at all. |
 | <a id="GUC_BATCH_SIZE"/> `GUC_BATCH_SIZE` | `"pgprime.batch_size"` | A custom two-part name, so no extension owns it. |
 | <a id="GUC_WATERMARK"/> `GUC_WATERMARK` | `"pgprime.watermark"` | The resume token, carried opaquely: the runner cannot know whether the key is a `bigint`, a `uuid` or a pair. |
 | <a id="STALL_LIMIT"/> `STALL_LIMIT` | `3` | Iterations that may report rows without moving the watermark before this is a bug. |
 | <a id="readPrimaryLag"/> `readPrimaryLag` | `(client: CatalogClient) => Promise<LagReading>` | `pg_stat_replication`, on the migration's own connection. Needs no second credential, but is invisible to a role outside `pg_monitor`. |
 | <a id="readReplicaLag"/> `readReplicaLag` | `(replicas: readonly ConnInfo[]) => Promise<LagReading>` | `pg_last_wal_replay_lsn()` on each configured replica. A replica that cannot be reached contributes `Infinity`, which keeps the loop paused — proceeding past a replica you cannot see is the failure the ceiling exists to prevent. |
-| <a id="LagReading"/> `LagReading` | `{ lagMs; replicas; source: "primary" \| "replicas"; detail }` | |
+| <a id="LagReading"/> `LagReading` | `{ lagMs; replicas; source: "primary" \| "replicas"; detail }` | `source` says which of the two mechanisms answered; `detail` carries the LSNs, for the report. |
 | <a id="DataProgress"/> `DataProgress` | `{ migrationId; rowsDone; statement; iterations; values; done; updatedAt }` | `values` is keyed by statement index and holds the text the statement itself reported, never a value the runner invented. |
 | <a id="EMPTY_WATERMARK"/> `EMPTY_WATERMARK` | `Omit<DataProgress, "migrationId" \| "updatedAt">` | The zero state a first run starts from. |
 | <a id="dataProgressSql"/> `dataProgressSql` | `(p: Omit<DataProgress, "updatedAt">) => string` | The progress upsert as one literal statement, so it can ride inside the batch's own transaction and a crash between the work and the bookkeeping is not possible. |
-| <a id="readDataProgress"/> `readDataProgress` | `(client: CatalogClient, migrationId: string) => Promise<DataProgress \| null>` | |
+| <a id="readDataProgress"/> `readDataProgress` | `(client: CatalogClient, migrationId: string) => Promise<DataProgress \| null>` | The resume point for one migration, or `null` for a first run. |
 | <a id="readAllDataProgress"/> `readAllDataProgress` | `(client: CatalogClient) => Promise<DataProgress[]>` | What `migrate status` shows a running backfill from. |
 
 ## Repeatables
@@ -831,10 +836,10 @@ Tier R: `sql/` files re-applied whenever their bytes change, recorded in `pgprim
 | <a id="ScanOptions"/> `ScanOptions` | `{ pathPrefix?: string }` | Defaults to the scanned directory's own name, so `/proj/sql` yields `sql/…`. |
 | <a id="loadRepeatables"/> `loadRepeatables` | `(client: RepeatableClient, dir: string, options?: ScanOptions) => Promise<RepeatableFile[]>` | Loads **every** repeatable into the shadow during `generate`, not just the changed ones: the shadow was created empty seconds ago, so "changed" has no meaning against it, and a repeatable skipped as unchanged is a repeatable whose breakage ships. |
 | <a id="parseDirectives"/> `parseDirectives` | `(text: string) => Directive[]` | Reads `-- pg-prime:<name>` out of the **leading** comment block only. A directive is a statement about the whole file, and the only way to keep that true is to stop looking at the first line that is neither blank nor a comment. |
-| <a id="Directive"/> `Directive` | `{ name; value; line }` | |
+| <a id="Directive"/> `Directive` | `{ name; value; line }` | One `-- pg-prime:<name> <value>` line from a file’s header. `line` is 1-based. |
 | <a id="checkIdempotence"/> `checkIdempotence` | `(statements: readonly string[]) => IdempotenceResult` | TX201, syntactically. It lexes rather than greps, so a leading `-- CREATE OR REPLACE` comment cannot launder a bare `CREATE` and a `DROP TABLE` inside a `$$…$$` body belongs to the body. An unrecognised leading verb passes. |
-| <a id="IdempotenceResult"/> `IdempotenceResult` | `{ ok: boolean; violations: readonly IdempotenceViolation[] }` | |
-| <a id="IdempotenceViolation"/> `IdempotenceViolation` | `{ index; sql; reason }` | |
+| <a id="IdempotenceResult"/> `IdempotenceResult` | `{ ok: boolean; violations: readonly IdempotenceViolation[] }` | `ok` is false as soon as one statement is not safely re-runnable. |
+| <a id="IdempotenceViolation"/> `IdempotenceViolation` | `{ index; sql; reason }` | The index into the list that was checked, the statement, and why it was rejected. |
 
 ## Database helpers
 
@@ -850,12 +855,12 @@ reimplement them, badly.
 | <a id="withClient"/> `withClient` | `<T>(c: ConnInfo, fn: (client) => Promise<T>) => Promise<T>` | Connect, run, always close. |
 | <a id="createDatabase"/> `createDatabase` | `(admin, name: string, template?: string) => Promise<void>` | Never terminates anything. A `TEMPLATE` clone that collides with a live session raises `55006`, and it is the caller's job to fall back to a tier that needs no exclusive access. |
 | <a id="dropDatabase"/> `dropDatabase` | `(admin, name: string) => Promise<void>` | Refuses a name without the shadow prefix. |
-| <a id="runSqlScript"/> `runSqlScript` | `(c: ConnInfo, sql: string) => Promise<void>` | |
+| <a id="runSqlScript"/> `runSqlScript` | `(c: ConnInfo, sql: string) => Promise<void>` | Connect, run a whole script as one query, close. This is how a materialised shadow is filled. |
 | <a id="terminateConnections"/> `terminateConnections` | `(admin, database: string) => Promise<void>` | Kills every other session on a shadow database this tool owns. Deliberately **not** a way to make a `TEMPLATE` clone succeed: the template belongs to somebody else. |
-| <a id="isShadowDatabase"/> `isShadowDatabase` | `(name: string) => boolean` | |
+| <a id="isShadowDatabase"/> `isShadowDatabase` | `(name: string) => boolean` | Does this name carry `SHADOW_PREFIX`? The question every destructive helper asks first. |
 | <a id="isObjectInUse"/> `isObjectInUse` | `(err: unknown) => boolean` | Is this SQLSTATE `55006`? |
 | <a id="SHADOW_PREFIX"/> `SHADOW_PREFIX` | `"pgprime_shadow_"` | The prefix that authorises destruction. `pg_terminate_backend` and `DROP DATABASE … WITH (FORCE)` are both gated on it, so a database the tool did not create cannot have its sessions killed whatever the caller passes. |
-| <a id="SQLSTATE_OBJECT_IN_USE"/> `SQLSTATE_OBJECT_IN_USE` | `"55006"` | |
+| <a id="SQLSTATE_OBJECT_IN_USE"/> `SQLSTATE_OBJECT_IN_USE` | `"55006"` | `object_in_use` — what `CREATE DATABASE … TEMPLATE x` raises while a session is attached to `x`. |
 
 ## SQL text
 
@@ -898,7 +903,7 @@ under `psql` as it does under the runner.
 | Name | Shape | What it is |
 |---|---|---|
 | <a id="isValidIdent"/> `isValidIdent` | `(name: unknown) => name is string` | The non-throwing probe, for tooling that wants to report rather than throw. |
-| <a id="IdentifierProblem"/> `IdentifierProblem` | `"not-a-string" \| "empty" \| "nul-byte" \| "lone-surrogate" \| "too-long"` | |
+| <a id="IdentifierProblem"/> `IdentifierProblem` | `"not-a-string" \| "empty" \| "nul-byte" \| "lone-surrogate" \| "too-long"` | Which of the five rules `InvalidIdentifierError` is about. |
 | <a id="MAX_IDENT_BYTES"/> `MAX_IDENT_BYTES` | `63` | `NAMEDATALEN - 1`: the maximum number of UTF-8 bytes PostgreSQL stores in a `name`. |
 | <a id="hasNul"/> `hasNul` | `(s: string) => boolean` | Written as a code-unit scan, so no source file has to hold a NUL. |
 | <a id="hasLoneSurrogate"/> `hasLoneSurrogate` | `(s: string) => boolean` | An unpaired UTF-16 surrogate, which is not encodable as UTF-8. |
@@ -906,10 +911,10 @@ under `psql` as it does under the runner.
 | <a id="makeObjectName"/> `makeObjectName` | `(name1: string, name2: string \| null, label: string) => string` | A port of PostgreSQL's own `makeObjectName`. The truncation is why it is a port and not a template string: when the pieces do not fit, the server shortens the **longer** of the two one byte at a time. |
 | <a id="chooseConstraintName"/> `chooseConstraintName` | `(name1, name2, label, taken: (candidate: string) => boolean) => string` | `makeObjectName` in a loop with the uniquifying suffix on the **label**, inside the truncation window — PostgreSQL writes `t_a_key1`, never `t_a_key_1`. `taken` is the caller's view of the namespace, because the two server functions this wraps consult different catalogs. |
 | <a id="defaultNotNullName"/> `defaultNotNullName` | `(table: string, column: string) => string` | The name PostgreSQL 18 gives an unnamed `NOT NULL` constraint. Deliberately the *unsuffixed* form: a suffixed name does not compare equal, so the extractor classifies it as a user name and carries it verbatim, which is the only direction that converges. |
-| <a id="lexSql"/> `lexSql` | `(sql: string) => Segment[]` | The lexer: code, string literals, dollar-quoted bodies, comments. |
+| <a id="lexSql"/> `lexSql` | `(sql: string) => SqlSegment[]` | The lexer: code, string literals, dollar-quoted bodies, comments. Everything else here is built on it. |
 | <a id="SqlSegment"/> `SqlSegment` | `{ kind: SegmentKind; text: string }` | One lexed segment. Exported under this name because `Segment` is already the plan's transaction segment. |
 | <a id="splitStatements"/> `splitStatements` | `(sql: string) => string[]` | Splits at semicolons the lexer classified as code. Empty statements are dropped. |
-| <a id="canonicalizeSql"/> `canonicalizeSql` | `(segments: readonly SqlSegment[]) => string` | Collapses code whitespace, drops comments, keeps literals byte for byte. This is what checksum comparison and statement-text drift detection run on. |
+| <a id="canonicalizeSql"/> `canonicalizeSql` | `(segments: readonly SqlSegment[]) => string` | Collapses code whitespace, drops comments, keeps literals byte for byte. This is what statement-text drift detection compares, so a re-indented migration is not a different migration. The file's own **checksum** is a `sha256` over the raw bytes, and is not this. |
 | <a id="codeMask"/> `codeMask` | `(sql: string) => boolean[]` | Per-character "this byte is code". Lets a caller count parentheses without a second lexer and without mistaking a `(` inside `DEFAULT '('` for structure. |
 | <a id="dollarTagAt"/> `dollarTagAt` | `(sql: string, i: number) => string \| null` | `$$` and `$tag$`, but **not** `$1`. |
 
@@ -1101,8 +1106,10 @@ class EmitError extends Error {
 }
 ```
 
-The schema registry cannot be turned into DDL — an unresolvable foreign-key target, a construct the
-emitter does not model.
+A column default with no SQL literal form — a function, a symbol, an Invalid Date. `emitSchema`
+catches it and records an `unrenderable_default` diagnostic at `error` severity rather than throwing,
+so one bad default names itself instead of stopping the emit; the class is exported because the
+literal renderer is reachable on its own.
 
 ### `DesiredLoadError`
 
@@ -1196,9 +1203,10 @@ class PoolRefusedError extends Error {
 }
 ```
 
-The runner was handed a pool where it needs a dedicated connection. A session advisory lock taken
-through a transaction-mode pooler is silently not held, which is the one failure mode that looks like
-success right up until two deploys run at once.
+`applyPending` was handed something with a `query` or `connect` method instead of a `ConnInfo`. A
+session advisory lock taken on a pooled connection is released when that connection goes back to the
+pool, and the migration then runs unprotected — the one failure mode that looks like success right up
+until two deploys run at once. Use `applyPendingOn` if you really do own the connection.
 
 ### `RepeatableApplyError`
 

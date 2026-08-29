@@ -3,18 +3,1172 @@ title: Queries
 description: Select, join, group, window, set operations, CTEs, insert, update, delete, streaming and EXPLAIN.
 ---
 
-{/* docs: use=blog,blog-ddl */}
-```ts title="select-where.ts"
-import { eq } from 'pg-prime'
+import { Aside } from '@astrojs/starlight/components'
 
-await db.insertInto(db.h.users).values({ email: 'a@example.com', name: 'Ada' }).execute()
+The query builder is a chain of methods, each returning a new immutable builder, and every clause
+that takes columns takes a **callback** whose parameter is the scope: one object per alias in the
+statement, carrying that alias's columns and its relations.
+
+Three properties are worth knowing before the details:
+
+- **Nothing runs until you ask.** A builder is a value, not a promise: `.execute()`, `.stream()`,
+  `.explain()` and `db.run(q)` are what touch a connection. Awaiting a builder hands the builder
+  back.
+- **Every method returns a new builder**, over a new frozen state record. That copies about a dozen
+  pointers, never an AST — nodes are frozen at construction and shared by reference — and
+  `.compile()` memoises on the *instance*, so deriving cannot make a memo go stale.
+- **Repeated clauses have one reading each.** A second `.where()` ANDs, a second `.orderBy()`
+  appends. `.select()`, `.limit()` and `.offset()` replace, because the grammar has one of each.
+
+Every block with a file name below is executed against a real PostgreSQL in this project's CI, on
+top of the two-table blog schema from [Getting started](/pg-prime/guides/getting-started/) and these
+rows:
+
+{/* docs: setup=seed use=blog,blog-ddl */}
+```ts
+const [ada, bob] = await db
+  .insertInto(db.h.users)
+  .valuesMany([
+    { email: 'ada@example.com', name: 'Ada', createdAt: new Date('2026-01-01T00:00:00Z') },
+    { email: 'bob@example.com', name: 'Bob', createdAt: new Date('2026-01-02T00:00:00Z') },
+    { email: 'cyd@example.com', name: 'Cyd', createdAt: new Date('2026-01-03T00:00:00Z') },
+  ])
+  .returning((t) => ({ id: t.users.id }))
+  .execute()
+
+await db
+  .insertInto(db.h.posts)
+  .valuesMany([
+    { authorId: ada!.id, title: 'Hello', body: 'a', published: true, createdAt: new Date('2026-02-01T00:00:00Z') },
+    { authorId: ada!.id, title: 'Draft', body: 'b', published: false, createdAt: new Date('2026-02-02T00:00:00Z') },
+    { authorId: ada!.id, title: 'Notes', body: 'c', published: true, createdAt: new Date('2026-02-03T00:00:00Z') },
+    { authorId: bob!.id, title: 'Bob writes', body: 'd', published: true, createdAt: new Date('2026-02-04T00:00:00Z') },
+  ])
+  .execute()
+```
+
+Cyd has no posts. That is deliberate: it is what makes the difference between an inner and an outer
+join visible below.
+
+## Selecting
+
+`db.from(handle, alias?)` starts a statement. The alias defaults to the handle's own registry key,
+and naming it is what gives a self-join two scopes:
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="select-where-order.ts"
+import { asc, desc, eq, isNotNull } from 'pg-prime'
+
+const rows = await db
+  .from(db.h.posts, 'p')
+  .where((t) => eq(t.p.published, true))
+  .where((t) => isNotNull(t.p.body))
+  .orderBy((t) => [desc(t.p.createdAt), asc(t.p.id)])
+  .limit(2)
+  .offset(0)
+  .select((t) => ({ title: t.p.title, at: t.p.createdAt }))
+  .execute()
+
+console.log(rows.map((r) => r.title)) // [ 'Bob writes', 'Notes' ]
+```
+
+`rows` is `{ title: string; at: Date }[]`. The row type is exactly the projection: one indexed
+access per output key, with no conditional and no recursion, which is what keeps the cost of a
+query linear in the size of the *query* and flat in the size of the schema.
+
+Two `.where()` calls became one `AND`. `.orderBy()` takes `asc(...)` / `desc(...)`, a bare column
+reference (which is `ASC`), or an array of them, and a second argument places the nulls:
+`desc(t.p.body, 'last')`. The `limit` bind is declared `int4` rather than left untyped, because
+`limit $1::text` plans differently and casts on every row.
+
+### There is no implicit `SELECT *`
+
+A statement with no projection has row type `unknown`, and the terminal methods refuse it rather
+than handing back `Promise<unknown[]>`:
+
+{/* docs: expect-error use=blog */}
+```ts
+// error TS2349: This expression is not callable.
+//   Type 'OrmTypeError<"this query has no projection yet: call .select(…) or .selectAll(…)
+//   before .execute()">' has no call signatures.
+await db.from(db.h.users).execute()
+```
+
+`select *` is the one shape whose result the codec layer cannot decode by position, so the
+alternative is not a convenience — it is a wrong answer.
+
+### `selectAll`, `$all` and `omit`
+
+Three ways to ask for every column, and they differ in what they let you do next:
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="select-all.ts"
+import { asc, omit } from 'pg-prime'
+
+// the whole row of one alias
+const whole = await db.from(db.h.users, 'u').selectAll('u').orderBy((t) => asc(t.u.id)).execute()
+console.log(Object.keys(whole[0]!)) // [ 'id', 'email', 'name', 'createdAt' ]
+
+// `$all` is a plain record of column references, so it spreads
+const spread = await db
+  .from(db.h.users, 'u')
+  .select((t) => ({ ...t.u.$all, login: t.u.email }))
+  .orderBy((t) => asc(t.u.id))
+  .execute()
+console.log(Object.keys(spread[0]!)) // [ 'id', 'email', 'name', 'createdAt', 'login' ]
+
+// …and `omit` removes members before the spread
+const fewer = await db
+  .from(db.h.users, 'u')
+  .select((t) => ({ ...omit(t.u.$all, 'createdAt', 'email') }))
+  .orderBy((t) => asc(t.u.id))
+  .execute()
+console.log(Object.keys(fewer[0]!)) // [ 'id', 'name' ]
+```
+
+`$all` is a spread, not a group: it produces one output column per member, and under a `LEFT JOIN`
+each of those columns is nullable on its own rather than the object being nullable as a whole. A
+table whose TypeScript keys include `$all` is rejected when its scope is built, because one of the
+two would silently hide the other.
+
+### Grouping columns into objects
+
+`nest({...})` builds a nested object in the result and costs **nothing** in SQL: it compiles to the
+same flat column list and is assembled by the positional decoder.
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="nest.ts"
+import { asc, eq, nest } from 'pg-prime'
+
+const rows = await db
+  .from(db.h.posts, 'p')
+  .innerJoin(db.h.users, 'u', (t) => eq(t.p.authorId, t.u.id))
+  .select((t) => ({ title: t.p.title, author: nest({ id: t.u.id, name: t.u.name }) }))
+  .orderBy((t) => asc(t.p.id))
+  .limit(1)
+  .execute()
+
+console.log(rows) // [ { title: 'Hello', author: { id: 1n, name: 'Ada' } } ]
+```
+
+`nestNullable({...})` is the left-join form: it makes the **whole object** `null` when the join
+missed, rather than each field individually. See [Joins](#joins) below for the worked contrast.
+
+## Operators
+
+Operators are free functions, not methods on columns, and they carry their result codec:
+
+```ts
+import { and, between, eq, gt, ilike, inList, isNull, not, or } from 'pg-prime'
+import type { Expr } from 'pg-prime'
+
+declare const email: Expr<string, 'text'>
+declare const views: Expr<number, 'int4'>
+declare const deletedAt: Expr<Date | null, 'timestamptz'>
+
+const p: Expr<boolean, 'bool'> = and(
+  or(eq(email, 'a@example.com'), ilike(email, '%@example.com')),
+  not(inList(email, ['spam@example.com'])),
+  between(views, 1, 100),
+  gt(views, 0),
+  isNull(deletedAt),
+)
+```
+
+The vocabulary is **77** free functions, plus the combinators (`and` `or` `not` `exists`
+`notExists`), the ordering helpers (`asc` `desc`) and the `fn` aggregate namespace. They group by
+the PostgreSQL type class they accept:
+comparison (`eq` `neq` `lt` `lte` `gt` `gte` `between` `inList` `notInList` `inQuery`), null and
+three-valued logic (`isNull` `isNotNull` `isTrue` `isFalse` `isNotTrue` `isNotFalse`
+`isDistinctFrom` `isNotDistinctFrom`), text (`like` `ilike` `notLike` `notILike` `startsWith`
+`regex` `iregex` `similarTo` `concat`), arithmetic (`add` `sub` `mul` `div` `mod` `abs`), arrays
+(`arrayContains` `arrayContainedBy` `overlaps` `arrayConcat` `arrayLength` `anyOf` `allOf`),
+JSON/JSONB (`jsonGet` `jsonGetText` `jsonPath` `jsonPathText` `jsonContains` `hasKey` `hasAnyKey`
+`hasAllKeys` `jsonConcat` `jsonDelete` …), ranges, network types and full text. The whole list, with
+the operand class each accepts and the SQL it emits, is in
+[the query reference](/pg-prime/reference/query/); the rest of this page uses a dozen of them without
+introduction.
+
+Three behaviours are worth knowing up front:
+
+- **`inList` compiles to `= any($1)`**, one parameter whatever the list's length, so a bulk `WHERE`
+  is one plan-cache entry rather than one per list size. An **empty** list costs no parameter at all
+  and evaluates to false, so `inList(t.id, [])` matches nothing — never everything.
+- **`and()` and `or()` are n-ary with a defined identity.** `and()` is `true` and `or()` is `false`,
+  which is what makes `and(...conditions.filter(Boolean))` safe when every condition is absent.
+- **A value is not an expression.** `desc('id')` and `and(x, undefined)` are refused rather than
+  quietly parameterised, because the first orders by a constant and the second returns no rows.
+  Data enters through `val(value, codec)`, a column reference, or the right-hand side of an
+  operator.
+
+A boolean column can be used as a predicate directly: `.where((t) => t.p.published)`.
+
+## Joins
+
+`innerJoin`, `leftJoin`, `rightJoin`, `fullJoin` and `crossJoin` all take a handle, an optional
+alias, and (except for `crossJoin`) an `ON` callback that sees the widened scope.
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="joins.ts"
+import { asc, eq, nestNullable } from 'pg-prime'
 
 const rows = await db
   .from(db.h.users, 'u')
-  .where((t) => eq(t.u.name, 'Ada'))
-  .select((t) => ({ id: t.u.id, email: t.u.email }))
+  .leftJoin(db.h.posts, 'p', (t) => eq(t.p.authorId, t.u.id))
+  .select((t) => ({
+    email: t.u.email,
+    // the WHOLE object is null when the join missed, not each field
+    post: nestNullable({ id: t.p.id, title: t.p.title }),
+  }))
+  .orderBy((t) => [asc(t.u.id), asc(t.p.id)])
   .execute()
 
-console.log(rows.length) // 1
+console.log(rows.filter((r) => r.post === null).map((r) => r.email)) // [ 'cyd@example.com' ]
+console.log(rows[0]) // { email: 'ada@example.com', post: { id: 1n, title: 'Hello' } }
 ```
 
+`rows` is `{ email: string; post: { id: bigint; title: string } | null }[]`. A left join makes every
+column of the alias it *adds* nullable, so `t.p.title` on its own reads `string | null` and
+`nestNullable` lifts that to the object.
+
+The runtime decides whether a group is really null by a **witness**: a column the schema declares
+`NOT NULL` whose alias was outer-joined. If the witness is null in the result row, the join found
+nothing. That is stricter than "every field is null", which agrees on a single-alias group and is
+wrong the moment one group spans two outer-joined aliases. A group projecting no `NOT NULL` column
+falls back to the all-null rule, which is the honest answer there.
+
+<Aside type="caution">
+`nestNullable`'s `| null` is unconditional at the type level: it cannot see whether any member's
+alias was outer-joined, so it always widens. The runtime can, and never produces a null for a group
+with no outer-joined member. The two disagree only in the safe direction — a null check you did not
+need, never a null you failed to check. Use `nest` when nothing is outer-joined.
+</Aside>
+
+### Right, full and cross joins
+
+The type-level move is the mirror of `leftJoin`'s, and it is the whole content of the feature: a
+**right** join makes every alias *already in scope* nullable, because the rows that survive are the
+joined table's; a **full** join makes both sides nullable; a **cross** join makes neither.
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="outer-joins.ts"
+import { asc, eq } from 'pg-prime'
+
+// right join: the driving side (posts) is what nulls
+const right = await db
+  .from(db.h.posts, 'p')
+  .rightJoin(db.h.users, 'u', (t) => eq(t.p.authorId, t.u.id))
+  .select((t) => ({ email: t.u.email, title: t.p.title }))
+  .orderBy((t) => [asc(t.u.id)])
+  .execute()
+
+console.log(right.filter((r) => r.title === null).map((r) => r.email)) // [ 'cyd@example.com' ]
+
+// full join: both sides may be missing
+const full = await db
+  .from(db.h.posts, 'p')
+  .fullJoin(db.h.users, 'u', (t) => eq(t.p.authorId, t.u.id))
+  .select((t) => ({ email: t.u.email, title: t.p.title }))
+  .execute()
+
+console.log(full.length) // 5
+
+// cross join: the Cartesian product, and the one join with no ON at all
+const cross = await db
+  .from(db.h.users, 'u')
+  .crossJoin(db.h.posts, 'p')
+  .select((t) => ({ email: t.u.email, title: t.p.title }))
+  .execute()
+
+console.log(cross.length) // 12
+```
+
+In the right join, `title` is `string | null` and `email` is `string`; in the full join both are
+nullable. `crossJoin` has **no** `on` parameter at all rather than an optional one: PostgreSQL
+rejects `cross join … on …`, and silently dropping a predicate is the one mistake in a query builder
+that *multiplies* rows. A caller who has a predicate wants `innerJoin`.
+
+### A right or full join after `.select()` is refused
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="join-after-select.ts"
+import { BuilderError, eq } from 'pg-prime'
+
+try {
+  db.from(db.h.posts, 'p')
+    .select((t) => ({ title: t.p.title }))
+    .rightJoin(db.h.users, 'u', (t) => eq(t.p.authorId, t.u.id))
+} catch (e) {
+  console.log(e instanceof BuilderError) // true
+  console.log((e as Error).message)
+  // pg-prime: a right join makes the aliases already in scope nullable, so it cannot be added
+  // after .select() — the projection's types are already fixed. Write .rightJoin(...) before
+  // .select(...).
+}
+```
+
+The projection has already fixed both the *type* of every column it took from an alias and the
+witness set of every group in it. Recompiling the plan would leave the type behind and hand back a
+`null` the caller was told could not happen, so the order is refused rather than half-supported. A
+`leftJoin` after `.select()` stays legal, because it can only null the alias it adds — one the
+projection cannot already mention.
+
+### Lateral joins
+
+`innerJoinLateral(sub, alias, on?)` and `leftJoinLateral(...)` take a select builder, or a callback
+handed **this query's own scope**, which is what makes the sub-query correlated. `on` is optional and
+defaults to `ON TRUE` — the shape a lateral almost always wants, since the correlation lives inside
+the sub-query.
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="lateral.ts"
+import { asc, desc, eq } from 'pg-prime'
+
+// the two most recent posts per author, in one statement
+const rows = await db
+  .from(db.h.users, 'u')
+  .innerJoinLateral(
+    (t) =>
+      db
+        .from(db.h.posts, 'p')
+        .where((s) => eq(s.p.authorId, t.u.id))
+        .orderBy((s) => [desc(s.p.createdAt), asc(s.p.id)])
+        .limit(2)
+        .select((s) => ({ id: s.p.id, title: s.p.title })),
+    'recent',
+  )
+  .select((t) => ({ email: t.u.email, title: t.recent.title }))
+  .orderBy((t) => [asc(t.u.email), asc(t.recent.id)])
+  .execute()
+
+console.log(rows.map((r) => `${r.email} ${r.title}`))
+// [ 'ada@example.com Draft', 'ada@example.com Notes', 'bob@example.com Bob writes' ]
+```
+
+The lateral's alias becomes an ordinary source, so `t.recent.title` is reached like any other
+column and carries the sub-query's own codecs. `leftJoinLateral` keeps the parents whose lateral
+found nothing, with the lateral's alias nullable.
+
+## Grouping and aggregates
+
+`groupBy` moves the chain to a different stage — `GroupedQuery` — which is what keeps its guard off
+every ungrouped query in the program. `having` exists only there.
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="group-by.ts"
+import { asc, eq, fn, gt } from 'pg-prime'
+
+const rows = await db
+  .from(db.h.posts, 'p')
+  .innerJoin(db.h.users, 'u', (t) => eq(t.p.authorId, t.u.id))
+  .groupBy((t) => [t.u.email])
+  .having((t) => gt(fn.count(t.p.id), 1n))
+  .orderBy((t) => asc(t.u.email))
+  .select((t) => ({ email: t.u.email, posts: fn.count(t.p.id), latest: fn.max(t.p.createdAt) }))
+  .execute()
+
+console.log(rows) // [ { email: 'ada@example.com', posts: 3n, latest: 2026-02-03T00:00:00.000Z } ]
+```
+
+The aggregate namespace `fn` has fourteen members: `count`, `sum`, `avg`, `min`, `max`, the three
+ranking functions `rank` / `denseRank` / `rowNumber`, `now`, and five full-text helpers.
+
+Their result types are **PostgreSQL's**, not the operand's, and that is where intuition disagrees
+with the server:
+
+| Aggregate | Operand | Result |
+|---|---|---|
+| `count` | anything, or nothing | `bigint` (`int8`), exact past 2^53 |
+| `sum` | `int2` / `int4` | `bigint \| null` |
+| `sum` | `int8` / `numeric` | `string \| null` (`numeric`) |
+| `sum` | `float4` / `float8` | the same float type, `\| null` |
+| `avg` | every exact type | `string \| null` (`numeric`) |
+| `avg` | `float4` / `float8` | `number \| null` (`float8`) |
+| `min` / `max` | anything | the operand's own type, `\| null` |
+
+`count()` with no argument is `count(*)`; `count(x)` counts non-null `x`. Every other aggregate is
+`| null`, because the aggregate of no rows is no answer.
+
+### The `GROUP BY` guard
+
+A relation *row-set* projection compiles to a `LEFT JOIN LATERAL` correlated on the parent's primary
+key, so after a `GROUP BY` that key must still be in the grouping list or the parent row is not
+identifiable. Asking for one anyway is a compile error with the fix in it:
+
+{/* docs: expect-error use=blog */}
+```ts
+// error TS2741: Property '[OUT]' is missing in type 'OrmTypeError<"relation projection on \"u\"
+//   needs its primary key in groupBy(): add t.u.id, or move the relation into a subquery">' but
+//   required in type 'Projectable'.
+await db
+  .from(db.h.users, 'u')
+  .groupBy((t) => [t.u.email])
+  .select((t) => ({ email: t.u.email, posts: t.u.posts.many((q) => q.select((p) => ({ id: p.id }))) }))
+  .execute()
+```
+
+Relation *aggregates* are never guarded: `t.u.posts.count()` after a `GROUP BY` is fine, because a
+correlated aggregate needs no identifiable parent row, only the key it correlates on. The guard is
+also deliberately permissive about composite keys declared table-level with `primaryKey(t.a, t.b)`,
+which the type layer cannot see: it reads that as "cannot prove it is ungrouped" and allows, so an
+unmodelled key can never produce a false rejection.
+
+## Window functions
+
+`over(expr, window)` is a free function rather than a method on the expression, and the window is
+either a callback or the name of one declared with `.window(name, …)`:
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="windows.ts"
+import { asc, desc, fn, over } from 'pg-prime'
+
+const rows = await db
+  .from(db.h.posts, 'p')
+  .select((t) => ({
+    title: t.p.title,
+    // an inline window with a frame
+    running: over(fn.count(t.p.id), (w) =>
+      w.partitionBy(t.p.authorId).orderBy(asc(t.p.createdAt)).rows({
+        from: 'unbounded preceding',
+        to: 'current row',
+      }),
+    ),
+    // …and two projection items sharing one named window
+    rank: over(fn.rank(), 'byAuthor'),
+    dense: over(fn.denseRank(), 'byAuthor'),
+  }))
+  .window('byAuthor', (t) => ({ partitionBy: [t.p.authorId], orderBy: [desc(t.p.createdAt)] }))
+  .orderBy((t) => [asc(t.p.authorId), asc(t.p.createdAt)])
+  .execute()
+
+console.log(rows.map((r) => `${r.title} ${r.running}/${r.rank}`))
+// [ 'Hello 1/3', 'Draft 2/2', 'Notes 3/1', 'Bob writes 1/1' ]
+```
+
+A named window is evaluated once by PostgreSQL and shared by every `over(x, 'name')` in the
+projection, which is the entire reason the named form exists. The name is a plain `string`: threading
+declared window names through the type would need a fourth type parameter on `Query`, carried by
+every method, for a feature a handful of queries use — so an undeclared name is a `BuilderError`
+naming it instead.
+
+A window definition is `{ partitionBy, orderBy, frame }` as a literal, or the builder
+`w => w.partitionBy(…).orderBy(…).rows(…)`. The three frame modes are `.rows(...)`, `.range(...)`
+and `.groups(...)`, each taking `FrameOpts`:
+
+```ts
+import type { FrameOpts } from 'pg-prime'
+
+const wholePartitionSoFar: FrameOpts = { from: 'unbounded preceding', to: 'current row' }
+const neighbours: FrameOpts = { from: { preceding: 1 }, to: { following: 1 }, exclude: 'current row' }
+```
+
+A bound is `'unbounded preceding'`, `'current row'`, `'unbounded following'`, `{ preceding: n }` or
+`{ following: n }`. A numeric offset is emitted as a **literal**, not a parameter: the offset is part
+of the plan's shape, so parameterising it would mean one prepared statement whose plan is re-costed
+for every distinct window size. Every keyword in a frame is checked against its closed set at the
+boundary, because a window assembled from configuration is a runtime value however well the
+TypeScript union describes it.
+
+## `DISTINCT`, `DISTINCT ON` and row locking
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="distinct-on.ts"
+import { asc, desc } from 'pg-prime'
+
+// the latest post per author, with no window function
+const latest = await db
+  .from(db.h.posts, 'p')
+  .distinctOn((t) => [t.p.authorId])
+  .orderBy((t) => [desc(t.p.createdAt), asc(t.p.id)])
+  .select((t) => ({ authorId: t.p.authorId, title: t.p.title }))
+  .execute()
+
+console.log(latest.map((r) => r.title)) // [ 'Notes', 'Bob writes' ]
+
+// row locking: `skip locked` is what makes a queue workload possible
+const claimed = await db
+  .from(db.h.posts, 'p')
+  .select((t) => ({ id: t.p.id }))
+  .limit(1)
+  .forUpdate({ of: ['p'], wait: 'skip locked' })
+  .execute()
+
+console.log(claimed.length) // 1
+```
+
+`.distinctOn(...)` emits an `ORDER BY` that **leads with the distinct keys**, in order, followed by
+whatever `.orderBy()` added. PostgreSQL requires the two to agree on their initial expressions
+(`42P10`), and `.orderBy()` appends, so writing `.distinctOn(a).orderBy(desc(b))` and meaning "the
+greatest `b` for each `a`" is the ordinary case rather than a mistake.
+
+`.distinct()` compares every output column, which has two consequences the compiler handles rather
+than leaving to the server: an `.orderBy()` on an expression the projection does not carry is a
+`BuilderError` when the statement is compiled, and a relation projection is built as `jsonb` rather
+than `json`, because `json` has no equality operator.
+
+`forUpdate` takes `{ strength, of, wait }`. `of` is checked against the aliases in *this query's*
+scope, since PostgreSQL raises `42P01` for a name that is not one of them and a typo in a lock list
+only shows up under contention.
+
+## Set operations
+
+`union`, `unionAll`, `intersect`, `intersectAll`, `except` and `exceptAll` are available on any
+select stage, and produce a `SetQuery` — deliberately narrower than `Query`, because PostgreSQL
+applies `ORDER BY`, `LIMIT` and `OFFSET` to the whole result and there is no scope left to filter or
+join against.
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="set-ops.ts"
+import { asc, eq, textCodec, val } from 'pg-prime'
+
+const emails = () =>
+  db.from(db.h.users, 'u').select((t) => ({ v: t.u.email, kind: val('user', textCodec) }))
+const titles = () =>
+  db.from(db.h.posts, 'p').select((t) => ({ v: t.p.title, kind: val('post', textCodec) }))
+
+const both = await emails()
+  .unionAll(titles())
+  .orderBy((r) => asc(r.v))
+  .limit(3)
+  .execute()
+
+console.log(both.map((r) => `${r.kind}:${r.v}`)) // [ 'post:Bob writes', 'post:Draft', 'post:Hello' ]
+
+const published = db
+  .from(db.h.posts, 'p')
+  .select((t) => ({ v: t.p.title }))
+  .where((t) => eq(t.p.published, true))
+const all = db.from(db.h.posts, 'p').select((t) => ({ v: t.p.title }))
+
+console.log((await all.except(published).execute()).map((r) => r.v)) // [ 'Draft' ]
+```
+
+The `ORDER BY` callback sees the **result columns**, not a scope: there is no `t.p` left after a
+union. A branch that does not line up resolves to a one-line sentence naming the column, at the
+point of use:
+
+{/* docs: expect-error use=blog */}
+```ts
+// error TS2339: Property 'execute' does not exist on type
+//   'OrmTypeError<"union branch 2 has no column \"name\"">'.
+await db
+  .from(db.h.users, 'u')
+  .select((t) => ({ email: t.u.email, name: t.u.name }))
+  .union(db.from(db.h.posts, 'p').select((t) => ({ email: t.p.title })))
+  .execute()
+```
+
+The branch is checked in **return** position rather than parameter position, which is a measurement
+rather than a preference: checking the argument makes TypeScript print the whole `Query<Schema<…>>`
+type twice, at 926 characters on TypeScript 5.9.3 for one missing column, against about 120 for the
+sentence above. The trade is that a set operation whose result is never used reports nothing — and an
+unused query is dead code.
+
+## CTEs
+
+`db.with(name, d => …)` returns an executor carrying one more CTE. The declared CTEs are ordinary
+table handles on `.cte`, so joining one needs no new method; `.fromCte(name, alias?)` is the sugar
+that keeps the single-CTE case one chain.
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="ctes.ts"
+import { asc, eq, fn } from 'pg-prime'
+
+const rows = await db
+  .with('published', (d) =>
+    d
+      .from(db.h.posts, 'p')
+      .where((t) => eq(t.p.published, true))
+      .select((t) => ({ id: t.p.id, authorId: t.p.authorId, title: t.p.title })),
+  )
+  .fromCte('published', 'pub')
+  .innerJoin(db.h.users, 'u', (t) => eq(t.pub.authorId, t.u.id))
+  .groupBy((t) => [t.u.email])
+  .orderBy((t) => asc(t.u.email))
+  .select((t) => ({ email: t.u.email, n: fn.count(t.pub.id) }))
+  .execute()
+
+console.log(rows) // [ { email: 'ada@example.com', n: 2n }, { email: 'bob@example.com', n: 1n } ]
+```
+
+A CTE is modelled as an ordinary table handle over a synthetic one-table schema, which is why every
+operator, `RefsAt`, `ScopeOf` and `innerJoin` work on it with no "is this alias a CTE?" branch
+anywhere on the hot path. The *codecs* flow through — a `numeric` column of a CTE still reads
+`string` — but the PostgreSQL type **class** does not: a CTE column's `pg` is `any`, so it accepts
+any class-gated operator. Recovering the class would need the projection record on `Query`, which is
+the fourth type parameter the design rules out.
+
+`{ materialized: true }` forces an optimization fence and `false` forbids one; leaving it out lets
+the planner decide, which since PostgreSQL 12 means inlining a CTE referenced once.
+
+Writable CTEs fall out for free, because an insert, update or delete builder with a `RETURNING` list
+is an ordinary row source:
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="writable-cte.ts"
+import { eq } from 'pg-prime'
+
+const moved = await db
+  .with('archived', (d) =>
+    d
+      .deleteFrom(db.h.posts)
+      .where((t) => eq(t.posts.published, false))
+      .returning((t) => ({ id: t.posts.id, title: t.posts.title })),
+  )
+  .fromCte('archived')
+  .select((t) => ({ title: t.archived.title }))
+  .execute()
+
+console.log(moved.map((r) => r.title)) // [ 'Draft' ]
+```
+
+### `withRecursive`
+
+`withRecursive(name, base, step, opts?)` runs `base` first, takes its **result shape**, registers the
+handle from it, and only then runs `step` with that handle in hand. The row type is therefore fixed
+by the base term, which is what makes this two ordinary callbacks rather than the self-referential
+row inference every builder that attempts it pays for on every query.
+
+```ts title="recursive-cte.ts"
+import { add, asc, eq, int4Codec, isNull, pgPrime, val } from 'pg-prime'
+import { defineSchema, pgTable } from 'pg-prime/schema'
+
+const categories = pgTable('categories', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  parentId: t.bigint().nullable(),
+  name: t.text(),
+}))
+
+const tree = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema: defineSchema({ categories }),
+})
+
+await tree.sql`
+  create table categories (
+    id        bigint generated always as identity primary key,
+    parent_id bigint,
+    name      text not null
+  )
+`.execute()
+
+await tree.insertInto(tree.h.categories).values({ parentId: null, name: 'root' }).execute()
+await tree
+  .insertInto(tree.h.categories)
+  .valuesMany([
+    { parentId: 1n, name: 'tools' },
+    { parentId: 1n, name: 'toys' },
+    { parentId: 2n, name: 'hammers' },
+  ])
+  .execute()
+
+const rows = await tree
+  .withRecursive(
+    'walk',
+    (d) =>
+      d
+        .from(tree.h.categories, 'c')
+        .where((t) => isNull(t.c.parentId))
+        .select((t) => ({ id: t.c.id, name: t.c.name, depth: val(0, int4Codec) })),
+    (d, self) =>
+      d
+        .from(tree.h.categories, 'c')
+        .innerJoin(self, 'w', (t) => eq(t.c.parentId, t.w.id))
+        .select((t) => ({ id: t.c.id, name: t.c.name, depth: add(t.w.depth, 1) })),
+  )
+  .fromCte('walk')
+  .select((t) => ({ name: t.walk.name, depth: t.walk.depth }))
+  .orderBy((t) => [asc(t.walk.depth), asc(t.walk.name)])
+  .execute()
+
+console.log(rows) // [ { name: 'root', depth: 0 }, { name: 'tools', depth: 1 }, … ]
+```
+
+`{ unionAll: false }` emits `UNION` instead of `UNION ALL`. `ALL` is the default because it is what
+PostgreSQL's own documentation writes and what a traversal wants; `UNION` deduplicates every
+intermediate row, which is the cycle-avoiding spelling for a graph, at the cost of an equality
+comparison per row. A `step` whose projection disagrees with `base` is a compile error at the
+callback's return statement, which is where you wrote it.
+
+### `fromRaw`
+
+`db.fromRaw(fragment, shape, opts?)` puts a hand-written `FROM` item in a typed query — the answer
+for set-returning functions the builder has no DSL for.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="from-raw.ts"
+import { asc, int8Codec, jsonbCodec, sql, textCodec, val } from 'pg-prime'
+
+const series = await db
+  .fromRaw(
+    sql`generate_series(${val(1n, int8Codec)}, ${val(3n, int8Codec)})`,
+    { n: int8Codec },
+    { alias: 'g' },
+  )
+  .select((t) => ({ n: t.g.n }))
+  .orderBy((t) => asc(t.g.n))
+  .execute()
+
+console.log(series) // [ { n: 1n }, { n: 2n }, { n: 3n } ]
+
+const doc = [{ id: '9007199254740993', name: 'a' }]
+const records = await db
+  .fromRaw(
+    sql`jsonb_to_recordset(${val(doc, jsonbCodec)})`,
+    { id: int8Codec, name: textCodec },
+    { alias: 'j', columnTypes: true },
+  )
+  .select((t) => ({ id: t.j.id, name: t.j.name }))
+  .execute()
+
+console.log(records) // [ { id: 9007199254740993n, name: 'a' } ]
+```
+
+`shape` does three jobs at once, and that is the whole design: its keys become the emitted column
+alias list, they become the row's keys, and each codec decodes its own column. There is no second
+place for a column name to be written, so the SQL, the row and the decode plan cannot drift.
+
+`{ columnTypes: true }` promotes the alias list to a column **definition** list
+(`("id" bigint, "name" text)`), built from the same codecs' SQL names. A function returning `record`
+requires one — `jsonb_to_recordset` is unusable without it — and a function that does not returns
+`42601` for one, which is why it is a choice rather than a default.
+
+### Derived tables and scalar subqueries
+
+`.as(name)` turns any select into a handle, and `.asScalar()` turns a one-column select into an
+expression:
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="derived-and-scalar.ts"
+import { asc, eq, fn } from 'pg-prime'
+
+const recent = db
+  .from(db.h.posts, 'p')
+  .where((t) => eq(t.p.published, true))
+  .select((t) => ({ id: t.p.id, authorId: t.p.authorId }))
+  .as('recent')
+
+console.log((await db.from(recent).select((t) => ({ id: t.recent.id })).execute()).length) // 3
+
+const withLatest = await db
+  .from(db.h.users, 'u')
+  .select((t) => ({
+    email: t.u.email,
+    lastPostAt: db
+      .from(db.h.posts, 'p')
+      .where((s) => eq(s.p.authorId, t.u.id))
+      .select((s) => ({ v: fn.max(s.p.createdAt) }))
+      .asScalar(),
+  }))
+  .orderBy((t) => asc(t.u.id))
+  .execute()
+
+console.log(withLatest.map((r) => r.lastPostAt)) // [ 2026-02-03…, 2026-02-04…, null ]
+```
+
+`asScalar()`'s result is `| null` and that is not defensive: a scalar subquery over **zero rows** is
+SQL NULL whatever the projected column's own nullability says. It needs exactly one column, and a
+`nest(...)` group or a relation projection is refused there because both are several columns wearing
+one key.
+
+## Inserting
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="insert.ts"
+import { eq, fn } from 'pg-prime'
+
+// one row, with an expression for one column
+const [one] = await db
+  .insertInto(db.h.users)
+  .values({ email: 'dee@example.com', name: 'Dee', createdAt: fn.now() })
+  .returning((t) => ({ id: t.users.id, email: t.users.email }))
+  .execute()
+
+console.log(one!.email) // dee@example.com
+
+// many rows, one statement
+const many = await db
+  .insertInto(db.h.users)
+  .valuesMany([
+    { email: 'eve@example.com', name: 'Eve' },
+    { email: 'fay@example.com', name: 'Fay' },
+  ])
+  .returning((t) => ({ email: t.users.email }))
+  .execute()
+
+console.log(many.length) // 2
+
+// insert … select — the callback is handed an executor carrying whatever CTEs were declared
+// before `.insertInto(...)`, so `d.fromCte('…')` is available inside it
+await db
+  .insertInto(db.h.posts)
+  .fromSelect((d) =>
+    d
+      .from(db.h.users, 'u')
+      .where((t) => eq(t.u.email, 'eve@example.com'))
+      .select((t) => ({ authorId: t.u.id, title: t.u.name, body: t.u.email })),
+  )
+  .execute()
+
+console.log((await db.from(db.h.posts, 'p').select((t) => ({ id: t.p.id })).execute()).length) // 5
+```
+
+Three details that are not obvious:
+
+- **The column list is the table's declaration order**, filtered to the keys present — so
+  `values({ name, email })` and `values({ email, name })` compile to the same statement. PostgreSQL's
+  plan cache is keyed on SQL text, and a builder whose column order followed `Object.keys` would mint
+  a different prepared statement per key ordering.
+- **`valuesMany` infers one row type from the whole array**, so a ragged batch is a compile error at
+  the literal rather than a runtime rejection: one bulk `INSERT` is one statement with one column
+  list.
+- **`fromSelect`'s column list follows the projection**, not the declaration order, because
+  `insert … select` is positional.
+
+`defaultValues()` emits `insert into … default values` for a table where every column has one.
+
+### Bulk strategies
+
+`valuesMany(rows, opts?)` has two strategies and an automatic switch. `values` emits one multi-row
+`VALUES` list — `rows × columns` parameters, which reaches the 65 535-parameter wire ceiling at about
+5 000 rows of 12 columns. `unnest` sends **one** parameter per column whatever the row count, which
+sidesteps the ceiling entirely and collapses the parse cost of a large batch.
+
+`auto` (the default) picks `unnest` above 30 000 cells and `values` below, and `{ chunkSize }`
+(default 5 000 rows) is where a batch is split. Chunks run inside one transaction unless you are
+already in one — a half-applied batch is the failure mode that makes bulk inserts untrustworthy.
+`unnest` cannot carry an array column: one array per column would need a two-dimensional array
+parameter, which PostgreSQL has no type for, so it is refused with a sentence rather than silently
+flattened.
+
+At 100 000 rows, [`copyFrom`](/pg-prime/guides/copy/) is 2.3–3.8× faster again (PostgreSQL 17.11,
+local TCP). There is no crossover below that: `copyFrom` is already 1.5–1.8× faster at 10–100 rows.
+The reason to prefer `valuesMany` for a few thousand rows is ergonomics, not speed.
+
+### `ON CONFLICT`
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="upsert.ts"
+import { concat, lt } from 'pg-prime'
+
+const upsert = (name: string) =>
+  db
+    .insertInto(db.h.users)
+    .values({ email: 'ada@example.com', name, createdAt: new Date('2026-03-01T00:00:00Z') })
+    .onConflict((c) =>
+      c
+        .columns((t) => [t.email])
+        .doUpdate((set, excluded) => ({ name: concat(set.name, excluded.name) }))
+        .whereUpdate((t, excluded) => lt(t.createdAt, excluded.createdAt)),
+    )
+    .returning((t) => ({ name: t.users.name }))
+
+console.log(await upsert('!').execute()) // [ { name: 'Ada!' } ]
+```
+
+The conflict builder covers the whole PostgreSQL surface: `.columns(...)` and `.expressions(...)`
+for an index arbiter, `.constraint(name)` for a named one, `.doNothing()`, `.doUpdate(...)` and the
+**two different `where`s**, which are two methods on purpose:
+
+- `.where(...)` is the **partial-index predicate** — which unique index is the arbiter. Omit it
+  against a partial index and PostgreSQL raises `42P10`. It needs `.columns(...)` or
+  `.expressions(...)` first, because a named constraint has no predicate.
+- `.whereUpdate(...)` is `DO UPDATE … WHERE` — whether to write *this* row at all. It needs
+  `.doUpdate(...)` first.
+
+Conflating the two is the classic upsert bug, so they have two names and each reports a named error
+when it is used out of place. `excluded` is the proposed row, handed to `doUpdate` and `whereUpdate`
+as a second scope of ordinary column references — so every operator works on it, and
+`arrayConcat(set.tags, excluded.tags)` means what it looks like.
+
+`.columns(...)` compares its references by identity against the target's own scope, not by column
+name: `on conflict ("id")` names an index on *this* table, and resolving a same-named column of a
+joined table would arbitrate on an index that does not exist.
+
+## Updating
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="update.ts"
+import { concat, eq, int8Codec, textCodec } from 'pg-prime'
+
+const renamed = await db
+  .update(db.h.users)
+  .set((t) => ({ name: concat(t.users.name, ' (edited)') }))
+  .where((t) => eq(t.users.email, 'ada@example.com'))
+  .returning((t) => ({ name: t.users.name }))
+  .execute()
+
+console.log(renamed) // [ { name: 'Ada (edited)' } ]
+
+// a different patch per row, in ONE statement
+const ids = await db
+  .from(db.h.users, 'u')
+  .select((t) => ({ id: t.u.id, email: t.u.email }))
+  .orderBy((t) => t.u.id)
+  .execute()
+
+await db
+  .update(db.h.users)
+  .fromValues(
+    [
+      { id: ids[0]!.id, name: 'A' },
+      { id: ids[1]!.id, name: 'B' },
+    ],
+    { id: int8Codec, name: textCodec },
+  )
+  .set((_t, v) => ({ name: v.name }))
+  .where((t, v) => eq(t.users.id, v.id))
+  .execute()
+
+console.log(
+  (await db.from(db.h.users, 'u').select((t) => ({ n: t.u.name })).orderBy((t) => t.u.id).execute())
+    .map((r) => r.n),
+) // [ 'A', 'B', 'Cyd' ]
+```
+
+`.set()`'s callback sees the target's own scope, and a second parameter `v` once `fromValues` has
+added a values relation. Two `.set()` calls merge, but assigning the same column twice is a named
+error rather than the `42701` PostgreSQL would raise: an `UPDATE` allows one assignment per column.
+
+`fromValues(rows, codecs, opts?)` emits `update … from (values …) as "v"(…)`. The rows are typed by
+the codecs rather than by `unknown`, so a wrong value is a compile error here instead of a
+`PgEncodeError` at execute time, and the per-column `::type` casts on the first row are load-bearing:
+an uncast `VALUES` list is `text`, and `"users"."id" = "v"."id"` is then `42883`.
+
+An `UPDATE` with no `.where()` is **refused**. Say `.allRows()` if you mean it:
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="update-all-rows.ts"
+const n = await db
+  .update(db.h.posts)
+  .set(() => ({ published: true }))
+  .allRows()
+  .returning((t) => ({ id: t.posts.id }))
+  .execute()
+
+console.log(n.length) // 4
+```
+
+An `UPDATE` that reaches the server with no `WHERE` is indistinguishable from one whose predicate was
+composed away by a `$if`. Requiring the caller to say so costs one method call and removes a whole
+class of incident.
+
+## Deleting
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="delete.ts"
+import { eq, inList } from 'pg-prime'
+
+const ids = (
+  await db.from(db.h.posts, 'p').select((t) => ({ id: t.p.id })).execute()
+).map((r) => r.id)
+
+const gone = await db
+  .deleteFrom(db.h.posts)
+  .where((t) => inList(t.posts.id, ids.slice(0, 2)))
+  .returning((t) => ({ title: t.posts.title }))
+  .execute()
+
+console.log(gone.map((r) => r.title)) // [ 'Hello', 'Draft' ]
+
+// the join form: `delete … using … where …`
+const byAuthor = await db
+  .deleteFrom(db.h.posts)
+  .using(db.h.users, 'u')
+  .where((t) => eq(t.posts.authorId, t.u.id))
+  .where((t) => eq(t.u.email, 'bob@example.com'))
+  .returning((t) => ({ title: t.posts.title, email: t.u.email }))
+  .execute()
+
+console.log(byAuthor) // [ { title: 'Bob writes', email: 'bob@example.com' } ]
+```
+
+`using` widens the scope exactly as `innerJoin` widens a select's, and a `DELETE … USING …
+RETURNING` may name the `USING` relations, so `returning` reads the same scope. `allRows()` is
+required here too.
+
+A bulk delete is `inList(t.id, ids)`, which compiles to `= any($1)` and not to an `IN (…)` list: one
+parameter, one plan-cache entry, and no dependence on the list's length.
+
+## Prepared statements
+
+`.prepare()` caches **our** work: the SQL text, the bind plan with its holes, and the decode plan.
+Nothing has touched a server. `placeholder(name, codec)` is the hole, and it is an ordinary operand,
+so it reaches an operator through the same door a column does.
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="prepared.ts"
+import { eq, placeholder, textCodec } from 'pg-prime'
+
+const byEmail = db
+  .from(db.h.users, 'u')
+  .where((t) => eq(t.u.email, placeholder('email', textCodec)))
+  .select((t) => ({ id: t.u.id, name: t.u.name }))
+  .prepare<{ email: string }>('users_by_email')
+
+console.log(byEmail.sql) // select … where "u"."email" = $1
+console.log(await byEmail.execute({ email: 'ada@example.com' })) // [ { id: 1n, name: 'Ada' } ]
+console.log(await byEmail.execute({ email: 'bob@example.com' })) // [ { id: 2n, name: 'Bob' } ]
+console.log(byEmail.toSQL({ email: 'ada@example.com' }).params) // [ 'ada@example.com' ]
+```
+
+`execute()` walks the bind list once, calls `codec.encode` per slot per execution, and re-does
+nothing else: no AST walk, no `compile()`, no decoder rebuild.
+
+The type parameter `P` is written by hand and checked at runtime against the declared placeholder
+names — a missing or extra key throws a `BuilderError` naming it. Linking the two statically would
+need that fourth type parameter on `Query` again, and the runtime check catches the same mistake one
+test run later.
+
+`{ statement: 'named' }` is a *different* feature, opted into by name: it additionally pins the
+server-side prepared statement, with its per-connection cache and its pooler consequences.
+
+## Streaming
+
+`stream` is a transaction-scoped server-side cursor (`WITHOUT HOLD`, which is the only form that
+works under transaction pooling). Back-pressure is your `await`: the next `FETCH` is issued when the
+current batch is exhausted.
+
+{/* docs: use=blog */}
+```ts
+import { asc } from 'pg-prime'
+
+const q = db.from(db.h.posts, 'p').select((t) => ({ title: t.p.title })).orderBy((t) => asc(t.p.id))
+
+// one row at a time
+for await (const row of q.stream({ batchSize: 500 })) {
+  console.log(row.title)
+}
+
+// one array per FETCH, which is what a batched writer wants
+for await (const batch of db.streamBatches(q, { batchSize: 500 })) {
+  console.log(batch.length)
+}
+```
+
+`batchSize` defaults to 1 000 rows. Breaking out of either loop runs the iterator's `return()`, which
+closes the cursor and releases the connection — the leak every hand-rolled cursor wrapper has.
+
+## `EXPLAIN`
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="explain.ts"
+import { eq } from 'pg-prime'
+
+const plan = await db
+  .from(db.h.posts, 'p')
+  .innerJoin(db.h.users, 'u', (t) => eq(t.p.authorId, t.u.id))
+  .select((t) => ({ title: t.p.title, email: t.u.email }))
+  .explain()
+
+console.log(plan.executed) // false
+console.log(typeof plan.plan?.['Node Type']) // string
+console.log(plan.text.split('\n').length > 0) // true
+```
+
+`explain()` defaults to `FORMAT JSON`, so `plan` is a typed tree and `text` is always there; ask for
+`{ format: 'text' }` and `plan` is `undefined`, because a typed tree cannot be recovered from
+PostgreSQL's text rendering without writing a parser for it.
+
+<Aside type="caution">
+`{ analyze: true }` **executes the statement**. For an insert, update or delete pg-prime wraps it and
+rolls it back by default (`{ rollback: false }` opts out) — inside a transaction that wrapper is a
+savepoint, not a nested `BEGIN`, because rolling your whole transaction back to hand you a plan would
+be worse than the problem.
+</Aside>
+
+## Debugging: `toSQL()` and `compile()`
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="to-sql.ts"
+import { eq } from 'pg-prime'
+
+const q = db
+  .from(db.h.users, 'u')
+  .where((t) => eq(t.u.email, 'ada@example.com'))
+  .select((t) => ({ id: t.u.id }))
+
+const snap = q.toSQL()
+console.log(snap.sql)
+// select "u"."id" as "id"
+// from "public"."users" as "u"
+// where "u"."email" = $1
+console.log(snap.params) // [ 'ada@example.com' ]
+console.log(snap.meta.reads) // [ { schema: 'public', name: 'users' } ]
+console.log(q.compile().sql === snap.sql) // true
+```
+
+`toSQL()` never throws — not on an unfilled placeholder, which reads as
+`{ placeholder: 'email' }`, and not on a builder with no executor. A debugging tool that refuses to
+print an incomplete statement is the one that is useless. `params` carries the **encoded** wire
+values, because that is the honest artifact: the safety claim is about what is in the bind slot, not
+about what you typed.
+
+`compile()` returns the frozen artifact — SQL, binds, decode plan and `meta` — and is memoised on the
+builder instance. `toAst()` is the tree below it, and is pure: the same builder always produces the
+same tree, because every callback runs once, at the call site, when you write it.
+
+## Running a query you were handed
+
+Every builder has `.execute()`, but a helper that takes *any* query wants `db.run(q)`, which accepts
+a builder, a prepared query or an already-compiled artifact:
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="run-and-compose.ts"
+import { asc, eq, ilike } from 'pg-prime'
+import type { AnySchema, Queryable, Runnable } from 'pg-prime'
+
+// `Queryable` is the shared surface of `Db`, `Tx` and `Session` — the type a helper should take
+async function first<O>(handle: Queryable<AnySchema>, q: Runnable<O>): Promise<O | undefined> {
+  return (await handle.run(q))[0]
+}
+
+const base = db.from(db.h.users, 'u').select((t) => ({ email: t.u.email }))
+
+console.log(await first(db, base.orderBy((t) => asc(t.u.id)))) // { email: 'ada@example.com' }
+
+// composition: `$call` threads a builder through a function, `$if` applies one conditionally
+const search = (term: string | undefined) =>
+  base
+    .$call((q) => q.orderBy((t) => asc(t.u.email)))
+    .$if(term !== undefined, (q) => q.where((t) => ilike(t.u.email, `%${term}%`)))
+
+console.log((await search('bob').execute()).map((r) => r.email)) // [ 'bob@example.com' ]
+console.log((await search(undefined).execute()).length) // 3
+
+// …so the same helper works inside a transaction. The callback's parameter is named `db` on
+// purpose: it shadows the outer handle, and a statement that should have joined the transaction
+// cannot silently reach the pool instead.
+await db.transaction(async (db) => {
+  await db.update(db.h.users).set(() => ({ name: 'X' })).where((t) => eq(t.users.email, 'bob@example.com')).execute()
+  console.log(await first(db, base.orderBy((t) => asc(t.u.id)))) // { email: 'ada@example.com' }
+})
+```
+
+`$call` is type-preserving composition. `$if` is the same idea with a condition, and it is typed
+honestly: when the branch keeps every column the query already had, the result is the union of the
+two; when it **drops** one, the query resolves to a sentence naming it. That matters because
+pg-prime's `.select()` *replaces* the projection rather than adding to it, so the usual formula
+(`O & Partial<Omit<O2, keyof O>>`) would claim a column that the SQL no longer selects.
+
+Every builder is also **invariant** in its row type, which is what turns the imperative build-up
+pattern into a compile error rather than a silently dropped column:
+
+{/* docs: expect-error use=blog */}
+```ts
+let q = db.from(db.h.users, 'u').select((t) => ({ id: t.u.id }))
+
+// the assignment is refused: the right-hand side's row type is `{ email: string }`, and `q` is
+// invariant in `{ id: bigint }`
+q = q.select((t) => ({ email: t.u.email }))
+```
+
+## Where to go next
+
+- [Relations](/pg-prime/concepts/relations/) — `t.u.posts.many(…)`, the correlated aggregates, and
+  the one query a nested projection emits.
+- [The `sql` tag](/pg-prime/guides/sql-tag/) — fragments, `.as(codec)`, and the one primitive that
+  interpolates text verbatim.
+- [Transactions](/pg-prime/guides/transactions/) — `Db`, `Tx` and `Session`, retries, savepoints.
+- [Codecs](/pg-prime/concepts/codecs/) — why `int8` is a `bigint` and `numeric` is a `string`.
+- [The query reference](/pg-prime/reference/query/) — every operator, with its operand class.

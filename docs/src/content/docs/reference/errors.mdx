@@ -20,7 +20,7 @@ That is the whole contract, and it is what lets you choose how narrowly to catch
 message parsing anywhere. Every error carries structured fields; if you ever have to read our prose
 to branch, that is a bug.
 
-Two names deviate from [design/07 §4.2](/pg-prime/guides/errors/) because the name was already
+Two leaf classes are not named after the SQLSTATE condition, because the obvious name was already
 taken: `SchemaObjectError` (SQLSTATE class 42) rather than `SchemaError`, which is what
 `defineSchema(...)` throws for a bad declaration, and `SqlSyntaxError` (`42601`) rather than
 `SyntaxError`, which would shadow the ECMAScript global in every file that imports the barrel.
@@ -113,18 +113,22 @@ try {
 } catch (e) {
   if (!(e instanceof UniqueViolationError)) throw e
 
-  console.log(e.code) // '23505'
+  console.log(e.code, e.sqlStateClass) // '23505' '23'
   console.log(e.message) // 'unique constraint violated: users(email) [users_email_key]'
   console.log(e.constraintName) // 'users_email_key'
   console.log(e.table?.$.name) // 'users'
   console.log(e.columns?.map((c) => c.$.dbName)) // [ 'email' ]
 
-  // The DETAIL keeps the columns and drops the value — it read
-  // `Key (email)=(alice@example.com) already exists.` on the wire.
+  // The DETAIL keeps the columns and drops the value. On the wire it read
+  // `Key (email)=(alice@example.com) already exists.`
   console.log(e.detail, e.detailRedacted) // 'Key (email)=(…) [values redacted]' true
 
-  // The SQL is kept (it is $n-parameterised), the parameter values are not.
-  console.log(e.paramCount, e.params) // 2 undefined
+  // The SQL is kept — it is $n-parameterised — and so are the parameter OIDs. The values are not.
+  console.log(e.sql) // 'insert into "public"."users" ("email", "name") values ($1, $2)'
+  console.log(e.paramTypes, e.params) // [ 25, 25 ] undefined
+
+  // Outside production, the frame that issued the statement, not an async stack of our internals.
+  console.log(e.callSite) // 'at async <anonymous> (duplicate-email.ts:7:3)'
 
   // And the match is on the column, not on the constraint name, so a rename is a compile error.
   console.log(isUniqueViolation(e, schema.tables.users.cols.email)) // true
@@ -137,6 +141,10 @@ try {
 cannot — a constraint created by a hand-written SQL migration or by an extension — those fields are
 `undefined`, the message falls back to PostgreSQL's own, and a sentence says the constraint is not
 declared in your schema. There is never a guess.
+
+`schema.tables.users.cols.email` is that column reference spelled from the schema value; where the
+table itself is in scope it is `users.cols.email`. Either way it is a value the compiler knows
+about, which is what makes a column rename break the match at build time instead of at runtime.
 
 ### `QueryError`
 
@@ -192,7 +200,7 @@ matters, the answer is a transaction, and if the failure happened at `COMMIT` th
 | <a id="ConnectionError"/>`ConnectionError` | `08000` | The generic case: bytes could not be moved to or from a backend and none of the leaves matched. Log `cause` — it is the driver's own error. |
 | <a id="ConnectionRefusedError"/>`ConnectionRefusedError` | `08000` | `ECONNREFUSED`, `ENOTFOUND` or `EHOSTUNREACH`: nothing is listening at that host and port. Check the URL before anything else. |
 | <a id="ConnectionTimeoutError"/>`ConnectionTimeoutError` | `08000` | The TCP or TLS handshake did not finish in time — a firewall that drops rather than rejects, or a server that is up but not accepting. |
-| <a id="AuthenticationError"/>`AuthenticationError` | `08000` | SCRAM or MD5 failed during startup, or the server rejected the role. The same rejection *after* startup is `InsufficientPrivilegeError` or `InvalidPasswordError`. |
+| <a id="AuthenticationError"/>`AuthenticationError` | `08000` | SCRAM or MD5 failed during startup, or the server rejected the role before the connection was usable. The same credentials rejected on a *statement* are `InvalidPasswordError` instead. |
 | <a id="ConnectionTerminatedError"/>`ConnectionTerminatedError` | `08000` | The backend went away mid-statement: `ECONNRESET`, `08006`, or a `57P01` admin shutdown that arrived while a query was in flight. Retry only if the statement is idempotent. |
 | <a id="ConfigError"/>`ConfigError` | `CONFIG` | An invalid configuration, thrown **eagerly** by `pgPrime(...)` rather than at the first query, and naming the key that is wrong. Nothing in your process has connected yet when you see one. |
 
@@ -293,17 +301,35 @@ retained `poisonedBy` is the whole point: by the time a `25P02` reaches you, the
 actually failed is several awaits in the past and its message would otherwise be gone. The fix is a
 savepoint around the statement that may fail, and the message says so.
 
-{/* docs: use=blog,blog-ddl */}
-```ts title="poisoned-transaction.ts"
+{/* docs: use=blog */}
+```ts
+import { InFailedTransactionError, UniqueViolationError, isUniqueViolation } from 'pg-prime'
+
+// Without a savepoint, the duplicate aborts the transaction and the *next* statement is the one
+// that throws — with the statement that actually failed hanging off `poisonedBy`.
 const failed = await db
   .transaction(async (db) => {
-    await db.insertInto(db.h.users).values({ email: 'zed@example.com', name: 'Zed' }).execute()
-    throw new Error('boom')
+    await db.insertInto(db.h.users).values({ email: 'alice@example.com', name: 'A' }).execute()
+    await db.insertInto(db.h.users).values({ email: 'bob@example.com', name: 'Bob' }).execute()
   })
   .catch((e: unknown) => e)
 
-const rows = await db.from(db.h.users, 'u').select((t) => ({ email: t.u.email })).execute()
-throw new Error(`ROLLBACK PROBE: ${String((failed as Error).message)} rows=${JSON.stringify(rows)}`)
+if (failed instanceof InFailedTransactionError) {
+  console.log(failed.poisonedBy instanceof UniqueViolationError) // true
+}
+
+// With one, the speculative insert fails inside its savepoint, `ROLLBACK TO SAVEPOINT` un-poisons
+// the transaction, and the rest of it commits.
+await db.transaction(async (db) => {
+  try {
+    await db.savepoint(async (db) => {
+      await db.insertInto(db.h.users).values({ email: 'alice@example.com', name: 'A' }).execute()
+    })
+  } catch (e) {
+    if (!isUniqueViolation(e, users.cols.email)) throw e
+  }
+  await db.insertInto(db.h.users).values({ email: 'bob@example.com', name: 'Bob' }).execute()
+})
 ```
 
 ### `IndeterminateCommitError`
@@ -326,6 +352,10 @@ library will ever re-run the callback that produced one. The only correct respon
 the row back, or reconcile against an idempotency key you wrote inside the transaction.
 
 ## Access and privileges
+
+`42501` is a class-42 state modelled here rather than under `SchemaObjectError`, because what went
+wrong is a privilege and not an object; an unmodelled `42xxx` still falls back to
+`SchemaObjectError`.
 
 | Class | SQLSTATE | What it means |
 |---|---|---|
@@ -510,8 +540,9 @@ Three decisions, each with a reason:
    is close to useless. The one leak vector is a `sql.unsafe` fragment that interpolates a literal,
    which is that fragment's owner's responsibility.
 2. **`params` are redacted by default.** Parameters are *precisely* the PII, the tokens and the
-   password hashes, and errors flow into logs and trackers. `paramCount` and `paramTypes` are always
-   present and are enough to debug an arity or a type mismatch.
+   password hashes, and errors flow into logs and trackers. The parameter *types* survive —
+   `paramTypes` is the OID list PostgreSQL was given — and they are enough to debug an arity or a
+   type mismatch without any value leaving the process.
 3. **`DETAIL` is redacted by default**, and this is the one that is usually got wrong. A unique
    violation's detail reads `Key (email)=(alice@example.com) already exists.`, and passing it into
    `error.message` puts a user's address in a log line. pg-prime parses it, keeps the **columns** and

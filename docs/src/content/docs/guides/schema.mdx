@@ -218,8 +218,9 @@ A primary key and a `GENERATED ALWAYS` column are `NOT NULL` by definition, so c
 ```ts
 import { bigint } from 'pg-prime/schema'
 
-// `.nullable` is not callable here — it has resolved to
-// OrmTypeError<'.nullable() after .primaryKey(): a primary key column is NOT NULL by definition'>
+// error TS2349: This expression is not callable.
+//   Type 'OrmTypeError<".nullable() after .primaryKey(): a primary key column is NOT NULL by
+//   definition">' has no call signatures.
 const id = bigint().primaryKey().nullable()
 ```
 
@@ -409,7 +410,7 @@ Widening is refused, which is the difference between this and a cast:
 ```ts
 import { text } from 'pg-prime/schema'
 
-// `number` does not extend `string`
+// error TS2344: Type 'number' does not satisfy the constraint 'string'.
 const bad = text().$type<number>()
 ```
 
@@ -658,10 +659,13 @@ lands is a property of the migration run rather than of the registry, and defaul
 ## Standalone declarations
 
 Tables are not the only thing a database holds, and a fact the differ models but the DSL cannot
-declare is a fact the first generated migration **drops**. These five exist for that reason.
+declare is a fact the first generated migration **drops**. These five declarations — and the
+`t.raw` column at the end of the section — exist for that reason.
 
 The kit collects them from the schema module's own exports — `defineSchema` takes tables and
-relations only — so each one has to be `export`ed from the file the config's `schema` points at.
+relations only — so each one has to be `export`ed from the file the config's `schema` points at. An
+enum is the one exception: it is also reachable through any column that uses it, so only an enum no
+column mentions depends on being exported.
 
 ### `pgSchema`
 

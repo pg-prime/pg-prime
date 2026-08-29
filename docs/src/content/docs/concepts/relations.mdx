@@ -3,4 +3,476 @@ title: Relations
 description: Declared relations, JSON laterals, and the relational projection accessors.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+A relation is a named correlation between two tables, declared once, in one place. It produces
+**zero DDL** — the foreign keys are declared on the columns, and a relation is purely a query-layer
+artifact: a name, a direction, and the columns that correlate.
+
+Asking for one in a projection compiles to **one query with JSON laterals**. Not N+1, and not a
+join whose duplicated rows you regroup yourself. That matters for the two things people usually
+have to give up: `LIMIT` inside the relation is per parent, and a nested projection has an exact
+type at any depth.
+
+## Declaring them
+
+{/* docs: setup=schema */}
+```ts title="schema.ts" no-run
+import { asc, isFalse } from 'pg-prime'
+import { defineRelations, defineSchema, pgTable, primaryKey, REFS } from 'pg-prime/schema'
+
+const authors = pgTable('authors', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  name: t.text(),
+}))
+
+const books = pgTable('books', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  authorId: t.bigint().references(() => authors[REFS].id),
+  title: t.text(),
+  price: t.numeric(),
+  archived: t.boolean().default(false),
+}))
+
+const tags = pgTable('tags', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  name: t.text(),
+}))
+
+/** The junction. Two foreign keys and a composite primary key; no id of its own. */
+const bookTags = pgTable(
+  'book_tags',
+  (t) => ({
+    bookId: t.bigint().references(() => books[REFS].id),
+    tagId: t.bigint().references(() => tags[REFS].id),
+  }),
+  (t) => [primaryKey(t.bookId, t.tagId)],
+)
+
+const tables = { authors, books, tags, bookTags }
+
+const relations = defineRelations(tables, (r) => ({
+  authors: {
+    // A default predicate and a default order, applied to every projection of this relation.
+    books: r.many.books({
+      where: (b) => isFalse(b.archived),
+      orderBy: (b) => asc(b.title),
+    }),
+  },
+  books: {
+    author: r.one.authors(),
+    tags: r.many.tags({ through: bookTags }),
+  },
+  tags: {
+    books: r.many.books({ through: bookTags }),
+  },
+}))
+
+export const schema = defineSchema(tables, relations)
+```
+
+Three builders, and the difference between them is entirely in the result type:
+
+| Builder | Result of a projection | When |
+|---|---|---|
+| `r.one.x()` | `T` | the correlating column is `NOT NULL`, so there is always exactly one |
+| `r.maybeOne.x()` | `T \| null` | the correlating column is nullable |
+| `r.many.x()` | `T[]` | to-many, and `[]` rather than `null` when there are none |
+
+`one` and `maybeOne` are two names rather than an `{ optional: true }` flag, so a declared relation
+costs no conditional in the type layer and the nullability is visible where it is decided.
+
+`where` and `orderBy` are typed against the **target** table's columns, with no hand annotation:
+`(b) => isFalse(b.archived)` gets `b` as `books`' refs. They apply to every projection of that
+relation — `orderBy` as the default a `.many()` uses when the caller supplies none, `where` always.
+
+`through` is the junction: `through: bookTags` is the whole declaration, and both hops are inferred
+the same way as a single-hop relation. `through: { table, from, to }` names them explicitly when
+the junction is ambiguous.
+
+## Foreign-key inference
+
+`from` and `to` are optional. With both omitted, the correlation is inferred from the one
+`.references()` or `foreignKey({ … })` path that joins the two tables **in the stated direction**:
+a `one` follows the child's own foreign key up to its parent, and a `many` follows the inverse. A
+column that declares `.references()` and also appears in an equivalent `foreignKey(...)` extra is
+one key in the database, so it is one candidate here and not an ambiguity your schema does not
+have.
+
+Zero candidates and more than one are both refused — at `defineSchema`, on the import of your
+schema module, not on the first query that happens to touch the relation. Both refusals name what
+they found:
+
+```ts title="inference-errors.ts"
+import { SchemaError } from 'pg-prime'
+import { defineRelations, defineSchema, pgTable, REFS } from 'pg-prime/schema'
+
+const users = pgTable('users', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  name: t.text(),
+}))
+
+const messages = pgTable('messages', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  senderId: t.bigint().references(() => users[REFS].id),
+  recipientId: t.bigint().references(() => users[REFS].id),
+  body: t.text(),
+}))
+
+const labels = pgTable('labels', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  name: t.text(),
+}))
+
+/** Two foreign keys from `messages` to `users`: which one is `sender`? */
+try {
+  defineSchema(
+    { users, messages },
+    defineRelations({ users, messages }, (r) => ({
+      messages: { sender: r.one.users() },
+    })),
+  )
+} catch (err) {
+  if (!(err instanceof SchemaError)) throw err
+  console.log(err.message)
+}
+
+/** No foreign key at all between `users` and `labels`. */
+try {
+  defineSchema(
+    { users, labels },
+    defineRelations({ users, labels }, (r) => ({
+      users: { labels: r.many.labels() },
+    })),
+  )
+} catch (err) {
+  if (!(err instanceof SchemaError)) throw err
+  console.log(err.message)
+}
+```
+
+which prints, soft-wrapped here:
+
+```text
+pg-prime: relation "messages.sender" could be inferred from 2 foreign keys and pg-prime will not
+guess which: messages.senderId -> users.id, messages.recipientId -> users.id. Name the columns you
+mean: r.one.users({ from: messages[REFS].…, to: users[REFS].… }).
+
+pg-prime: relation "users.labels" has no `from`/`to` and no foreign key to infer them from —
+nothing in "labels" references "users". Declare the key on the column
+(`.references(() => users.cols.id)`) or as a `foreignKey({ columns, references })` extra, or write
+the correlation: r.many.labels({ from: users[REFS].…, to: labels[REFS].… }).
+```
+
+Guessing "the first one" is how a relation silently returns the wrong rows, and a relation with no
+correlation at all is a cross join wearing a relation's name. Neither is worth the saved keystrokes.
+
+Declared `from`/`to` always win, and the two are declared together or not at all:
+
+{/* docs: use=schema */}
+```ts
+import { defineRelations, pgTable, REFS } from 'pg-prime/schema'
+
+const users = pgTable('users', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  name: t.text(),
+}))
+
+const messages = pgTable('messages', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  senderId: t.bigint().references(() => users[REFS].id),
+  recipientId: t.bigint().references(() => users[REFS].id),
+  body: t.text(),
+}))
+
+defineRelations({ users, messages }, (r) => ({
+  messages: {
+    sender: r.one.users({ from: messages[REFS].senderId, to: users[REFS].id }),
+    recipient: r.one.users({ from: messages[REFS].recipientId, to: users[REFS].id }),
+  },
+  users: {
+    sent: r.many.messages({ from: users[REFS].id, to: messages[REFS].senderId }),
+  },
+}))
+```
+
+A matching pair of explicit relations is also a differential the repository runs on itself: the
+same graph declared once with `from`/`to` and once with none compiles to byte-identical SQL and
+returns identical rows.
+
+## Reading them
+
+{/* docs: setup=db use=schema */}
+```ts title="db.ts" no-run
+import { pgPrime } from 'pg-prime'
+import { schema } from './schema.js'
+
+export const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema })
+```
+
+{/* docs: setup=ddl use=db */}
+```ts title="ddl.ts" no-run
+import { db } from './db.js'
+
+await db.sql`
+  create table authors (
+    id   bigint generated always as identity primary key,
+    name text not null
+  )
+`.execute()
+await db.sql`
+  create table books (
+    id        bigint generated always as identity primary key,
+    author_id bigint not null references authors (id),
+    title     text not null,
+    price     numeric not null,
+    archived  boolean not null default false
+  )
+`.execute()
+await db.sql`
+  create table tags (
+    id   bigint generated always as identity primary key,
+    name text not null
+  )
+`.execute()
+await db.sql`
+  create table book_tags (
+    book_id bigint not null references books (id),
+    tag_id  bigint not null references tags (id),
+    primary key (book_id, tag_id)
+  )
+`.execute()
+```
+
+Every relation is an accessor on the alias in the projection callback. This is one statement:
+
+{/* docs: use=db,ddl */}
+```ts title="relational-projection.ts"
+import { strict as assert } from 'node:assert'
+import { asc, desc, lt, numericCodec, val } from 'pg-prime'
+import { db } from './db.js'
+import './ddl.js'
+
+const [ada] = await db
+  .insertInto(db.h.authors)
+  .values({ name: 'Ada' })
+  .returning((t) => ({ id: t.authors.id }))
+  .execute()
+
+await db
+  .insertInto(db.h.books)
+  .valuesMany([
+    { authorId: ada!.id, title: 'Analytical Engine', price: '30.00', archived: false },
+    { authorId: ada!.id, title: 'Bernoulli Numbers', price: '12.50', archived: false },
+    { authorId: ada!.id, title: 'Corrections', price: '7.25', archived: false },
+    { authorId: ada!.id, title: 'Draft', price: '1.00', archived: true },
+  ])
+  .execute()
+
+const query = db
+  .from(db.h.authors, 'a')
+  .select((t) => ({
+    name: t.a.name,
+    // The LIMIT lives inside the lateral: two books *per author*.
+    books: t.a.books.many((sub) =>
+      sub
+        .select((b) => ({ title: b.title, price: b.price }))
+        .orderBy((b) => desc(b.price))
+        .limit(2),
+    ),
+    bookCount: t.a.books.count(),
+    revenue: t.a.books.sum((b) => b.price),
+    dearest: t.a.books.max((b) => b.price),
+    anyCheap: t.a.books.some((b) => lt(b.price, val('10.00', numericCodec))),
+  }))
+  .orderBy((t) => asc(t.a.name))
+
+const [row] = await query.execute()
+console.dir(row, { depth: null })
+// {
+//   name: 'Ada',
+//   books: [
+//     { title: 'Analytical Engine', price: '30.00' },
+//     { title: 'Bernoulli Numbers', price: '12.50' }
+//   ],
+//   bookCount: 3n,
+//   revenue: '49.75',
+//   dearest: '30.00',
+//   anyCheap: true
+// }
+
+// One statement, four laterals — not one query per author, and not a join to regroup.
+const text = query.compile().sql
+assert.equal(text.match(/left join lateral/g)!.length, 4)
+assert.equal(text.includes(';'), false)
+assert.deepEqual(row!.books.map((b) => b.title), ['Analytical Engine', 'Bernoulli Numbers'])
+assert.equal(row!.bookCount, 3n)
+assert.equal(row!.revenue, '49.75')
+```
+
+`books` is `{ title: string; price: string }[]`, `bookCount` is a `bigint`, `revenue` is a `string`
+and `dearest` is `string | null` — none of which you wrote down. The archived book is absent from
+every one of them, because the relation declaration's `where` applies to every projection of it,
+and `bookCount` is `3n` rather than `4n` for exactly that reason.
+
+## The accessors
+
+On a scope alias, a to-many relation offers `.many()` and a to-one offers `.one()`, and neither
+offers the other: an accessor that answered "which one" for a to-many would have to invent the
+answer. Everything from `.all()` down is on both kinds, and none of it is blocked by the `GROUP BY`
+guard, because a correlated aggregate needs no identifiable parent row — only the key it correlates
+on.
+
+| Accessor | Emits | Result type |
+|---|---|---|
+| `.many(q => …)` | `left join lateral (select json_agg(…) …) on true` | `Project<P>[]` |
+| `.one(q => …)` | the same lateral, one row | `T`, or `T \| null` for a `maybeOne` |
+| `.all()` | every column of the related rows | `SelectAt[]` or `SelectAt` |
+| `.count()` | `count(*)` | `bigint` |
+| `.sum(f)` | `coalesce(sum(f), 0)` | PostgreSQL's own widening — `sum(int4)` is `int8` (`bigint`), `sum(int8)` and `sum(numeric)` are `numeric` (`string`). Never null |
+| `.avg(f)` | `avg(f)` | `string \| null` (`number \| null` for the two inexact operands) |
+| `.min(f)` / `.max(f)` | `min(f)` / `max(f)` | the operand's own type, `\| null` |
+| `.exists()` | `exists (select 1 … where <correlation>)` | `boolean` |
+| `.some(f?)` | at least one related row satisfies `f` | `boolean` |
+| `.none(f?)` | no related row satisfies `f` | `boolean` |
+| `.every(f)` | `not exists (… and (f) is not true)` | `boolean` |
+
+`.every` is null-safe by construction, and the `is not true` is the whole difference from the
+obvious `not exists (… and not f)`: a predicate that is NULL is neither true nor false, and only
+this spelling counts "unknown" as a failure. It is vacuously true for a parent with no related
+rows, which is what `NOT EXISTS` gives.
+
+The aggregates are also usable in `where`, `orderBy` and a window frame, because each is an
+ordinary scalar expression — `where((t) => t.a.books.some(...))` is a correlated `EXISTS`, not a
+post-filter.
+
+<Aside type="caution">
+Two identical aggregates over the same relation share **one** lateral — write `.avg(...)` twice and
+the compiled SQL has one. A parent's aggregate and the same aggregate written *inside* one of its
+relations are necessarily two, because they correlate on different rows and so have nothing to
+share.
+</Aside>
+
+## The two rules that matter
+
+**The `LIMIT` inside `.many(q => q.limit(3))` is per parent.** It lives inside the lateral, so it
+is three rows *for each* parent row rather than three rows in total. The repository's own oracle for
+that claim is a hand-written `row_number() over (partition by author_id order by …) <= 3`, executed
+through a completely separate path, and the two must agree pair for pair.
+
+**`sum` is coalesced to zero; `avg`, `min` and `max` are `| null`.** Zero is the sum of no rows. It
+is not their average, and it is not their minimum. A `coalesce(avg(x), 0)` would report a 0 %
+average for a parent with no children, which is worse than a null, and the type says `| null` to
+match:
+
+{/* docs: use=db,ddl */}
+```ts title="empty-relation.ts"
+import { strict as assert } from 'node:assert'
+import { lt, numericCodec, val } from 'pg-prime'
+import { db } from './db.js'
+import './ddl.js'
+
+await db.insertInto(db.h.authors).values({ name: 'Nobody' }).execute()
+
+const [row] = await db
+  .from(db.h.authors, 'a')
+  .select((t) => ({
+    name: t.a.name,
+    books: t.a.books.many((sub) => sub.select((b) => ({ title: b.title }))),
+    n: t.a.books.count(),
+    revenue: t.a.books.sum((b) => b.price),
+    average: t.a.books.avg((b) => b.price),
+    dearest: t.a.books.max((b) => b.price),
+    any: t.a.books.exists(),
+    allCheap: t.a.books.every((b) => lt(b.price, val('5.00', numericCodec))),
+  }))
+  .execute()
+
+console.log(row)
+// {
+//   name: 'Nobody',
+//   books: [],
+//   n: 0n,
+//   revenue: '0',
+//   average: null,
+//   dearest: null,
+//   any: false,
+//   allCheap: true
+// }
+
+assert.deepEqual(row!.books, []) // [] and never null
+assert.equal(row!.revenue, '0') // the sum of no rows
+assert.equal(row!.average, null) // NOT the average of no rows
+assert.equal(row!.allCheap, true) // vacuously true
+```
+
+An empty to-many is `[]` in the SQL itself — `coalesce(json_agg(…), '[]'::json)` — and not only
+after decoding, so `EXPLAIN` and a hand-run `toSQL()` show the same thing the decoder does.
+
+## `$all` and `omit`
+
+`$all` on an alias is every column of it, as a plain record of column references. Spreading it into
+a projection is `SELECT *` with an exact type:
+
+{/* docs: use=db,ddl */}
+```ts
+import { omit } from 'pg-prime'
+import { db } from './db.js'
+
+await db
+  .from(db.h.books, 'b')
+  .select((t) => ({ ...t.b.$all }))
+  .execute()
+
+// …and `omit` is Prisma's `omit`, for free, because the value is an ordinary frozen record.
+await db
+  .from(db.h.books, 'b')
+  .select((t) => ({ ...omit(t.b.$all, 'price') }))
+  .execute()
+```
+
+`$all` is a **spread, not a group**: it produces one output column per member, so under a left join
+each column is `T | null` on its own rather than the whole object being nullable. It costs one
+intersection member per alias per scope instantiation — measured at 0.00 % on 17 of the 37 type
+benchmark fixtures and at most +1.96 % on the rest, which is why it is a member of the scope rather
+than a helper function you call.
+
+## `nest` and `nestNullable`
+
+A relation projection is not the only way to get a nested object. `nest` groups columns that are
+already in the query — from a joined alias, say — into an object in the result, and it costs
+nothing at all: the SQL of a query with `nest` is byte-identical to the same query written flat.
+
+{/* docs: use=db,ddl */}
+```ts
+import { eq, nest, nestNullable } from 'pg-prime'
+import { db } from './db.js'
+
+// An inner join: the author is always there, so `nest`.
+await db
+  .from(db.h.books, 'b')
+  .innerJoin(db.h.authors, 'a', (t) => eq(t.b.authorId, t.a.id))
+  .select((t) => ({ title: t.b.title, author: nest({ id: t.a.id, name: t.a.name }) }))
+  .execute()
+
+// A left join: the whole object is null when the join missed, so `nestNullable`.
+await db
+  .from(db.h.authors, 'a')
+  .leftJoin(db.h.books, 'b', (t) => eq(t.b.authorId, t.a.id))
+  .select((t) => ({ name: t.a.name, book: nestNullable({ id: t.b.id, title: t.b.title }) }))
+  .execute()
+```
+
+The difference is the one that bites: `nest` keeps per-field nulls, so a missed left join gives
+`{ id: null, title: null }`; `nestNullable` gives `null` for the object. Which one is correct
+depends on what you meant, so both exist and neither is a default.
+
+Use a relation accessor when you want the *related rows*; use `nest` when you have already joined
+and want the columns grouped. They compose: a relation's sub-query can `nest` a group of its own.
+
+## Where to go next
+
+- [Queries](/pg-prime/guides/queries/) — joins, aggregates, window functions, CTEs.
+- [The schema DSL](/pg-prime/guides/schema/) — `pgTable`, `references`, constraints and indexes.
+- [`pg-prime/schema` reference](/pg-prime/reference/schema/) — `defineRelations`, `RelConfig` and
+  every builder in full.

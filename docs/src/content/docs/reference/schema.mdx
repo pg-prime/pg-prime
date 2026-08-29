@@ -105,16 +105,11 @@ console.log(events.$.columns.map((c) => [c.key, c.dbName, c.column.ddl.pgType]))
 
 {/* docs: signature */}
 ```ts
-const table: <N extends string, B extends Record<string, AnyCol>>(
-  name: N,
-  columns: B | ((t: ColumnKit) => B),
-  extras?: (t: RefsOfCols<N, ColsOf<B>>) => readonly TableExtra[],
-  options?: TableOptions,
-) => Table<N, ColsOf<B>>
+const table: typeof pgTable
 ```
 
-The same function under the shorter name — the declaration is literally `typeof pgTable`. Both
-spellings exist because both appear in the design documents; there is no behavioural difference.
+The same function under the shorter name. Both spellings exist because both appear in the design
+documents; there is no behavioural difference.
 
 ### `TableOptions`
 
@@ -167,14 +162,29 @@ The same object `pgTable` passes to the column callback, exported so that a plai
 
 ### `ColumnKit`
 
-Thirteen properties, each declared as `typeof` the exported builder of the same name, so the kit and
-the standalone functions can never drift. Its only job is to keep a schema file's import list short
-and to give extension packs one place to hang new column types.
+{/* docs: signature */}
+```ts
+interface ColumnKit {
+  uuid: typeof uuid
+  text: typeof text
+  varchar: typeof varchar
+  integer: typeof integer
+  smallint: typeof smallint
+  bigint: typeof bigint
+  boolean: typeof boolean
+  timestamptz: typeof timestamptz
+  date: typeof date
+  numeric: typeof numeric
+  jsonb: typeof jsonb
+  enum: typeof enumColumn
+  raw: typeof raw
+}
+```
 
-Two keys are spelled differently from the function they hold: `t.enum` is
+Every property is `typeof` the exported builder of the same name, so the kit and the standalone
+functions cannot drift. Two keys are spelled differently from the function they hold: `t.enum` is
 [`enumColumn`](#enumcolumn), and `t.raw` is [`raw`](#raw), the escape hatch for the several hundred
-PostgreSQL types that have no builder. The other eleven — `uuid`, `text`, `varchar`, `integer`,
-`smallint`, `bigint`, `boolean`, `timestamptz`, `date`, `numeric`, `jsonb` — match.
+PostgreSQL types that have no builder.
 
 ### `uuid`
 
@@ -324,10 +334,6 @@ The enum's own schema travels with it, so a shared enum does not move because on
 
 {/* docs: signature */}
 ```ts
-// `META` is the exported phantom slot symbol, re-declared here because a signature block imports
-// types and a computed key needs the value.
-const META: unique symbol
-
 interface Col<M extends ColMeta> {
   readonly [META]: M
   readonly $: ColumnRuntime
@@ -342,19 +348,42 @@ interface Col<M extends ColMeta> {
   check(expression: AnyFragment, name?: string): Col<M>
   comment(text: string): Col<M>
   renamedFrom(old: string): Col<M>
-  array(): Col<{ t: M['t'][]; pg: `${M['pg']}[]`; opt: M['opt']; ro: M['ro']; pk: M['pk'] }>
-  $type<T extends M['t']>(): Col<{ t: T; pg: M['pg']; opt: M['opt']; ro: M['ro']; pk: M['pk'] }>
+  array(): Col<{
+    t: Exclude<M['t'], null>[] | Extract<M['t'], null>
+    pg: `${M['pg']}[]`
+    opt: M['opt']
+    ro: M['ro']
+    pk: M['pk']
+  }>
+  $type<T extends Exclude<M['t'], null>>(): Col<{
+    t: T | Extract<M['t'], null>
+    pg: M['pg']
+    opt: M['opt']
+    ro: M['ro']
+    pk: M['pk']
+  }>
   $default(fn: () => M['t']): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
   $onUpdate(fn: () => M['t']): Col<M>
 }
 ```
 
-Every modifier returns a new column; nothing mutates. The block above is the shape after the
-nullability gates are removed for readability — the real declaration types `nullable`, `default`,
-`defaultSql` and `$default` as *properties* rather than methods, so that an impossible combination
-resolves to an [`OrmTypeError`](#the-type-layer) instead of a constraint mismatch. Writing
-`t.bigint().primaryKey().nullable()` then fails with "This expression is not callable" and the
-sentence "a primary key column is NOT NULL by definition" in the diagnostic:
+Every modifier returns a new column; nothing mutates. Four of them are shown above as plain methods
+for readability, and are really *properties*: `nullable`, `default`, `defaultSql` and `$default`
+resolve to an [`OrmTypeError`](#OrmTypeError) when the combination they were given is impossible, so
+the diagnostic is one line with the explanation in it rather than a constraint mismatch. `nullable`
+in full:
+
+{/* docs: signature */}
+```ts
+type NullableFn<M extends ColMeta> = M['pk'] extends true
+  ? OrmTypeError<'.nullable() after .primaryKey(): a primary key column is NOT NULL by definition'>
+  : M['ro'] extends true
+    ? OrmTypeError<'.nullable() after .generatedAlways(): a generated column is always NOT NULL'>
+    : () => Col<{ t: M['t'] | null; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+```
+
+So `t.bigint().primaryKey().nullable()` fails with "This expression is not callable" and the sentence
+itself in the diagnostic:
 
 {/* docs: expect-error */}
 ```ts
@@ -421,19 +450,60 @@ table-level constraints and the objects that hang off a table.
 {/* docs: signature */}
 ```ts
 type TableExtra =
-  | { readonly node: 'primaryKey'; readonly name: string | undefined; readonly columns: readonly string[] }
-  | { readonly node: 'unique'; readonly name: string | undefined; readonly columns: readonly string[]; readonly nullsNotDistinct: boolean }
-  | { readonly node: 'check'; readonly name: string; readonly expression: string }
+  | {
+      readonly node: 'primaryKey'
+      readonly name: string | undefined
+      readonly columns: readonly string[]
+    }
+  | {
+      readonly node: 'index'
+      readonly name: string
+      readonly unique: boolean
+      readonly columns: readonly string[]
+      readonly items: readonly IndexItem[]
+      readonly using: string | undefined
+      readonly where: string | undefined
+      readonly include: readonly string[]
+      readonly nullsNotDistinct: boolean
+    }
   | { readonly node: 'comment'; readonly text: string }
+  | {
+      readonly node: 'unique'
+      readonly name: string | undefined
+      readonly columns: readonly string[]
+      readonly nullsNotDistinct: boolean
+    }
+  | { readonly node: 'check'; readonly name: string; readonly expression: string }
+  | {
+      readonly node: 'foreignKey'
+      readonly name: string | undefined
+      readonly columns: readonly string[]
+      readonly references: () => readonly RefLike[]
+      readonly onDelete: FkAction | undefined
+      readonly onUpdate: FkAction | undefined
+      readonly deferrable: boolean
+      readonly initiallyDeferred: boolean
+    }
   | { readonly node: 'renamedFrom'; readonly from: string }
   | { readonly node: 'clusterOn'; readonly index: string }
-  | { readonly node: 'partitionBy'; readonly strategy: 'range' | 'list' | 'hash'; readonly key: string }
+  | {
+      readonly node: 'partitionBy'
+      readonly strategy: 'range' | 'list' | 'hash'
+      readonly key: string
+    }
+  | {
+      readonly node: 'partitionOf'
+      readonly parent: string
+      readonly parentSchema: string | undefined
+      readonly bound: string
+    }
 ```
 
 One heterogeneous array of tagged nodes, so an extension pack can add a node kind without an API
-change. The union above is shortened: the `index`, `foreignKey` and `partitionOf` members carry more
-fields, and are described under their own functions below. Every node is plain frozen data apart
-from `foreignKey`'s one thunk.
+change. Every node is plain frozen data apart from `foreignKey`'s one thunk, and every column name
+in it is the resolved *database* name, not the TypeScript key. An index node carries its columns
+twice: `columns` is the bare names in order — the shape the first release shipped — and `items` is
+the same list with each column's own options beside it.
 
 ### `primaryKey`
 
@@ -459,6 +529,9 @@ interface PrimaryKeyInput {
   readonly columns: readonly AnyRef[]
 }
 ```
+
+The object form of `primaryKey`, and the only spelling that can name the constraint. It is told apart
+from a bare column reference by the presence of a `columns` array.
 
 ### `unique`
 
@@ -506,7 +579,8 @@ paid for by every column of every table in every program, to serve a handful of 
 
 ### `uniqueIndex`
 
-Declared beside `index` above, and identical to it but for `unique: true` on the emitted node. See [`unique`](#unique) for which of the two you want.
+Declared beside `index` above, and identical to it but for `unique: true` on the emitted node. See
+[`unique`](#unique) for which of the two objects you want.
 
 ### `IndexOptions`
 
@@ -926,24 +1000,6 @@ schema file rather than on the first query that happens to touch it. The result 
 
 {/* docs: signature */}
 ```ts
-// `AnySchema` and `Handle` are re-declared here, shortened, because the phantom slot symbols they
-// are keyed by are values and a signature block imports types.
-const TABLES: unique symbol
-const RELS: unique symbol
-const SCHEMA: unique symbol
-const NAME: unique symbol
-
-interface AnySchema {
-  readonly [TABLES]: any
-  readonly [RELS]: any
-}
-
-interface Handle<Sc extends AnySchema, N extends string> {
-  readonly [SCHEMA]: Sc
-  readonly [NAME]: N
-  readonly $: TableRuntime
-}
-
 interface Schema<T extends Tables, R extends RelsRecord<T>> {
   readonly [TABLES]: T
   readonly [RELS]: R
@@ -960,9 +1016,6 @@ what `db.h.users` reaches, and it is why a query started from a handle knows whi
 
 {/* docs: signature */}
 ```ts
-const SCHEMA: unique symbol
-const NAME: unique symbol
-
 interface Handle<Sc extends AnySchema, N extends string> {
   readonly [SCHEMA]: Sc
   readonly [NAME]: N
@@ -1024,7 +1077,7 @@ interface RelBuilders<T extends Tables> {
 
 {/* docs: signature */}
 ```ts
-const OUT: unique symbol
+// `RelBool` and `RelOrderArg` are internal aliases, inlined here.
 type RelBool = { readonly [OUT]: boolean }
 type RelOrderArg = { readonly dir: 'asc' | 'desc' } | { readonly [OUT]: unknown }
 
@@ -1033,8 +1086,8 @@ interface RelConfig<T extends AnyTable = AnyTable> {
   readonly to?: unknown
   readonly through?: unknown
   readonly alias?: string
-  readonly where?: (t: Refs<T>) => RelBool
-  readonly orderBy?: (t: Refs<T>) => RelOrderArg | readonly RelOrderArg[]
+  readonly where?: (t: T[typeof REFS]) => RelBool
+  readonly orderBy?: (t: T[typeof REFS]) => RelOrderArg | readonly RelOrderArg[]
 }
 ```
 
@@ -1087,10 +1140,11 @@ codecs. A codec's OID is per-database, so binding one at `defineSchema` time wou
 the default registry held; structure is resolved once here, codecs are resolved per registry later,
 where they can be re-resolved when the generation moves.
 
-## Naming and inference
+## Row shapes
 
-The two shapes below are what a schema file exports and what an application reads back. This is the
-part of the entry point you import for its *types* rather than its values.
+Four types read a table back as the rows an application handles. This is the part of the entry point
+you import for its *types* rather than its values, and it is why a schema file is the only place a
+column is written down.
 
 {/* docs: use=blog,blog-ddl */}
 ```ts title="row-types.ts"
@@ -1116,60 +1170,87 @@ as a `bigint` and `createdAt` as a `Date`.
 
 {/* docs: signature */}
 ```ts
-// `AnyTable` shortened to the one slot this reads; `SEL` is the exported slot symbol.
-const SEL: unique symbol
-interface AnyTable {
-  readonly [SEL]: any
-}
-
 type Row<T extends AnyTable> = T[typeof SEL]
+type Selectable<T extends AnyTable> = T[typeof SEL]
+type SelectRow<C extends Cols> = Simplify<{ [K in keyof C]: C[K]['t'] }>
 ```
 
 The row as read: every column, with `| null` already folded into the ones that opted in. It is an
 indexed access into a slot the table computed once, not a mapped type evaluated per use, which is
 why a hundred queries against one table cost one row-shape computation.
 
-The <a id="Selectable"/>`Selectable<T>` spelling is the same type under the `$inferSelect` name,
-and <a id="SelectRow"/>`SelectRow<C>` is the mapped type that computes it from a
-[`Cols`](#mapped-types-and-supertypes) record.
+The same type is exported twice more: `Selectable<T>` <a id="Selectable"/> is the `$inferSelect`
+spelling, and `SelectRow<C>` <a id="SelectRow"/> is the mapped type behind both — one indexed access
+per column, and not one conditional.
 
 ### `Insert`
 
 {/* docs: signature */}
 ```ts
-const INS: unique symbol
-interface AnyTable {
-  readonly [INS]: any
-}
-
 type Insert<T extends AnyTable> = T[typeof INS]
+type Insertable<T extends AnyTable> = T[typeof INS]
+type InsertRow<C extends Cols> = Simplify<
+  {
+    [K in keyof C as C[K]['ro'] extends true
+      ? never
+      : C[K]['opt'] extends true
+        ? never
+        : K]: C[K]['t']
+  } & {
+    [K in keyof C as C[K]['ro'] extends true
+      ? never
+      : C[K]['opt'] extends true
+        ? K
+        : never]?: C[K]['t']
+  }
+>
 ```
 
 The insert shape: `GENERATED ALWAYS` columns removed entirely, and columns that are nullable,
-defaulted or identity-by-default made optional. <a id="Insertable"/><a id="InsertRow"/>
-`Insertable<T>` is the `$inferInsert` spelling and `InsertRow<C>` the mapped type behind both.
+defaulted or identity-by-default made optional; the required and the optional halves are split by two
+`as` filters rather than by a conditional per column. <a id="Insertable"/><a id="InsertRow"/>
+`Insertable` is the `$inferInsert` spelling and `InsertRow` the mapped type behind both.
 
 ### `Update`
 
 {/* docs: signature */}
 ```ts
-const UPD: unique symbol
-interface AnyTable {
-  readonly [UPD]: any
-}
-
 type Update<T extends AnyTable> = T[typeof UPD]
+type Updateable<T extends AnyTable> = T[typeof UPD]
+type UpdateRow<C extends Cols> = Simplify<{
+  [K in keyof C as C[K]['ro'] extends true ? never : K]?: C[K]['t']
+}>
 ```
 
-Everything writable, all optional. <a id="Updateable"/><a id="UpdateRow"/> `Updateable<T>` is the
-`$inferUpdate` spelling and `UpdateRow<C>` the mapped type.
+Everything writable, all optional. <a id="Updateable"/><a id="UpdateRow"/> `Updateable` is the
+`$inferUpdate` spelling and `UpdateRow` the mapped type.
 
 ### `Loaded`
 
-`Loaded<H, K, F>` takes three parameters: the handle, the relation keys that must be present, and
-the column keys that were selected — `K` defaults to `never` and `F` to every column. The second and
-third are constrained by the handle's own schema, and its body is an unexported helper, so this is
-one of the two declarations on this page with no checked signature block.
+{/* docs: signature */}
+```ts
+// Two local aliases for readability; the real declaration spells both out at every use.
+type Sc<H extends AnyHandle> = H[typeof SCHEMA]
+type Nm<H extends AnyHandle> = H[typeof NAME]
+
+type Loaded<
+  H extends AnyHandle,
+  K extends keyof RelsAt<Sc<H>, Nm<H>> & string = never,
+  F extends keyof ColsAt<Sc<H>, Nm<H>> = keyof ColsAt<Sc<H>, Nm<H>>,
+> = Defer<
+  Simplify<
+    { [P in F & keyof ColsAt<Sc<H>, Nm<H>>]: ColsAt<Sc<H>, Nm<H>>[P]['t'] } & {
+      [P in K & keyof RelsAt<Sc<H>, Nm<H>>]-?: RelOut<
+        RelsAt<Sc<H>, Nm<H>>[P],
+        SelAt<Sc<H>, RelsAt<Sc<H>, Nm<H>>[P]['to']>
+      >
+    }
+  >
+>
+```
+
+Three parameters: the handle, the relation keys that must be present, and the column keys that were
+selected — `K` defaults to `never`, `F` to every column.
 
 `Loaded` is a *structural contract, not a brand*: because query results are plain object types, a
 result that projected all of `users` plus its `posts` is assignable to

@@ -1,6 +1,1161 @@
 ---
 title: The query builder
 description: Every query-builder export of the root entry point.
+apiEntry: pg-prime#.
 ---
 
-TODO
+Everything on this page is exported from `pg-prime` itself. It is the other half of the root entry
+point: the statement builders, the operators, the projection and scope types, and the relation
+accessors. The runtime half — `pgPrime`, the handles, the option bags — is on
+[pg-prime](/pg-prime/reference/pg-prime/), and [queries](/pg-prime/guides/queries/) is the guide
+that shows the same surface in the order you would learn it.
+
+A query is built by chaining immutable stages off a handle, and run with `.execute()`. The builder
+is not a thenable: nothing happens until a terminal method is called, so a half-built query is an
+ordinary value you can pass around, store, or hand to `.toSQL()`.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="operators.ts"
+import { and, eq, fn, ilike } from 'pg-prime'
+
+const [ada] = await db
+  .insertInto(db.h.users)
+  .values({ email: 'ada@example.com', name: 'Ada' })
+  .returning((t) => ({ id: t.users.id }))
+  .execute()
+
+await db
+  .insertInto(db.h.posts)
+  .values({ authorId: ada!.id, title: 'On the engine', body: '…', published: true })
+  .execute()
+
+const perAuthor = await db
+  .from(db.h.posts, 'p')
+  .innerJoin(db.h.users, 'u', (t) => eq(t.p.authorId, t.u.id))
+  .where((t) => and(eq(t.p.published, true), ilike(t.u.email, '%@example.com')))
+  .groupBy((t) => t.u.name)
+  .select((t) => ({ author: t.u.name, posts: fn.count() }))
+  .execute()
+
+console.log(perAuthor) // [ { author: 'Ada', posts: 1n } ]
+```
+
+## Building and running
+
+The entry points live on [`Executor`](#Executor), which every handle extends. A finished builder is
+a value; running it is `.execute()`, `.executeTakeFirst()`, `.stream()` — or handing it to
+`db.run(q)`, which accepts a builder, a prepared query or an already-compiled artifact.
+
+### `Executor`
+
+{/* docs: signature */}
+```ts
+interface Executor {
+  from<H extends AnyHandle, A extends string>(t: H, alias: A): Query<Record<A, H>, unknown>
+  with<N extends string, O2>(
+    name: N,
+    f: (d: Executor) => RowSource<O2>,
+    opts?: WithOpts,
+  ): CteExecutor<Record<N, CteHandle<N, O2>>>
+  withRecursive<N extends string, O2>(
+    name: N,
+    base: (d: Executor) => SelectSource<O2>,
+    step: (d: Executor, self: CteHandle<N, O2>) => SelectSource<O2>,
+    opts?: RecursiveOpts,
+  ): CteExecutor<Record<N, CteHandle<N, O2>>>
+  fromRaw<C extends Record<string, AnyCodec>, A extends string = 'raw'>(
+    frag: AnyFragment,
+    shape: C,
+    opts?: FromRawOpts<A>,
+  ): Query<Record<A, CteHandle<A, RawShape<C>>>, unknown>
+  insertInto<H extends AnyHandle>(t: H): InsertQuery<H, never, {}>
+  update<H extends AnyHandle>(t: H): UpdateQuery<H, never, never>
+  deleteFrom<H extends AnyHandle>(t: H): DeleteQuery<H, never>
+  sql(strings: TemplateStringsArray, ...values: readonly unknown[]): RawQuery
+}
+```
+
+Every method also has a two-argument form where the alias is omitted and defaults to the source's
+own name, so `db.from(db.h.users)` puts the table in scope as `t.users`.
+
+`fromRaw` is the named workaround for a set-returning function the builder has no DSL for —
+`jsonb_to_recordset`, `xmltable`, a `VALUES` list nobody wants typed. `shape` is the whole
+contract: its keys become the emitted column-alias list *and* the row's keys, and each codec
+decodes its column, so the result is as exactly typed as a table's. `columnTypes: true` emits a
+column *definition* list instead, which is what a function returning `record` cannot do without.
+
+`sql` is the fragment-only statement: the one path whose result OIDs only the server knows, and
+therefore the only one the description cache serves. Its rows are keyed by field name and typed
+`unknown`.
+
+### `Query`
+
+{/* docs: signature */}
+```ts
+interface Query<S extends Sources, O, N = never> extends SetOps<O, readonly [unknown]> {
+  select<P extends Projection>(f: (t: ScopeOf<S, N>) => P): Query<S, Project<P>, N>
+  selectAll<A extends keyof S>(
+    a: A,
+  ): Query<S, [A] extends [N] ? NullRow<SelectAt<S[A]>> : SelectAt<S[A]>, N>
+  where(f: (t: ScopeOf<S, N>) => Expr<boolean>): Query<S, O, N>
+  orderBy(f: (t: ScopeOf<S, N>) => OrderBy): Query<S, O, N>
+  limit(n: number): Query<S, O, N>
+  offset(n: number): Query<S, O, N>
+  distinct(): Query<S, O, N>
+  distinctOn(f: (t: ScopeOf<S, N>) => Grouping): Query<S, O, N>
+  window(
+    name: string,
+    f: (t: ScopeOf<S, N>) => WindowSpec | WindowLiteral | WindowFn,
+  ): Query<S, O, N>
+  forUpdate(opts?: LockOpts<keyof S & string>): Query<S, O, N>
+  innerJoin<H2 extends AnyHandle, A extends string>(
+    t: H2,
+    alias: A,
+    on: (t: ScopeOf<S, N> & Record<A, RefsAt<H2>>) => Expr<boolean>,
+  ): Query<S & Record<A, H2>, O, N>
+  leftJoin<H2 extends AnyHandle, A extends string>(
+    t: H2,
+    alias: A,
+    on: (t: ScopeOf<S, N> & Record<A, RefsAt<H2>>) => Expr<boolean>,
+  ): Query<S & Record<A, H2>, O, N | A>
+  innerJoinLateral<O2, A extends string>(
+    sub: SelectSource<O2> | ((t: ScopeOf<S, N>) => SelectSource<O2>),
+    alias: A,
+    on?: (t: ScopeOf<S, N> & Record<A, RefsAt<CteHandle<A, O2>>>) => Expr<boolean>,
+  ): Query<S & Record<A, CteHandle<A, O2>>, O, N>
+  $call<O2>(f: (q: this) => Query<S, O2, N>): Query<S, O2, N>
+  asScalar(): Expr<O[keyof O] | null>
+  as<A extends string>(name: A): CteHandle<A, O>
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
+}
+```
+
+The select stage. `S` is the aliases in scope, `O` is the result row, and `N` is the set of aliases
+that were **left-joined** — every ref off one of those reads `T | null`.
+
+`Query` is **invariant** in `O`. Without that, `let q = …; if (f) q = q.select(x)` silently discards
+`x` from the result type with no error at all; invariance turns the imperative build-up pattern into
+a compile error, which is why `$call` and `$if` exist to absorb it. `$if(cond, f)` has three
+signatures — a `true` literal, a `false` literal, and a runtime `boolean` whose result type admits
+both branches — and is the one deliberate exception to "never overload a hot-path builder method".
+
+The members not shown above:
+
+- `groupBy(f)` moves to [`GroupedQuery`](#GroupedQuery), carrying the grouping keys as
+  `"alias.column"` strings so the relation guard can read them.
+- `rightJoin`, `fullJoin` and `crossJoin` mirror `innerJoin`. `rightJoin` nulls **every alias
+  already in scope** rather than the new one, because the rows that survive are the new table's;
+  `crossJoin` has no `on` parameter at all, because PostgreSQL rejects `cross join … on …` and the
+  emitter refuses to drop a predicate silently. `leftJoinLateral` is `innerJoinLateral` with the
+  lateral's own alias nullable.
+- `execute()`, `executeTakeFirst()`, `stream(opts?)` and `prepare(name?, opts?)` need a projection
+  first. Before `.select(…)` the row type is `unknown` and calling them is a type error naming the
+  missing projection — `db.from(users).execute()` used to typecheck as `Promise<unknown[]>` and
+  emit `select *`, which is the one shape the codec layer cannot decode by position.
+- `toAst()` returns the AST node and `compile()` the compiled artifact. Both are pure and
+  deterministic: the same builder always produces the same tree, and `compile()` is memoised on the
+  instance, because a builder cannot change and so the memo cannot go stale.
+
+### `GroupedQuery`
+
+{/* docs: signature */}
+```ts
+interface GroupedQuery<S extends Sources, O, N, G extends string> extends SetOps<O, readonly [unknown]> {
+  limit(n: number): GroupedQuery<S, O, N, G>
+  offset(n: number): GroupedQuery<S, O, N, G>
+  as<A extends string>(name: A): CteHandle<A, O>
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
+}
+```
+
+The stage a `.groupBy(…)` lands in, where `G` is the grouping list as `"alias.column"` strings.
+`select`, `having`, `orderBy` and `window` all take the *grouped* scope, whose callback parameter
+carries the guard: a column that is neither grouped nor aggregated is a compile error rather than
+PostgreSQL's `column "…" must appear in the GROUP BY clause` at run time.
+
+A separate interface is not stylistic. It is what keeps the guard's conditionals off every
+ungrouped query in the program, and it is why an error prints `GroupedQuery<…>` rather than a
+method body.
+
+There is deliberately no `asScalar()` here: a grouped query returns one row per group, and
+`(select … group by …)` in a scalar position raises `21000` the moment there are two. The ungrouped
+aggregate — `db.from(posts).select(p => ({ v: fn.max(p.createdAt) }))` — is an ordinary `Query`.
+
+### `SetQuery`
+
+{/* docs: signature */}
+```ts
+interface SetQuery<O, B extends readonly unknown[]> extends SetOps<O, B> {
+  orderBy(f: (r: ResultRefs<O>) => OrderBy): SetQuery<O, B>
+  limit(n: number): SetQuery<O, B>
+  offset(n: number): SetQuery<O, B>
+  as<A extends string>(name: A): CteHandle<A, O>
+  execute(): Promise<O[]>
+  executeTakeFirst(): Promise<O | undefined>
+  prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
+  stream(opts?: StreamOptions): AsyncIterable<O>
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
+}
+```
+
+A finished set operation, deliberately narrower than `Query`: PostgreSQL applies `ORDER BY`, `LIMIT`
+and `OFFSET` to the whole set-op result, and there is no scope left to filter or join against — so
+those methods are absent rather than present and wrong. `orderBy` reads
+[`ResultRefs`](#ResultRefs), the *result* columns.
+
+### `SetOps`
+
+The set-op vocabulary, shared by every stage that can start one: `union`, `unionAll`, `intersect`,
+`intersectAll`, `except` and `exceptAll`, each taking one row source and returning a
+[`SetQuery`](#SetQuery). Its second type parameter `B` is a tuple whose length is the number of
+branches so far, which is how a mismatched branch's error message can say "branch 3" truthfully for
+`a.union(b).union(c)` instead of always saying "branch 2".
+
+Only a `SELECT` may be a branch. An `InsertQuery` with a `RETURNING` list satisfies
+[`RowSource`](#RowSource) structurally, so `select … union insert …` used to typecheck and then die
+in the compiler; the [`SELECT_SOURCE`](#SELECT_SOURCE) brand closes that at the cost of one property
+check.
+
+### `InsertQuery`
+
+{/* docs: signature */}
+```ts
+/** The target table under its own name, so a callback reads `t.users.id` and not `t.id`. */
+type SelfScope<H extends AnyHandle> = Record<string, RefsAt<H> & AllRefs<RefsAt<H>> & RelPickers<H>>
+
+interface InsertQuery<H extends AnyHandle, O, C extends Sources = {}> extends RowSource<O> {
+  values(row: InsertPatch<TableAt<H>>): InsertQuery<H, O, C>
+  valuesMany<R extends InsertPatch<TableAt<H>>>(
+    rows: readonly R[],
+    opts?: BulkOpts,
+  ): InsertQuery<H, O, C>
+  defaultValues(): InsertQuery<H, O, C>
+  fromSelect<O2>(q: SelectSource<O2> | ((d: CteExecutor<C>) => SelectSource<O2>)): InsertQuery<H, O, C>
+  onConflict(f: (c: ConflictBuilder<H>) => ConflictBuilder<H>): InsertQuery<H, O, C>
+  returning<P extends Projection>(f: (t: SelfScope<H>) => P): InsertQuery<H, Project<P>, C>
+  returningAll(): InsertQuery<H, SelectAt<H>, C>
+  execute(): Promise<O[]>
+  executeTakeFirst(): Promise<O | undefined>
+  prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
+}
+```
+
+`C` is the CTE map the executor that built the insert had in scope, so `.fromSelect(d => …)` hands
+back an executor that can still say `d.fromCte('moved')`.
+
+`valuesMany` infers a single `R` from every element, which makes the batch **homogeneous by
+construction**: `readonly InsertPatch<T>[]` alone let `[{ a: 1 }, { b: 2 }]` typecheck — each
+element is a legal patch on its own — and the runtime then rejected it, because a bulk insert is
+one statement with one column list. Its real return type is a sentinel carrying that sentence when
+the rows disagree, so the mismatch is a compile error at the literal.
+
+`compileAll()` returns every statement the builder will run, which is more than one only when the
+batch was chunked; `prepare()` throws for a chunked batch, because one prepared artifact cannot
+mean N statements. Under `analyze`, `explain` wraps and rolls back by default — `EXPLAIN ANALYZE
+INSERT` inserts.
+
+### `UpdateQuery`
+
+{/* docs: signature */}
+```ts
+/** `SelfScope<H>` is again the target table under its own name — `t.posts.views`. */
+type SelfScope<H extends AnyHandle> = Record<string, RefsAt<H> & AllRefs<RefsAt<H>> & RelPickers<H>>
+
+interface UpdateQuery<H extends AnyHandle, O, V> extends RowSource<O> {
+  set(f: (t: SelfScope<H>, v: V) => SetPatch<TableAt<H>>): UpdateQuery<H, O, V>
+  where(f: (t: SelfScope<H>, v: V) => Expr<boolean>): UpdateQuery<H, O, V>
+  allRows(): UpdateQuery<H, O, V>
+  fromValues<C extends Record<string, AnyCodec>>(
+    rows: readonly NoInfer<{ [K in keyof C]: CodecIn<C[K]> }>[],
+    codecs: C,
+    opts?: FromValuesOpts,
+  ): UpdateQuery<H, O, ValueRefs<C>>
+  returning<P extends Projection>(f: (t: SelfScope<H>) => P): UpdateQuery<H, Project<P>, V>
+  returningAll(): UpdateQuery<H, SelectAt<H>, V>
+  execute(): Promise<O[]>
+  executeTakeFirst(): Promise<O | undefined>
+  prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
+}
+```
+
+There is no unconditional `UPDATE`: without a `where` or an explicit `allRows()`, the builder
+refuses to emit rather than rewrite the table.
+
+`fromValues` is bulk update by key — `update … from (values …) as "v"(…)`. The rows are typed by
+the codecs rather than by `unknown`, so `{ id: 'not-a-bigint' }` against `{ id: int8Codec }` is a
+compile error here rather than a `PgEncodeError` at execute time, and `V` becomes the
+[`ValueRefs`](#ValueRefs) the `set` and `where` callbacks read as their second argument.
+
+### `DeleteQuery`
+
+{/* docs: signature */}
+```ts
+interface DeleteQuery<H extends AnyHandle, O, S extends Sources> extends RowSource<O> {
+  where(f: (t: ScopeOf<S>) => Expr<boolean>): DeleteQuery<H, O, S>
+  allRows(): DeleteQuery<H, O, S>
+  using<H2 extends AnyHandle, A extends string>(t: H2, alias: A): DeleteQuery<H, O, S & Record<A, H2>>
+  returning<P extends Projection>(f: (t: ScopeOf<S>) => P): DeleteQuery<H, Project<P>, S>
+  returningAll(): DeleteQuery<H, SelectAt<H>, S>
+  execute(): Promise<O[]>
+  executeTakeFirst(): Promise<O | undefined>
+  prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
+}
+```
+
+`S` is the scope, which `using(…)` widens exactly as `innerJoin` widens a select's — a
+`DELETE … USING … RETURNING` may name the USING relations, so `returning` reads the same scope. `S`
+defaults to the target table under its own name. `allRows()` is the same opt-in an unconditional
+`DELETE` needs.
+
+### `ConflictBuilder`
+
+{/* docs: signature */}
+```ts
+interface ConflictBuilder<H extends AnyHandle> {
+  columns(f: (t: RefsAt<H>) => Grouping): ConflictBuilder<H>
+  expressions(f: (t: RefsAt<H>) => Grouping): ConflictBuilder<H>
+  constraint(name: string): ConflictBuilder<H>
+  where(f: (t: RefsAt<H>) => Expr<boolean>): ConflictBuilder<H>
+  doNothing(): ConflictBuilder<H>
+  doUpdate(f: (set: RefsAt<H>, excluded: RefsAt<H>) => SetPatch<TableAt<H>>): ConflictBuilder<H>
+  whereUpdate(f: (t: RefsAt<H>, excluded: RefsAt<H>) => Expr<boolean>): ConflictBuilder<H>
+}
+```
+
+The full `ON CONFLICT` surface. `excluded` is the proposed row, handed to `doUpdate` as a second
+scope.
+
+Note the two different `where`s. `where` is the *partial-index predicate* that picks the arbiter
+index; `whereUpdate` is `DO UPDATE … WHERE`, which decides per row whether to write. Conflating
+them is the classic upsert bug, so they have two names. `constraint(name)` takes a bare `string` on
+purpose: the arbiter is a constraint, and table-level `primaryKey(…)` and `uniqueIndex(…)` have
+optional names, so there is no complete set to check against and a union here would reject valid
+input.
+
+### `PreparedQuery`
+
+{/* docs: signature */}
+```ts
+interface PreparedQuery<P, O> {
+  readonly name: string | undefined
+  readonly sql: string
+  toSQL(params?: P): SqlSnapshot
+  execute(params: P): Promise<O[]>
+  executeTakeFirst(params: P): Promise<O | undefined>
+  stream(params: P, opts?: StreamOptions): AsyncIterable<O>
+  explain(params: P, opts?: ExplainOptions): Promise<ExplainResult>
+}
+```
+
+A compiled statement with typed holes, from `.prepare<P>(name?)`. `P` is written by hand —
+`.prepare<{ email: string }>('users_by_email')` — and checked against the declared
+[`placeholder(…)`](#placeholder) names at `execute()`; linking the two statically would need a
+fourth type parameter on `Query`, which the hot-path budget rules out.
+
+`execute()` walks the binds once, calls `codec.encode` per slot per execution, and re-does nothing
+else: no AST walk, no `compile()`, no decoder build. All three are pinned with spies, because "we
+cached it" is exactly the kind of claim that is true on the day it is written. `compile()` returns
+the frozen artifact — identical on every call, which is what "prepared" means — and `meta` carries
+the reads, writes, placeholders and unsafe-raw flags the compiler recorded.
+
+### `RawQuery`
+
+{/* docs: signature */}
+```ts
+interface RawQuery {
+  readonly sql: string
+  execute(): Promise<RawRow[]>
+  executeTakeFirst(): Promise<RawRow | undefined>
+  stream(opts?: StreamOptions): AsyncIterable<RawRow>
+  explain(opts?: ExplainOptions): Promise<ExplainResult>
+  toSQL(): SqlSnapshot
+}
+```
+
+What `` db.sql`…` `` returns. Rows are keyed by the field names the server reported and decoded by
+OID, and there is deliberately no `prepare()`, no `as(…)` and no projection: a statement whose shape
+only the server knows cannot offer the guarantees the typed builders do.
+
+### CTEs
+
+`db.with(name, f)` and `db.withRecursive(name, base, step)` return a
+[`CteExecutor`](#CteExecutor) whose declared CTEs are ordinary handles on `.cte`, so
+`.innerJoin(d.cte.archived, 'a', …)` needs no new method. `.fromCte(name, alias?)` is the sugar that
+keeps the single-CTE case one chain.
+
+### `CteExecutor`
+
+{/* docs: signature */}
+```ts
+interface CteExecutor<C extends Sources> {
+  readonly cte: C
+  with<N extends string, O2>(
+    name: N,
+    f: (d: CteExecutor<C>) => RowSource<O2>,
+    opts?: WithOpts,
+  ): CteExecutor<C & Record<N, CteHandle<N, O2>>>
+  insertInto<H extends AnyHandle>(t: H): InsertQuery<H, never, C>
+  update<H extends AnyHandle>(t: H): UpdateQuery<H, never, never>
+  deleteFrom<H extends AnyHandle>(t: H): DeleteQuery<H, never>
+  from<H extends AnyHandle, A extends string>(t: H, alias: A): Query<Record<A, H>, unknown>
+  fromCte<K extends keyof C & string, A extends string>(name: K, alias: A): Query<Record<A, C[K]>, unknown>
+  fromCte<K extends keyof C & string>(name: K): Query<Record<K, C[K]>, unknown>
+}
+```
+
+`withRecursive` and `fromRaw` are here too, with the declared CTEs still in scope for the rest of
+the chain. A name already taken by another CTE is refused: the real return type of `with` is a
+sentinel that prints the clash, rather than an overwrite nobody would notice.
+
+Because `f` accepts any [`RowSource`](#RowSource), a writable CTE —
+`db.with('moved', d => d.deleteFrom(t).returning(…))` — needs nothing extra.
+
+The remaining builder types are small:
+
+| Type | Shape | Notes |
+|---|---|---|
+| <a id="CteHandle"/> `CteHandle` | `CteHandle<N, O>` | A CTE, a derived table or a lateral, as a handle. Carries the alias `N` and the row type `O`, so it is usable anywhere a table handle is. |
+| <a id="WithOpts"/> `WithOpts` | `{ materialized?: boolean }` | `MATERIALIZED` / `NOT MATERIALIZED`; absent lets the planner decide. |
+| <a id="RecursiveOpts"/> `RecursiveOpts` | `WithOpts` + `{ unionAll?: boolean }` | `UNION ALL` by default, which is what a traversal wants; `false` is `UNION`, which deduplicates every intermediate row and is the cycle-avoiding spelling for a graph, at one equality comparison per row. |
+| <a id="FromRawOpts"/> `FromRawOpts` | `{ alias?: A; columnTypes?: boolean }` | The alias defaults to `'raw'`. `columnTypes` is required for a function returning `record` and rejected by PostgreSQL for one that is not, which is why it is a choice and not a default. |
+| <a id="FromValuesOpts"/> `FromValuesOpts` | `{ alias?: string; strategy?: 'values' \| 'unnest' }` | `UPDATE … FROM (VALUES …)`. |
+| <a id="BulkOpts"/> `BulkOpts` | `{ strategy?: 'values' \| 'unnest' \| 'auto'; chunkSize?: number }` | `'auto'` picks `unnest` above 30 000 cells and `values` below. `chunkSize` is rows per statement once the batch is split, default 5000. |
+| <a id="LockOpts"/> `LockOpts` | `{ strength?, of?, wait? }` | `forUpdate()`. `strength` is `'update' \| 'no key update' \| 'share' \| 'key share'`; `wait` is `'block' \| 'nowait' \| 'skip locked'`, and `'skip locked'` is what makes a queue workload possible. `of` is checked against **this query's aliases**, because PostgreSQL raises `42P01` for a name that is not one of them and a typo in a lock list only shows up under contention. |
+| <a id="InsertPatch"/> `InsertPatch` | `InsertPatch<T>` | The insert row, with an expression allowed per column, so `createdAt: fn.now()` typechecks without a cast. A column is optional iff it is nullable, has a default or is identity-by-default, and absent iff it is `GENERATED ALWAYS`. |
+| <a id="SetPatch"/> `SetPatch` | `SetPatch<T>` | The update patch: everything writable, all optional, values or expressions. |
+| <a id="SubQuery"/> `SubQuery` | `SubQuery<Sc, N, P>` | A relation sub-query, with `where`, `orderBy`, `limit`, `offset` and `select`. Its filters are **per parent**. `P` defaults to the child's own refs, so a sub-query that never calls `.select()` still has an exact row type and `.many(q => q.limit(3))` means what it looks like it means. |
+| <a id="Runnable"/> `Runnable` | `Compilable<O> \| Compiled<O>` | What `db.run`, `db.explain` and `db.stream` accept: anything that compiles, which is strictly wider than a builder. |
+| <a id="AnyQuery"/> `AnyQuery` | the minimal supertype | An O(1) constraint check for a generic that means "some query", with no structural walk. |
+| <a id="InferResult"/> `InferResult` | `InferResult<Q>` | The array of rows a query returns, as one indexed access. |
+| <a id="RowOf"/> `RowOf` | `RowOf<Q>` | One row of a query. `InferResult<Q>` is the array form. |
+
+### `RowSource`
+
+{/* docs: signature */}
+```ts
+interface RowSource<O> {}
+```
+
+Anything that yields rows: a `Query`, a `GroupedQuery`, a `SetQuery` — **and** an `InsertQuery`,
+`UpdateQuery` or `DeleteQuery` with a `RETURNING` list, which is what makes a writable CTE
+expressible. It carries the row type in a phantom slot, so the interface has no members you can
+call.
+
+### `SelectSource`
+
+{/* docs: signature */}
+```ts
+interface SelectSource<O> extends RowSource<O> {}
+```
+
+A `RowSource` that is a `SELECT`: the only thing a set operation, a lateral join or a `fromSelect`
+may take.
+
+### `SELECT_SOURCE`
+
+{/* docs: signature */}
+```ts
+const SELECT_SOURCE: unique symbol
+```
+
+The phantom brand behind `SelectSource`, present on the three SELECT stages and nowhere else. One
+property check is what keeps `select … union insert …` and `$if(flag, q => db.insertInto(other))`
+from compiling.
+
+### `Sources`
+
+{/* docs: signature */}
+```ts
+type Sources = Record<string, AnyHandle>
+```
+
+Only the tables **in scope** — no database-wide parameter and no `keyof DB` on the hot path. That
+is the single decision the builder's compile-time cost turns on: a scope is 1 to 4 entries, not the
+whole schema.
+
+### `SqlSnapshot`
+
+{/* docs: signature */}
+```ts
+interface SqlSnapshot {
+  readonly sql: string
+  readonly params: readonly (PgParam | PlaceholderRef)[]
+  readonly placeholders: readonly string[]
+}
+```
+
+What `toSQL()` returns, plus `meta` — the compiler's own record of reads, writes, placeholders and
+whether an unsafe raw fragment was spliced. `params` carries the **encoded** wire values, because
+that is the honest artifact: the injection-safety claim is about what is in the bind slot, not
+about what the caller typed. An unfilled placeholder reads as `{ placeholder: 'email' }` rather
+than throwing, because `toSQL()` is what you reach for *while* debugging a prepared query.
+
+### `PlaceholderRef`
+
+{/* docs: signature */}
+```ts
+interface PlaceholderRef {
+  readonly placeholder: string
+}
+```
+
+An unfilled `.prepare()` hole, as `toSQL()` reports it.
+
+### `placeholder`
+
+{/* docs: signature */}
+```ts
+function placeholder<C extends AnyCodec>(name: string, codec: C): Expr<CodecOut<C>, C['name']>
+```
+
+A named hole, filled at `execute(params)` on a prepared query. The codec is mandatory and is the
+same one a column or `val(…)` would carry, so the hole is a class-gated operand —
+`eq(u.email, placeholder('email', textCodec))` typechecks and comparing it with a `numeric` column
+does not — and its `$n` is declared to `Parse` with a real OID rather than left for PostgreSQL to
+infer, which is what avoids `42P18`.
+
+## Projections and scopes
+
+A projection is a plain object literal whose values are refs and expressions; the result row is
+that object with each value replaced by what it yields. The types below are how that happens, and
+all of them are one indexed access or one mapped type — deliberately not conditional and not
+recursive, which is what keeps a large query's instantiation count flat.
+
+### `Projection`
+
+{/* docs: signature */}
+```ts
+type Projection = Record<string, Projectable>
+```
+
+What a `select` callback returns. `Projectable` is the marker every ref, expression and `nest(…)`
+carries; a sort direction is not one, which is why `select(() => ({ x: desc(u.id) }))` is a type
+error.
+
+### `nest`
+
+{/* docs: signature */}
+```ts
+function nest<P extends Projection>(p: P): Expr<Project<P>>
+```
+
+Group columns into a nested object in the result — pure grouping, zero SQL cost. The columns are
+still selected flat and the object is assembled while decoding, so `{ author: nest({ id: t.u.id,
+name: t.u.name }) }` costs nothing beyond the two columns it already selected.
+
+### `nestNullable`
+
+{/* docs: signature */}
+```ts
+function nestNullable<P extends Projection>(p: P): Expr<ProjectPreJoin<P> | null>
+```
+
+As `nest`, but the **whole object** is `null` when its source alias was left-joined — the shape you
+want for an optional relation, where "no author" should be one `null` rather than an object of
+nulls. Which members decide that needs the enclosing statement's join list, so it is settled during
+compilation; the static type always says `\| null`, which is a deliberate over-approximation.
+
+### `omit`
+
+{/* docs: signature */}
+```ts
+function omit<R extends object, K extends readonly (keyof R & string)[]>(
+  r: R,
+  ...keys: K
+): Omit<R, K[number]>
+```
+
+`omit(u.$all, 'passwordHash')` — a copy, never a mutation. `$all` is the scope's own frozen ref
+record, shared by every query that touches the alias, so deleting from it would delete the column
+from the next query too. Prisma needs a whole second mechanism for this; here it is `Object.keys`.
+
+### `AllRefs`
+
+{/* docs: signature */}
+```ts
+interface AllRefs<R> {
+  readonly $all: R
+}
+```
+
+`$all` is every column of one alias as a plain record of refs, so `{ ...u.$all }` is `SELECT *` with
+an exact type and `{ ...omit(u.$all, 'passwordHash') }` is Prisma's `omit` for free.
+
+It is a **spread, not a group**: one output column per member, so a left-joined alias's `$all` is a
+record of `T | null` columns and never a `\| null` object — whole-object nullability is
+[`nestNullable`](#nestNullable)'s rule. It is also not a column: a table whose TypeScript keys
+include `$all` is rejected when its scope is built, because one of the two would silently hide the
+other.
+
+### `ResultRefs`
+
+{/* docs: signature */}
+```ts
+type ResultRefs<O> = { [K in keyof O]-?: Expr<O[K]> }
+```
+
+The refs a set operation's `ORDER BY` may name: the *result* columns, because after a `UNION` there
+is no scope left.
+
+### `ValueRefs`
+
+{/* docs: signature */}
+```ts
+type ValueRefs<C extends Record<string, AnyCodec>> = Defer<
+  Simplify<{ [K in keyof C]: Expr<CodecOut<C[K]>, CodecPg<C[K]>> }>
+>
+```
+
+The refs a `fromValues` source exposes, one per declared codec — the second argument the `set` and
+`where` callbacks of a bulk update receive.
+
+### `NullRow`
+
+{/* docs: signature */}
+```ts
+type NullRow<T> = Defer<Simplify<{ [K in keyof T]: T[K] | null }>>
+```
+
+A whole row shape with every column nullable, which is what `selectAll(a)` returns for a
+left-joined alias.
+
+### `RefsOf`
+
+{/* docs: signature */}
+```ts
+type RefsOf<S extends Sources> = { [A in keyof S]: RefsAt<S[A]> }
+```
+
+The refs of every alias in scope. It maps over 1 to 4 entries, and column legality is then ordinary
+property access rather than a lookup type.
+
+The rest of the scope machinery is type-level only:
+
+| Type | Meaning |
+|---|---|
+| <a id="ScopeOf"/> `ScopeOf` | `ScopeOf<S, N>` — columns and relations in one object per alias, so `t.u.posts(…)` sits next to `t.u.email`. `N` is the set of left-joined aliases; the `[N] extends [never]` split is the whole cost of left-join nullability on a query that has none, and the taken branch is byte-identical to the version without it, so it hits the same instantiation-cache entry. |
+| <a id="RefsAt"/> `RefsAt` | `RefsAt<H>` — a table's pre-computed ref record, built at most once per table per program no matter how many queries touch it. This is the load-bearing performance decision of the whole type layer. |
+| <a id="SelectAt"/> `SelectAt` | `SelectAt<H>` — the table's pre-flattened select row, i.e. what `selectAll` and `returningAll` produce. |
+| <a id="TableAt"/> `TableAt` | `TableAt<H>` — the table a handle names, resolved through the handle's schema. |
+| <a id="ColsAtH"/> `ColsAtH` | `ColsAtH<H>` — the table's column-metadata record, read by the `GROUP BY` guard and nothing else. |
+| <a id="PkOf"/> `PkOf` | `PkOf<H>` — the primary key **as declared per column**. Deliberately incomplete and deliberately biased: a composite key declared table-level is runtime-only, so this is `never` for such a table and the guard then allows everything — an unmodelled key can never produce a false rejection, only a missed one, which PostgreSQL itself catches. |
+| <a id="Project"/> `Project` | `Project<P>` — the result-narrowing type: one indexed access per output key, not conditional and not recursive. Affordable only because grouping goes through `nest` rather than through bare nested object literals. |
+| <a id="ProjectPreJoin"/> `ProjectPreJoin` | `Project`, reading each key's pre-left-join type. Only ever instantiated by `nestNullable`. |
+| <a id="NullRef"/> `NullRef` | `NullRef<R>` — a column of a left-joined alias: same source, same key, same PostgreSQL type class, with `\| null` on the read type. Written as guarded indexed accesses rather than a conditional so the whole nullable ref record for a table is computed once per program and cached, exactly like the non-null one. |
+| <a id="Grouping"/> `Grouping` | `Projectable \| readonly Projectable[]` — what a `groupBy`, `distinctOn` or `ConflictBuilder.columns` callback may return. Not `OrderBy`: a sort direction is not a grouping key. |
+
+## Operators
+
+Every operator is a free function, `and`-ed and `or`-ed explicitly, and every one of them is
+**class-gated**: its first operand must be an expression PostgreSQL calls a particular type. That
+is what stops `rangeContains` from taking an `inet`, and what makes `strictlyLeft` (a range's `<<`)
+and `containedByNet` (a network's `<<`) two different functions rather than one stringly-typed
+`op('<<', …)`.
+
+Every value on the right-hand side becomes a `$n` bind — including a JSON key, a JSON path, a
+pattern, and a list. Nothing below splices text into SQL.
+
+{/* docs: signature */}
+```ts
+function like(a: TextOperand, p: Operand<string>): Expr<boolean, 'bool'>
+```
+
+That is the shape of the whole family: a gated left operand, a value-or-expression right operand,
+and a result that is itself an operand, so `ilike(jsonPathText(u.meta, ['a']), 'x%')` typechecks
+because `jsonPathText` returns `Expr<string, 'text'>`.
+
+### Comparison
+
+`eq` and `neq` refuse a literal `null` at the type level and at run time. `a = NULL` is `NULL`, not
+`false`, so the query would silently return nothing; the rejection is deliberate rather than a
+rewrite to `IS NULL`, because the two mean different things and only you know which you meant. The
+null-safe forms are `isNull`, `isNotNull`, `isDistinctFrom` and `isNotDistinctFrom`, and the
+three-valued boolean tests are `isTrue`, `isNotTrue`, `isFalse` and `isNotFalse`.
+
+The right operand is typed by the column's **decoded** type, not its codec's input type. So
+`gt(u.createdAt, '2026-01-01')` is a compile error even though `timestamptz.encode` accepts a
+string: a widened `Date | string` would also make `gt(u.createdAt, u.name)` compile, comparing a
+`timestamptz` with a `text` column.
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="eq"/> `eq` | `a = b` | Refuses a literal `null`. |
+| <a id="neq"/> `neq` | `a <> b` | Refuses a literal `null`. |
+| <a id="lt"/> `lt` | `a < b` | |
+| <a id="lte"/> `lte` | `a <= b` | |
+| <a id="gt"/> `gt` | `a > b` | |
+| <a id="gte"/> `gte` | `a >= b` | |
+| <a id="between"/> `between` | `a between lo and hi` | Both bounds are encoded with `a`'s own codec. |
+| <a id="inList"/> `inList` | `a = any($1)` | **One** parameter regardless of list length, so a hundred list sizes share one prepared plan instead of minting a hundred. The empty list compiles to the constant `false`, which the planner can prune outright. |
+| <a id="notInList"/> `notInList` | `a <> all($1)` | The mirror of `inList`; the empty list is the constant `true`. |
+| <a id="inQuery"/> `inQuery` | `a in (select …)` | Takes a select builder, not a list. |
+| <a id="coalesce"/> `coalesce` | `coalesce(a, b)` | The result cannot be null, so the type drops it. |
+| <a id="cast"/> `cast` | `a::<codec.sqlName>` | The cast is spelled from the codec, so the SQL type and the decoder can never disagree. `NULL::text` is still NULL, so the operand's nullability is threaded through rather than dropped. |
+| <a id="val"/> `val` | `$n`, encoded **and declared** with the codec | The missing primitive without which a class-gated operator has no literal operand: a value inside a `sql` template is a `$n` with no declared type, so `int4range && $1` has no unique resolution. `val('[1,5)', int4rangeCodec)` sends `Parse` with OID 3904 and the operator resolves. |
+
+### Boolean
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="and"/> `and` | `(a and b and …)` | Variadic. No arguments is the constant `true`, and one argument collapses to itself. |
+| <a id="or"/> `or` | `(a or b or …)` | Variadic. No arguments is the constant `false`. |
+| <a id="not"/> `not` | `not a` | |
+| <a id="exists"/> `exists` | `exists (select …)` | Takes a select builder, a set operation, or a hand-built node. |
+| <a id="notExists"/> `notExists` | `not exists (select …)` | |
+
+### Text and pattern matching
+
+The pattern operand of `like`, `ilike` and `startsWith` is encoded with the **left** operand's
+codec, so a `citext` column keeps `citext ~~ citext` (case-insensitive) instead of being down-cast
+to `text ~~ text` by a parameter declared too narrowly. The regex family is different: PostgreSQL
+has no `citext ~ citext`, only `text ~ text`, so those pass `text` explicitly.
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="like"/> `like` | `a like $1` | |
+| <a id="ilike"/> `ilike` | `a ilike $1` | Case-insensitive. |
+| <a id="notLike"/> `notLike` | `a not like $1` | |
+| <a id="notILike"/> `notILike` | `a not ilike $1` | |
+| <a id="startsWith"/> `startsWith` | `a ^@ $1` | Prefix match, index-backed by an SP-GiST index or a `text_pattern_ops` btree. |
+| <a id="regex"/> `regex` | `a ~ $1` | POSIX regular expression. |
+| <a id="iregex"/> `iregex` | `a ~* $1` | Case-insensitive. |
+| <a id="notRegex"/> `notRegex` | `a !~ $1` | |
+| <a id="notIRegex"/> `notIRegex` | `a !~* $1` | |
+| <a id="similarTo"/> `similarTo` | `a similar to $1` | SQL's own pattern language, not POSIX. |
+| <a id="concat"/> `concat` | `a \|\| b` | `NULL \|\| 'x'` is NULL, so the operand's nullability survives into the result type. |
+
+### Arithmetic
+
+Each preserves the left operand's PostgreSQL type, which is what PostgreSQL itself does.
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="add"/> `add` | `a + b` | |
+| <a id="sub"/> `sub` | `a - b` | |
+| <a id="mul"/> `mul` | `a * b` | |
+| <a id="div"/> `div` | `a / b` | Integer operands mean **integer** division: `div(int4, int4)` is `int4`, and `7 / 2` is `3`. |
+| <a id="mod"/> `mod` | `a % b` | |
+| <a id="abs"/> `abs` | `abs(a)` | |
+
+### Arrays
+
+`ArrayOperand<E>` infers `E` from the element type rather than from the `[]` suffix, because
+PostgreSQL has one array type per element type and no multi-dimensional array type at all.
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="arrayContains"/> `arrayContains` | `a @> $1` | |
+| <a id="arrayContainedBy"/> `arrayContainedBy` | `a <@ $1` | |
+| <a id="hasAll"/> `hasAll` | `a @> $1` | Every element of the argument is in `a` — the readable spelling of `arrayContains`. |
+| <a id="overlaps"/> `overlaps` | `a && $1` | At least one element in common. |
+| <a id="has"/> `has` | `$1 = any(a)` | One **scalar** against the array, encoded with the array's element codec. |
+| <a id="arrayLength"/> `arrayLength` | `array_length(a, 1)` | `int4`, and `null` for an empty array — PostgreSQL's own answer. |
+| <a id="arrayConcat"/> `arrayConcat` | `a \|\| b` | Keeps the left operand's array type. |
+| <a id="anyOf"/> `anyOf` | `any(a)` | An operand, not a predicate: `eq(u.name, anyOf(u.tags))`. |
+| <a id="allOf"/> `allOf` | `all(a)` | The `ALL` quantifier, same shape. |
+
+### JSON and JSONB
+
+The four accessors exist for both `json` and `jsonb`, and their result keeps the operand's own type
+— `json -> k` yields `json`, `jsonb -> k` yields `jsonb`, which are different OIDs, so hard-coding
+`jsonb` would make `assertShape` reject every accessor on a `json` column. Everything else in this
+table is `jsonb`-only, and the operand gate is what says so.
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="jsonGet"/> `jsonGet` | `a -> $1` | A string key declares `text` and a number declares `int4`, because PostgreSQL has two `->` operators and sending an untyped key makes it pick the object one and return `null` for every array. |
+| <a id="jsonGetText"/> `jsonGetText` | `a ->> $1` | The same choice of key type; result `text`. |
+| <a id="jsonPath"/> `jsonPath` | `a #> $1` | The path is **one** `text[]` parameter, never spliced text. |
+| <a id="jsonPathText"/> `jsonPathText` | `a #>> $1` | Result `text`. |
+| <a id="jsonContains"/> `jsonContains` | `a @> $1` | The probe document is one `jsonb` bind. |
+| <a id="jsonContainedBy"/> `jsonContainedBy` | `a <@ $1` | |
+| <a id="hasKey"/> `hasKey` | `a ? $1` | Key existence. The operand is `text`, which is exactly where a stringly-typed builder gets it wrong. |
+| <a id="hasAnyKey"/> `hasAnyKey` | `a ?\| $1` | The keys are one `text[]`. |
+| <a id="hasAllKeys"/> `hasAllKeys` | `a ?& $1` | The keys are one `text[]`. |
+| <a id="jsonPathExists"/> `jsonPathExists` | `a @? $1` | Does the SQL/JSON path match anything? The path is a `jsonpath` parameter. |
+| <a id="jsonPathMatch"/> `jsonPathMatch` | `a @@ $1` | Does the SQL/JSON path predicate evaluate to true? |
+| <a id="jsonConcat"/> `jsonConcat` | `a \|\| $1` | |
+| <a id="jsonDelete"/> `jsonDelete` | `a - $1` | Delete a key, or several with a `text[]`. |
+| <a id="jsonDeletePath"/> `jsonDeletePath` | `a #- $1` | Delete at a path. |
+
+### Ranges
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="rangeOverlaps"/> `rangeOverlaps` | `a && $1` | |
+| <a id="rangeContains"/> `rangeContains` | `a @> $1` | The argument is the range's **element** or another range; PostgreSQL resolves the two `@>` overloads. |
+| <a id="rangeContainedBy"/> `rangeContainedBy` | `a <@ $1` | |
+| <a id="strictlyLeft"/> `strictlyLeft` | `a << $1` | Strictly left of. For `inet` the same token means "is contained by", and the operand gate is the only thing that keeps the two apart. |
+| <a id="strictlyRight"/> `strictlyRight` | `a >> $1` | Strictly right of. |
+| <a id="adjacent"/> `adjacent` | `a -\|- $1` | |
+| <a id="rangeUnion"/> `rangeUnion` | `a + $1` | Raises `22000` on the server if the union would not be contiguous. |
+| <a id="rangeIntersection"/> `rangeIntersection` | `a * $1` | |
+| <a id="rangeLower"/> `rangeLower` | `lower(a)` | Typed as the range's **subtype** — `int4range` gives `number \| null` — from a fixed table, because a range type's subtype is a property of PostgreSQL and not of your database. |
+| <a id="rangeUpper"/> `rangeUpper` | `upper(a)` | The same. |
+
+### Network
+
+`<<` and `>>` are the same tokens the range class uses, with the opposite reading: for a range `<<`
+is "strictly left of", for a network it is "is contained by". Nothing but the operand gate
+distinguishes them, which is the concrete payoff of typing operands by PostgreSQL type class.
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="containsNet"/> `containsNet` | `a >> $1` | `a` contains the network on the right. |
+| <a id="containedByNet"/> `containedByNet` | `a << $1` | `a` is contained by it. |
+| <a id="overlapsNet"/> `overlapsNet` | `a && $1` | Either contains the other. |
+
+### Full text
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="matches"/> `matches` | `a @@ q` | The right operand is a **`tsquery`**, never a string: build it with `fn.toTsquery(config, q)` or one of its siblings. |
+| <a id="tsRank"/> `tsRank` | `ts_rank(a, q)` | Returns `float4` (`real`), not `float8` — confirmed against the server's own OIDs. |
+| <a id="tsRankCd"/> `tsRankCd` | `ts_rank_cd(a, q)` | Cover-density ranking, same result type. |
+
+## Functions, aggregates and windows
+
+SQL functions live on one namespace object, `fn`, and a window is attached to an aggregate with
+`over(…)` rather than by a method on the aggregate — which is why `over` takes any expression and
+not only an aggregate.
+
+### `fn`
+
+{/* docs: signature */}
+```ts
+const fn: Fn
+```
+
+The function namespace: `fn.count()`, `fn.sum(p.amount)`, `fn.now()`. It is one object rather than
+a dozen exports because these names — `count`, `min`, `max`, `now` — are the ones most likely to
+collide with something in your own module.
+
+### `Fn`
+
+`fn`'s type. Every member returns an [`Expr`](#Expr), so an aggregate can be wrapped in
+[`over`](#over), compared, or projected directly.
+
+| Member | SQL | Result |
+|---|---|---|
+| `count(a?)` | `count(*)` with no argument, `count(a)` with one | `bigint`, because PostgreSQL's `count` is `int8` |
+| `sum(a)` | `sum(a)` | PostgreSQL's own answer, not the operand's: `sum(int4)` is `int8`, `sum(int8)` and `sum(numeric)` are `numeric`. Nullable — an empty aggregate sums to no answer |
+| `avg(a)` | `avg(a)` | `numeric` for every exact operand and `float8` for the two inexact ones, nullable |
+| `min(a)`, `max(a)` | `min(a)` / `max(a)` | The operand's own type, `\| null` |
+| `rank()`, `denseRank()`, `rowNumber()` | `rank()` and friends | `bigint`. Legal only inside an `OVER (…)` |
+| `now()` | `now()` | `Date`. This is `transaction_timestamp()`, so it is constant within a transaction |
+| `toTsvector(config, a)` | `to_tsvector($1::regconfig, a)` | The configuration is a **parameter cast to `regconfig`**, never spliced text: without the cast PostgreSQL sees `to_tsvector(text, text)`, which does not exist, and with it interpolated a caller-supplied language name would be SQL text |
+| `toTsquery`, `plaintoTsquery`, `phrasetoTsquery`, `websearchToTsquery` | the matching `*_to_tsquery` | `tsquery`, same `regconfig` treatment |
+
+### `over`
+
+{/* docs: signature */}
+```ts
+function over<T, P extends string>(e: Expr<T, P>, w: WindowFn | string): Expr<T, P>
+```
+
+`agg(…) over (…)`, or `agg(…) over "name"` when the second argument is the name of a window
+declared with `.window(name, f)`. The name is a bare `string` on purpose: threading declared window
+names would need a fourth type parameter on `Query`, carried through every method's return type, so
+every query in the program would pay for a feature a handful use. The runtime throws a
+`BuilderError` naming the undeclared window instead.
+
+### `WindowSpec`
+
+{/* docs: signature */}
+```ts
+interface WindowSpec {
+  partitionBy(...xs: readonly Projectable[]): WindowSpec
+  orderBy(o: OrderBy): WindowSpec
+  rows(f: FrameOpts): WindowSpec
+  range(f: FrameOpts): WindowSpec
+  groups(f: FrameOpts): WindowSpec
+}
+```
+
+The window-definition builder, immutable like every other builder here: each method returns a new
+spec, so a partially built window can be shared between call sites.
+
+### `WindowLiteral`
+
+{/* docs: signature */}
+```ts
+interface WindowLiteral {
+  readonly partitionBy?: readonly Projectable[]
+  readonly orderBy?: OrderBy
+  readonly frame?: FrameOpts & { readonly mode: 'rows' | 'range' | 'groups' }
+}
+```
+
+The object form, which reads better for a named window:
+`.window('byAuthor', ({ posts: p }) => ({ partitionBy: [p.authorId], orderBy: [desc(p.amount)] }))`.
+Both forms produce the same definition; the builder form exists for frames, which read badly as a
+literal.
+
+### `WindowFn`
+
+{/* docs: signature */}
+```ts
+type WindowFn = (w: WindowSpec) => WindowSpec
+```
+
+The callback form: `over(fn.rank(), (w) => w.partitionBy(p.authorId).orderBy(desc(p.createdAt)))`.
+
+### `FrameOpts`
+
+{/* docs: signature */}
+```ts
+interface FrameOpts {
+  readonly from: Bound
+  readonly to?: Bound
+  readonly exclude?: 'current row' | 'group' | 'ties' | 'no others'
+}
+```
+
+A frame. `to` absent means the frame ends at the current row, which is SQL's own default.
+
+### `Bound`
+
+{/* docs: signature */}
+```ts
+type Bound =
+  | 'unbounded preceding'
+  | 'current row'
+  | 'unbounded following'
+  | { readonly preceding: number }
+  | { readonly following: number }
+```
+
+A frame endpoint. An offset is emitted as a literal, because PostgreSQL does not accept a parameter
+there.
+
+## Ordering
+
+`orderBy` takes a bare expression, an `asc`/`desc` wrapper, or an array of either. A sort direction
+is a type of its own, so it cannot be projected by mistake.
+
+### `asc`
+
+{/* docs: signature */}
+```ts
+function asc(a: AnyOperand, nulls?: 'first' | 'last'): Order
+```
+
+### `desc`
+
+{/* docs: signature */}
+```ts
+function desc(a: AnyOperand, nulls?: 'first' | 'last'): Order
+```
+
+PostgreSQL's own default is `NULLS LAST` for ascending and `NULLS FIRST` for descending, which
+surprises people often enough that `nulls` is worth spelling out on the query that cares.
+
+### `Order`
+
+{/* docs: signature */}
+```ts
+interface Order {
+  readonly dir: 'asc' | 'desc'
+}
+```
+
+One `ORDER BY` item. It is opaque and distinct from `Projectable`, so
+`select(() => ({ x: desc(u.id) }))` is a type error: a sort direction is not a value a row can
+carry.
+
+### `OrderArg`
+
+{/* docs: signature */}
+```ts
+type OrderArg = Order | ExprOf<unknown>
+```
+
+What one item of an `orderBy` may be: a bare expression, which sorts ascending, or an `asc`/`desc`
+that says so explicitly.
+
+### `OrderBy`
+
+{/* docs: signature */}
+```ts
+type OrderBy = OrderArg | readonly OrderArg[]
+```
+
+One item or several, so the single-key case needs no array.
+
+### `toOrderItem`
+
+`(o: Order) => OrderItem` — an `Order` as the compiler's own node type. An escape hatch for code
+that builds an order list outside the builder.
+
+## Operands: why `eq(a, b)` refuses two type classes
+
+Every operator's first argument is typed by the **PostgreSQL type class** its operand belongs to,
+not by its TypeScript type. A `text` column and a `citext` column are both `string` in TypeScript;
+an `int4range` and an `inet` are both `string` too. Without the class, `rangeContains(user.ip, …)`
+would compile and fail at run time with a 42883 from the server — and `strictlyLeft` and
+`containedByNet`, which emit the *same token* `<<`, could not be two different functions.
+
+The type that carries the class is [`ClassOperand`](#ClassOperand): "a `T` that PostgreSQL calls
+`P`". It is satisfied by a column ref, by any expression the operator module builds, and by a typed
+`sql` fragment — and by nothing a user can hand-write, because both of its keys are `unique
+symbol`s. The aliases below name each class.
+
+| Type | Definition | Meaning |
+|---|---|---|
+| <a id="Expr"/> `Expr` | `Expr<T, P = string>` | Anything with a known output type and a place in the SQL tree. `T` is the decoded TypeScript type, carried in the phantom `[OUT]` slot; `P` is the PostgreSQL type name the expression *is*, carried in `[META].pg`, so an operator's result can go straight back into a class-gated operator. `P` defaults to `string`, the honest answer for anything whose PostgreSQL type is not tracked, and which no gate accepts. |
+| <a id="ExprOf"/> `ExprOf` | `{ [OUT]: T }` | "Something that yields a `T`", without claiming to be an `Expr`. The structural operand. |
+| <a id="Operand"/> `Operand` | `T \| ExprOf<T>` | A value or anything that yields one — the right-hand side of every binary operator. |
+| <a id="NonNullOperand"/> `NonNullOperand` | `(T \| ExprOf<T>) & {}` | A right-hand operand that may not be the literal `null`. The `& {}` removes `null` and `undefined` from the value half of the union while leaving the expression half untouched, so `eq(u.deletedAt, null)` is a compile error while `eq(u.deletedAt, u.createdAt)` — two nullable columns, three-valued logic understood — is not. |
+| <a id="ClassOperand"/> `ClassOperand` | `ClassOperand<T, P>` | The base: a `T` that PostgreSQL calls `P`. |
+| <a id="AnyOperand"/> `AnyOperand` | `ClassOperand<T, string>` | Anything with a PostgreSQL type at all — the operand of `min`, `max`, `cast`, `asc` and `desc`. |
+| <a id="NumOperand"/> `NumOperand` | `ClassOperand<T, P extends NumPg>` | A number-ish column or expression. |
+| <a id="TextOperand"/> `TextOperand` | `ClassOperand<string \| null, TextPg>` | |
+| <a id="BoolOperand"/> `BoolOperand` | `ClassOperand<boolean \| null, 'bool'>` | Gated on `bool` rather than `ExprOf<boolean>` so a nullable `bool` column reaches `isTrue` and a `text` column does not. |
+| <a id="JsonOperand"/> `JsonOperand` | `ClassOperand<unknown, 'json' \| 'jsonb'>` | The four accessors, which both types have. |
+| <a id="JsonbOperand"/> `JsonbOperand` | `ClassOperand<unknown, 'jsonb'>` | Everything else in the JSON table. |
+| <a id="ArrayOperand"/> `ArrayOperand` | ``ClassOperand<readonly E[] \| null, `${string}[]`>`` | `E` comes from the element type, not from the name. |
+| <a id="RangeOperand"/> `RangeOperand` | `ClassOperand<string \| null, RangePg>` | |
+| <a id="NetOperand"/> `NetOperand` | `ClassOperand<string \| null, 'inet' \| 'cidr'>` | |
+| <a id="TsvectorOperand"/> `TsvectorOperand` | `ClassOperand<unknown, 'tsvector'>` | |
+| <a id="TsqueryOperand"/> `TsqueryOperand` | `ClassOperand<unknown, 'tsquery'>` | |
+
+And the three class tables themselves:
+
+### `NumPg`
+
+{/* docs: signature */}
+```ts
+type NumPg = 'int2' | 'int4' | 'int8' | 'float4' | 'float8' | 'numeric' | 'money'
+```
+
+### `TextPg`
+
+{/* docs: signature */}
+```ts
+type TextPg = 'text' | 'varchar' | 'citext' | 'bpchar' | 'name'
+```
+
+`citext` has no static codec — it is an extension type — but it is listed because a column declared
+`citext` must still gate as text.
+
+### `RangePg`
+
+{/* docs: signature */}
+```ts
+type RangePg = 'int4range' | 'int8range' | 'numrange' | 'tsrange' | 'tstzrange' | 'daterange'
+```
+
+## Relations
+
+A relation declared with `defineRelations` becomes an accessor on the scope, next to the columns:
+`t.u.posts.many(…)` for the rows and `t.u.posts.count()` for a correlated aggregate. Both compile to
+**one** statement — a JSON lateral, or a correlated subquery where a `RETURNING` list needs one — not
+a second round trip and not a join whose rows you regroup yourself. [Relations](/pg-prime/concepts/relations/)
+is the concept page.
+
+### `RelAccessor`
+
+{/* docs: signature */}
+```ts
+type RelAccessor<Sc extends AnySchema, M extends RelMeta> = M['kind'] extends 'many'
+  ? ManyRel<Sc, M>
+  : OneRel<Sc, M>
+```
+
+A to-many relation offers `.many()` and a to-one offers `.one()`, and neither offers the other.
+Splitting on the kind is what makes the *result* type honest: an accessor that offered `.one()` on
+a to-many would have to invent an answer for "which one".
+
+### `ManyRel`
+
+{/* docs: signature */}
+```ts
+interface ManyRel<Sc extends AnySchema, M extends RelMeta> extends RelAggs<Sc, M> {
+  many<P extends Projection>(
+    f: (q: SubQuery<Sc, M['to']>) => SubQuery<Sc, M['to'], P>,
+    opts?: RelOpts,
+  ): Expr<Project<P>[]>
+  all(opts?: RelOpts): Expr<SelAt<Sc, M['to']>[]>
+}
+```
+
+`.many(q => q.limit(3))` is paginated **per parent**: the `LIMIT` lives inside the lateral, so it is
+three rows for each parent and not three rows in total. `.all()` is every column of the related
+rows.
+
+### `OneRel`
+
+{/* docs: signature */}
+```ts
+interface OneRel<Sc extends AnySchema, M extends RelMeta> extends RelAggs<Sc, M> {
+  one<P extends Projection>(
+    f: (q: SubQuery<Sc, M['to']>) => SubQuery<Sc, M['to'], P>,
+    opts?: RelOpts,
+  ): Expr<RelOut<M, Project<P>>>
+  all(opts?: RelOpts): Expr<RelOut<M, SelAt<Sc, M['to']>>>
+}
+```
+
+The result is `\| null` exactly when the relation was declared with `maybeOne`.
+
+### `RelAggs`
+
+The scalar half of a relation, available on **both** kinds and — unlike `.many()` and `.one()` —
+never blocked by the `GROUP BY` guard, because a correlated aggregate needs no identifiable parent
+row, only the grouping key it correlates on.
+
+| Member | SQL | Notes |
+|---|---|---|
+| `count()` | `count(*)` over the related rows | `bigint`, so it stays exact past 2^53 |
+| `sum(f)` | `coalesce(sum(f), 0)` | Never null: an empty relation sums to zero rather than to "no answer" |
+| `avg(f)` | `avg(f)` | **Nullable**, unlike `sum` — the average of no rows is not zero, it is no answer |
+| `min(f)`, `max(f)` | `min` / `max` over the related rows | The operand's own type, `\| null` on an empty relation |
+| `exists()` | `exists (select 1 from … where <correlation>)` | |
+| `some(f?)` | at least one related row satisfies the predicate | MikroORM's `$some` |
+| `none(f?)` | no related row satisfies it | |
+| `every(f)` | `not exists (… and (p) is not true)` | The `is not true` is the whole difference from `not exists (… and not p)`: a predicate that is NULL is neither true nor false, and only this spelling counts "unknown" as a failure. Vacuously true on a parent with no related rows |
+
+### `RelOpts`
+
+{/* docs: signature */}
+```ts
+interface RelOpts {
+  readonly variant?: 'json' | 'jsonb'
+  readonly strategy?: 'lateral' | 'subquery'
+}
+```
+
+`variant` defaults to `'json'`, which is order-preserving and cheaper; `'jsonb'` reorders keys and
+deduplicates them. `strategy` defaults to `'lateral'`; the correlated-subquery form is what a
+`RETURNING` list needs, because there is no `FROM` to attach a lateral to.
+
+### `RelPickers`
+
+`RelPickers<H>` — the relation accessors of one handle, which is half of what a scope object is.
+One conditional per *declared relation*, and only inside a scope that is actually instantiated: a
+query that projects no relation never asks for these members, and TypeScript computes an
+instantiated interface's property types lazily. That is why a nine-method accessor costs a query
+that ignores it nothing.
+
+## Metadata and markers
+
+The last group is what other tools read: the shapes an error, a `toSQL()` or a codec-mismatch
+report is rendered from.
+
+| Type | Shape | Notes |
+|---|---|---|
+| <a id="CodecMismatch"/> `CodecMismatch` | `{ column, declared, declaredOid, actual, actualOid, origin? }` | Everything a `CodecMismatchError`'s message is rendered from, exported so a caller can branch on it rather than parse the sentence. `declaredOid` is `undefined` for a codec that claims none, such as a pending enum. |
+| <a id="FieldOrigin"/> `FieldOrigin` | `{ column?: string; site?: string }` | Where a result column's codec was declared: the qualified column for a schema column, the `.as(codec)` call site for a fragment. At most one is set, because the two mistakes have different fixes — a wrong codec in your own source against schema drift. The call site is captured outside production only. |
+| <a id="ColumnRef"/> `ColumnRef` | `{ readonly $: RefRuntime }` | One column of one table, structurally. `users.cols.email` satisfies it, which is how an error can name a column without importing the schema layer. |
+| <a id="TableRef"/> `TableRef` | `{ readonly $: TableRuntime }` | A schema table, structurally. `pgTable(…)` and a `defineSchema` handle both satisfy it. |
+| <a id="RawRow"/> `RawRow` | `Record<string, unknown>` | One row of a `` db.sql`…` `` result: keyed by the field names the server reported, decoded by OID, typed `unknown` because nothing else would be true. |
+| <a id="RawShape"/> `RawShape` | `RawShape<C>` | The row a `fromRaw` shape describes: one decoded value per declared codec. |

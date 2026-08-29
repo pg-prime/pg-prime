@@ -24,8 +24,8 @@ definition and a schema diff is legible to someone who did not write it — a re
 TypeScript builder, where a column-type change hides inside a method chain. It comes with
 `prisma format`, `prisma validate` and a first-class language server, which is a genuine moat.
 
-**Exact result narrowing from a literal argument.** `select: { id: true, posts: { select: { title:
-true } } }` returns exactly `{ id: number; posts: { title: string }[] }[]`. The survey calls this
+**Exact result narrowing from a literal argument.** A `select` that names an id and a nested
+relation's title returns exactly `{ id: number; posts: { title: string }[] }[]`. The survey calls this
 "the single feature that keeps people on Prisma", and pg-prime's projection typing exists to match
 it.
 
@@ -51,7 +51,8 @@ all.
 
 A closed DSL creates a permanent feature backlog, and the backlog is the thing to look at rather
 than any single missing feature. As of the 2026-08 survey, in stable Prisma: `CHECK` constraints
-had been open since 2020 (issue 3388, 294 👍) and were still absent; `EXCLUDE` constraints absent;
+had been open since 2020 (issue 3388, 294 upvotes) and were still absent; `EXCLUDE` constraints
+absent;
 generated columns absent; triggers and functions absent; partial indexes shipped in **7.4.0**, after
 a 4.8-year wait, and were immediately buggy enough to produce infinite regenerating migrations;
 expression indexes arrived only in Prisma 8; views had been a preview feature since **4.9.0, in
@@ -64,7 +65,7 @@ having the feature at all.*
 
 Authoring in TypeScript removes the queue rather than shortening it. A JSON column's shape is just
 a type; a shared `id` / `createdAt` / `tenantId` group is object spread rather than issue 2371
-(231 👍, "reuse collections of fields inside models"); and PostgreSQL's own vocabulary —
+(231 upvotes, "reuse collections of fields inside models"); and PostgreSQL's own vocabulary —
 `CHECK`, `EXCLUDE`, partial and expression indexes, opclasses, `INCLUDE`, generated columns,
 domains, sequences, partitions — is in [the schema DSL](/pg-prime/guides/schema/) because there is
 no second database whose absence of a feature has to be negotiated.

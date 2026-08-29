@@ -141,8 +141,10 @@ Fix: use codecs.numeric, or cast in SQL.
 ```
 
 The call site costs one stack capture per `.as()` call — not per row, not per execution — and it is
-skipped entirely when `NODE_ENV` is `production`. The check itself is `assertShape`, on by default;
-`pgPrime({ assertShape: false })` removes it.
+skipped entirely when `NODE_ENV` is `production`. The check itself is `assertShape`, which is one
+integer comparison per column per query and defaults to `NODE_ENV !== 'production'` for the same
+reason; `pgPrime({ assertShape: true })` keeps it on in production and `false` removes it
+everywhere.
 
 ### `.asUnsafe<T>()`, and what it costs
 
@@ -353,14 +355,14 @@ console.log(series) // [ { n: 1 }, { n: 2 }, { n: 3 } ]
 
 | Position | Spelling |
 |---|---|
-| A projection | `.select((t) => ({ k: sql`…`.as(codec) }))`, and the same in `.returning()` |
+| A projection | ``.select((t) => ({ k: sql`…`.as(codec) }))``, and the same in `.returning()` |
 | A predicate | `.where(…)`, `.having(…)`, a join's `on`, `onConflict(...).where(…)` |
 | An operand | either side of an operator, wherever an `Expr` goes |
 | A `FROM` item | `db.fromRaw(frag, shape, opts?)` |
 | A whole statement | ``db.sql`…` `` |
-| A column `CHECK` | `t.integer().check(sql`…`)` |
-| A table `CHECK` | `check('name', sql`…`)` in the extras callback |
-| A partial index | `index('name').where(sql`…`)` |
+| A column `CHECK` | ``t.integer().check(sql`…`)`` |
+| A table `CHECK` | ``check('name', sql`…`)`` in the extras callback |
+| A partial index | ``index('name').where(sql`…`)`` |
 
 The last three are DDL positions, and they are stricter: a `CHECK` expression is stored in the
 catalog as a parsed expression, so it can never carry a `$n`. A fragment used there may contain SQL

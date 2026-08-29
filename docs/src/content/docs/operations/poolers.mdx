@@ -74,7 +74,7 @@ the prose and the behaviour cannot drift.
 |---|---|---|---|---|
 | Named prepared statements (`execMode: { statement: 'named' }`) | ✅ ok | ✅ ok | ⚠️ shared-lru — allowed; the pooler's per-server cache is shared across clients | ❌ unsupported — `ConfigError` at construction |
 | Session GUCs at connect (`session: { … }`) | ✅ ok | ✅ ok | ❌ unsafe — skipped, with one `info` line naming the `ALTER ROLE` fix | ❌ unsafe — skipped, with one `info` line naming the `ALTER ROLE` fix |
-| `db.listen()` | ✅ ok | ✅ ok | ❌ unsupported — routed to `directConnection`, or `ConfigError` if there is none | ❌ unsupported — routed to `directConnection`, or `ConfigError` if there is none |
+| `db.listen()` | ✅ ok | ✅ ok | ❌ unsupported — routed to `directConnection`; `UnsupportedInPoolerModeError` if there is none | ❌ unsupported — routed to `directConnection`; `UnsupportedInPoolerModeError` if there is none |
 | Session advisory locks (`session.advisoryLock()`) | ✅ ok | ✅ ok | ❌ unsupported — use `tx.advisoryLock()` | ❌ unsupported — use `tx.advisoryLock()` |
 | `WITH HOLD` cursors | ✅ ok | ✅ ok | ❌ unsupported | ❌ unsupported |
 | `db.session()` | ✅ ok | ✅ ok | ❌ unsupported — `UnsupportedInPoolerModeError` | ❌ unsupported — `UnsupportedInPoolerModeError` |
@@ -272,7 +272,7 @@ no-ops on the wrong backend and the original one returns to the pool still holdi
 PgBouncer is commonly 6432 in front of 5432, Supabase 6543 in front of 5432).
 ```
 
-That is exit **1**, not 6: nothing holds the lock, the connection is simply unusable for the job.
+That is exit **1**, not 6: nothing holds the lock, the connection is unusable for the job.
 Three separate things are wrong with migrating over a transaction pooler, and each on its own is
 fatal — `CREATE INDEX CONCURRENTLY` cannot run inside a transaction, a session-level
 `SET lock_timeout` does not survive to the next statement, and the session advisory lock that stops

@@ -35,15 +35,39 @@ export interface PgLikeClient {
   query(config: PgLikeQueryConfig): Promise<PgLikeResult | PgLikeResult[]>
   /** Submittable overload. This is pg's real extension seam (§5.2); Neon re-exports it verbatim. */
   query<T extends PgLikeSubmittable>(submittable: T): T
-  on(event: 'notice' | 'notification' | 'error' | 'end', listener: (arg: never) => void): unknown
+  /**
+   * The listener is `(...args: any[]) => void` and that `any` is load-bearing, not laziness.
+   *
+   * These two members come from `EventEmitter`, whose `@types/node` signature is
+   * `<E extends string | symbol>(eventName: E, listener: (...args: any[]) => void) => this`. `any`
+   * is assignable to everything **except `never`**, so declaring the listener `(arg: never)` — the
+   * shape that accepts every listener WE might pass — made `pg.Pool` structurally non-assignable
+   * to {@link PgLikePool}, which is the one claim design/02 §3 and design/08 §8 #5 make about this
+   * file. Found by design/12 §4 D while writing the `pool:` path into the documentation; the
+   * repository's own live harness had been carrying an `as unknown as PgLikePool` cast around it.
+   * `@types/pg` declares its own `on` overloads, so `on` happened to match and `removeListener`
+   * did not — the same bug, visible in one of the two.
+   */
+  on(
+    event: 'notice' | 'notification' | 'error' | 'end',
+    listener: (...args: any[]) => void,
+  ): unknown
   /**
    * REQUIRED. The adapter keeps an `error` listener on every checked-out client (pg-pool removes
    * its own idle listener at checkout, and pg emits `error` unconditionally — an unhandled one is
    * a process exit), so it MUST be able to take it off again at release.
    */
-  removeListener(event: string, listener: (arg: never) => void): unknown
-  /** Present on pg >= 8.21. Optional so a minimal duck-type still satisfies us. */
-  getTransactionStatus?(): 'I' | 'T' | 'E'
+  removeListener(event: string, listener: (...args: any[]) => void): unknown
+  /**
+   * Present on pg >= 8.21. Optional so a minimal duck-type still satisfies us.
+   *
+   * `null` is part of the contract, not an oversight: pg reports it until the first
+   * `ReadyForQuery`, `@types/pg` declares `TransactionStatus = 'I' | 'T' | 'E' | null`, and
+   * omitting it here made `pg.Pool` non-assignable to {@link PgLikePool}. The adapter has always
+   * narrowed it — `transactionStatus` maps anything that is not one of the three letters to
+   * `undefined`, the seam's word for "cannot tell".
+   */
+  getTransactionStatus?(): 'I' | 'T' | 'E' | null
   readonly processID?: number
   /** The in-flight query object, if the driver exposes one. Only used to aim a protocol cancel. */
   readonly activeQuery?: unknown
@@ -154,15 +178,23 @@ export interface PgLikeConnection {
    * protocol messages are called and what an earlier draft of this declaration guessed. Measured
    * against `pg@8.23.0`'s `lib/connection.js`: the methods are `sendCopyFromChunk(chunk)` and
    * `endCopyFrom()`, and they are the pair `pg-copy-streams` drives.
+   *
+   * **Optional**, like `query` below and for the same reason: they exist on `pg`'s connection at
+   * run time but `@types/pg` does not declare them, so requiring them here made `pg.Pool`
+   * structurally non-assignable to {@link PgLikePool} — the one claim design/02 §3 and design/08
+   * §8 #5 make about this file (found by design/12 §4 D writing the `pool:` path into the docs).
+   * `src/driver/copy.ts` checks for all three at `submit()` and returns the same shape of error it
+   * already returns for a missing `query`, so a drop-in without them fails with a sentence instead
+   * of a `TypeError` — which is what a duck-typed seam has to do anyway.
    */
-  sendCopyFromChunk(chunk: Uint8Array): void
-  endCopyFrom(): void
-  sendCopyFail(msg: string): void
+  sendCopyFromChunk?(chunk: Uint8Array): void
+  endCopyFrom?(): void
+  sendCopyFail?(msg: string): void
   /** Simple query. The path COPY takes — it carries no bind parameters, so there is nothing else. */
   query?(text: string): void
-  on(event: string, listener: (msg: never) => void): unknown
-  removeListener(event: string, listener: (msg: never) => void): unknown
-  readonly parsedStatements: Record<string, string>
+  on(event: string, listener: (...args: any[]) => void): unknown
+  removeListener(event: string, listener: (...args: any[]) => void): unknown
+  readonly parsedStatements?: Record<string, string>
   readonly stream: {
     cork?(): void
     uncork?(): void

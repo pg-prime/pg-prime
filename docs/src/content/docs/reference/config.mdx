@@ -3,4 +3,311 @@ title: Config file
 description: pg-prime.config.ts and defineConfig.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+Every `pg-prime` command reads one config file. It describes the **kit's** inputs — where the
+migrations live, which schemas are managed, how the desired state is normalised — and nothing about
+the runtime: `pgPrime()` takes its own options, and the runtime package never sees this file.
+
+```ts title="pg-prime.config.ts" no-run
+import { defineConfig } from '@pg-prime/kit'
+
+export default defineConfig({
+  schema: './db/schema.ts',
+  url: process.env['DATABASE_URL'] ?? 'postgres://postgres:postgres@localhost:5432/app',
+})
+```
+
+That is a complete, working config. Everything else has a default.
+
+## Where the file is looked for
+
+The CLI searches for these four names, in this order, in the working directory and then in each
+ancestor directory. The first hit wins.
+
+```text
+pg-prime.config.ts
+pg-prime.config.mts
+pg-prime.config.js
+pg-prime.config.mjs
+```
+
+`--config <path>` overrides the search entirely; a relative path is resolved against the working
+directory, and a `--config` that names a file which does not exist is an error rather than a fallback
+to the search. **No config file at all is a valid state**: every command then runs on defaults plus
+`--url` or the environment, which is what makes `pg-prime migrate status --url …` work in a
+container with nothing checked out.
+
+Relative paths *inside* the config are resolved against **the config file's own directory**, not the
+working directory. That is what lets `pnpm exec pg-prime migrate status` mean the same thing from a
+subdirectory of the repository as it does from the root. `--migrations` is resolved the same way.
+
+<Aside title="TypeScript, with no loader">
+The file is loaded with a plain `import()`. On **Node 22.18 and newer** type stripping is on by
+default and a `.ts` config is simply a module. Below that, the CLI re-executes itself **once** with
+`--experimental-strip-types` — guarded by the `PG_PRIME_STRIP_TYPES_RETRY` environment variable, so
+it can never fork twice — and if that also fails you get one sentence naming your Node version and
+the `pg-prime.config.mjs` alternative. There is no `jiti`, no `tsx` and no `esbuild` at run time.
+</Aside>
+
+The module must have a **default export**, and it must be an object — not a function, not an array,
+not a promise. `defineConfig` is the identity function at run time; it exists so the file gets
+completion and so a typo in a key is a compile error in your editor rather than a setting that is
+silently ignored.
+
+## Every key
+
+| Key | Type | Default | What it changes |
+|---|---|---|---|
+| `url` | `string` | none | The connection URL for every command. |
+| `connection` | `{ host; port; user; password; database }` | none | The same thing, pre-parsed. Beats `url`. |
+| `migrations` | `string` | `./migrations` | Where `NNNN_name.sql` and `NNNN_name.plan.json` live. |
+| `repeatables` | `string` | `./sql` | Tier R: the files re-applied whenever their bytes change. |
+| `schemas` | `readonly string[]` | `["public"]` | The managed schema set. |
+| `shadow` | `"auto" \| "temp-schema" \| "createdb" \| "offline"` | `"auto"` | Which tier of the ladder normalises the desired state. |
+| `schema` | `string \| readonly string[]` | none | Path(s) to the TypeScript schema module. |
+| `replicas` | `readonly string[]` | `[]` | Standby URLs, for lag-aware backfills. |
+| `seeds` | `string` | `./seeds` | Where `db seed` looks. |
+| `lockTimeout` | `string` | `"3s"` | PostgreSQL `lock_timeout` for every statement the runner issues. |
+| `statementTimeout` | `string` | none | `statement_timeout` for the statements a plan leaves unbounded. |
+| `lockWaitMs` | `number` | `30000` | How long to wait for a concurrent deploy's lease. |
+| `staleLockAfterMs` | `number` | `60000` | A lease whose heartbeat is older than this is reported stale. |
+| `production` | `boolean` | `false` | Forces the production tag on, whatever `PG_PRIME_ENV` says. |
+
+`loadConfig` validates the type of every key it knows about, so `migrations: 3` throws a
+`ConfigError` naming `migrations` rather than failing later in a path join. An **unknown** key is
+not an error at run time — `defineConfig` catches it at compile time instead, which is the whole
+reason to use it.
+
+Every key is optional, but none of them accepts `undefined`. The kit is checked under
+`exactOptionalPropertyTypes`, so `url: process.env['DATABASE_URL']` does not compile; write
+`url: process.env['DATABASE_URL'] ?? 'postgres://…'`, or leave the key out and let the environment
+supply it.
+
+Most keys have a command-line override, and the flag always wins: `--url` over `url` *and*
+`connection`, `--migrations` over `migrations`, `--schema` (repeatable) over `schemas`, `--shadow`
+over `shadow`, `--seeds` over `seeds`, `--sql-dir` over `repeatables` for `pull`, and
+`--lock-timeout`, `--statement-timeout`, `--lock-wait` and `--stale-lock-after` over the four
+runner settings. `production` has no flag: `db seed --force` and the literal `--dev` on
+`migrate push` are the per-run escapes, and neither is remembered.
+
+### `schemas` is three scopes at once
+
+`schemas` is the diff's scope, the fingerprint's scope **and** the advisory lock key's scope. All
+three, deliberately: two unrelated schema sets in one database must not serialise their deploys
+against each other, so the lock key is derived from the database name and this list rather than
+being a fixed constant.
+
+The consequence is that a generator and a runner that disagree about `schemas` compute different
+fingerprints, and `apply` refuses. The set is therefore recorded in every `.plan.json`, so the
+refusal can name both sides instead of only saying "fingerprint mismatch". If you add a schema to
+this list, the next `generate` sees everything in it as new.
+
+`pgprime`, the history schema, is excluded from the managed set by construction — the kit's own
+bookkeeping never shows up in a diff of `public`.
+
+### `shadow` picks a ladder tier
+
+The desired state is never diffed as text: it is loaded into a real PostgreSQL and read back, so
+that "what you wrote" and "what the catalog holds" are the same form. `shadow` says how that
+PostgreSQL is obtained.
+
+| Value | Tier | What it does |
+|---|---|---|
+| `"auto"` | 2, demoting to 3 | Uses `CREATE DATABASE` when the role has `CREATEDB`; falls back to the temp-schema tier on SQLSTATE `55006`, because the sessions attached to the template belong to somebody else. This is the default and it is almost always right. |
+| `"createdb"` | 2 | `CREATE DATABASE pgprime_shadow_<token>` with the target's locale copied. Copying the locale is not cosmetic: a different `LC_COLLATE` normalises index and constraint definitions differently, and every one of those is a phantom diff. |
+| `"temp-schema"` | 3 | `CREATE SCHEMA pgprime_shadow_<token>_<name>` **inside the target database**. Needs no `CREATEDB`, which is why the ladder exists at all. |
+| `"offline"` | 4 | Refused, with a sentence. Without a PostgreSQL to load the desired state into, a plan compares human DDL against catalog DDL and diffs forever. |
+
+<Aside type="caution">
+A shadow **URL** cannot be set in the config file. `ShadowStrategy` has a `{ url }` member, but
+`loadConfig` validates `shadow` as a string and rejects an object, and a `postgres://…` string in
+this key is not recognised by the ladder — it falls through to `auto` silently. Pass
+`--shadow postgres://…` on the command line instead; that is the path the CLI parses and the one
+that reaches tier 1.
+</Aside>
+
+### `replicas` is an opt-in
+
+A `-- pg-prime:batch max-replica-lag=10s` directive needs a lag reading. Without `replicas`, the
+ceiling is read primary-side from `pg_stat_replication.replay_lag`: no second credential, but
+invisible to a role outside `pg_monitor`, which reads as "no replicas" and lets the backfill run
+flat out. With `replicas`, each URL is asked for `pg_last_wal_replay_lsn()` directly.
+
+A replica that cannot be reached does **not** count as zero lag — it contributes `Infinity`, which
+keeps the loop paused. Proceeding past a standby you cannot see is exactly the failure the ceiling
+exists to prevent. Nothing else in the kit ever connects to these URLs.
+
+### The two timeouts are not symmetric
+
+`lockTimeout` applies to every statement the runner issues, and its default of `3s` is the point:
+a migration that cannot take its lock in three seconds should fail fast rather than queue behind a
+long transaction and block every reader behind *it*.
+
+`statementTimeout` has **no default at the config level**, because a generated plan carries its own.
+Every statement in a plan is stamped `statement_timeout = 30s` except the intentionally long builds
+— `CREATE INDEX CONCURRENTLY`, `VALIDATE CONSTRAINT`, `REINDEX` — which carry none, since a
+timeout on a two-hour index build is a way to fail after ninety minutes of work. This key is what
+fills that gap: set it and those builds get a ceiling too. `lock_timeout` applies to them either
+way.
+
+`lockWaitMs` and `staleLockAfterMs` are about the deploy lease rather than about PostgreSQL locks.
+See [locks and leases](/pg-prime/operations/locks/).
+
+### `production` is a refusal, not a mode
+
+`production: true` — or `PG_PRIME_ENV=production` — makes `migrate push --dev` and `db seed` refuse.
+Nothing else changes: there is no "production mode" that applies migrations differently, because a
+migration that behaves differently in production is a migration nobody has tested. `--force` on
+`db seed` is a flag and only a flag; nothing about it is written down, so nothing can remember it.
+
+## Resolving the connection
+
+Highest priority first:
+
+1. `--url` on the command line
+2. `connection` in the config file
+3. `url` in the config file
+4. `PG_PRIME_DATABASE_URL`
+5. `DATABASE_URL`
+
+The project's own file beats the ambient environment on purpose: a `DATABASE_URL` left over in a
+shell is the classic way to run a migration against the wrong database. Note that `connection` sits
+above `url`, so a config that sets both uses `connection` — unless `--url` was passed, which wins
+over everything.
+
+If none of the five is present, the command fails with one sentence naming the three ways to fix it.
+The one exception is `migrate lint <file>`, which is a pure function of files: requiring a database
+URL to lint SQL text is the kind of friction that gets a linter dropped from CI.
+
+A connection URL is parsed into five fields — host, port, user, password, database — and **nothing
+else**. Query parameters are dropped and *named* in a warning, because a silently ignored
+`sslmode=require` is the kind of thing that only shows up in production. A URL that names no user
+falls back to `PGUSER` and then to `postgres`; one that names no database falls back to the user's
+name.
+
+## Environment variables
+
+| Variable | What it is for |
+|---|---|
+| `PG_PRIME_DATABASE_URL` | The connection URL, below the config file and above `DATABASE_URL`. |
+| `DATABASE_URL` | The last resort, so a twelve-factor container works with no config file. |
+| `PG_PRIME_ENV` | The environment tag. `production` turns the production tag on — `migrate push --dev` and `db seed` refuse — and the verbatim value is handed to a `.ts` seed as `env`. |
+| `PGUSER` | The user for a connection URL that names none. Falls back to `postgres`. |
+| `PG_PRIME_PG_DUMP` | The `pg_dump` launcher's argv: a JSON array of strings for an exact argv, or a whitespace-separated string. Anything malformed makes the oracle report `skipped`, never fail — a broken environment variable is an environment gap, not a proof failure. |
+| `PG_PRIME_PG_DUMP_URI` | A template for the conninfo `pg_dump` receives, with `{db}` replaced by the URL-encoded database name. Set it when the server only exists inside a container and the URI the kit would build is not reachable from the launcher. |
+| `PG_PRIME_STRIP_TYPES_RETRY` | Set by the CLI on its own re-exec, so the retry happens at most once. Do not set it yourself; setting it disables the retry. |
+
+`PGPASSWORD` is **written, never read**: it is set on the `pg_dump` child process so the password
+travels out of band rather than landing in the process table.
+
+Setting `PG_PRIME_PG_DUMP` to a container command is the usual reason to touch any of these:
+
+```sh
+export PG_PRIME_PG_DUMP='["docker","exec","-i","pg17","pg_dump"]'
+export PG_PRIME_PG_DUMP_URI='postgres://postgres@localhost:5432/{db}'
+```
+
+## A config that uses everything
+
+```ts title="pg-prime.config.ts" no-run
+import { defineConfig } from '@pg-prime/kit'
+
+export default defineConfig({
+  // Where the desired state is declared. One path, or several that are merged into one
+  // registry — a table exported twice under two names is still one table.
+  schema: './db/schema.ts',
+
+  // The database every command connects to. `--url` overrides it; without either,
+  // PG_PRIME_DATABASE_URL and then DATABASE_URL are tried.
+  url: process.env['DATABASE_URL'] ?? 'postgres://postgres:postgres@localhost:5432/app',
+
+  // Paths are resolved against THIS FILE's directory, not the working directory.
+  migrations: './migrations',
+  repeatables: './sql',
+  seeds: './seeds',
+
+  // The diff's scope, the fingerprint's scope and the advisory lock key's scope.
+  // Adding a schema here makes everything in it appear as new in the next `generate`.
+  schemas: ['public', 'billing'],
+
+  // 'auto' tries CREATE DATABASE and demotes to the temp-schema tier when the role
+  // cannot, or when something is attached to the template.
+  shadow: 'auto',
+
+  // The opt-in for `-- pg-prime:batch max-replica-lag=…`. Without it the ceiling is
+  // read primary-side from pg_stat_replication, which a role outside pg_monitor
+  // cannot see. A replica that cannot be reached counts as infinite lag, not zero.
+  replicas: [
+    'postgres://readonly:secret@replica-1.internal:5432/app',
+    'postgres://readonly:secret@replica-2.internal:5432/app',
+  ],
+
+  // A migration that cannot take its lock in three seconds fails fast instead of
+  // queueing behind a long transaction and blocking every reader behind it.
+  lockTimeout: '3s',
+  // No default: a plan stamps 30s on every statement except the intentionally long
+  // builds. This is the ceiling for those.
+  statementTimeout: '15min',
+
+  // The deploy lease, not a PostgreSQL lock.
+  lockWaitMs: 30_000,
+  staleLockAfterMs: 60_000,
+
+  // Makes `migrate push --dev` and `db seed` refuse, whatever PG_PRIME_ENV says —
+  // for a deployment that tags its environment under some other name.
+  production: process.env['DEPLOY_ENV'] === 'prod',
+})
+```
+
+## Project layout
+
+A repository that uses all of it:
+
+```text
+my-app/
+├── pg-prime.config.ts
+├── db/
+│   └── schema.ts                          # config.schema — and `pull --out`'s default
+├── migrations/                            # config.migrations
+│   ├── 0000_init.sql
+│   ├── 0000_init.plan.json
+│   ├── 0007_add_orders.sql                # one `generate` run, three files, one seq:
+│   ├── 0007_add_orders.plan.json          #   applied in (seq, name) order, so `main`
+│   ├── 0007_add_orders_concurrently.sql   #   lands before `_concurrently` before `_data`
+│   ├── 0007_add_orders_concurrently.plan.json
+│   ├── 0007_add_orders_data.sql           # the backfill stub — no .plan.json, on purpose
+│   ├── 0042_checkpoint.sql                # `migrate checkpoint`
+│   ├── 0042_checkpoint.plan.json
+│   └── checkpoints/                       # always beside the migrations
+│       └── 0042.ir.json
+├── sql/                                   # config.repeatables — Tier R
+│   ├── 010_active_users.sql               # re-applied whenever its bytes change
+│   └── 020_touch_updated_at.sql
+└── seeds/                                 # config.seeds
+    ├── 001_lookup_tables.sql              # the base set: runs on every `db seed`
+    ├── 002_admin_user.ts                  # a .ts seed gets the typed query builder
+    └── demo/                              # a named set: only with `db seed --set demo`
+        └── 001_fake_orders.sql
+```
+
+`checkpoints/` is always a subdirectory of the migrations directory — there is no key for it,
+because a checkpoint's IR file and the migration it belongs to have to travel together. `sql/` and
+`seeds/` are scanned directory-lexicographically with files and directories in **one** sort, so
+`010_x.sql` runs before `020_y/` in a way you can see by reading the names.
+
+## The smallest useful config
+
+```ts title="pg-prime.config.ts" no-run
+import { defineConfig } from '@pg-prime/kit'
+
+export default defineConfig({ schema: './db/schema.ts' })
+```
+
+With `DATABASE_URL` set in the environment, that is enough for all thirteen commands. Everything
+else — `./migrations`, `./sql`, `./seeds`, `["public"]`, `auto` — is a default, and the defaults are
+the layout above.
+
+The types behind every key (`PgPrimeConfig`, `ResolvedConfig`, `ConnInfo`, `ShadowStrategy`) are
+documented on [the kit reference](/pg-prime/reference/kit/#PgPrimeConfig); every command that reads
+this file is on [the CLI reference](/pg-prime/reference/cli/).
