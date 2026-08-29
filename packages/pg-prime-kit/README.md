@@ -206,8 +206,9 @@ is inside it. In a project that has never run `tsc` there is no `schema.js` on d
 `schema.ts` beside it. The kit installs a resolve hook (`module.registerHooks`, Node ≥ 22.15) that
 redirects exactly that case — relative specifier, JavaScript extension, no such file, a TypeScript
 sibling that exists — and nothing else, so a project that *has* compiled keeps its own build. On
-Node 22.12–22.14 the hook does not exist and the import fails with `ERR_MODULE_NOT_FOUND` naming
-the `.js` that is not there; the two fixes are a build step, or Node 22.15 or newer. The floor
+Node 22.12–22.14 the hook does not exist, and the kit turns Node's raw `ERR_MODULE_NOT_FOUND`
+into one sentence naming the file it was loading, the `.js` that is not there, the `.ts` beside it
+and your Node version; the two fixes are a build step, or Node 22.15 or newer. The floor
 stays `>=22.12` because everything else the kit does works there.
 
 ```ts

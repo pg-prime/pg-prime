@@ -59,8 +59,10 @@ project that has never run `tsc` there is no `db/schema.js`, only `db/schema.ts`
 The kit installs a resolve hook for exactly that case — a *relative* specifier, a JavaScript
 extension, no such file on disk, a TypeScript sibling that exists — and for nothing else, so a
 project that has compiled keeps its own build. The hook is `module.registerHooks`, which arrived in
-**Node 22.15**. On 22.12–22.14 it does not exist and the import fails with `ERR_MODULE_NOT_FOUND`
-naming the `.js` that is not there; the fixes are a build step, or Node 22.15 or newer. The kit's
+**Node 22.15**. On 22.12–22.14 it does not exist, and rather than let Node's raw
+`ERR_MODULE_NOT_FOUND` name a file you never wrote, the kit refuses with one sentence: the file it
+was loading, the `.js` that is not there, the `.ts` that is beside it, your Node version, and the
+two fixes — a build step, or Node 22.15 or newer. The kit's
 `engines` stays `>=22.12`, because everything else works there — this is the one thing that does
 not. The same applies to a schema module and to a `.ts` seed: anything the kit loads from your
 source.

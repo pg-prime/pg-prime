@@ -20,7 +20,7 @@
  */
 
 import pg from "pg";
-import { ConfigError } from "../config/load.js";
+import { ConfigError, tsSpecifierAdvice } from "../config/load.js";
 import { enableTsSpecifiers } from "../config/ts-specifiers.js";
 import { connectionString, type ConnInfo } from "../db/pg.js";
 
@@ -116,9 +116,15 @@ export async function openSeedDb(conn: ConnInfo, schemaPaths: readonly string[])
   }
 
   const modules: Record<string, unknown>[] = [];
-  await enableTsSpecifiers(); // a schema module's own `.js` specifiers (design/12 F2 item j)
+  const hooks = await enableTsSpecifiers(); // a module's own `.js` specifiers (design/12 F2 item j)
   for (const path of schemaPaths) {
-    modules.push((await import(pathHref(path))) as Record<string, unknown>);
+    try {
+      modules.push((await import(pathHref(path))) as Record<string, unknown>);
+    } catch (err) {
+      // Node 22.12–22.14 has no `module.registerHooks`, so the redirect never happened and the
+      // `.js` the schema imports is genuinely absent (design/13 §5, E's F3).
+      throw tsSpecifierAdvice(path, err, hooks) ?? err;
+    }
   }
   const schema = registryFrom(modules, mod);
 

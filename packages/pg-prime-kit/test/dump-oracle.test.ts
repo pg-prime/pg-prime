@@ -17,7 +17,7 @@ import {
 import { splitStatements } from "../src/sql/statements.js";
 import { generateFromDatabases as generate } from "../src/generate.js";
 import { ADMIN, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
-import { pgDumpLauncher } from "./support/pgdump.js";
+import { PG_DUMP_HINT, pgDumpLauncher } from "./support/pgdump.js";
 
 const T = 120_000;
 
@@ -185,7 +185,7 @@ describe("pg_dump oracle against live PostgreSQL", () => {
   beforeAll(async () => {
     expect(await serverAvailable(), `no PostgreSQL at ${ADMIN.host}:${ADMIN.port}`).toBe(true);
     const found = await pgDumpLauncher();
-    expect(found, "no pg_dump available (install client tools or start the spike container)").not.toBeNull();
+    expect(found, PG_DUMP_HINT).not.toBeNull();
     pgDump = found ?? undefined;
   }, T);
 

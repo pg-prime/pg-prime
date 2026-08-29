@@ -25,8 +25,13 @@
  * cannot observe the hook at all, and an uncompiled one gets the resolution `tsc` promised it.
  *
  * `module.registerHooks` (Node ≥ 22.15) runs the hook **in this thread**, with no worker and no
- * separate hooks file to ship; on 22.12–22.14 it does not exist and the loader keeps the
- * behaviour it had, which is the `ERR_MODULE_NOT_FOUND` plus `stripTypesAdvice`'s sentence.
+ * separate hooks file to ship. On 22.12–22.14 it does not exist, {@link enableTsSpecifiers}
+ * returns `false`, and the import fails with a raw `ERR_MODULE_NOT_FOUND` from Node — so
+ * `config/load.ts` recognises exactly that shape and replaces it with `tsSpecifierAdvice`'s
+ * sentence, which names the file, the `.js` that is not there, the `.ts` that is, and the two ways
+ * out. (An earlier version of this paragraph claimed `stripTypesAdvice`'s sentence covered it. It
+ * does not: that one is reached only for the four type-stripping error codes, and
+ * `ERR_MODULE_NOT_FOUND` is not one of them — design/13 §5, E's F3.)
  */
 
 import { existsSync } from "node:fs";
@@ -61,42 +66,66 @@ const onDisk = (url: URL): boolean => {
   }
 };
 
+/**
+ * The same rule asked of a RESOLVED url — which is all an `ERR_MODULE_NOT_FOUND` gives you
+ * (`err.url`). Returns the TypeScript sibling's url, or `null` when this is not the case at hand.
+ *
+ * The disk half lives here and {@link typeScriptSibling} delegates to it, so the hook and the
+ * error message cannot come to different conclusions about the same file.
+ */
+export function typeScriptSiblingUrl(url: string): string | null {
+  const pair = SIBLING.find(([js]) => url.endsWith(js));
+  if (pair === undefined) return null;
+  let asIs: URL;
+  let candidate: URL;
+  try {
+    asIs = new URL(url);
+    candidate = new URL(`${url.slice(0, -pair[0].length)}${pair[1]}`);
+  } catch {
+    return null;
+  }
+  // The `.js` winning is the whole safety property: a project that compiled keeps its own build.
+  if (onDisk(asIs) || !onDisk(candidate)) return null;
+  return candidate.href;
+}
+
 /** The rewrite, as a pure function, so a test can ask what it would do without a Node hook. */
 export function typeScriptSibling(specifier: string, parentURL: string | undefined): string | null {
   if (parentURL === undefined) return null;
   if (!specifier.startsWith("./") && !specifier.startsWith("../")) return null;
   const pair = SIBLING.find(([js]) => specifier.endsWith(js));
   if (pair === undefined) return null;
-  let asIs: URL;
-  let candidate: URL;
-  const rewritten = `${specifier.slice(0, -pair[0].length)}${pair[1]}`;
+  let resolved: string;
   try {
-    asIs = new URL(specifier, parentURL);
-    candidate = new URL(rewritten, parentURL);
+    resolved = new URL(specifier, parentURL).href;
   } catch {
     return null;
   }
-  // The `.js` winning is the whole safety property: a project that compiled keeps its own build.
-  if (onDisk(asIs) || !onDisk(candidate)) return null;
-  return rewritten;
+  if (typeScriptSiblingUrl(resolved) === null) return null;
+  return `${specifier.slice(0, -pair[0].length)}${pair[1]}`;
 }
 
-let installed: Promise<void> | null = null;
+let installed: Promise<boolean> | null = null;
 
 /**
  * Install the hook once per process. Safe to call from every entry point that imports a user
  * module, and a no-op on a Node that has no `registerHooks`.
+ *
+ * @returns `true` when the hook is in force. `false` is Node 22.12–22.14, and it is the fact
+ *   `config/load.ts` needs to tell "this `.js` genuinely does not exist" from "this Node cannot
+ *   redirect it to the `.ts` beside it".
  */
-export async function enableTsSpecifiers(): Promise<void> {
-  installed ??= (async (): Promise<void> => {
+export async function enableTsSpecifiers(): Promise<boolean> {
+  installed ??= (async (): Promise<boolean> => {
     const nodeModule = (await import("node:module")) as unknown as HookRegistrar;
-    if (typeof nodeModule.registerHooks !== "function") return;
+    if (typeof nodeModule.registerHooks !== "function") return false;
     nodeModule.registerHooks({
       resolve(specifier, context, nextResolve) {
         const sibling = typeScriptSibling(specifier, context.parentURL);
         return nextResolve(sibling ?? specifier, context);
       },
     });
+    return true;
   })();
   return installed;
 }

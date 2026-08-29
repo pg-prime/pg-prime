@@ -11,11 +11,11 @@
 
 import { access } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ConnInfo } from "../db/pg.js";
 import { parseShadowStrategy } from "../shadow/ladder.js";
 import type { PgPrimeConfig } from "./define.js";
-import { enableTsSpecifiers } from "./ts-specifiers.js";
+import { enableTsSpecifiers, typeScriptSiblingUrl } from "./ts-specifiers.js";
 
 /** Searched in this order in the starting directory, then in each ancestor. */
 export const CONFIG_FILENAMES: readonly string[] = [
@@ -80,6 +80,68 @@ function stripTypesAdvice(file: string, err: unknown): ConfigError {
   );
 }
 
+/** The four codes Node uses when it cannot strip the types out of a `.ts` file. */
+const STRIP_TYPES_CODES: readonly string[] = [
+  "ERR_UNKNOWN_FILE_EXTENSION",
+  "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX",
+  "ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING",
+  "ERR_INVALID_TYPESCRIPT_SYNTAX",
+];
+
+/**
+ * The Node 22.12–22.14 failure, turned into a sentence (design/13 §5, E's F3).
+ *
+ * `ts-specifiers.ts` redirects a relative `./x.js` with no file on disk to the `./x.ts` beside it,
+ * through `module.registerHooks` — which arrived in **Node 22.15**. Below that the hook cannot be
+ * installed, the specifier resolves literally, and the user got Node's raw `ERR_MODULE_NOT_FOUND`
+ * naming a file they never wrote. `stripTypesAdvice` did not cover it: that one is reached only
+ * for {@link STRIP_TYPES_CODES}, and neither of its two ways out (Node >= 22.18, or a `.mjs`
+ * config) is the fix for this.
+ *
+ * Every clause of the test matters, because an `ERR_MODULE_NOT_FOUND` is ordinarily the user's own
+ * typo and must keep saying so: the hook is **not** installed, the missing module ends in a
+ * JavaScript extension, it is not on disk, and its TypeScript sibling **is**. That last pair is
+ * {@link typeScriptSiblingUrl} — the same predicate the hook itself uses, so the message cannot
+ * promise a redirect the hook would not have made.
+ *
+ * @returns the `ConfigError` to throw, or `null` to let the original error through untouched.
+ */
+export function tsSpecifierAdvice(file: string, err: unknown, hooksInstalled: boolean): ConfigError | null {
+  if (hooksInstalled) return null;
+  if (errCode(err) !== "ERR_MODULE_NOT_FOUND") return null;
+  const url = (err as { url?: unknown } | null)?.url;
+  if (typeof url !== "string") return null;
+  const sibling = typeScriptSiblingUrl(url);
+  if (sibling === null) return null;
+  return new ConfigError(
+    `${file} imports "${pathOfUrl(url)}", which does not exist — only "${pathOfUrl(sibling)}" beside ` +
+      `it. Node resolves a .js specifier literally, and the resolve hook that redirects it to its ` +
+      `TypeScript sibling needs module.registerHooks (Node >= 22.15); this is Node ${process.version}, ` +
+      `so either upgrade Node or compile the project first, which puts the .js there.`,
+  );
+}
+
+/** `file:///a/b.js` to `/a/b.js`, and anything else back unchanged. */
+function pathOfUrl(url: string): string {
+  try {
+    return fileURLToPath(url);
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * The one place an import of the USER's TypeScript is classified — the config file and every
+ * schema module take the same two branches, and they used to be two copies of the same `if`.
+ *
+ * @returns the error to throw instead of `err`, or `null` when `err` is already the right one.
+ */
+function classifyUserImportFailure(file: string, err: unknown, hooksInstalled: boolean): ConfigError | null {
+  const code = errCode(err);
+  if (code !== undefined && STRIP_TYPES_CODES.includes(code)) return stripTypesAdvice(file, err);
+  return tsSpecifierAdvice(file, err, hooksInstalled);
+}
+
 export interface LoadedConfig {
   readonly file: string | null;
   readonly config: PgPrimeConfig;
@@ -98,22 +160,13 @@ export async function loadConfig(path?: string, cwd: string = process.cwd()): Pr
   if (path && !(await exists(file))) throw new ConfigError(`no config file at ${file}`);
 
   let mod: { default?: unknown };
+  // A `.ts` config that imports a sibling `.ts` module writes `'./db/schema.js'`, because that
+  // is the specifier `tsc` requires and emits. Node resolves it literally (design/12 F2 item j).
+  const hooks = await enableTsSpecifiers();
   try {
-    // A `.ts` config that imports a sibling `.ts` module writes `'./db/schema.js'`, because that
-    // is the specifier `tsc` requires and emits. Node resolves it literally (design/12 F2 item j).
-    await enableTsSpecifiers();
     mod = (await import(pathToFileURL(file).href)) as { default?: unknown };
   } catch (err) {
-    const code = errCode(err);
-    if (
-      code === "ERR_UNKNOWN_FILE_EXTENSION" ||
-      code === "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX" ||
-      code === "ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING" ||
-      code === "ERR_INVALID_TYPESCRIPT_SYNTAX"
-    ) {
-      throw stripTypesAdvice(file, err);
-    }
-    throw err;
+    throw classifyUserImportFailure(file, err, hooks) ?? err;
   }
 
   const value = mod.default;
@@ -260,22 +313,13 @@ export async function loadSchema(paths: string | readonly string[], base: string
   for (const file of list) {
     if (!(await exists(file))) throw new ConfigError(`no schema module at ${file}`);
     let mod: Record<string, unknown>;
+    // Same reason as `loadConfig`: a schema split over several files imports its own siblings
+    // with `.js` specifiers, and nothing has compiled them (design/12 F2 item j).
+    const hooks = await enableTsSpecifiers();
     try {
-      // Same reason as `loadConfig`: a schema split over several files imports its own siblings
-      // with `.js` specifiers, and nothing has compiled them (design/12 F2 item j).
-      await enableTsSpecifiers();
       mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
     } catch (err) {
-      const code = errCode(err);
-      if (
-        code === "ERR_UNKNOWN_FILE_EXTENSION" ||
-        code === "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX" ||
-        code === "ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING" ||
-        code === "ERR_INVALID_TYPESCRIPT_SYNTAX"
-      ) {
-        throw stripTypesAdvice(file, err);
-      }
-      throw err;
+      throw classifyUserImportFailure(file, err, hooks) ?? err;
     }
     const registry = hasTables(mod["default"]) ? mod["default"] : Object.values(mod).find((v) => hasTables(v));
     const candidates: unknown[] = registry ? Object.values(registry.tables) : Object.values(mod);

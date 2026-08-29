@@ -37,6 +37,7 @@ import type { Dirent } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { CatalogClient } from "../catalog/extract.js";
+import { tsSpecifierAdvice } from "../config/load.js";
 import { enableTsSpecifiers } from "../config/ts-specifiers.js";
 import { withClient, type ConnInfo } from "../db/pg.js";
 import { splitStatements } from "../sql/statements.js";
@@ -313,8 +314,15 @@ async function applyOne(file: SeedFile, options: SeedOptions, db: unknown): Prom
 
   // A `.ts` seed imports the project's schema as `'../db/schema.js'` — the specifier `tsc`
   // requires — and Node's type stripping resolves it literally (design/12 F2 item j).
-  await enableTsSpecifiers();
-  const mod = (await import(pathHref(file.absPath))) as SeedModule;
+  const hooks = await enableTsSpecifiers();
+  let mod: SeedModule;
+  try {
+    mod = (await import(pathHref(file.absPath))) as SeedModule;
+  } catch (err) {
+    // On Node 22.12–22.14 there is no hook to install, so that `'../db/schema.js'` reaches the
+    // user as a raw ERR_MODULE_NOT_FOUND naming a file they never wrote (design/13 §5, E's F3).
+    throw tsSpecifierAdvice(file.absPath, err, hooks) ?? err;
+  }
   const fn = mod.default;
   if (typeof fn !== "function") {
     throw new Error(

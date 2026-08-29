@@ -19,9 +19,10 @@ import {
   parseDatabaseUrl,
   resolveConfig,
   STRIP_TYPES_MARKER,
+  tsSpecifierAdvice,
 } from "../../src/config/load.js";
 import { defineConfig } from "../../src/config/define.js";
-import { typeScriptSibling } from "../../src/config/ts-specifiers.js";
+import { enableTsSpecifiers, typeScriptSibling, typeScriptSiblingUrl } from "../../src/config/ts-specifiers.js";
 import { runCli } from "../support/cli.js";
 import { EXIT } from "../../src/cli/exit.js";
 import { PKG_DIR } from "../support/cli.js";
@@ -251,6 +252,84 @@ describe("typeScriptSibling — the narrowest rule that can work", () => {
     expect(typeScriptSibling("./define.ts", inSrc)).toBeNull();
     // A resolution with no parent is an entry point, which cannot be relative.
     expect(typeScriptSibling("./define.js", undefined)).toBeNull();
+  });
+
+  /**
+   * `typeScriptSiblingUrl` is the same rule asked of a RESOLVED url, which is all an
+   * `ERR_MODULE_NOT_FOUND` carries (`err.url`). The hook and the sub-22.15 error message share it
+   * on purpose: a message that promised a redirect the hook would not have made would be worse
+   * than the raw error it replaced.
+   */
+  it("typeScriptSiblingUrl answers the same question about a resolved url", () => {
+    const missing = pathToFileURL(join(PKG_DIR, "src", "config", "define.js")).href;
+    expect(typeScriptSiblingUrl(missing)).toBe(pathToFileURL(join(PKG_DIR, "src", "config", "define.ts")).href);
+    // The built tree really has the `.js`, so there is nothing to redirect.
+    expect(typeScriptSiblingUrl(pathToFileURL(join(PKG_DIR, "dist", "config", "define.js")).href)).toBeNull();
+    // Neither file exists; already TypeScript; not a JavaScript extension at all.
+    expect(typeScriptSiblingUrl(pathToFileURL(join(PKG_DIR, "src", "nowhere.js")).href)).toBeNull();
+    expect(typeScriptSiblingUrl(pathToFileURL(join(PKG_DIR, "src", "config", "define.ts")).href)).toBeNull();
+    expect(typeScriptSiblingUrl("https://example.test/x.js")).toBeNull();
+  });
+});
+
+/**
+ * design/13 §5, E's F3 — the sentence a Node without `module.registerHooks` gets.
+ *
+ * `ts-specifiers.ts` used to claim this case produced `stripTypesAdvice`'s sentence. It did not:
+ * that one is reached for four type-stripping codes and `ERR_MODULE_NOT_FOUND` is not among them,
+ * so the user got Node's raw error naming a `.js` they never wrote, with no mention of 22.15 or of
+ * a build step.
+ *
+ * Node 22.12–22.14 cannot be run here, so the absent hook is the `hooksInstalled` argument —
+ * `enableTsSpecifiers()` returns exactly that fact, and it is asserted below on the Node that IS
+ * here so the two halves are pinned together.
+ */
+describe("the sub-22.15 message (design/13 §5, E's F3)", () => {
+  const missing = pathToFileURL(join(PKG_DIR, "src", "config", "define.js")).href;
+  const notFound = (url: string): Error & { code: string; url: string } =>
+    Object.assign(new Error(`Cannot find module '${url}' imported from wherever`), {
+      code: "ERR_MODULE_NOT_FOUND",
+      url,
+    });
+
+  it("names the file, the .js that is not there, the .ts that is, and the two ways out", () => {
+    const advice = tsSpecifierAdvice("/proj/pg-prime.config.ts", notFound(missing), false);
+    expect(advice).not.toBeNull();
+    const message = advice!.message;
+    expect(advice!.code).toBe("PG_PRIME_CONFIG");
+    // One sentence-shaped line, like every other message this loader produces.
+    expect(message.split("\n")).toHaveLength(1);
+    expect(message).toContain("/proj/pg-prime.config.ts");
+    expect(message).toContain(join(PKG_DIR, "src", "config", "define.js"));
+    expect(message).toContain(join(PKG_DIR, "src", "config", "define.ts"));
+    expect(message).toContain("Node >= 22.15");
+    expect(message).toContain("compile the project first");
+    expect(message).toContain(process.version);
+    // NOT the type-stripping advice: renaming the config to .mjs fixes nothing here.
+    expect(message).not.toContain("pg-prime.config.mjs");
+    // And it is not the retryable kind — a re-exec with --experimental-strip-types adds no hook.
+    expect(advice!.retryWithStripTypes).toBe(false);
+  });
+
+  it("stays out of the way of every other ERR_MODULE_NOT_FOUND", () => {
+    // The hook IS installed, so a missing module is a missing module.
+    expect(tsSpecifierAdvice("/proj/c.ts", notFound(missing), true)).toBeNull();
+    // A different code entirely.
+    expect(
+      tsSpecifierAdvice("/proj/c.ts", Object.assign(new Error("x"), { code: "ERR_REQUIRE_ESM" }), false),
+    ).toBeNull();
+    // No `url` on the error — nothing to reason about.
+    expect(
+      tsSpecifierAdvice("/proj/c.ts", Object.assign(new Error("x"), { code: "ERR_MODULE_NOT_FOUND" }), false),
+    ).toBeNull();
+    // The user's own typo: no TypeScript sibling either, so the raw error is the honest one.
+    const typo = pathToFileURL(join(PKG_DIR, "src", "config", "nowhere.js")).href;
+    expect(tsSpecifierAdvice("/proj/c.ts", notFound(typo), false)).toBeNull();
+  });
+
+  it("enableTsSpecifiers reports whether the hook is in force, and on this Node it is", async () => {
+    // >= 22.15 everywhere the kit is tested; the false branch is the argument above.
+    expect(await enableTsSpecifiers()).toBe(true);
   });
 });
 
