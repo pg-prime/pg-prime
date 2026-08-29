@@ -20,6 +20,13 @@ also `.mts`, `.js` and `.mjs`, searched in that order in each directory before m
 no loader dependency: Node ≥ 22.18 strips the types itself, and below that the CLI re-executes
 itself once with `--experimental-strip-types`.
 
+One caveat, and it is the only place the kit's supported Node range is not flat. A config that
+imports its own schema writes `'./src/schema.js'` — the specifier `tsc` emits — and Node resolves
+it literally, so in a project that has never compiled there is no such file. The kit redirects that
+one case to the `.ts` beside it through `module.registerHooks`, which needs **Node ≥ 22.15**; on
+22.12–22.14 the import fails with `ERR_MODULE_NOT_FOUND`, and the fixes are a build step or a newer
+Node. See [config reference](/pg-prime/reference/config/).
+
 `defineConfig` is the identity function, typed. It exists so the file gets completion and so a typo
 in a key is a compile error in your editor rather than a setting that is silently ignored.
 

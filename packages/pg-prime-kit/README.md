@@ -198,6 +198,18 @@ turns the whole layer off and gives you the literal diff in one file.
 < 22.18 the CLI re-executes itself once with `--experimental-strip-types`; if that is not available
 either, rename the file to `pg-prime.config.mjs` and write it in JavaScript.
 
+**One thing needs Node ≥ 22.15**, and `engines` deliberately does not require it. A relative `.js`
+specifier in a file the kit loads — `import { schema } from './db/schema.js'` in a config, a schema
+module or a `.ts` seed — is the specifier TypeScript's `nodenext` resolution requires and `tsc`
+emits, and Node resolves it *literally*: type stripping compiles the file but never rewrites what
+is inside it. In a project that has never run `tsc` there is no `schema.js` on disk, only
+`schema.ts` beside it. The kit installs a resolve hook (`module.registerHooks`, Node ≥ 22.15) that
+redirects exactly that case — relative specifier, JavaScript extension, no such file, a TypeScript
+sibling that exists — and nothing else, so a project that *has* compiled keeps its own build. On
+Node 22.12–22.14 the hook does not exist and the import fails with `ERR_MODULE_NOT_FOUND` naming
+the `.js` that is not there; the two fixes are a build step, or Node 22.15 or newer. The floor
+stays `>=22.12` because everything else the kit does works there.
+
 ```ts
 import { defineConfig } from '@pg-prime/kit'
 

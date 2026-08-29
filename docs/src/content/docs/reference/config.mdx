@@ -50,6 +50,22 @@ it can never fork twice — and if that also fails you get one sentence naming y
 the `pg-prime.config.mjs` alternative. There is no `jiti`, no `tsx` and no `esbuild` at run time.
 </Aside>
 
+<Aside type="caution" title="A relative `.js` import needs Node ≥ 22.15">
+A config that imports its own schema writes `import { schema } from './db/schema.js'` — the
+specifier TypeScript's `nodenext` resolution requires and `tsc` emits. Node resolves it
+**literally**: type stripping compiles the file, it does not rewrite what is inside it. So in a
+project that has never run `tsc` there is no `db/schema.js`, only `db/schema.ts` beside it.
+
+The kit installs a resolve hook for exactly that case — a *relative* specifier, a JavaScript
+extension, no such file on disk, a TypeScript sibling that exists — and for nothing else, so a
+project that has compiled keeps its own build. The hook is `module.registerHooks`, which arrived in
+**Node 22.15**. On 22.12–22.14 it does not exist and the import fails with `ERR_MODULE_NOT_FOUND`
+naming the `.js` that is not there; the fixes are a build step, or Node 22.15 or newer. The kit's
+`engines` stays `>=22.12`, because everything else works there — this is the one thing that does
+not. The same applies to a schema module and to a `.ts` seed: anything the kit loads from your
+source.
+</Aside>
+
 The module must have a **default export**, and it must be an object — not a function, not an array,
 not a promise. `defineConfig` is the identity function at run time; it exists so the file gets
 completion and so a typo in a key is a compile error in your editor rather than a setting that is

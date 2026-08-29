@@ -470,6 +470,12 @@ a project that compiles keeps its own build, and it covers the config file and t
 for the same reason it covers seeds. A `'../schema.ts'` specifier also works if you prefer it and
 your `tsconfig.json` allows it.
 
+**That hook is `module.registerHooks`, and it needs Node ≥ 22.15.** Below it — 22.12, 22.13, 22.14,
+all of which the kit's `engines` still allows, because everything else works on them — the `.js`
+specifier is resolved literally and the seed fails to load with `ERR_MODULE_NOT_FOUND` naming a
+file that was never written. On those versions, either compile the project first or write the
+specifier as `'../schema.ts'`.
+
 `set` is the set the file belongs to (`null` for the base set) and `env` is `PG_PRIME_ENV`
 verbatim. `db` is a **real pg-prime handle** — specifically the transaction handle, so the file's
 writes are atomic by the same mechanism your own code would use — built by the kit through **your**
