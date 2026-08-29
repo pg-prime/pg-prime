@@ -12,7 +12,12 @@
 //      input and never emits it, so `src/unsupported-typescript.d.ts` — the `types@<5.9` gate of
 //      design §2.2, which the export map points every subpath at — would otherwise be missing from
 //      the tarball and every subpath would resolve to nothing on an old TypeScript.
-//   3. Every `bin` target is chmod +x. tsc preserves the shebang from `src/cli.ts` but emits 0644,
+//   3. A package's `templates/` directory, when it has one, is copied to `dist/templates/`
+//      (design/13 decision 7). `@pg-prime/create` ships the getting-started project as files
+//      rather than as string literals so that `test/templates.test.ts` can assert they are
+//      byte-equal to the docs blocks; tsc does not know they exist. `pg-prime` and the kit have no
+//      such directory and this is a no-op for them.
+//   4. Every `bin` target is chmod +x. tsc preserves the shebang from `src/cli.ts` but emits 0644,
 //      and while `npm install` sets the bit on the symlink it creates, `publint` reads the tarball
 //      and a 0644 `bin` is one of the things it fails on. `tools/pack-smoke.mjs` proves the end
 //      state by running `pg-prime --help` out of an installed tarball.
@@ -88,6 +93,17 @@ export function buildPackage(
     copied.push(rel)
   }
 
+  const templatesSrc = join(pkgDir, 'templates')
+  const templates = []
+  if (existsSync(templatesSrc)) {
+    for (const rel of listFiles(templatesSrc)) {
+      const dest = join(out, 'templates', ...rel.split('/'))
+      mkdirSync(dirname(dest), { recursive: true })
+      copyFileSync(join(templatesSrc, ...rel.split('/')), dest)
+      templates.push(rel)
+    }
+  }
+
   const executable = []
   const pkgJsonPath = join(pkgDir, 'package.json')
   if (existsSync(pkgJsonPath)) {
@@ -117,10 +133,11 @@ export function buildPackage(
         (copied.length
           ? `  (+${copied.length} hand-written .d.ts copied: ${copied.join(', ')})`
           : '') +
+        (templates.length ? `  (+${templates.length} templates/ files copied)` : '') +
         (executable.length ? `  (+x: ${executable.join(', ')})` : ''),
     )
   }
-  return { out, files, bytes, copied, executable }
+  return { out, files, bytes, copied, templates, executable }
 }
 
 if (process.argv[1] && process.argv[1].endsWith('build-package.mjs')) {
