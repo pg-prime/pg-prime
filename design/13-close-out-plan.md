@@ -933,15 +933,74 @@ as its own commit.
 
 Done when, on one `main` commit:
 
-- [ ] `pnpm -r build` produces four publishable packages; `pnpm package:check` (now including
+- [x] `pnpm -r build` produces four publishable packages; `pnpm package:check` (now including
       `create-smoke`) is green; `size-budget` prints `@pg-prime/testing` ≤ 300 KB and
       `@pg-prime/create` ≤ 500 KB beside their design values.
-- [ ] `pnpm test` runs three tier-0 suites, tier 0 of `pg-prime` still ≤ 5 s; tier 1 of `pg-prime`
+- [x] `pnpm test` runs three tier-0 suites, tier 0 of `pg-prime` still ≤ 5 s; tier 1 of `pg-prime`
       has the same pass count as `9be7192` (1 790) with the bridge served from the package.
-- [ ] `docs:check` is green with `guides/testing` and `getting-started` executed; `docs:examples:pg`
+- [x] `docs:check` is green with `guides/testing` and `getting-started` executed; `docs:examples:pg`
       is green on PostgreSQL 17 + PgBouncer locally and on the CI `pg` job; every `no-run` states
       why (R22).
-- [ ] The scaffold e2e (decision 9) is green on the `pg` job and on every nightly leg.
-- [ ] `bench/runtime/budget.json` carries Q's result either way, with the five-run numbers.
+- [x] The scaffold e2e (decision 9) is green on the `pg` job and on every nightly leg.
+- [x] `bench/runtime/budget.json` carries Q's result either way, with the five-run numbers.
 - [ ] CI green, nightly green, and the *what is still open* list of `12` §5 is reduced to the
       three operator switches.
+
+### Integration — 2026-08-30
+
+**Order and mechanics.** X and E landed first (both handed over while T was still running; their
+26 commits cherry-picked onto `integ-13` from `e453e16` with no conflict), then T's six. T against
+X conflicted exactly where §3 predicted — one line each in `knip.json`, `tools/api-snapshot.mjs`,
+`tools/budgets.json`, `tools/check-dts.mjs`, `tools/emit-parity.mjs`, `docs/astro.config.mjs`,
+`tools/docs-coverage.mjs`, `tools/docs-typecheck.mjs` — all "keep both". One resolution was wrong
+the first time: concatenating both sides of `emit-parity.mjs`'s ternary produced two `?` branches,
+which `pnpm format:check` caught (and a `| tail` had masked its exit code — the gate list is run
+with the exit code visible, not the last line). The lockfile T committed applied clean; `pnpm
+install` changed nothing. E's §6 sentences for T's page were moot — T's rewrite already states
+every `no-run` reason — so the `PENDING_R22` waiver construct was deleted rather than emptied;
+E's four reasons for X's page were applied as written. E's F7 (three kit `afterAll` teardowns
+under vitest's 10 s default) was fixed at integration, `, T` on each.
+
+**What the merged tree found that no branch could.** X's scaffold e2e `--testing` leg switches on
+when `@pg-prime/testing` has a `dist`, which only the integrated tree has, and it failed twice:
+
+1. The scaffold's `test/setup.ts` stopped PGlite in `afterAll` while `db.ts`'s pool still held
+   an idle connection; `pg` re-emits the dropped socket as `error` on the pool, `buildPool`
+   attaches no listener, vitest reports an uncaught exception — **T's recorded runtime finding,
+   reproduced by X's e2e**. The fixture now ends the pool before the server (a dynamic import of
+   `../db.js`, because `db.ts` reads `DATABASE_URL` when it loads); the runtime listener is the
+   fix round's.
+2. `npm run build` compiles `test/` into `dist/`, and **Vitest 4 no longer excludes `**/dist/**`
+   by default**, so every scaffold test ran twice and the second copy imported a `dist/db.js` pool
+   nothing ended. `templates/vitest.config.ts` now excludes it, with the reason.
+
+Both are template files with no docs block behind them. Create's tier 2 reads **42 / 42, 0
+skipped** after them.
+
+**Gate numbers on `711594e`** (macOS arm64, Node 24.14.1, PostgreSQL 17.11 `pgprime-s` + PgBouncer
+`pgprime-s-bouncer`, `PG_PRIME_SPIKE_CONTAINER=pgprime-s`; the full §2 chain, 231 s, exit 0):
+
+| Gate | Result |
+|---|---|
+| lint · format:check · typecheck | green, 4 packages |
+| tier 0 | pg-prime **1 013** in **4.24 s** · create **35** · testing **23** |
+| tier 1 | pg-prime **1 796** (0 skipped — the run had a server URL) · testing **28** |
+| tier 2 | pg-prime **1 862 / 0 skipped** · kit **426** · testing **36** (Docker answered) · create **42** |
+| build | pg-prime 2 313.9 KB · kit 1 751.4 KB · **testing 111.0 KB / 300 (31 files, 0 deps, 1 required + 2 optional peers)** · **create 65.0 KB / 500 (48 files, 0 deps / 0 peers)** |
+| package:check | 12/12 size gates · api-snapshot no drift (four goldens) · emit-parity · check-dts · treeshake · pack-smoke (three tarballs) · **create-smoke ok** (scaffold with tests, installed from four tarballs, `tsc --noEmit`, `pg-prime --help` inside it) |
+| bench:types · bench:compile | green, unchanged |
+| docs:check | typecheck **575 blocks / 47 pages** · examples **95** on PGlite from 26 pages · coverage **1 230 / 1 230 names (100 %)**, 16 CLI blocks, 40/40 hazard codes, 232 links, **R22: 33 explained, 0 waived** · build 48 pages |
+| docs:examples:pg | **10** examples from 5 pages in 3.6 s (7 `pg-only`, 3 `pg-only="pgbouncer"`) |
+
+Executed docs examples: 83 → **105** (95 + 10).
+
+**Carried to the fix round** (recorded by the branches, none fixed here — all in `packages/*/src`):
+T — `pgPrime({ connection })`'s `buildPool` attaches no `error` listener (an idle pooled
+connection terminated under it is an uncaught `57P01`); E F1 — `copyFrom(table, rows)` defaults
+`columns` to every declared column, so a generated column is sent as `\N` (`23502`), against
+`CopyOptions`' own doc comment; E F2 — the cancel path reads `pg`'s deprecated
+`Client.activeQuery` (gone in `pg@9`); E F3 — `ts-specifiers.ts` claims a sub-22.15 Node gets
+`stripTypesAdvice`'s sentence on `ERR_MODULE_NOT_FOUND`, but `load.ts` only advises on the four
+type-stripping codes. Local-only: the kit's `pg_dump` fallback container defaults to
+`pgorm-spike-diff`, so a `PG_PRIME_TEST_URL` on any other container needs
+`PG_PRIME_SPIKE_CONTAINER` beside it (T, E both lost time to it).
