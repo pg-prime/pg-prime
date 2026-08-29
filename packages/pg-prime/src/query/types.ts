@@ -1326,15 +1326,21 @@ type Settable<T> = T | ExprOf<T>
 type ColsOfT<T extends AnyTable> = T[typeof COLS & keyof T]
 
 /**
- * `true` iff `T` is a union of two or more members — the classic distributive self-comparison,
- * two conditionals and no `UnionToIntersection`.
+ * `true` iff every row of a bulk insert sets the same columns — the type-level half of the
+ * runtime's per-row check (`query/insert.ts`'s `#columnsFor`).
  *
- * TypeScript infers `R` from an array literal as the *union* of its element types, so
- * `readonly R[]` alone accepts a heterogeneous batch; asking whether `R` came out a union is what
- * turns that back into an error. Instantiated only by `valuesMany`, which appears at most once
- * per statement.
+ * TypeScript infers `R` from an array literal as the *union* of its element types, so `readonly
+ * R[]` alone accepts a heterogeneous batch. "Is `R` a union?" was the first spelling and it is
+ * wrong for a common case: a column whose type is itself a union (`boolean` is `true | false`, an
+ * enum is its labels) keeps its literal type, so `[{ published: true }, { published: false }]` —
+ * one column list — was refused with a message about columns. What TypeScript produces for a
+ * genuinely ragged batch is `{ a; b?: undefined } | { a; b: string }`: the missing key is present
+ * as `?: undefined`, so the honest question is whether any member declares a key it cannot have a
+ * value for. One mapped type per member, no `UnionToIntersection`, instantiated at most once per
+ * statement.
  */
-type IsUnion<T, U = T> = T extends unknown ? ([U] extends [T] ? false : true) : never
+type AbsentKeys<T> = { [K in keyof T]-?: [T[K]] extends [undefined] ? K : never }[keyof T]
+type SameColumns<R> = [R extends unknown ? AbsentKeys<R> : never] extends [never] ? true : false
 
 /** `03` §2.6's two bulk strategies and the automatic switch. */
 export interface BulkOpts {
@@ -1429,7 +1435,7 @@ export interface InsertQuery<H extends AnyHandle, O, C extends Sources = {}> ext
   valuesMany<R extends InsertPatch<TableAt<H>>>(
     rows: readonly R[],
     opts?: BulkOpts,
-  ): [IsUnion<R>] extends [false] ? InsertQuery<H, O, C> : OrmTypeError<HeterogeneousBulkMsg>
+  ): [SameColumns<R>] extends [true] ? InsertQuery<H, O, C> : OrmTypeError<HeterogeneousBulkMsg>
   defaultValues(): InsertQuery<H, O, C>
   /** `insert … select …`, the writable-CTE pattern (03 §2.7). */
   fromSelect<O2>(

@@ -157,48 +157,95 @@ export function readSnippets() {
   }
   for (const f of files) {
     const name = relative(SNIPPETS, f).replace(/\.ts$/, '')
-    out.set(name, { file: f, text: readFileSync(f, 'utf8') })
+    const raw = readFileSync(f, 'utf8')
+    // A snippet may itself compose others: `// docs: use=blog` on a line of its own. That is how
+    // `blog-ddl` is the single copy of the DDL both it and `blog` need.
+    const uses = []
+    const lines = raw.split('\n')
+    const kept = []
+    for (const line of lines) {
+      const m = /^\s*\/\/\s*docs:\s*use=(\S+)\s*$/.exec(line)
+      if (m) {
+        uses.push(...m[1].split(',').map((x) => x.trim()).filter(Boolean))
+        kept.push('')
+        continue
+      }
+      kept.push(line)
+    }
+    out.set(name, { file: f, text: kept.join('\n'), uses })
   }
   return out
 }
 
+/** A `title=` that is a plain file name is emitted as that file; anything else is prose. */
+const FILE_TITLE = /^[\w.-]+\.tsx?$/
+
 /**
- * The composed module for one block: its `use=` preludes, then the block.
+ * What one block is checked and run as: an entry module, plus the sibling files it imports.
  *
- * Composition is textual, not `import`-based, so a block reads on the page exactly as it runs: the
- * prelude's `const db = …` really is in scope, and no line of the block is rewritten. The returned
- * `map` is one entry per composed line — `{ file, line }` of where it came from — which is how a
- * `tsc` or Node diagnostic is reported against the page instead of against a temp file.
+ * `use=` means "this code is in scope", and there are two ways to be in scope, chosen by whether
+ * the thing being used has a file name of its own:
+ *
+ *  - a `setup=` block **with** a `title="schema.ts"` becomes the file `schema.ts` next to the
+ *    entry, and the block imports it exactly as a reader's project would (`./schema.js` resolves to
+ *    `schema.ts`, which is what NodeNext does and what the bundler the examples runner uses does);
+ *  - a snippet, or a `setup=` block with no file name, is **prepended** textually, so an invisible
+ *    prelude's `const db = …` is simply in scope with nothing on the page to explain.
+ *
+ * Either way no line of the block is rewritten. `map` is one entry per line of the entry module —
+ * `{ file, line }` of where it came from — which is how a diagnostic points at the page.
  */
 export function compose(block, snippets, pageSetups) {
   const out = []
   const map = []
   const used = []
+  const files = []
   const seen = new Set()
 
-  const useList = String(block.attrs.use ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
+  const useListOf = (attrs) =>
+    String(attrs.use ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
 
-  for (const name of useList) {
-    if (seen.has(name)) continue
-    seen.add(name)
+  /** Collects into `sink` (an entry-module accumulator) or emits a file, depending on the source. */
+  const include = (name, sink, where) => {
+    if (seen.has(name)) return
     const snippet = snippets.get(name)
     const setup = pageSetups.get(name)
     const source = snippet ?? setup
     if (!source) {
       throw new Error(
-        `${block.page}:${block.line}: use=${name} names no snippet ` +
+        `${where}: use=${name} names no snippet ` +
           `(docs/src/snippets/${name}.ts) and no setup= block on this page`,
       )
     }
+    seen.add(name)
     used.push(name)
+
+    if (source.fileName) {
+      // File mode: its own `use=` is resolved against the same rules, into its own text.
+      const inner = { out: [], map: [] }
+      for (const dep of useListOf(source.attrs ?? {})) include(dep, inner, where)
+      appendText(inner, source, name)
+      files.push({ name: source.fileName, text: inner.out.join('\n'), map: inner.map })
+      return
+    }
+    for (const dep of source.uses ?? []) include(dep, sink, where)
+    appendText(sink, source, name)
+  }
+
+  const appendText = (sink, source, name) => {
     const lines = stripExportMarker(source.text).split('\n')
     for (let i = 0; i < lines.length; i++) {
-      out.push(lines[i])
-      map.push({ file: source.file, line: (source.startLine ?? 1) + i, snippet: name })
+      sink.out.push(lines[i])
+      sink.map.push({ file: source.file, line: (source.startLine ?? 1) + i, snippet: name })
     }
+  }
+
+  const entry = { out, map }
+  for (const name of useListOf(block.attrs)) {
+    include(name, entry, `${block.page}:${block.line}`)
   }
 
   const body = block.text.split('\n')
@@ -206,7 +253,7 @@ export function compose(block, snippets, pageSetups) {
     out.push(body[i])
     map.push({ file: block.file, line: block.bodyLine + i })
   }
-  return { text: out.join('\n'), map, used }
+  return { text: out.join('\n'), map, used, files }
 }
 
 /** A snippet file ends with `export {}` so it is a module on its own; concatenation does not need it. */
@@ -218,9 +265,15 @@ function stripExportMarker(text) {
 export function pageSetupsOf(page) {
   const setups = new Map()
   for (const b of page.blocks) {
-    if (typeof b.attrs.setup === 'string') {
-      setups.set(b.attrs.setup, { file: b.file, text: b.text, startLine: b.bodyLine })
-    }
+    if (typeof b.attrs.setup !== 'string') continue
+    const title = typeof b.attrs.title === 'string' ? b.attrs.title : undefined
+    setups.set(b.attrs.setup, {
+      file: b.file,
+      text: b.text,
+      startLine: b.bodyLine,
+      attrs: b.attrs,
+      ...(title && FILE_TITLE.test(title) ? { fileName: title } : {}),
+    })
   }
   return setups
 }

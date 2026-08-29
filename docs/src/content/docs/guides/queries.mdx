@@ -3,4 +3,18 @@ title: Queries
 description: Select, join, group, window, set operations, CTEs, insert, update, delete, streaming and EXPLAIN.
 ---
 
-TODO
+{/* docs: use=blog,blog-ddl */}
+```ts title="select-where.ts"
+import { eq } from 'pg-prime'
+
+await db.insertInto(db.h.users).values({ email: 'a@example.com', name: 'Ada' }).execute()
+
+const rows = await db
+  .from(db.h.users, 'u')
+  .where((t) => eq(t.u.name, 'Ada'))
+  .select((t) => ({ id: t.u.id, email: t.u.email }))
+  .execute()
+
+console.log(rows.length) // 1
+```
+

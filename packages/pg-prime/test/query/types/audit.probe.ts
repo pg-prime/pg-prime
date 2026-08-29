@@ -117,6 +117,15 @@ db.insertInto(schema.h.posts).valuesMany([
   { authorId: 'b', title: 'u' },
 ])
 
+// Rows that differ only in the VALUE of a union-typed column — `boolean` is `true | false`, and an
+// enum column is a union of its labels — are one batch. The first spelling of the guard asked
+// whether `R` came out a union and refused these; design/12 §4 D found it while writing the
+// getting-started page.
+db.insertInto(schema.h.posts).valuesMany([
+  { authorId: 'a', title: 't', published: true },
+  { authorId: 'b', title: 'u', published: false },
+])
+
 // One statement, one column list: a heterogeneous batch is not insertable. Return-position
 // sentinel again, so the gate lands where the result is used.
 const hetero = db.insertInto(schema.h.posts).valuesMany([

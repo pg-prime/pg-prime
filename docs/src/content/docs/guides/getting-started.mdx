@@ -3,4 +3,323 @@ title: Getting started
 description: Install pg-prime, define a schema, run a query, and ship your first migration — in fifteen minutes.
 ---
 
-TODO
+import { Steps } from '@astrojs/starlight/components'
+
+This page goes from an empty directory to a migrated database and a typed query. It takes about
+fifteen minutes and assumes nothing beyond a PostgreSQL you can connect to.
+
+You need **Node ≥ 22.12**, **TypeScript ≥ 5.9** and **PostgreSQL 15 or newer**. Every code block
+below is compiled on TypeScript 5.9.3 and every one with a file name is executed against a real
+PostgreSQL in this project's CI, so what you read is what runs.
+
+## Install
+
+<Steps>
+
+1. Two packages, plus the PostgreSQL driver:
+
+   ```sh
+   pnpm add pg-prime @pg-prime/kit pg
+   ```
+
+   `pg-prime` is the runtime: the schema DSL, the query builder, the connection handles. It has
+   **no dependencies of its own**. `@pg-prime/kit` is the migration engine and the `pg-prime`
+   binary; it is a `devDependency` in most projects. `pg` is an *optional* peer of `pg-prime` —
+   you need it only if you let pg-prime build the connection pool for you, which is what
+   `connection:` below does. Bring your own pool (`pool:`) and you never install it.
+
+2. TypeScript needs `module` and `moduleResolution` set to `nodenext` (or `bundler`), because
+   pg-prime is ESM-only and ships its types through the `exports` map:
+
+   ```json
+   {
+     "compilerOptions": {
+       "module": "nodenext",
+       "moduleResolution": "nodenext",
+       "strict": true,
+       "target": "es2023"
+     }
+   }
+   ```
+
+</Steps>
+
+## Describe the schema
+
+A schema is ordinary TypeScript. Tables are values, columns are built by the `t` kit the table
+callback is given, and **every column is `NOT NULL` until you say otherwise** — `.nullable()` is
+the opt-in, because in a real database most columns are not nullable and the default should be the
+common case.
+
+{/* docs: setup=schema */}
+```ts title="schema.ts" no-run
+import { defineRelations, defineSchema, pgTable, REFS } from 'pg-prime/schema'
+
+const users = pgTable('users', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  email: t.text().unique(),
+  name: t.text(),
+  createdAt: t.timestamptz().defaultSql('now()'),
+}))
+
+const posts = pgTable('posts', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  authorId: t.bigint().references(() => users[REFS].id),
+  title: t.text(),
+  body: t.text(),
+  published: t.boolean().default(false),
+  createdAt: t.timestamptz().defaultSql('now()'),
+}))
+
+const relations = defineRelations({ users, posts }, (r) => ({
+  users: { posts: r.many.posts() },
+  posts: { author: r.one.users() },
+}))
+
+export const schema = defineSchema({ users, posts }, relations)
+```
+
+Three things worth noticing before moving on:
+
+- **Column names are converted for you.** `authorId` is `author_id` in the database; `snakeCase` is
+  the default naming strategy, and `t.bigint('author_id')` overrides it per column.
+- **`.references()` takes a thunk**, because `posts` is declared after `users` and a mutually
+  referencing pair has no declaration order that works without one. `users[REFS].id` is the
+  reference to the column, not the column itself.
+- **Relations are declared once, in one place**, and `r.many.posts()` needs no `from`/`to`: there is
+  exactly one foreign key joining the two tables, so pg-prime infers the correlation. If there were
+  two, it would refuse at `defineSchema` and name both candidates.
+
+## Point the migration kit at your database
+
+The kit reads a `pg-prime.config.ts` from the nearest directory at or above the working directory.
+
+```ts title="pg-prime.config.ts" no-run
+import { defineConfig } from '@pg-prime/kit'
+
+export default defineConfig({
+  schema: './schema.ts',
+  migrations: './migrations',
+  url: process.env['DATABASE_URL'] ?? 'postgres://postgres:postgres@localhost:5432/app',
+})
+```
+
+## Generate the first migration
+
+```sh
+pg-prime migrate generate --name init
+```
+
+```text frame="terminal"
+migrate generate — app (shadow tier 2: the admin role has CREATEDB)
+  0000_init.sql  main  7 statements  txmode transactional
+  proof    passed
+  witness  passed
+```
+
+A lot happened in that one line, and it is worth knowing what:
+
+- pg-prime connected to your database and **read the catalog** — the real tables, constraints and
+  indexes, not a file it wrote earlier. Migrations are diffed against the database, so a
+  hand-applied change is a difference pg-prime can see rather than one it silently ignores.
+- It built the desired state by creating your schema on a **shadow clone**, so what it compares is
+  catalog against catalog: PostgreSQL's own normalization of your DDL, not a guess at it.
+- `proof passed` means it replayed the migration it was about to write, on a fresh clone, and the
+  result matched the desired state exactly. A migration that does not do what it claims is not
+  written at all.
+- `witness passed` is the second opinion: `pg_dump` of both databases, normalized and compared. It
+  is skipped with a sentence if `pg_dump` is not on your `PATH`.
+
+The file it wrote is readable SQL with a header. Nothing is hidden in a binary journal:
+
+```sql title="migrations/0000_init.sql"
+-- pg-prime:migration 0000_init
+-- pg-prime:plan      0000_init.plan.json
+-- pg-prime:from      sha256:bcb83d0e69a2603084b68c868f2ae1ffa396f30223c9b258bb6606bfa4008926
+-- pg-prime:to        sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=3s statement=per-statement
+-- pg-prime:requires-pg 150000
+
+SET search_path = pg_catalog;
+
+-- pg-prime:segment 0 transactional
+-- pg-prime:stmt 0 lock=none non-idempotent
+CREATE TABLE "public"."posts" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  "author_id" bigint NOT NULL,
+  "title" text NOT NULL,
+  "body" text NOT NULL,
+  "published" boolean DEFAULT false NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+
+-- … users, then the primary keys and the unique index …
+
+-- pg-prime:stmt 5 lock=accessExclusive non-idempotent
+ALTER TABLE "public"."posts" ADD CONSTRAINT "posts_author_id_fkey" FOREIGN KEY (author_id) REFERENCES public.users(id) NOT VALID;
+
+-- pg-prime:stmt 6 lock=shareUpdateExclusive idempotent
+ALTER TABLE "public"."posts" VALIDATE CONSTRAINT "posts_author_id_fkey";
+```
+
+The foreign key is added `NOT VALID` and validated in a second statement. That is not a stylistic
+choice: `ADD FOREIGN KEY` on a populated table holds a `SHARE ROW EXCLUSIVE` lock for the whole
+scan, and `NOT VALID` + `VALIDATE` takes a weaker lock and lets writes continue. pg-prime rewrites
+to the lock-safe form by default, and `migrate lint` explains any hazard it could not rewrite away.
+
+## Apply it
+
+```sh
+pg-prime migrate apply
+```
+
+```text frame="terminal"
+migrate apply — app @ localhost:5432
+applied 1 migration in 136 ms:
+  0000_init  transactional  7 statements  14 ms
+  fingerprint  sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392
+```
+
+```sh
+pg-prime migrate status
+```
+
+```text frame="terminal"
+migrate status — app @ localhost:5432
+  history      present (v1)
+  fingerprint  sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392 (history)
+  migrations   1 file, 0 pendings
+  lock         free
+  applied   0000_init
+```
+
+`apply` never generates and never introspects your TypeScript: it runs the files on disk, in order,
+under an advisory lock, recording each one. `status` is read-only and exits `5` when something is
+pending and `4` on drift, which is what makes it usable in a deploy script.
+
+## Connect and query
+
+{/* docs: setup=db use=schema */}
+```ts title="db.ts" no-run
+import { pgPrime } from 'pg-prime'
+import { schema } from './schema.js'
+
+export const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema,
+})
+```
+
+`pgPrime` is synchronous and lazy: it opens no socket, so importing this module costs nothing and a
+test that never queries never connects. Everything that can be wrong about the configuration is
+caught here, immediately, with a message naming the key.
+
+Now a query. Tables are reached through `db.h` — the handle knows which schema it belongs to, which
+is what makes relations available on it:
+
+{/* docs: use=db,blog-ddl */}
+```ts title="first-query.ts"
+import { eq } from 'pg-prime'
+import { db } from './db.js'
+
+const [alice] = await db
+  .insertInto(db.h.users)
+  .values({ email: 'alice@example.com', name: 'Alice' })
+  .returning((t) => ({ id: t.users.id, email: t.users.email }))
+  .execute()
+
+await db
+  .insertInto(db.h.posts)
+  .valuesMany([
+    { authorId: alice!.id, title: 'Hello', body: 'first', published: true },
+    { authorId: alice!.id, title: 'Draft', body: 'second', published: false },
+  ])
+  .execute()
+
+const published = await db
+  .from(db.h.posts, 'p')
+  .innerJoin(db.h.users, 'a', (t) => eq(t.p.authorId, t.a.id))
+  .where((t) => eq(t.p.published, true))
+  .select((t) => ({ title: t.p.title, author: t.a.name }))
+  .execute()
+
+console.log(published) // [ { title: 'Hello', author: 'Alice' } ]
+```
+
+`published` is typed `{ title: string; author: string }[]` — not `any`, and not a type you wrote
+twice. The `id` you inserted came back as a `bigint`, because that is what PostgreSQL's `int8` is;
+[codecs and decode defaults](/pg-prime/concepts/codecs/) explains why that is the default and how to
+change it.
+
+## Load a relation
+
+The relation you declared is an accessor on the scope, and asking for it emits **one** query with a
+JSON lateral — not a second round trip, and not a join whose rows you have to regroup yourself:
+
+{/* docs: use=db,blog-ddl */}
+```ts title="relation-query.ts"
+import { db } from './db.js'
+
+await db
+  .insertInto(db.h.users)
+  .values({ email: 'bob@example.com', name: 'Bob' })
+  .execute()
+
+const authors = await db
+  .from(db.h.users, 'u')
+  .select((t) => ({
+    name: t.u.name,
+    posts: t.u.posts.many((sub) => sub.select((p) => ({ title: p.title }))),
+    postCount: t.u.posts.count(),
+  }))
+  .execute()
+
+console.log(authors) // [ { name: 'Bob', posts: [], postCount: 0n } ]
+```
+
+`posts` is `{ title: string }[]`, `postCount` is a `bigint`, and neither needed a `groupBy`.
+
+## Change something
+
+Add a column to `posts`:
+
+```ts title="schema.ts (excerpt)" no-run
+import { pgTable } from 'pg-prime/schema'
+
+const posts = pgTable('posts', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  title: t.text(),
+  body: t.text(),
+  summary: t.text().nullable(),
+  published: t.boolean().default(false),
+}))
+```
+
+Then generate again. pg-prime diffs the catalog against the new desired state, so the migration is
+exactly the difference:
+
+```sh
+pg-prime migrate generate --name post_summary
+```
+
+```text frame="terminal"
+migrate generate — app (shadow tier 2: the admin role has CREATEDB)
+  0001_post_summary.sql  main  1 statement  txmode transactional
+  proof    passed
+  witness  passed
+```
+
+Had you made that column `NOT NULL` with no default, pg-prime would have refused instead, because
+`ALTER TABLE … ADD COLUMN … NOT NULL` fails on a table with rows in it (hazard `MF103`). The refusal
+names the hazard and what to do about it; [zero-downtime patterns](/pg-prime/operations/zero-downtime/)
+is the long answer.
+
+## Where to go next
+
+- [Handles: `Db`, `Tx` and `Session`](/pg-prime/concepts/handles/) — the three things you can run a
+  query against, and why they are not interchangeable.
+- [Queries](/pg-prime/guides/queries/) — joins, aggregates, set operations, CTEs, streaming.
+- [Migrations end to end](/pg-prime/guides/migrations/) — every command, and what each one refuses.
+- [Migrations in CI/CD](/pg-prime/operations/ci-cd/) — `check` as the gate, and where `apply` belongs.
+- [Testing with PGlite](/pg-prime/guides/testing/) — a real PostgreSQL in your test process.

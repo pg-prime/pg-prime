@@ -88,6 +88,7 @@ export default defineConfig({
           label: 'Reference',
           items: [
             { label: 'pg-prime', slug: 'reference/pg-prime' },
+            { label: 'The query builder', slug: 'reference/query' },
             { label: 'pg-prime/schema', slug: 'reference/schema' },
             { label: 'pg-prime/sql', slug: 'reference/sql' },
             { label: 'pg-prime/codecs', slug: 'reference/codecs' },

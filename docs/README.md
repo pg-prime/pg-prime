@@ -37,8 +37,8 @@ await db.update(db.h.posts).set({ published: true }).where((p) => eq(p.posts.id,
 | Directive | Effect |
 |---|---|
 | `title="file.ts"` (on the fence) | The block is an **example**: `docs-examples.mjs` executes it against PGlite. Give every runnable block a name that reads like a file. |
-| `use=name[,name2]` | Prepend a prelude before compiling and running. `name` is a file in `docs/src/snippets/` or a `setup=` block earlier on the same page. Composition is textual, so the prelude's `const db = …` really is in scope. |
-| `setup=id` | Register this (visible) block as a page-local prelude that later blocks can `use=`. |
+| `use=name[,name2]` | "This code is in scope." `name` is a file in `docs/src/snippets/` or a `setup=` block on the same page. Two shapes, below. |
+| `setup=id` | Register this (visible) block as a prelude that other blocks on the page can `use=`. |
 | `signature` | The block is a declaration, not a program: it is compiled inside `declare namespace` with every type of the page's `apiEntry` in scope. This is how reference signatures are checked. Bodiless functions, bare `interface`s and `type` aliases belong here. |
 | `expect-error` | The block **must** fail to compile. Used where a page claims something is refused; if it starts compiling, the gate fails. |
 | `no-run` | A `title=` block that is a file rather than a program — a `pg-prime.config.ts`, a migration, a snippet of somebody else's library. Still compiled. |
@@ -47,6 +47,25 @@ await db.update(db.h.posts).set({ published: true }).where((p) => eq(p.posts.id,
 
 Languages other than `ts`/`tsx` are never compiled or executed: `sh` blocks are CLI walkthroughs,
 `sql` blocks are output, `json` blocks are files.
+
+### The two shapes of `use=`
+
+- **A file.** A `setup=` block that also has a plain-file `title` (`title="schema.ts"`) is written
+  as *that file* next to the block using it, and the block imports it exactly as a reader's project
+  would: `import { schema } from './schema.js'` resolves to `schema.ts`, which is what NodeNext does
+  and what the examples runner's bundler does. This is how a multi-file walkthrough stays honest.
+- **A prelude.** A snippet, or a `setup=` block with no file name, is prepended textually, so an
+  invisible prelude's `const db = …` is simply in scope with nothing on the page to explain.
+
+Either way no line of the block is rewritten, and diagnostics point back at the page.
+
+The three snippets, and what each is for:
+
+| Snippet | Contents | Typical use |
+|---|---|---|
+| `blog-schema` | `users` + `posts`, both relations, `defineSchema` | a block that only needs the types |
+| `blog` | `blog-schema`, plus a `db` built from `DATABASE_URL` | `use=blog` |
+| `blog-ddl` | the two `create table` statements, run through `db.sql` | `use=blog,blog-ddl` — needed by any block that reads or writes rows |
 
 ## Runnable examples
 
@@ -64,8 +83,8 @@ so nothing is rewritten. A block that hard-codes a `'postgres://…'` literal is
 Each example is a separate process and gets a clean database (`drop schema public cascade` between
 runs), so examples never depend on each other. An example that hangs is killed after 60 s and fails.
 
-`docs/src/snippets/blog.ts` is the prelude most examples use: two tables (`users`, `posts`), a
-relation in each direction, a `db`, and the DDL that makes the queries real.
+Most examples begin `use=blog,blog-ddl`: two tables, a relation in each direction, a `db`, and the
+DDL that makes the queries real.
 
 ## Reference pages
 

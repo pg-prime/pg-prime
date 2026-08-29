@@ -18,7 +18,7 @@
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "docs:dev": "pnpm --filter @pg-prime/docs dev",
-    "docs:build": "pnpm --filter @pg-prime/docs build",
+    "docs:build": "pnpm --filter @pg-prime/docs build:site",
     "docs:typecheck": "node tools/docs-typecheck.mjs",
     "docs:examples": "node tools/docs-examples.mjs",
     "docs:coverage": "node tools/docs-coverage.mjs",

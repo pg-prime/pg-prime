@@ -6,7 +6,7 @@
   "description": "The pg-prime documentation site (Astro Starlight). Not published; see docs/README.md.",
   "scripts": {
     "dev": "node ../tools/pooler-matrix.mjs && astro dev",
-    "build": "node ../tools/pooler-matrix.mjs && astro build",
+    "build:site": "node ../tools/pooler-matrix.mjs && astro build",
     "preview": "astro preview",
     "sync": "astro sync"
   },

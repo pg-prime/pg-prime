@@ -206,6 +206,26 @@ describe('§2.6 — the two bulk strategies and the automatic switch', () => {
     )
   })
 
+  it('rows that differ only in a boolean or enum VALUE are one batch, not a heterogeneous one', () => {
+    // The type-level guard used to ask "did `R` come out a union?", and a column whose type IS a
+    // union (`boolean` is `true | false`) keeps its literal type through inference — so this
+    // perfectly rectangular batch was refused at compile time with a message about columns. Found
+    // while writing the getting-started page (design/12 §4 D). The runtime never had the bug: it
+    // compares `Object.keys` per row, which is what the type now mirrors.
+    const built = db.insertInto(schema.h.posts).valuesMany([
+      { authorId: 1n, title: 'a', amount: '1', published: true, createdAt: new Date(0) },
+      { authorId: 2n, title: 'b', amount: '2', published: false, createdAt: new Date(0) },
+    ])
+    expect(built.compileAll()).toHaveLength(1)
+    expect(sqlOf(built)).toContain(
+      'insert into "public"."posts" ("author_id", "title", "amount", "published", "created_at") values',
+    )
+    // `t` / `f` is the bool codec's encoding; the point is that both rows made it into one
+    // statement's bind list with their own value.
+    expect(vals(built).slice(3, 4)).toStrictEqual(['t'])
+    expect(vals(built).slice(8, 9)).toStrictEqual(['f'])
+  })
+
   it('every row must set the same columns — a missing key is named, never NULLed', () => {
     expect(() =>
       db

@@ -60,6 +60,7 @@ function main() {
 
   const units = []
   const skipped = []
+  const usedSnippets = new Set()
   let n = 0
 
   for (const page of pages) {
@@ -75,8 +76,15 @@ function main() {
         continue
       }
       const composed = compose(block, snippets, setups)
+      for (const name of composed.used) usedSnippets.add(name)
       const id = String(n++).padStart(4, '0')
-      const name = `blocks/${id}.${block.lang}`
+      const dir = `blocks/${id}`
+      const name = `${dir}/index.${block.lang}`
+      mkdirSync(join(GEN, dir), { recursive: true })
+      for (const file of composed.files) {
+        writeFileSync(join(GEN, dir, file.name), file.text + '\n')
+        units.push({ id: `${id}:${file.name}`, name: `${dir}/${file.name}`, block, map: file.map, offset: 0, expectError: false, sibling: true })
+      }
       const { text, offset } = wrap(block, composed, apiEntries, entries)
       writeFileSync(join(GEN, name), text)
       units.push({ id, name, block, map: composed.map, offset, expectError: !!block.attrs['expect-error'] })
@@ -105,7 +113,10 @@ function main() {
           allowJs: false,
           verbatimModuleSyntax: false,
         },
-        include: ['blocks/**/*.ts', 'blocks/**/*.tsx', '../../src/snippets/**/*.ts'],
+        // Only the composed blocks. A snippet is never compiled on its own — several are
+        // fragments that need the `db` their caller's prelude built — so an unused one would be
+        // dead code nobody checks. The unused-snippet check below is what covers that instead.
+        include: ['blocks/**/*.ts', 'blocks/**/*.tsx'],
       },
       null,
       2,
@@ -145,18 +156,32 @@ function main() {
     }
   }
 
-  const total = units.length
-  const executed = units.filter((u) => typeof u.block.attrs.title === 'string').length
+  for (const name of snippets.keys()) {
+    if (!usedSnippets.has(name)) {
+      failures.push({
+        where: `docs/src/snippets/${name}.ts`,
+        message: 'no block uses this snippet, so nothing compiles it — delete it or use= it',
+      })
+    }
+  }
+
+  const real = units.filter((u) => !u.sibling)
+  const total = real.length
+  const executed = real.filter((u) => typeof u.block.attrs.title === 'string').length
   console.log(
     `docs-typecheck: ${total} blocks from ${pages.length} pages on TypeScript ${TS_VERSION} ` +
-      `(${units.filter((u) => u.block.attrs.signature).length} signature, ${units.filter((u) => u.expectError).length} expect-error, ` +
+      `(${real.filter((u) => u.block.attrs.signature).length} signature, ${real.filter((u) => u.expectError).length} expect-error, ` +
       `${executed} runnable) in ${(ms / 1000).toFixed(1)} s`,
   )
   for (const s of skipped) console.log(`  skip-check ${s.block.page}:${s.block.line} — ${s.reason}`)
 
-  if (failures.length > 0) {
-    console.error(`\ndocs-typecheck: ${failures.length} failure(s)\n`)
-    for (const f of failures) console.error(`  ${f.where}${f.message ? `: ${f.message}` : ''}`)
+  // A `setup=` file is emitted beside every block that uses it, so one broken setup would be
+  // reported once per user; the page cares about the page.
+  const unique = [...new Map(failures.map((f) => [`${f.where}${f.message}`, f])).values()]
+
+  if (unique.length > 0) {
+    console.error(`\ndocs-typecheck: ${unique.length} failure(s)\n`)
+    for (const f of unique) console.error(`  ${f.where}${f.message ? `: ${f.message}` : ''}`)
     console.error(`\n  (re-run with --keep to inspect the composed blocks in ${GEN})`)
     if (!KEEP) rmSync(GEN, { recursive: true, force: true })
     process.exit(1)

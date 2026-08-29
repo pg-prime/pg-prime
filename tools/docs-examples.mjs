@@ -120,21 +120,28 @@ async function runAll(examples) {
   try {
     for (const [i, ex] of examples.entries()) {
       const id = String(i).padStart(4, '0')
-      const file = join(GEN, `${id}.ts`)
-      const { text, substituted } = substitute(ex.composed.text, server.url)
-      if (substituted) {
-        substitutions.push(`${ex.block.page}:${ex.block.line} — ${substituted}`)
+      const dir = join(GEN, id)
+      mkdirSync(dir, { recursive: true })
+
+      // The entry, plus any `setup=` block that has a file name of its own — written as that file,
+      // so the example's own `import { db } from './db.js'` resolves the way the page says it does.
+      const maps = new Map()
+      const entry = join(dir, 'index.ts')
+      for (const file of [...ex.composed.files, { name: 'index.ts', text: ex.composed.text, map: ex.composed.map }]) {
+        const { text, substituted } = substitute(file.text, server.url)
+        if (substituted) substitutions.push(`${ex.block.page}:${ex.block.line} — ${substituted}`)
+        writeFileSync(join(dir, file.name), text + '\n')
+        maps.set(join(dir, file.name), file.map)
       }
-      writeFileSync(file, text + '\n')
 
       await reset(admin)
-      const result = await runOne(file, server.url)
+      const result = await runOne(dir, entry, server.url)
       ran++
       if (result.code !== 0) {
         failures.push({
           where: `${ex.block.page}:${ex.block.line}`,
           title: ex.block.attrs.title,
-          output: remap(result.output.trimEnd(), file, ex.composed.map),
+          output: remap(result.output.trimEnd(), maps),
         })
       }
     }
@@ -165,15 +172,20 @@ async function runAll(examples) {
 }
 
 /**
- * Node reports a stack against the composed temp file. Rewrite every mention of it back to the page
- * (or the snippet) the line came from, so a failure reads as `guides/queries.mdx:88`.
+ * Node reports a stack against the composed temp files (through the bundle's inline source map).
+ * Rewrite every mention of one back to the page — or the snippet — the line came from, so a failure
+ * reads as `guides/queries.mdx:88`.
  */
-function remap(output, file, map) {
-  const re = new RegExp(`(?:file://)?${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:(\\d+)`, 'g')
-  return output.replaceAll(re, (_m, line) => {
-    const origin = map[Number(line) - 1]
-    return origin ? `${relative(ROOT, origin.file)}:${origin.line}` : `${relative(ROOT, file)}:${line}`
-  })
+function remap(output, maps) {
+  let out = output
+  for (const [file, map] of maps) {
+    const re = new RegExp(`(?:file://)?${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:(\\d+)`, 'g')
+    out = out.replaceAll(re, (_m, line) => {
+      const origin = map[Number(line) - 1]
+      return origin ? `${relative(ROOT, origin.file)}:${origin.line}` : `${relative(ROOT, file)}:${line}`
+    })
+  }
+  return out
 }
 
 /** One documented rewrite: a hard-coded connection URL becomes the bridge's. */
@@ -198,13 +210,40 @@ async function reset(admin) {
   await admin.query('create schema public')
 }
 
-function runOne(file, url) {
+/**
+ * Bundle, then run.
+ *
+ * Node's own type stripping would do for a single file, but it cannot resolve `./db.js` to the
+ * `db.ts` beside it — the ESM specifier a TypeScript project actually writes — and rewriting the
+ * page's import line is exactly what this gate exists not to do. esbuild resolves it, leaves every
+ * package import external (so `pg-prime` still comes from `docs/node_modules`, i.e. the built
+ * package), and an inline source map plus `--enable-source-maps` keeps the stack on the `.ts`.
+ */
+function runOne(dir, entry, url) {
+  const bundle = join(dir, 'bundle.mjs')
+  const built = spawnSync(
+    join(ROOT, 'node_modules', '.bin', 'esbuild'),
+    [
+      entry,
+      '--bundle',
+      '--platform=node',
+      '--format=esm',
+      '--target=node22',
+      '--packages=external',
+      '--sourcemap=inline',
+      `--outfile=${bundle}`,
+    ],
+    { encoding: 'utf8' },
+  )
+  if (built.status !== 0) {
+    return Promise.resolve({ code: built.status ?? 1, output: built.stdout + built.stderr })
+  }
   return new Promise((resolve) => {
     const child = spawn(
       process.execPath,
-      ['--disable-warning=ExperimentalWarning', join(GEN, '_run.mjs'), file],
+      ['--enable-source-maps', '--disable-warning=ExperimentalWarning', join(GEN, '_run.mjs'), bundle],
       {
-        cwd: GEN,
+        cwd: dir,
         env: { ...process.env, DATABASE_URL: url, NODE_ENV: 'test' },
       },
     )
