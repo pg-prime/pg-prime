@@ -1046,41 +1046,23 @@ class PgDriverImpl implements PgDriver {
 
 /**
  * A protocol `CancelRequest`, sent on the canceller's own socket — **without** reading `pg`'s
- * deprecated `Client.activeQuery` (design/13 §5, E's F2).
+ * deprecated `Client.activeQuery` (design/13 §5, E's F2; the full account is there).
  *
- * ## Why not `canceller.cancel(target, target.activeQuery)`
+ * `pg` 8.23 made `activeQuery` a deprecated accessor, so every cancel warned and
+ * `--throw-deprecation` threw. Passing something else does not help: `Client.prototype.cancel`
+ * opens with `if (client.activeQuery === query)`, reading the getter off the TARGET whatever we
+ * hand it — so the only way out is not to call that method. Of `pg` 8.23's three alternatives
+ * (`_getActiveQuery()`, underscore-private and no help anyway; a no-query `cancel()` overload,
+ * which does not exist) this is the third: the body of `Client.prototype.cancel` after the
+ * comparison. Same bytes, same absence of TLS on the cancel socket, same fire-and-forget.
  *
- * `pg` 8.23 made `activeQuery` a deprecated accessor (`nodeUtils.deprecate`, "will be removed in
- * pg@9.0"), so every cancel printed a `DeprecationWarning` — and under `--throw-deprecation` it
- * *throws*. Passing something else does not help: `Client.prototype.cancel(client, query)` opens
- * with `if (client.activeQuery === query)`, i.e. it reads the deprecated getter **off the target**
- * whatever we hand it. The only way not to trigger it is not to call that method.
+ * **A feature test, not a version test.** Every part — `Client#connection`, `#host`, `#port`,
+ * `#processID`, `#secretKey`, `Connection#connect`, `Connection#cancel` — has been on `pg` since
+ * 8.0, so the declared floor (`>= 8.11`) takes this path too; anything that fails the test is not
+ * `pg` and falls back. One deliberate difference: an `error` listener, because `pg` attaches none
+ * and a refused cancel socket is otherwise a process exit while handling a timeout.
  *
- * ## What was chosen, and what was rejected
- *
- * The three candidates in `pg` 8.23 were: `_getActiveQuery()` (underscore-private, and it does not
- * help anyway — see above); a `cancel()` overload taking no query (**does not exist** in 8.23);
- * and sending the `CancelRequest` ourselves over the client's `Connection`. The third is what this
- * is, and its body is line-for-line what `Client.prototype.cancel` does after the `activeQuery`
- * comparison: open the socket to the same host/port and, on `connect`, write
- * `con.cancel(processID, secretKey)` from the TARGET's BackendKeyData. Same bytes on the wire,
- * same lack of TLS on the cancel socket (a `pg` limitation we inherit either way), same
- * fire-and-forget — the server closes the socket once it has processed the request.
- *
- * **A feature test, not a version test.** Every part it needs — `Client#connection`, `#host`,
- * `#port`, `#processID`, `#secretKey`, `Connection#connect`, `Connection#cancel` — has been on
- * `pg` since 8.0, so the declared peer floor (`pg >= 8.11`) takes this path too and the deprecated
- * call is dead code there. Anything that fails the test is not `pg`, and `false` sends it back to
- * `cancel(client, query)` unchanged. `Connection` is `@internal` in the same sense `parse`/`bind`
- * already are here (design/02 §5.2: "private-ish, but stable since pg 6").
- *
- * The one deliberate difference from `pg`: an `error` listener on the connection. `pg` attaches
- * none on this path, so a refused or reset cancel socket is an unhandled `'error'` event — a
- * process exit, during the handling of a timeout. A cancel is best-effort by definition; failing
- * to send one is not worth a crash.
- *
- * @returns `true` when the request was dispatched, `false` when this canceller is not shaped for
- *   it and the caller should fall back.
+ * @returns `true` when the request was dispatched, `false` when the caller should fall back.
  */
 function sendCancelRequest(canceller: PgLikeCancelClient, target: PgLikeClient): boolean {
   const con = canceller.connection

@@ -65,11 +65,10 @@ export function escapeCopyCsv(s: string): string {
 /** The columns a typed `copyFrom` writes, and the codec for each. */
 export interface CopyColumn {
   /**
-   * The key each row is read under — the TS key (`authorId`) for a defaulted list, or verbatim
-   * whatever the caller wrote in `{ columns }`. Carried ON the column rather than in a second
-   * array beside it: the two used to be built from different expressions in `handles.ts`
-   * (`copyColumns(meta, opts?.columns)` and `opts?.columns ?? meta.keys`), which is exactly the
-   * pair that has to stay in step once the default list is a SUBSET of the declared columns.
+   * The key each row is read under — the TS key for a defaulted list, or verbatim what the caller
+   * wrote in `{ columns }`. Carried ON the column rather than in a second array beside it: the two
+   * were separate expressions in `handles.ts` and must stay in step now that the default list is a
+   * SUBSET of the declared columns.
    */
   readonly key: string
   readonly name: string
@@ -78,17 +77,14 @@ export interface CopyColumn {
 
 /**
  * Resolve `{ columns }` against the table, or default to every column the schema declares as
- * **insertable** — which is what {@link CopyOptions.columns}' doc comment has always promised.
+ * **insertable** — which is what `CopyOptions.columns`' doc comment has always promised.
  *
- * That set is `meta.insertableKeys`: declaration order (the order `insert into t (...)` uses),
- * minus GENERATED ALWAYS. It is read from the metadata the insert path's *types* are derived from
- * rather than recomputed here, so the two cannot disagree — which is the reason the default exists
- * and was the property that was broken. An earlier version defaulted to every *declared* column,
- * so `copyFrom(posts, rows)` against a `bigint generated always as identity` sent `\N` for the id
- * and PostgreSQL answered `23502` (design/13 §5, E's F1).
- *
- * A caller who names a generated column explicitly still gets it: COPY, unlike INSERT, will write
- * a supplied value into a `generated always as identity` column, and restoring one is a real use.
+ * That set is `meta.insertableKeys`: declaration order, minus GENERATED ALWAYS. It is READ from
+ * the metadata the insert path's types come from rather than recomputed, so the two cannot
+ * disagree — the reason the default exists, and the property that was broken. Defaulting to every
+ * *declared* column sent `\N` for a `generated always as identity` and PostgreSQL answered `23502`
+ * (design/13 §5, E's F1). Naming such a column explicitly still works: COPY, unlike INSERT, writes
+ * the value you give it, which is what makes a restore possible.
  */
 export function copyColumns(
   meta: TableCodecMeta,

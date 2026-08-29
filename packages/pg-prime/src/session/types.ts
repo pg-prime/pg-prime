@@ -278,12 +278,9 @@ export interface CopyOptions {
   readonly format?: 'text' | 'csv'
   /**
    * Columns to write, in order. Defaults to every column the schema declares as insertable —
-   * declaration order, minus `.generatedAlways()`, the same set an insert may name.
-   *
-   * Naming a `generated always as identity` column here still works and writes your value: COPY
-   * bypasses the rewriter check that makes an INSERT refuse it, which is what makes a restore
-   * possible. That is also why it cannot be in the default list — an absent key would go out as
-   * `\N` and land as a not-null violation.
+   * declaration order, minus `.generatedAlways()`, the same set an insert may name. Naming one of
+   * those explicitly still writes your value (COPY, unlike INSERT, allows it); that is also why it
+   * cannot be in the DEFAULT list, where an absent key would go out as `\N`.
    */
   readonly columns?: readonly string[]
   /** Bytes buffered before backpressure is applied to the source. Default 64 KiB. */

@@ -152,23 +152,18 @@ export async function buildPool(
   }
   const pool = new Pool(config)
 
-  // ── The pool's own `error` listener, which is what keeps the process alive ─────────────────
+  // The pool's own `error` listener, which is what keeps the process alive. pg-pool gives each
+  // idle client an `idleListener` (`pg-pool/index.js` `makeIdleListener`) that removes it, closes
+  // it and re-emits `('error', err, client)` on the POOL — and an `EventEmitter` `error` with no
+  // listener throws, so `pg_terminate_backend` / `idle_session_timeout` / a failover against an
+  // idle pooled connection took the process down with an uncaught `57P01`.
   //
-  // pg-pool hands each client an `idleListener` while it sits in the idle set
-  // (`pg-pool/index.js` `makeIdleListener`): on an error it removes the client, closes it, and
-  // re-emits `('error', err, client)` on the POOL. An `EventEmitter` `error` with no listener
-  // throws, so `pg_terminate_backend` / `idle_session_timeout` / a server restart against an idle
-  // pooled connection took the host process down — as an uncaught `57P01`, not a rejected promise.
-  //
-  // The shape is `pg-adapter.ts`'s `#onClientError` for a CHECKED-OUT client (~L200), one level up
-  // and one degree quieter: there the adapter owns the connection, so it records the failure and
-  // flips `usable`; here pg-pool has ALREADY removed and destroyed the client before it emits, so
-  // there is no state of ours left to correct and nothing for the caller to catch — no statement
-  // was in flight. What is left is observability, and the runtime already has exactly one channel
-  // for "something we decided on our own": `hooks.onInternal` (`07` §7.1). Silence would be the
-  // other defensible answer; it is rejected because a fleet losing idle connections is a real
-  // signal (a failover, a pooler restart, a too-short `idle_session_timeout`) and an event nobody
-  // subscribes to costs nothing.
+  // It is `pg-adapter.ts`'s `#onClientError` (~L200) one level up and one degree quieter: there
+  // the adapter owns a CHECKED-OUT connection and flips `usable`; here pg-pool has already
+  // destroyed the client before it emits, nothing was in flight, and no caller exists to reject.
+  // What is left is observability, through the one channel `07` §7.1 has for a decision the
+  // runtime took on its own. (Silence is the other defensible answer; rejected because a fleet
+  // losing idle connections is a real signal and an unobserved event costs nothing.)
   const emitter = pool as PgLikePool & MaybePoolEmitter
   if (typeof emitter.on === 'function') {
     emitter.on('error', (err) => onIdleError?.(err))
