@@ -17,7 +17,7 @@ type at any depth.
 ## Declaring them
 
 {/* docs: setup=schema */}
-```ts title="schema.ts" no-run
+```ts title="schema.ts" no-run="a file: use=schema composes it into the blocks below, and a schema module runs nothing on its own"
 import { asc, isFalse } from 'pg-prime'
 import { defineRelations, defineSchema, pgTable, primaryKey, REFS } from 'pg-prime/schema'
 
@@ -203,7 +203,7 @@ returns identical rows.
 ## Reading them
 
 {/* docs: setup=db use=schema */}
-```ts title="db.ts" no-run
+```ts title="db.ts" no-run="a file: the handle the blocks below import as ./db.js"
 import { pgPrime } from 'pg-prime'
 import { schema } from './schema.js'
 
@@ -211,7 +211,7 @@ export const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema })
 ```
 
 {/* docs: setup=ddl use=db */}
-```ts title="ddl.ts" no-run
+```ts title="ddl.ts" no-run="a file: the DDL the blocks below import as ./ddl.js"
 import { db } from './db.js'
 
 await db.sql`

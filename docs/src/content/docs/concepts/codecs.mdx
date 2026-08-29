@@ -32,7 +32,7 @@ your own `pg.Pool` is safe and needs no cooperation from you.
 ## The schema this page uses
 
 {/* docs: setup=schema */}
-```ts title="schema.ts" no-run
+```ts title="schema.ts" no-run="a file: use=schema composes it into the blocks below, and a schema module runs nothing on its own"
 import { defineSchema, pgEnum, pgTable } from 'pg-prime/schema'
 
 export const readingKind = pgEnum('reading_kind', ['temperature', 'humidity'])
@@ -51,7 +51,7 @@ export const schema = defineSchema({ readings })
 ```
 
 {/* docs: setup=db use=schema */}
-```ts title="db.ts" no-run
+```ts title="db.ts" no-run="a file: the handle the blocks below import as ./db.js"
 import { pgPrime } from 'pg-prime'
 import { schema } from './schema.js'
 
@@ -59,7 +59,7 @@ export const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema })
 ```
 
 {/* docs: setup=ddl use=db */}
-```ts title="ddl.ts" no-run
+```ts title="ddl.ts" no-run="a file: the DDL the blocks below import as ./ddl.js"
 import { db } from './db.js'
 
 await db.sql`create type reading_kind as enum ('temperature', 'humidity')`.execute()
@@ -251,7 +251,7 @@ through a codec that produces a different one would make the declaration a lie. 
 whole column decoded differently, register the codec under the PostgreSQL type's own name and
 declare the column with `t.raw` so the two agree:
 
-{/* docs: no-run */}
+{/* docs: no-run="the decimal library is declared, not depended on: nothing here can construct a Decimal, so running this would prove only that the registry accepts the codec" */}
 ```ts title="decimal-columns.ts"
 import { createRegistry, pgPrime } from 'pg-prime'
 import { defineSchema, pgTable } from 'pg-prime/schema'
@@ -302,7 +302,7 @@ composite and range OIDs from that database's own catalogue on first connect.
 `jsonb` decodes to `unknown`, which is the honest type: PostgreSQL will hand back whatever is stored
 and nothing validated it on the way in. `$type<T>()` is the documented cast:
 
-{/* docs: no-run */}
+{/* docs: no-run="a schema fragment: one table declaration, with no handle to run it against" */}
 ```ts title="typed-jsonb.ts"
 import { pgTable } from 'pg-prime/schema'
 

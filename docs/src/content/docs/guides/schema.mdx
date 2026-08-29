@@ -51,7 +51,7 @@ column, a value that is not a column, a key starting with `$`, and the key `__pr
 This is the schema the rest of the page uses:
 
 {/* docs: setup=catalogue */}
-```ts title="catalogue.ts" no-run
+```ts title="catalogue.ts" no-run="a file: use=catalogue composes this schema module into the blocks below"
 import { defineSchema, index, pgTable, REFS, uniqueIndex } from 'pg-prime/schema'
 
 export const suppliers = pgTable('suppliers', (t) => ({
@@ -729,7 +729,7 @@ TypeScript union would silently collapse the two.
 **Renaming a label** is `renamedValues: { [newLabel]: oldLabel }` beside `renamedFrom` — keys first,
 because the key is the label that exists now and the value is the history:
 
-```ts title="renamed-label.ts" no-run
+```ts title="renamed-label.ts" no-run="a schema fragment: one enum declaration, with no handle to run it against"
 import { pgEnum } from 'pg-prime/schema'
 
 export const status = pgEnum('member_status', ['active', 'suspended'], {

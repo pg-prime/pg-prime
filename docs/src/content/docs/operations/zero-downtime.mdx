@@ -58,7 +58,7 @@ Here is the shape when it is not.
 
 ### Migration 1 — add it nullable, and backfill
 
-```ts title="schema.ts (excerpt)" no-run
+```ts title="schema.ts (excerpt)" no-run="an excerpt: the lines of schema.ts that change at this step, not a module"
 import { pgTable } from 'pg-prime/schema'
 
 export const tickets = pgTable('tickets', (t) => ({
@@ -134,7 +134,7 @@ having taken a lock on anything. Fix the row, run the `VALIDATE` again.
 
 ### Migration 3 — take the `NOT NULL`, and drop the scaffold
 
-```ts title="schema.ts (excerpt)" no-run
+```ts title="schema.ts (excerpt)" no-run="an excerpt: the lines of schema.ts that change at this step, not a module"
 import { pgTable } from 'pg-prime/schema'
 
 export const tickets = pgTable('tickets', (t) => ({
@@ -201,7 +201,7 @@ preserves every value in the column, the other destroys all of them.
 
 pg-prime therefore never decides. **Annotation is the only authority:**
 
-```ts title="schema.ts (excerpt)" no-run
+```ts title="schema.ts (excerpt)" no-run="an excerpt: the lines of schema.ts that change at this step, not a module"
 import { pgTable } from 'pg-prime/schema'
 
 export const users = pgTable('users', (t) => ({

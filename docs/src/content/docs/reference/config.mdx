@@ -9,7 +9,7 @@ Every `pg-prime` command reads one config file. It describes the **kit's** input
 migrations live, which schemas are managed, how the desired state is normalised — and nothing about
 the runtime: `pgPrime()` takes its own options, and the runtime package never sees this file.
 
-```ts title="pg-prime.config.ts" no-run
+```ts title="pg-prime.config.ts" no-run="a config file: the kit loads it, and as a program it executes nothing"
 import { defineConfig } from '@pg-prime/kit'
 
 export default defineConfig({
@@ -122,7 +122,7 @@ PostgreSQL is obtained.
 
 A **tier-1 shadow URL** has two spellings in this key and they mean the same thing:
 
-```ts title="pg-prime.config.ts" no-run
+```ts title="pg-prime.config.ts" no-run="a config file: the kit loads it, and as a program it executes nothing"
 import { defineConfig } from '@pg-prime/kit'
 
 export const asAString = defineConfig({ shadow: 'postgres://user@localhost:5432/app_shadow' })
@@ -225,7 +225,7 @@ export PG_PRIME_PG_DUMP_URI='postgres://postgres@localhost:5432/{db}'
 
 ## A config that uses everything
 
-```ts title="pg-prime.config.ts" no-run
+```ts title="pg-prime.config.ts" no-run="a config file: the kit loads it, and as a program it executes nothing"
 import { defineConfig } from '@pg-prime/kit'
 
 export default defineConfig({
@@ -313,7 +313,7 @@ because a checkpoint's IR file and the migration it belongs to have to travel to
 
 ## The smallest useful config
 
-```ts title="pg-prime.config.ts" no-run
+```ts title="pg-prime.config.ts" no-run="a config file: the kit loads it, and as a program it executes nothing"
 import { defineConfig } from '@pg-prime/kit'
 
 export default defineConfig({ schema: './db/schema.ts' })

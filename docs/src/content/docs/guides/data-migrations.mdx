@@ -279,7 +279,7 @@ one of them is evidence.
 **Replica-side, opt in.** List the standbys in the config and each is asked for
 `pg_last_wal_replay_lsn()` instead:
 
-```ts title="pg-prime.config.ts" no-run
+```ts title="pg-prime.config.ts" no-run="a config file: the kit loads it, and as a program it executes nothing"
 import { defineConfig } from '@pg-prime/kit'
 
 export default defineConfig({
@@ -432,7 +432,7 @@ nothing can remember it.
 things:
 
 {/* docs: use=blog-schema */}
-```ts title="seeds/020_posts.ts" no-run
+```ts title="seeds/020_posts.ts" no-run="a seed module: pg-prime seed imports it and calls its default export with a Tx of its own"
 import { eq, type Tx } from 'pg-prime'
 
 export default async ({ db, set, env }: {

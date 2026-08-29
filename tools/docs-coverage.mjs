@@ -274,6 +274,9 @@ for (const page of pages) {
   }
 }
 
+// ── 5. R22: every `no-run` states why ────────────────────────────────────────
+checkNoRunReasons(pages, failures, notes)
+
 // ── Report ───────────────────────────────────────────────────────────────────
 const totalNames = [...entries.values()].reduce((n, e) => n + e.names.size, 0)
 const totalCovered = [...entries.values()].reduce((n, e) => n + e.covered.size, 0)
@@ -291,3 +294,87 @@ if (failures.length > 0) {
   process.exit(1)
 }
 console.log('docs-coverage: OK')
+
+// ── R22 (design/13 decision 11) ───────────────────────────────────────────────
+// A `no-run` block is one the examples runner will not execute, and until this check existed the
+// only way to know why was to guess. The reason is now written down in one of two places:
+//
+//     {/* docs: no-run="a config file: the kit loads it" */}   the attribute, for a block whose
+//     ```ts title="pg-prime.config.ts" no-run="…"              reader should not see a note
+//
+//     // no-run: PGlite cannot host COPY.                      the block's first line, when the
+//                                                              reason is worth reading on the page
+//
+// Both are the same attribute as far as `docs-blocks.mjs` is concerned; the difference is whether
+// the page shows it, and that is an editorial choice per block.
+
+// The two constants live inside the function on purpose: this section is appended at the end of
+// the file so that two other branches can add their package-list lines at the top of it without a
+// conflict, and a `const` at the end of a module is in its temporal dead zone when the checks
+// above run.
+function checkNoRunReasons(allPages, sink, noteSink) {
+  /**
+   * The pages design/13 §3 hands to another branch, which E must not edit.
+   *
+   * Every entry is a *claim*: that page still has an unexplained `no-run` today. When the owning
+   * branch lands and the claim stops being true, this check fails and says to delete the line —
+   * so the waiver cannot outlive the integration it exists for.
+   */
+  const PENDING_R22 = new Map([
+    ['guides/testing.mdx', 'T rewrites this page around @pg-prime/testing (design/13 §3 T)'],
+    ['guides/getting-started.mdx', 'X rewrites Install around npm create (design/13 §3 X)'],
+  ])
+  /** A reason has to be a sentence; `no-run="x"` is not one. */
+  const MIN_REASON = 12
+
+  const waived = new Map()
+  let explained = 0
+  let unexplained = 0
+
+  for (const page of allPages) {
+    for (const block of page.blocks) {
+      if (!block.attrs['no-run']) continue
+      const where = `${page.page}:${block.line}`
+      if (block.attrs['pg-only']) {
+        sink.push(
+          `${where}: the block is both no-run and pg-only — the first says nothing runs it and ` +
+            'the second says the real-server tier does. Pick one.',
+        )
+        continue
+      }
+      const attr = typeof block.attrs['no-run'] === 'string' ? block.attrs['no-run'].trim() : ''
+      const first = /^\s*\/\/\s*no-run:\s*(\S.*)$/.exec(block.text.split('\n')[0] ?? '')
+      const reason = attr || (first?.[1] ?? '').trim()
+      if (reason.length >= MIN_REASON) {
+        explained++
+        continue
+      }
+      unexplained++
+      if (PENDING_R22.has(page.page)) {
+        waived.set(page.page, (waived.get(page.page) ?? 0) + 1)
+        continue
+      }
+      sink.push(
+        `${where}: no-run with no reason (R22). Write it as the block's first line — ` +
+          '`// no-run: <why>` — or as `no-run="<why>"` on the fence when a comment would be ' +
+          'wrong for the reader.',
+      )
+    }
+  }
+
+  for (const [page, owner] of PENDING_R22) {
+    const n = waived.get(page)
+    if (n === undefined) {
+      sink.push(
+        `docs-coverage: ${page} has no unexplained no-run block left, so its PENDING_R22 waiver ` +
+          'in tools/docs-coverage.mjs is stale — delete that line (design/13 §3, R22).',
+      )
+      continue
+    }
+    noteSink.push(`R22: ${n} no-run block(s) on ${page} waived — ${owner}`)
+  }
+
+  noteSink.push(
+    `R22: ${explained} no-run block(s) state why` + (unexplained > 0 ? `, ${unexplained} do not` : ''),
+  )
+}

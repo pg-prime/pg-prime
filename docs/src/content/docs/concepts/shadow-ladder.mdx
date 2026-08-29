@@ -151,7 +151,7 @@ reachable at all", and every command except `migrate lint` needs one anyway.
 
 `--shadow` on the command line wins; then `shadow` in `pg-prime.config.ts`; then `auto`.
 
-```ts title="pg-prime.config.ts" no-run
+```ts title="pg-prime.config.ts" no-run="a config file: the kit loads it, and as a program it executes nothing"
 import { defineConfig } from '@pg-prime/kit'
 
 export default defineConfig({

@@ -19,7 +19,7 @@ import { defineSchema, pgTable } from 'pg-prime/schema'
 A schema file in full:
 
 {/* docs: setup=schema */}
-```ts title="schema.ts" no-run
+```ts title="schema.ts" no-run="a file: use=schema composes it into the blocks below, and a schema module runs nothing on its own"
 import { check, defineRelations, defineSchema, index, pgEnum, pgTable, REFS, sql } from 'pg-prime'
 
 export const postStatus = pgEnum('post_status', ['draft', 'review', 'published'])
@@ -793,7 +793,7 @@ interface PgEnumOptions<V extends readonly string[] = readonly string[]> {
 the key is the label that exists now and the value is the history. The keys are the declared labels,
 so a typo is a compile error rather than an annotation that silently never fires.
 
-```ts title="member-role.ts" no-run
+```ts title="member-role.ts" no-run="a schema fragment: one enum declaration, with no handle to run it against"
 import { pgEnum } from 'pg-prime/schema'
 
 export const memberRole = pgEnum('member_role', ['owner', 'admin', 'member'], {
