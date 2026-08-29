@@ -767,12 +767,14 @@ const DECODE_LABELS = {
   codegenDispatchOnly: 'codegen · vs literal-object copy, identity (row loop)',
 }
 console.log(
-  `  ${'pair'.padEnd(50)} ${'decoder'.padStart(9)} ${'mapper'.padStart(9)} ${'p50 ×'.padStart(7)} ${'p95 ×'.padStart(7)}`,
+  `  ${'pair'.padEnd(50)} ${'decoder'.padStart(9)} ${'mapper'.padStart(9)} ${'p50 ×'.padStart(7)} ` +
+    `${'p95 ×'.padStart(7)} ${'paired'.padStart(8)}`,
 )
 for (const [k, r] of Object.entries(decodePairs)) {
   console.log(
     `  ${DECODE_LABELS[k].padEnd(50)} ${fmt(r.a.p50, 2).padStart(9)} ${fmt(r.b.p50, 2).padStart(9)} ` +
-      `${fmt(r.ratioP50, 3).padStart(7)} ${fmt(r.a.p95 / r.b.p95, 3).padStart(7)}   (µs)`,
+      `${fmt(r.ratioP50, 3).padStart(7)} ${fmt(r.a.p95 / r.b.p95, 3).padStart(7)} ` +
+      `${fmt(r.ratioP50Paired, 3).padStart(8)}   (µs)`,
   )
 }
 const perSec = (us) =>

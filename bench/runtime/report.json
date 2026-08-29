@@ -1,117 +1,117 @@
 {
-  "generatedAt": "2026-08-29T06:29:07.931Z",
+  "generatedAt": "2026-08-29T06:53:00.669Z",
   "node": "v24.14.1",
   "platform": "darwin/arm64",
   "quick": false,
-  "compileOnly": true,
+  "compileOnly": false,
   "calibration": {
     "samples": [
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 3.889975000000004,
-        "p95": 4.381341599999996,
-        "p99": 4.399950000000001,
-        "min": 3.745500000000038,
-        "max": 4.399950000000001
+        "p50": 3.95071660000001,
+        "p95": 5.0827165999999915,
+        "p99": 6.532841599999995,
+        "min": 3.7462750000000145,
+        "max": 6.532841599999995
       },
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 6.591300000000047,
-        "p95": 14.280408400000306,
-        "p99": 14.394033399999898,
-        "min": 5.065599999999904,
-        "max": 14.394033399999898
+        "p50": 6.783174999999756,
+        "p95": 13.962816799999928,
+        "p99": 15.483525000000009,
+        "min": 5.323675000000003,
+        "max": 15.483525000000009
       },
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 6.399049999999988,
-        "p95": 13.507675000000017,
-        "p99": 13.98690839999981,
-        "min": 5.038866599999892,
-        "max": 13.98690839999981
+        "p50": 6.289133399999992,
+        "p95": 13.416191799999797,
+        "p99": 14.182208399999945,
+        "min": 4.865191599999889,
+        "max": 14.182208399999945
       },
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 6.619058399999995,
-        "p95": 13.537033200000224,
-        "p99": 15.497116800000004,
-        "min": 5.205325000000085,
-        "max": 15.497116800000004
+        "p50": 7.997716599999694,
+        "p95": 16.804666600000928,
+        "p99": 17.300500000000465,
+        "min": 5.552050000001327,
+        "max": 17.300500000000465
       }
     ],
-    "referenceUs": 3.745500000000038,
-    "driftFraction": 0.3897543719129708
+    "referenceUs": 3.7462750000000145,
+    "driftFraction": 0.48201880534699293
   },
   "compile": {
     "timing": {
       "heavyBuildAndCompile": {
         "iters": 2000,
         "samples": 60,
-        "p50": 20.830104500000058,
-        "p95": 38.27237500000002,
-        "p99": 39.984645999999884,
-        "min": 16.33766650000007,
-        "max": 39.984645999999884
+        "p50": 20.07883300000003,
+        "p95": 34.47729199999981,
+        "p99": 38.21181249999995,
+        "min": 15.246000000000095,
+        "max": 38.21181249999995
       },
       "heavyEmit": {
         "iters": 2000,
         "samples": 60,
-        "p50": 4.002916500000083,
-        "p95": 4.339979000000085,
-        "p99": 5.16839600000003,
-        "min": 3.8330415000000357,
-        "max": 5.16839600000003
+        "p50": 3.8470835000000534,
+        "p95": 4.309937499999933,
+        "p99": 6.737645499999871,
+        "min": 3.7811039999996865,
+        "max": 6.737645499999871
       },
       "simpleBuildAndCompile": {
         "iters": 4000,
         "samples": 60,
-        "p50": 4.0649792500000785,
-        "p95": 8.061760249999907,
-        "p99": 21.459677000000053,
-        "min": 3.396333249999998,
-        "max": 21.459677000000053
+        "p50": 4.20053125000004,
+        "p95": 13.10068750000005,
+        "p99": 28.79372900000021,
+        "min": 3.354708500000015,
+        "max": 28.79372900000021
       }
     },
     "allocation": {
       "heavyBuildAndCompile": {
-        "median": 31475,
+        "median": 31472,
         "batch": 8,
         "stable": true,
         "exact": true
       },
       "heavyToAst": {
-        "median": 9985,
+        "median": 9971,
         "batch": 26,
-        "stable": false,
+        "stable": true,
         "exact": true
       },
       "heavyEmit": {
-        "median": 9123,
+        "median": 9115,
         "batch": 29,
         "stable": true,
         "exact": true
       },
       "simpleBuildAndCompile": {
-        "median": 7189,
+        "median": 7220,
         "batch": 36,
         "stable": true,
         "exact": true
       }
     },
     "allocBySource": {
-      "builderChain": 9985,
-      "planner": 12367,
-      "emitter": 9123,
-      "total": 31475
+      "builderChain": 9971,
+      "planner": 12386,
+      "emitter": 9115,
+      "total": 31472
     },
-    "simplePerSec": 246003.71576311998,
-    "simplePerSecNorm": 245708.51130420674,
-    "simplePerSecBest": 294435.18241326895,
-    "simplePerSecBestNorm": 294081.86019437603
+    "simplePerSec": 238065.12569094455,
+    "simplePerSecNorm": 237828.64766609247,
+    "simplePerSecBest": 298088.4926365422,
+    "simplePerSecBestNorm": 297792.39140052436
   },
   "structure": {
     "heavy": {
@@ -151,29 +151,29 @@
       "preSession": {
         "iters": 400,
         "samples": 40,
-        "p50": 0.5490624999993088,
-        "p95": 0.6050000000004729,
-        "p99": 40.36552000000029,
-        "min": 0.4437499999994543,
-        "max": 40.36552000000029
+        "p50": 0.5469800000037139,
+        "p95": 0.6275000000005093,
+        "p99": 37.42437500000051,
+        "min": 0.4411449999997785,
+        "max": 37.42437500000051
       },
       "production": {
         "iters": 400,
         "samples": 40,
-        "p50": 1.0525000000006912,
-        "p95": 1.2087500000006912,
-        "p99": 1.9496875000004366,
-        "min": 0.862707500000397,
-        "max": 1.9496875000004366
+        "p50": 1.0433350000039354,
+        "p95": 1.176980000000185,
+        "p99": 1.823332499998287,
+        "min": 0.8476025000027221,
+        "max": 1.823332499998287
       },
       "dev": {
         "iters": 400,
         "samples": 40,
-        "p50": 4.257500000003347,
-        "p95": 4.649687500000255,
-        "p99": 5.1242699999966135,
-        "min": 4.191664999998466,
-        "max": 5.1242699999966135
+        "p50": 4.233334999998988,
+        "p95": 4.9099999999998545,
+        "p99": 5.317187499999818,
+        "min": 4.050105000001167,
+        "max": 5.317187499999818
       }
     },
     "allocation": {
@@ -190,14 +190,14 @@
         "exact": true
       },
       "dev": {
-        "median": 6953,
+        "median": 6954,
         "batch": 38,
         "stable": true,
         "exact": true
       }
     },
-    "overPreSessionP50": 1.9169038133218281,
-    "devOverPreSessionP50": 7.754126351751771,
+    "overPreSessionP50": 1.9074463417252026,
+    "devOverPreSessionP50": 7.739469450382544,
     "overPreSessionBytes": 3121
   },
   "decode": {
@@ -206,122 +206,359 @@
     "pairs": {
       "vsUnchecked": {
         "a": {
-          "p50": 8208.91599999959,
-          "p95": 8760.207999999693,
-          "p99": 8880.24999999925,
-          "min": 8077.166000000034
+          "p50": 8576.833000000079,
+          "p95": 9958.332999999584,
+          "p99": 11106.584000000112,
+          "min": 8118.6250000000655
         },
         "b": {
-          "p50": 3193.3749999998327,
-          "p95": 3649.5840000006865,
-          "p99": 3920.0840000003154,
-          "min": 3103.334000000359
+          "p50": 3356.999999999971,
+          "p95": 3963.9170000000377,
+          "p99": 13007.041999999274,
+          "min": 3154.3750000000728
         },
-        "ratioP50": 2.5706082123145637,
-        "ratioP95": 2.4003305582219907,
-        "ratioP99": 2.2653213553583385,
+        "ratioP50": 2.554910038725098,
+        "ratioP95": 2.5122455894004565,
+        "ratioP99": 0.8538900697022991,
+        "ratioP50Paired": 2.559848498704567,
+        "ratioP95Paired": 2.7822388961413753,
         "iters": 1,
         "samples": 60
       },
       "vsChecked": {
         "a": {
-          "p50": 8295.29199999979,
-          "p95": 10396.665999999641,
-          "p99": 11806.915999999546,
-          "min": 8068.249999999352
+          "p50": 8612.7919999999,
+          "p95": 10927.584000000934,
+          "p99": 11636.500000000524,
+          "min": 8062.667000000147
         },
         "b": {
-          "p50": 5415.291999999681,
-          "p95": 5795.583999999508,
-          "p99": 7496.624999999767,
-          "min": 5313.958000000639
+          "p50": 5817.583999999442,
+          "p95": 6294.5419999996375,
+          "p99": 8371.166999999332,
+          "min": 5368.16700000054
         },
-        "ratioP50": 1.531827277273373,
-        "ratioP95": 1.7938944548125821,
-        "ratioP99": 1.5749642005569058,
+        "ratioP50": 1.4804757438828087,
+        "ratioP95": 1.736041160739187,
+        "ratioP99": 1.390069030996688,
+        "ratioP50Paired": 1.4950910929309473,
+        "ratioP95Paired": 1.8771704972499355,
         "iters": 1,
         "samples": 60
       },
       "dispatchOnly": {
         "a": {
-          "p50": 1871.0829999999987,
-          "p95": 1932.6660000006086,
-          "p99": 3784.3749999992724,
-          "min": 1855.7920000002923
+          "p50": 1874.8329999998532,
+          "p95": 2002.2919999992155,
+          "p99": 3843.166000000565,
+          "min": 1857.5000000000728
         },
         "b": {
-          "p50": 66.87499999861757,
-          "p95": 78.62500000010186,
-          "p99": 894.1660000000411,
-          "min": 64.79199999921548
+          "p50": 67.75000000016007,
+          "p95": 89.5829999990383,
+          "p99": 878.3750000002328,
+          "min": 64.24999999944703
         },
-        "ratioP50": 27.978811215531625,
-        "ratioP95": 24.580807631136466,
-        "ratioP99": 4.232295792950189,
+        "ratioP50": 27.672811808050533,
+        "ratioP95": 22.351249679299766,
+        "ratioP99": 4.375313505051426,
+        "ratioP50Paired": 27.83201663854979,
+        "ratioP95Paired": 28.939050583917112,
         "iters": 1,
         "samples": 60
       },
       "codegenVsUnchecked": {
         "a": {
-          "p50": 6094.542000000729,
-          "p95": 6549.332999999024,
-          "p99": 6972.7920000004815,
-          "min": 6039.666999999099
+          "p50": 6408.124999999927,
+          "p95": 7080.583000000843,
+          "p99": 7580.917000001136,
+          "min": 6072.3330000000715
         },
         "b": {
-          "p50": 3144.8749999999563,
-          "p95": 3594.708000000537,
-          "p99": 3869.87500000032,
-          "min": 3104.084000000512
+          "p50": 3297.2909999989497,
+          "p95": 3714.791000000332,
+          "p99": 4671.041999999943,
+          "min": 3128.791999999521
         },
-        "ratioP50": 1.9379282165430465,
-        "ratioP95": 1.8219374146656822,
-        "ratioP99": 1.801813236861631,
+        "ratioP50": 1.9434514575759216,
+        "ratioP95": 1.9060515113771432,
+        "ratioP99": 1.6229605728232006,
+        "ratioP50Paired": 1.9463688020545125,
+        "ratioP95Paired": 2.1271873336099305,
         "iters": 1,
         "samples": 60
       },
       "codegenVsChecked": {
         "a": {
-          "p50": 6216.500000000451,
-          "p95": 8600.04200000003,
-          "p99": 33454.54199999949,
-          "min": 6046.249999999418
+          "p50": 6589.708999999857,
+          "p95": 10586.041999998997,
+          "p99": 16709.082999999737,
+          "min": 6149.499999999534
         },
         "b": {
-          "p50": 5419.5829999989655,
-          "p95": 6251.958000000741,
-          "p99": 12227.750000000015,
-          "min": 5325.166999999055
+          "p50": 5824.916000001394,
+          "p95": 8484.166000000187,
+          "p99": 13196.500000000015,
+          "min": 5598.291999998764
         },
-        "ratioP50": 1.147043969988399,
-        "ratioP95": 1.3755757796196026,
-        "ratioP99": 2.735952403344806,
+        "ratioP50": 1.1312968290011873,
+        "ratioP95": 1.2477410272263372,
+        "ratioP99": 1.2661753495244739,
+        "ratioP50Paired": 1.1344978075457854,
+        "ratioP95Paired": 1.609818594379786,
         "iters": 1,
         "samples": 60
       },
       "codegenDispatchOnly": {
         "a": {
-          "p50": 139.0000000010332,
-          "p95": 339.7919999988517,
-          "p99": 1208.958999999595,
-          "min": 125.29200000062701
+          "p50": 161.95800000059535,
+          "p95": 321.4169999992009,
+          "p99": 2048.2499999998254,
+          "min": 141.91699999901175
         },
         "b": {
-          "p50": 71.70800000130839,
-          "p95": 119.04200000026322,
-          "p99": 1352.5829999998678,
-          "min": 65.41699999979755
+          "p50": 77.9579999998532,
+          "p95": 148.58399999866378,
+          "p99": 901.7910000002303,
+          "min": 70.87499999943248
         },
-        "ratioP50": 1.938416913015242,
-        "ratioP95": 2.854387527075321,
-        "ratioP99": 0.893815019115066,
+        "ratioP50": 2.0775032710036214,
+        "ratioP95": 2.1632006138082933,
+        "ratioP99": 2.2713134196274996,
+        "ratioP50Paired": 2.064663139329074,
+        "ratioP95Paired": 4.0010580956726605,
         "iters": 1,
         "samples": 60
       }
     }
   },
   "e2e": {
-    "skipped": "--compile-only"
+    "serverVersion": "17.11 (Debian 17.11-1.pgdg13+2)",
+    "url": "postgres://postgres:***@127.0.0.1:54334/postgres",
+    "mode": "production",
+    "nodeEnvBefore": null,
+    "cases": [
+      {
+        "name": "point select by PK",
+        "a": {
+          "p50": 0.2303305333333507,
+          "p95": 0.3531916666666196,
+          "p99": 0.7841028000000126,
+          "min": 0.2154972000000271
+        },
+        "b": {
+          "p50": 0.2100819666666818,
+          "p95": 0.27960000000002766,
+          "p99": 0.3193389000000025,
+          "min": 0.19553056666669968
+        },
+        "ratioP50": 1.096384125624621,
+        "ratioP95": 1.2632033857889293,
+        "ratioP99": 2.4553939404188045,
+        "ratioP50Paired": 1.1009332235253775,
+        "ratioP95Paired": 1.2707920125563528,
+        "iters": 30,
+        "samples": 100
+      },
+      {
+        "name": "select 1 000 rows (12 cols, 2 joins)",
+        "a": {
+          "p50": 3.707437499999287,
+          "p95": 3.9597499999999854,
+          "p99": 4.10510400000021,
+          "min": 3.5149170000004233
+        },
+        "b": {
+          "p50": 3.081312499998603,
+          "p95": 3.4734169999992446,
+          "p99": 4.228771000000052,
+          "min": 2.9411459999992076
+        },
+        "ratioP50": 1.2032007464354777,
+        "ratioP95": 1.1400157251492828,
+        "ratioP99": 0.9707558058831184,
+        "ratioP50Paired": 1.2046653424869913,
+        "ratioP95Paired": 1.2696718161257117,
+        "iters": 2,
+        "samples": 60
+      },
+      {
+        "name": "insert one",
+        "a": {
+          "p50": 0.5181082999999489,
+          "p95": 0.6797167000000627,
+          "p99": 0.772137500000099,
+          "min": 0.36092920000010054
+        },
+        "b": {
+          "p50": 0.4500707999999577,
+          "p95": 0.5868458000000828,
+          "p99": 0.6151665999997931,
+          "min": 0.32032499999986613
+        },
+        "ratioP50": 1.151170660260558,
+        "ratioP95": 1.1582543489277197,
+        "ratioP99": 1.2551681121835268,
+        "ratioP50Paired": 1.154194045885366,
+        "ratioP95Paired": 1.4196086436894464,
+        "iters": 10,
+        "samples": 100
+      },
+      {
+        "name": "insert 1 000 (batch)",
+        "a": {
+          "p50": 8.77612500000032,
+          "p95": 13.787333999996918,
+          "p99": 14.648207999998704,
+          "min": 8.270916000001307
+        },
+        "b": {
+          "p50": 6.923333000002458,
+          "p95": 9.259750000001077,
+          "p99": 16.5523749999993,
+          "min": 6.55225000000064
+        },
+        "ratioP50": 1.2676156123065587,
+        "ratioP95": 1.4889531574821473,
+        "ratioP99": 0.884961100748341,
+        "ratioP50Paired": 1.2837876909576549,
+        "ratioP95Paired": 1.7704971983604947,
+        "iters": 1,
+        "samples": 40
+      },
+      {
+        "name": "update by PK",
+        "a": {
+          "p50": 0.4011916999999812,
+          "p95": 0.8124165999997786,
+          "p99": 1.2014500000001136,
+          "min": 0.33570829999989654
+        },
+        "b": {
+          "p50": 0.3521082999999635,
+          "p95": 0.7395708999996714,
+          "p99": 0.9600916999999753,
+          "min": 0.31126250000015715
+        },
+        "ratioP50": 1.1393985884457218,
+        "ratioP95": 1.0984972502300179,
+        "ratioP99": 1.2513908827668696,
+        "ratioP50Paired": 1.131330111189173,
+        "ratioP95Paired": 1.6404908527257194,
+        "iters": 10,
+        "samples": 100
+      },
+      {
+        "name": "delete by PK",
+        "a": {
+          "p50": 0.35339587499993286,
+          "p95": 0.4135052500000711,
+          "p99": 0.5060103749997324,
+          "min": 0.32618237499991665
+        },
+        "b": {
+          "p50": 0.3262552500000311,
+          "p95": 0.4760103749999871,
+          "p99": 1.909145874999922,
+          "min": 0.2995728749997397
+        },
+        "ratioP50": 1.0831883165095402,
+        "ratioP95": 0.8686895742557761,
+        "ratioP99": 0.26504542247184393,
+        "ratioP50Paired": 1.085105776309615,
+        "ratioP95Paired": 1.23561841926768,
+        "iters": 8,
+        "samples": 60
+      },
+      {
+        "name": "5-statement transaction",
+        "a": {
+          "p50": 1.4404270000004544,
+          "p95": 1.7401457500000106,
+          "p99": 1.986270749999676,
+          "min": 1.282281249999869
+        },
+        "b": {
+          "p50": 1.3598542500003532,
+          "p95": 1.4999687500003347,
+          "p99": 2.401937500000713,
+          "min": 1.2659062500006257
+        },
+        "ratioP50": 1.0592510189971318,
+        "ratioP95": 1.160121335860912,
+        "ratioP99": 0.8269452265094684,
+        "ratioP50Paired": 1.0698141326317883,
+        "ratioP95Paired": 1.2361849452749551,
+        "iters": 4,
+        "samples": 100
+      },
+      {
+        "name": "relation load, one level",
+        "a": {
+          "p50": 86.41650000000118,
+          "p95": 92.26443749999999,
+          "p99": 125.13302049999947,
+          "min": 83.64077050000196
+        },
+        "b": {
+          "p50": 86.3989375000001,
+          "p95": 98.57541649999985,
+          "p99": 114.67662500000006,
+          "min": 83.9823335000001
+        },
+        "ratioP50": 1.0002032721756686,
+        "ratioP95": 0.9359781655094517,
+        "ratioP99": 1.0911815768906645,
+        "ratioP50Paired": 0.9965355916854156,
+        "ratioP95Paired": 1.04796668940517,
+        "iters": 2,
+        "samples": 40
+      },
+      {
+        "name": "relation load, two levels",
+        "a": {
+          "p50": 183.68393750000178,
+          "p95": 196.05104199999914,
+          "p99": 198.86462500000198,
+          "min": 181.072937500001
+        },
+        "b": {
+          "p50": 182.6964999999982,
+          "p95": 199.29522949999955,
+          "p99": 217.3286874999976,
+          "min": 179.42366649999894
+        },
+        "ratioP50": 1.0054047970267825,
+        "ratioP95": 0.9837217001724549,
+        "ratioP99": 0.9150408410762807,
+        "ratioP50Paired": 1.0007857270085025,
+        "ratioP95Paired": 1.0338756784984342,
+        "iters": 2,
+        "samples": 40
+      }
+    ],
+    "devPointSelect": {
+      "name": "point select by PK",
+      "a": {
+        "p50": 0.2517958333332596,
+        "p95": 0.3351403000002999,
+        "p99": 0.36745693333311163,
+        "min": 0.193152766666996
+      },
+      "b": {
+        "p50": 0.2173569666663146,
+        "p95": 0.2649430333331111,
+        "p99": 0.2844861000000189,
+        "min": 0.18236249999996895
+      },
+      "ratioP50": 1.1584438133966757,
+      "ratioP95": 1.264952302327309,
+      "ratioP99": 1.2916516249232817,
+      "ratioP50Paired": 1.1693068903716077,
+      "ratioP95Paired": 1.3859108324282088,
+      "iters": 30,
+      "samples": 100
+    }
   },
   "budget": {
     "_source": "design/03 Appendix B rows 4-5 and §1.1; design/08 §5. CI fails the build on breach (R9). Loosening any line here is a reviewed change to this file with the reason in the commit message.",
@@ -329,6 +566,7 @@
       "bench:compile": "every PR — the compile, structure and decode sections. Deterministic, no database.",
       "bench:runtime": "nightly on the fixed runner, and on a PR labelled `perf` — adds the nine end-to-end pairs."
     },
+    "_sizedFromTheRunner": "design/12 §4 P item 1, R21. Every budget below was re-cut on 2026-08-29 from the FIXED NIGHTLY RUNNER's distribution, never from the design machine. The sample is 17 runs on ubuntu-latest: the six `bench-runtime-report-*` artifacts of the nightly `bench` job after the 2026-08-27 perf pass (33113108895, 33152893089, 33162124589, 33162423166, 33184536648, 33215061332) for everything, plus eleven `types`-job logs from ci.yml for the compile and decode lines, which run there on every PR and are the ones that actually flake. The eleventh is deliberately the FAILED first attempt of 33207272663 — the run C's merge record describes as tripping 2.816/2.8 and 1.663/1.65 on inert bench changes — because a budget sized from the runs that passed is a budget sized to fail.\n\nTHE RULES, stated so the next person re-cuts them the same way. e2e p50: max over the distribution PLUS 0.15, rounded up to the next 0.05 — an ABSOLUTE margin, because the p50 ratios reproduce to ±0.03 on the runner and a multiplicative margin would give the expensive cases headroom they do not need and the cheap ones headroom they do. e2e p95: max × 1.40. e2e p99: max × 2.00, because a p99 over 40–100 samples IS the single worst sample. Those two factors were themselves chosen by measurement rather than taste: cut at 1.30 and 1.60 first, the design machine — a second machine, running the identical code — read `delete by PK` p99 at 3.98 against a runner-sized 3.20 and p95 at 1.567 against 1.65. A tail budget that a second machine trips on unchanged code is not sized, so the factors were widened until both machines clear every line, and the result is still a 1.2x–2.2x tightening on p95 and a 1.7x–5.7x one on p99. Decode and the reference ratios: max × 1.05, rounded up to 0.05. Throughput floors: min × 0.90. Byte counts: max × 1.02, because allocation is machine-independent.\n\nTHE MODE. From design/12 §4 P item 0 the e2e section runs with NODE_ENV=production, and the distribution above is consistent with that: the five pre-session-layer runs had no call-site capture and no dev guard in the code AT ALL, so their numbers are production numbers. The sixth run (33215061332) is post-session-layer and dev-mode, and its five cheap-statement ratios are the regression item 0 fixed — so they are EXCLUDED from the sizing of those five cases and included for the four the regression could not reach (the 1 000-row select, the batch insert and the two relation loads, where a constant ~90 µs is under 2 % of the case).",
     "_referenceUsOnDesignMachine": 3.75,
     "_design": {
       "_why": "design/03 §1.1 and design/08 §5's own numbers, printed beside the measurement so drift from the design document is visible even inside budget (R9).",
@@ -341,16 +579,16 @@
       "e2eP99": 1.3
     },
     "compile": {
-      "_why": "Two kinds of line. `emitP50Us` is design/03 §1.1's own number, gated absolutely because the emitter measures ~4.6 us against it -- ~5.4x headroom, which no runner can flake. Everything tighter is a RATIO to sampler.mjs's fixed reference workload measured in the same process, for the reason design/08 §5 gives for the DB cases: a wall-clock budget loose enough not to flake on a shared runner is too loose to notice a 30% regression. The bytes/op lines are the tight ones, because allocation is machine-INDEPENDENT (+/-0.1% across runs here) and design/08 §5 names it as where ORM overhead hides. Every number below was re-cut downward after the 2026-08-27 perf pass (design/09 §3.7 follow-up); headroom is ~5% on the allocation lines and ~2x on the build-and-compile ratio, which is the only line a busy machine really moves.",
+      "_why": "Two kinds of line. `emitP50Us` is design/03 §1.1's own number, gated absolutely because the emitter measures ~4.6 us against it -- ~5.4x headroom, which no runner can flake. Everything tighter is a RATIO to sampler.mjs's fixed reference workload measured in the same process, for the reason design/08 §5 gives for the DB cases: a wall-clock budget loose enough not to flake on a shared runner is too loose to notice a 30% regression. The bytes/op lines are the tight ones, because allocation is machine-INDEPENDENT (+/-0.1% across runs here) and design/08 §5 names it as where ORM overhead hides. Every number below was re-cut downward after the 2026-08-27 perf pass (design/09 §3.7 follow-up); headroom is ~5% on the allocation lines and ~2x on the build-and-compile ratio, which is the only line a busy machine really moves.\n\nRe-cut again on 2026-08-29 from eleven runner `types`-job runs (design/12 §4 P item 1, R21), downward on five lines: `emitRefRatio` 1.4 -> 1.25 (runner 0.92-1.08), `buildAndCompileRefRatio` 12.0 -> 8.0 (3.87-5.50), `simpleRefRatio` 2.0 -> 1.5 (0.78-1.05), `buildAndCompileBytes` 32 500 -> 32 000 (31 290-31 469) and `simpleBytes` 7 600 -> 7 500 (7 012-7 284). `buildAndCompileRefRatio` stays a catastrophe guard rather than a regression detector — 8.0 is 1.45x the worst runner value and the file's own note explains why the reference workload cannot do better — and `emitBytes` is deliberately NOT tightened: all seventeen observations sit at 9 115-9 123, but `_whyEmitBytesIsNotTighter` records a 9 353-9 474 high mode on the same code, and seventeen runs at the low mode are not evidence that a bimodality is gone. A byte gate that goes red one run in three for no code change is the failure R9 exists to stop, and the regression detectors on that path are the two lines that DID come down.",
       "emitP50Us": 25,
-      "emitRefRatio": 1.4,
-      "buildAndCompileRefRatio": 12,
-      "simpleRefRatio": 2,
+      "emitRefRatio": 1.25,
+      "buildAndCompileRefRatio": 8,
+      "simpleRefRatio": 1.5,
       "simpleSelectsPerSecond": 200000,
       "_whySimpleSelectsPerSecond": "design/08 §5's own 200 000/s, gated AT the design number since the 2026-08-27 perf pass; the `_overDesign` waiver this line carried is deleted. The measurement is the BEST-CASE per-second figure (1e6 / min, machine-normalised) and not the p50 one, and `run.mjs` explains at length why: this is the only throughput FLOOR in the file, every source of interference pushes it towards failing and nothing pushes it away, and a 4 us operation is one scheduler stall wide. Across thirteen runs the min-derived figure was 263 548-350 116 and the p50-derived one 199 772-306 147, the low end of the second taken while `tsc` rebuilt the package in the same process tree. Both clear 200 000 on every run but that one; the gate uses the statistic that measures the library rather than the machine, which is the same choice `calibrate()` makes for the machine reference. The p50 figure stays in the print and in report.json, and the machine-independent regression detectors for this path are `simpleBytes` and `simpleRefRatio`.",
-      "buildAndCompileBytes": 32500,
+      "buildAndCompileBytes": 32000,
       "emitBytes": 9900,
-      "simpleBytes": 7600,
+      "simpleBytes": 7500,
       "_whyBuildAndCompileRefRatioIsCoarse": "Measured 4.8-5.4 across three consecutive runs on a quiet machine and 5.5-6.0 on the same machine at load average 20-25; the pre-perf-pass code measured 11.2-11.3 quiet and reached 21.6 while `pnpm test:live` saturated the machine. The reference workload tracks CPU speed well and memory/GC pressure only roughly, so this line is a CATASTROPHE guard at ~2x the worst observed value, not a regression detector; the regression detector for this path is `buildAndCompileBytes`, which moved 0.1% across the same runs.",
       "_whyEmitBytesIsNotTighter": "The emitter reads 9 020 B on most runs and 9 353-9 474 on some -- bimodal, not noisy: the same 256 pre-built ASTs, the same batch of 28-29, `stable: true` on both readings. It is most likely the chunk array's growth landing on either side of a capacity doubling for a given warm-up history. 9 900 is ~4.5% over the high mode; a budget at the low one would be red on a run in three for no code change, which is what R9 exists to stop. It is still a tightening: WS7's was 10 400."
     },
@@ -363,54 +601,54 @@
       "_measured": "After design/12 §4 P item 0, on the design machine, over four runs: production/pre-session 1.967-2.077 (before the pass: 2.503), bytes over the pre-session path 3 120-3 122 B (6 145), production/reference 0.28-0.29 (0.39). The dev arm is reported and never gated -- 7.7-9.5x the pre-session path, against 27.1x before -- because `07` §7.4's call-site capture and §1.5's dev guard are debugging aids that are ON outside production by design, and a budget on them would gate a feature nobody deploys."
     },
     "decode": {
-      "_why": "design/03 Appendix B says 'within 15% of a hand-written positional mapper' and does not say what the mapper may skip. Measured (design/09 §3.7), that is the whole question, so three pairs are gated per builder instead of one. The default closure tree does not reach 1.15 and cannot: a closure tree cannot write an object LITERAL, because the keys are only known at run time, and the dynamic-key row loop alone is ~24x a literal copy (see `_notGated`). The opt-in `{ decoder: 'codegen' }` builder does reach it -- 1.126-1.168 against the same-checks mapper -- which is exactly the disposition src/compile/decode.ts recorded in advance: 'if benchmarks later disagree, codegen becomes an opt-in flag, never the default'. Both builders are gated, and the design number is printed beside every one of them (R9).",
-      "ratioVsUncheckedMapperP50": 2.8,
-      "ratioVsCheckedMapperP50": 1.65,
-      "rowsPerSecond": 1000000,
+      "_why": "design/03 Appendix B says 'within 15% of a hand-written positional mapper' and does not say what the mapper may skip. Measured (design/09 §3.7), that is the whole question, so three pairs are gated per builder instead of one. The default closure tree does not reach 1.15 and cannot: a closure tree cannot write an object LITERAL, because the keys are only known at run time, and the dynamic-key row loop alone is ~24x a literal copy (see `_notGated`). The opt-in `{ decoder: 'codegen' }` builder does reach it -- 1.126-1.168 against the same-checks mapper -- which is exactly the disposition src/compile/decode.ts recorded in advance: 'if benchmarks later disagree, codegen becomes an opt-in flag, never the default'. Both builders are gated, and the design number is printed beside every one of them (R9).\n\nRE-SIZED FROM THE RUNNER, design/12 §4 P item 1, and two of these four went UP. Across seventeen runner observations the closure tree measures 2.374-2.816 against the unchecked mapper and 1.478-1.663 against the same-checks one; the budgets were 2.8 and 1.65, i.e. INSIDE the observed range, and the run that proved it is in the sample — ci.yml 33207272663 attempt 1 went red at 2.816 and 1.663 on a change that touched no decoding code at all, and was green on a re-run. A gate that a re-run fixes is not a gate. They are now 2.95 and 1.75, which is max × 1.05.\n\nWidening a budget deserves more suspicion than tightening one, so: what was tried and did not help is switching the STATISTIC. The report carries `min`, `p50` and `p95` for both sides of every pair, and across the six nightly runs the min/min quotient spreads 5.4 % where the p50/p50 one spreads 4.4 % — no better. What SHOULD help is pairing the quotient rather than the timings: `samplePaired` already interleaves the two sides sample by sample, so `median(a_i / b_i)` cancels drift inside each pair where `median(a) / median(b)` cannot. That statistic is now measured and PRINTED on every run (`ratioP50Paired` in report.json) and is deliberately NOT gated yet: it has no runner distribution, and sizing a new gate off the design machine is exactly what R21 forbids. Five nightly runs from now it is the candidate to gate, and these two numbers are the candidates to bring back down.\n\nThe two throughput floors are raised on the same evidence (min × 0.90 of the runner's range): closure 1 000 000 -> 1 150 000 rows/s from a measured 1 270 426-1 444 888, codegen 1 400 000 -> 1 500 000 from 1 645 540-1 859 078. `fractionOfClosureTree` 0.85 -> 0.82 from a measured 0.708-0.786.",
+      "ratioVsUncheckedMapperP50": 2.95,
+      "ratioVsCheckedMapperP50": 1.75,
+      "rowsPerSecond": 1150000,
       "_notGated": "`decode · row-loop dispatch only` is reported, never gated, for BOTH builders. It pairs a decoder built over twelve `text` (identity) codecs against a literal-object copy, so the denominator is ~80 us for 10 000 rows and the ratio swings with the sample size and the machine. It is a decomposition -- it says the closure tree's row loop is ~24-27x a literal object and the generated one ~2x, which is where the two builders differ and nowhere else -- not an Appendix B row, and a gate on it would be a gate on noise.",
       "codegen": {
         "_why": "The opt-in `{ decoder: 'codegen' }` builder (design/03 §1.3 AS BUILT). It is gated because an opt-in fast path with no budget is a fast path that rots, and because the flag only earns its existence if the number beside it is published. Measured 1.89-2.02 vs the unchecked mapper and 1.126-1.168 vs the same-checks one across eight runs; the budgets are the worst of those plus the same relative headroom WS7 used for the closure-tree lines. `fractionOfClosureTree` is the line that says the flag is still worth having: the generated decoder must stay measurably faster than the default (measured 0.726-0.758), or it is a liability rather than a choice.",
         "ratioVsUncheckedMapperP50": 2.15,
         "ratioVsCheckedMapperP50": 1.3,
-        "rowsPerSecond": 1400000,
-        "fractionOfClosureTree": 0.85
+        "rowsPerSecond": 1500000,
+        "fractionOfClosureTree": 0.82
       }
     },
     "e2e": {
-      "_why": "design/08 §5's gate is p50 <= 1.15x and p99 <= 1.30x raw `pg`, on all nine cases. The budgets are PER CASE and measured, with the design number printed beside every one of them on every run so the gap cannot be forgotten. Measured on PostgreSQL 17.11 across seven runs after the 2026-08-27 perf pass, the nine p50 ranges are 1.007-1.010 and 1.009-1.022 (the two relation loads), 1.061-1.123 (the 5-statement transaction), 1.078-1.159 (update), 1.096-1.110 (point select), 1.111-1.282 (delete), 1.170-1.205 (the 1 000-row select), 1.204-1.340 (insert one) and 1.389-1.684 (the 1 000-row batch insert) -- four of the nine now sit entirely at or under 1.15, against three before, and six of nine do on a good run. Only the batch insert moved enough to re-cut its budget (2.1 -> 1.9); the other eight sit inside the ranges that sized them over six runs including a saturated machine, and tightening a nine-case tail gate from three quieter runs would be sizing it on LESS evidence than set it. The shape of the gap is the useful part and it is booked in design/09 §3.7: our overhead is a roughly constant ~0.02-0.11 ms of client-side work per statement, which is ~10-30% of a point select and ~1% of a relation load, plus real encoding work in the batch insert.",
+      "_why": "design/08 §5's gate is p50 <= 1.15x and p99 <= 1.30x raw `pg` on all nine cases. The budgets are PER CASE and MEASURED ON THE RUNNER (see `_sizedFromTheRunner` at the top of this file), with the design number printed beside every one of them on every run so the gap cannot be forgotten.\n\nThe distribution the current numbers come from, p50, worst-of-runs first: batch insert 1.337 (range 1.201-1.337, six runs) · 5-statement transaction 1.320 (1.157-1.320) · point select 1.286 (1.261-1.286) · insert one 1.241 (1.200-1.241) · 1 000-row select 1.219 (1.181-1.219, six runs) · update 1.167 (1.129-1.167) · delete 1.162 (1.136-1.162) · relation load two levels 1.037 (0.979-1.037, six runs) · relation load one level 1.009 (0.977-1.009, six runs). p95, worst: batch 1.943 · 1 000-row select 1.481 · update 1.379 · insert one 1.315 · point select 1.293 · delete 1.237 · transaction 1.214 · relations 1.037 / 1.040. p99, worst: batch 3.469 · delete 1.993 · insert one 1.724 · 1 000-row select 1.591 · point select 1.421 · update 1.411 · transaction 1.270 · relations 1.032 / 1.110.\n\nSEVEN OF THE NINE p50 BUDGETS CAME DOWN and one went UP. Down: 1 000-row select 1.55 -> 1.40, insert one 1.65 -> 1.40, batch insert 1.90 -> 1.50, update 1.50 -> 1.35, delete 1.60 -> 1.35, both relation loads 1.25 -> 1.20. Unchanged: point select 1.45, which the rule reproduces exactly (1.286 + 0.15 = 1.436) — design/12 §4 P was told not to re-budget the regression away and did not; it fixed the code and the line kept its number. UP: the 5-statement transaction, 1.40 -> 1.50, and that one is worth reading rather than skimming. It measured 1.320 on run 33162124589 against a 1.40 budget: six per cent of margin on a case whose own run-to-run range is fourteen per cent wide. A gate with less margin than the thing it measures is a coin flip, and a coin-flip gate is one people re-run until it passes, which is the failure R9 exists to stop. The honest move is to widen it to the rule every other line here uses and say so.\n\np95 and p99 are tightened HARD, which is the other half of item 1. p99 was a uniform 12x catastrophe guard set from a laptop where the same line moved 0.44 -> 10.92 between runs; on the runner it ranges 0.94-3.47 across all nine cases and six runs, so it is now per case at 2.0x the worst observed — a 1.7x to 5.7x tightening. p95 goes from 1.6x-3.9x the worst runner value to a uniform 1.40x of it. The two factors are wider than the first cut (1.30 and 1.60) for a measured reason recorded in `_sizedFromTheRunner`: at 1.60 the DESIGN MACHINE read `delete by PK` p99 at 3.98 against the runner-sized 3.20, on code the runner had never measured above 1.993. Two machines is a better sample than one for a tail. These are the first numbers these two lines have ever had from a fixed runner; if the nightly trips one, the answer is a wider FACTOR sized from more runs, not a return to a round number nobody measured.\n\nThe shape of the gap is the useful part and it is booked in design/09 §3.7 and design/12 §4 P: our overhead is a roughly constant amount of client-side work per statement — which is 10-30 % of a point select and ~1 % of a relation load — plus real codec encoding in the batch insert.",
       "_whyP99IsLoose": "design/08 §5 gates p99 <= 1.30x and the gate is kept, but it is kept HONEST rather than tight. Across five runs on the reference machine the p50 ratios reproduced to +/-0.1 and the p95 ratios to about +/-0.4, while the SAME p99 line moved 0.44 -> 10.92 for `delete by PK` and 0.79 -> 4.38 for the batch insert: a 99th percentile over 40-100 samples of a sub-millisecond round trip is one scheduler stall wide, and no sample count this harness can afford fixes that on a machine it does not own. So p99 is a uniform 12x catastrophe guard and `overheadP95` is the tail gate that actually holds. Tightening p99 wants the fixed nightly runner's numbers, which is one nightly run away; design/09 §3.7 records that as unverified rather than guessing.",
       "overheadP50": {
         "point select by PK": 1.45,
-        "select 1 000 rows (12 cols, 2 joins)": 1.55,
-        "insert one": 1.65,
-        "insert 1 000 (batch)": 1.9,
-        "update by PK": 1.5,
-        "delete by PK": 1.6,
-        "5-statement transaction": 1.4,
-        "relation load, one level": 1.25,
-        "relation load, two levels": 1.25
+        "select 1 000 rows (12 cols, 2 joins)": 1.4,
+        "insert one": 1.4,
+        "insert 1 000 (batch)": 1.5,
+        "update by PK": 1.35,
+        "delete by PK": 1.35,
+        "5-statement transaction": 1.5,
+        "relation load, one level": 1.2,
+        "relation load, two levels": 1.2
       },
       "overheadP99": {
-        "point select by PK": 12,
-        "select 1 000 rows (12 cols, 2 joins)": 12,
-        "insert one": 12,
-        "insert 1 000 (batch)": 12,
-        "update by PK": 12,
-        "delete by PK": 12,
-        "5-statement transaction": 12,
-        "relation load, one level": 12,
-        "relation load, two levels": 12
+        "point select by PK": 2.85,
+        "select 1 000 rows (12 cols, 2 joins)": 3.2,
+        "insert one": 3.45,
+        "insert 1 000 (batch)": 6.95,
+        "update by PK": 2.85,
+        "delete by PK": 4,
+        "5-statement transaction": 2.55,
+        "relation load, one level": 2.1,
+        "relation load, two levels": 2.25
       },
       "overheadP95": {
-        "point select by PK": 2.2,
-        "select 1 000 rows (12 cols, 2 joins)": 3,
-        "insert one": 2.8,
-        "insert 1 000 (batch)": 6,
-        "update by PK": 2.8,
-        "delete by PK": 2.4,
-        "5-statement transaction": 2,
-        "relation load, one level": 1.8,
-        "relation load, two levels": 1.8
+        "point select by PK": 1.85,
+        "select 1 000 rows (12 cols, 2 joins)": 2.1,
+        "insert one": 1.85,
+        "insert 1 000 (batch)": 2.75,
+        "update by PK": 1.95,
+        "delete by PK": 1.75,
+        "5-statement transaction": 1.7,
+        "relation load, one level": 1.5,
+        "relation load, two levels": 1.5
       },
       "_whyP95Exists": "A deviation from design/08 §5, which names p50 and p99 only. p95 was added because it is the tightest tail statistic this harness measures reproducibly: across six runs on the reference machine p50 moved +/-0.1 and p95 +/-0.4, while the same p99 line moved 0.44 -> 10.92. The p95 budgets are ~1.6x the WORST of those six runs -- a tail guard, not a tight bound, because even p95 shows the occasional excursion (the 1 000-row select read 1.13-1.22 five times and 1.96 once). Tightening them wants the fixed nightly runner's distribution; guessing one from a laptop and calling it a gate is what R9 exists to stop. The p99 line stays so design/08 §5's number keeps its place in the print."
     },
@@ -432,20 +670,20 @@
       "decode.codegen.ratioVsCheckedMapperP50": "decodeRatio"
     },
     "_overDesign": {
-      "_why": "Every entry is a budget that is deliberately looser than design's number, with the reason. Adding one is the reviewed act R9 describes; the three-way print keeps the design number visible next to the measurement for as long as the entry exists. `compile.simpleSelectsPerSecond` was DELETED on 2026-08-27 because the measurement now clears 200 000/s -- which is what these entries are for: they come out by measurement, never by editing the number.",
-      "decode.ratioVsUncheckedMapperP50": "design/03 Appendix B asks for 1.15x a hand-written positional mapper; the DEFAULT closure tree measures 2.51-2.66 (was 2.68-2.99). ~40% of the gap is validation the unchecked mapper skips and the rest is the dynamic-key row loop, which no closure tree can remove -- `{ decoder: 'codegen' }` is the supported way to 1.15 and is gated below.",
-      "decode.ratioVsCheckedMapperP50": "the same measurement against a mapper that performs the codecs' own checks: 1.50-1.55 (was 1.55-1.65). This is the honest 'what does the closure tree cost' number. It is at the closure tree's floor: an all-`col` specialisation that writes the row without a per-cell closure was implemented and measured at 1.520 against 1.542, inside the run-to-run spread, and was not kept (design/09 §3.7 follow-up).",
-      "e2e.overheadP50": "design/08 §5 asks p50 <= 1.15x on all nine; measured 1.007-1.684 over seven runs after the 2026-08-27 perf pass (was 1.01-1.83). Four of the nine are now entirely at or under the design number and the batch insert's budget came down 2.1 -> 1.9 with it. The overhead is a roughly constant amount of client-side work per statement plus real codec encoding in the batch insert, so one number for all nine is either meaningless for the cheap cases or red for the expensive ones. Per-case budgets, each measured.",
-      "e2e.overheadP95": "the tail gate design/08 §5 does not name; see e2e._whyP95Exists.",
-      "e2e.overheadP99": "a uniform 12x catastrophe guard; see e2e._whyP99IsLoose.",
-      "decode.codegen.ratioVsUncheckedMapperP50": "the generated builder against the mapper that skips the codecs' checks: 1.89-1.96. The remaining gap is the codecs themselves -- `parseTimestamptz` and `decodeInt8Text` are ~59% of a decode and the unchecked mapper does neither -- not the row loop, which is now 2x a literal copy rather than 24x.",
-      "decode.codegen.ratioVsCheckedMapperP50": "the MEASUREMENT meets design here -- 1.126-1.146 on the quiet runs -- and the BUDGET does not, at 1.30. A run taken straight after a full tier-2 suite read 1.168, which is the whole argument: a ratio of two ~6 ms timings on a machine this harness does not own moves several percent, so a gate at 1.15 would have 0.1% margin -- red on the first busy runner and therefore worthless. The entry stays until the fixed nightly runner has a distribution to size it from; the three-way print carries 1.15 beside the measurement on every run, which is the part that matters."
+      "_why": "Every entry is a budget that is deliberately looser than design's number, with the reason. Adding one is the reviewed act R9 describes; the three-way print keeps the design number visible next to the measurement for as long as the entry exists. `compile.simpleSelectsPerSecond` was DELETED on 2026-08-27 because the measurement now clears 200 000/s -- which is what these entries are for: they come out by measurement, never by editing the number.\n\nAll seven survivors were RE-SIZED FROM THE RUNNER on 2026-08-29 (design/12 §4 P item 1, R21; the sample and the rules are in `_sizedFromTheRunner` at the top of this file) and NONE of them closed. The brief named `decode.codegen.ratioVsCheckedMapperP50` as the candidate to close, and the answer the runner gives is no: seventeen runs measure 1.098-1.218 against design's 1.15, so the budget stays at 1.30 -- a measurement that straddles the design number does not clear it. That is the mechanism working, not failing. What DID change is that every number below is now a runner number rather than a laptop number, and that eleven of the twenty-seven per-case e2e lines came down while one went up.",
+      "decode.ratioVsUncheckedMapperP50": "design/03 Appendix B asks for 1.15x a hand-written positional mapper; the DEFAULT closure tree measures 2.374-2.816 across seventeen RUNNER runs (2.51-2.66 on the design machine). ~40% of the gap is validation the unchecked mapper skips and the rest is the dynamic-key row loop, which no closure tree can remove -- `{ decoder: 'codegen' }` is the supported way to 1.15 and is gated below. Budget 2.8 -> 2.95 on runner evidence; see `decode._why` for why widening it was the honest move and what will bring it back down.",
+      "decode.ratioVsCheckedMapperP50": "the same measurement against a mapper that performs the codecs' own checks: 1.478-1.663 across seventeen RUNNER runs (1.50-1.55 on the design machine). This is the honest 'what does the closure tree cost' number. It is at the closure tree's floor: an all-`col` specialisation that writes the row without a per-cell closure was implemented and measured at 1.520 against 1.542, inside the run-to-run spread, and was not kept (design/09 §3.7 follow-up). Budget 1.65 -> 1.75 on runner evidence; the 1.663 in that range is a real run that went red on a change touching no decoding code.",
+      "e2e.overheadP50": "design/08 §5 asks p50 <= 1.15x on all nine; the RUNNER measures 0.977-1.337 across six nightly runs (excluding the five cheap-statement ratios of the post-session-layer run, which are design/12 §4 P item 0's regression and are fixed). Two of the nine -- both relation loads -- sit entirely under the design number on the runner, and their budgets are 1.20 rather than 1.15 only because the sizing rule adds a fixed 0.15; the other seven are over it by a roughly constant amount of client-side work per statement, which is 10-30 % of a point select and ~1 % of a relation load, plus real codec encoding in the batch insert. One number for all nine would be either meaningless for the cheap cases or red for the expensive ones, so the budgets are per case and each is measured. Seven came down (up to 1.65 -> 1.40 on `insert one`), one went up and one is unchanged; `e2e._why` has the table and the argument for the one that went up.",
+      "e2e.overheadP95": "the tail gate design/08 §5 does not name; see e2e._whyP95Exists. Re-cut from the runner on 2026-08-29 at 1.40x the worst of six runs per case, which is a 1.2x-2.2x tightening on every one of the nine (the batch insert 6.0 -> 2.75, the 1 000-row select 3.0 -> 2.10).",
+      "e2e.overheadP99": "was a uniform 12x catastrophe guard sized from a laptop; see e2e._whyP99IsLoose for why it was uniform and why it was 12. It is now PER CASE at 2.0x the worst of six runner runs -- 2.10 to 6.95, a 1.7x-5.7x tightening -- because the runner's p99 turns out to range 0.94-3.47 across all nine cases where the design machine's moved 0.44-10.92 on one of them. The fixed runner was the thing that line was waiting for and it now has it.",
+      "decode.codegen.ratioVsUncheckedMapperP50": "the generated builder against the mapper that skips the codecs' checks: 1.753-2.014 across seventeen RUNNER runs. The remaining gap is the codecs themselves -- `parseTimestamptz` and `decodeInt8Text` are ~59% of a decode and the unchecked mapper does neither -- not the row loop, which is 2x a literal copy rather than 24x. The budget stays at 2.15: max x 1.05 is 2.11, and 2.15 is the next 0.05 above it.",
+      "decode.codegen.ratioVsCheckedMapperP50": "THE ENTRY design/12 §4 P WAS SENT TO CLOSE, AND THE RUNNER SAYS NO. The previous note said the measurement met design -- 1.126-1.146 on quiet runs of the design machine -- and that the entry would go when the fixed nightly runner had a distribution to size it from. It now has one, seventeen runs, and the distribution is 1.098-1.218 against design's 1.15: SIX of the seventeen are above 1.15. So the opt-in generated decoder meets design/03 Appendix B on a quiet machine and does not meet it on the runner, which is a more useful sentence than the one it replaces, and the budget stays at 1.30 (max 1.218 x 1.05 = 1.279). Closing it would mean gating at 1.15 and going red on a third of nights.\n\nWhat would close it is making the generated decoder faster, not re-reading the same numbers -- the remaining gap is `parseTimestamptz` and `decodeInt8Text`, i.e. the codecs, per the sibling entry above. The three-way print carries 1.15 beside the measurement on every run, which is the part that matters."
     }
   },
   "checks": [
     {
       "name": "compile · emitter p50 (design/03 §1.1)",
-      "measured": 4.003,
+      "measured": 3.847,
       "limit": 25,
       "unit": "µs",
       "mode": "max",
@@ -453,31 +691,31 @@
     },
     {
       "name": "compile · emitter / reference",
-      "measured": 1.07,
-      "limit": 1.4,
+      "measured": 1.03,
+      "limit": 1.25,
       "unit": "",
       "mode": "max",
       "ok": true
     },
     {
       "name": "compile · build+compile / reference",
-      "measured": 5.56,
-      "limit": 12,
+      "measured": 5.36,
+      "limit": 8,
       "unit": "",
       "mode": "max",
       "ok": true
     },
     {
       "name": "compile · simple select / reference",
-      "measured": 1.09,
-      "limit": 2,
+      "measured": 1.12,
+      "limit": 1.5,
       "unit": "",
       "mode": "max",
       "ok": true
     },
     {
       "name": "compile · simple selects/sec (machine-normalised, best-case)",
-      "measured": 294082,
+      "measured": 297792,
       "limit": 200000,
       "unit": "/s",
       "mode": "min",
@@ -485,15 +723,15 @@
     },
     {
       "name": "compile · bytes/op, build+compile",
-      "measured": 31475,
-      "limit": 32500,
+      "measured": 31472,
+      "limit": 32000,
       "unit": "B",
       "mode": "max",
       "ok": true
     },
     {
       "name": "compile · bytes/op, emitter",
-      "measured": 9123,
+      "measured": 9115,
       "limit": 9900,
       "unit": "B",
       "mode": "max",
@@ -501,8 +739,8 @@
     },
     {
       "name": "compile · bytes/op, simple",
-      "measured": 7189,
-      "limit": 7600,
+      "measured": 7220,
+      "limit": 7500,
       "unit": "B",
       "mode": "max",
       "ok": true
@@ -573,31 +811,31 @@
     },
     {
       "name": "decode · vs unchecked hand mapper (p50)",
-      "measured": 2.571,
-      "limit": 2.8,
+      "measured": 2.555,
+      "limit": 2.95,
       "unit": "",
       "mode": "max",
       "ok": true
     },
     {
       "name": "decode · vs same-checks hand mapper (p50)",
-      "measured": 1.532,
-      "limit": 1.65,
+      "measured": 1.48,
+      "limit": 1.75,
       "unit": "",
       "mode": "max",
       "ok": true
     },
     {
       "name": "decode · rows/sec (machine-normalised)",
-      "measured": 1216726,
-      "limit": 1000000,
+      "measured": 1164773,
+      "limit": 1150000,
       "unit": "/s",
       "mode": "min",
       "ok": true
     },
     {
       "name": "decode · codegen vs unchecked hand mapper (p50)",
-      "measured": 1.938,
+      "measured": 1.943,
       "limit": 2.15,
       "unit": "",
       "mode": "max",
@@ -605,7 +843,7 @@
     },
     {
       "name": "decode · codegen vs same-checks hand mapper (p50)",
-      "measured": 1.147,
+      "measured": 1.131,
       "limit": 1.3,
       "unit": "",
       "mode": "max",
@@ -613,23 +851,23 @@
     },
     {
       "name": "decode · codegen rows/sec (machine-normalised)",
-      "measured": 1638843,
-      "limit": 1400000,
+      "measured": 1558969,
+      "limit": 1500000,
       "unit": "/s",
       "mode": "min",
       "ok": true
     },
     {
       "name": "decode · codegen is faster than the closure tree",
-      "measured": 0.742,
-      "limit": 0.85,
+      "measured": 0.747,
+      "limit": 0.82,
       "unit": "",
       "mode": "max",
       "ok": true
     },
     {
       "name": "statement · production / pre-session path",
-      "measured": 1.917,
+      "measured": 1.907,
       "limit": 2.4,
       "unit": "",
       "mode": "max",
@@ -653,8 +891,224 @@
     },
     {
       "name": "statement · dev / pre-session path (reported)",
-      "measured": 7.754,
+      "measured": 7.739,
       "limit": 99,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · point select by PK · p50 orm/raw",
+      "measured": 1.096,
+      "limit": 1.45,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · point select by PK · p95 orm/raw",
+      "measured": 1.263,
+      "limit": 1.85,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · point select by PK · p99 orm/raw",
+      "measured": 2.455,
+      "limit": 2.85,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · select 1 000 rows (12 cols, 2 joins) · p50 orm/raw",
+      "measured": 1.203,
+      "limit": 1.4,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · select 1 000 rows (12 cols, 2 joins) · p95 orm/raw",
+      "measured": 1.14,
+      "limit": 2.1,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · select 1 000 rows (12 cols, 2 joins) · p99 orm/raw",
+      "measured": 0.971,
+      "limit": 3.2,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · insert one · p50 orm/raw",
+      "measured": 1.151,
+      "limit": 1.4,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · insert one · p95 orm/raw",
+      "measured": 1.158,
+      "limit": 1.85,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · insert one · p99 orm/raw",
+      "measured": 1.255,
+      "limit": 3.45,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · insert 1 000 (batch) · p50 orm/raw",
+      "measured": 1.268,
+      "limit": 1.5,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · insert 1 000 (batch) · p95 orm/raw",
+      "measured": 1.489,
+      "limit": 2.75,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · insert 1 000 (batch) · p99 orm/raw",
+      "measured": 0.885,
+      "limit": 6.95,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · update by PK · p50 orm/raw",
+      "measured": 1.139,
+      "limit": 1.35,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · update by PK · p95 orm/raw",
+      "measured": 1.098,
+      "limit": 1.95,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · update by PK · p99 orm/raw",
+      "measured": 1.251,
+      "limit": 2.85,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · delete by PK · p50 orm/raw",
+      "measured": 1.083,
+      "limit": 1.35,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · delete by PK · p95 orm/raw",
+      "measured": 0.869,
+      "limit": 1.75,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · delete by PK · p99 orm/raw",
+      "measured": 0.265,
+      "limit": 4,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · 5-statement transaction · p50 orm/raw",
+      "measured": 1.059,
+      "limit": 1.5,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · 5-statement transaction · p95 orm/raw",
+      "measured": 1.16,
+      "limit": 1.7,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · 5-statement transaction · p99 orm/raw",
+      "measured": 0.827,
+      "limit": 2.55,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · relation load, one level · p50 orm/raw",
+      "measured": 1,
+      "limit": 1.2,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · relation load, one level · p95 orm/raw",
+      "measured": 0.936,
+      "limit": 1.5,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · relation load, one level · p99 orm/raw",
+      "measured": 1.091,
+      "limit": 2.1,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · relation load, two levels · p50 orm/raw",
+      "measured": 1.005,
+      "limit": 1.2,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · relation load, two levels · p95 orm/raw",
+      "measured": 0.984,
+      "limit": 1.5,
+      "unit": "",
+      "mode": "max",
+      "ok": true
+    },
+    {
+      "name": "e2e · relation load, two levels · p99 orm/raw",
+      "measured": 0.915,
+      "limit": 2.25,
       "unit": "",
       "mode": "max",
       "ok": true
@@ -673,31 +1127,31 @@
     },
     {
       "name": "budget · decode.ratioVsUncheckedMapperP50 vs design (1.15)",
-      "measured": 2.8,
+      "measured": 2.95,
       "limit": "1.15 — waived in _overDesign",
       "ok": true
     },
     {
       "name": "budget · decode.ratioVsCheckedMapperP50 vs design (1.15)",
-      "measured": 1.65,
+      "measured": 1.75,
       "limit": "1.15 — waived in _overDesign",
       "ok": true
     },
     {
       "name": "budget · e2e.overheadP50 vs design (1.15)",
-      "measured": 1.9,
+      "measured": 1.5,
       "limit": "1.15 — waived in _overDesign",
       "ok": true
     },
     {
       "name": "budget · e2e.overheadP95 vs design (1.3)",
-      "measured": 6,
+      "measured": 2.75,
       "limit": "1.3 — waived in _overDesign",
       "ok": true
     },
     {
       "name": "budget · e2e.overheadP99 vs design (1.3)",
-      "measured": 12,
+      "measured": 6.95,
       "limit": "1.3 — waived in _overDesign",
       "ok": true
     },
@@ -717,8 +1171,7 @@
   "caveats": [
     "The `…RefRatio` gates divide by sampler.mjs's reference workload. It tracks CPU speed well and GC pressure only roughly, so the build-and-compile ratio is the noisiest line here (4.8-5.4 quiet, 5.5-6.0 at load average 20-25, and 21.6 for the pre-perf-pass code under saturation); the tight gate on that path is bytes/op, not time.",
     "`decode · row-loop dispatch only` is reported, not gated, for either builder -- see decode._notGated.",
-    "`decode.codegen.*` gates a code path that is OFF by default. It is measured on every run anyway, because design/03 §1.3's disposition is that the flag exists only as long as the benchmark says it is worth having.",
-    "end-to-end skipped: --compile-only"
+    "`decode.codegen.*` gates a code path that is OFF by default. It is measured on every run anyway, because design/03 §1.3's disposition is that the flag exists only as long as the benchmark says it is worth having."
   ],
   "ok": true
 }

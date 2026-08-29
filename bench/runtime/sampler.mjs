@@ -90,8 +90,25 @@ export function samplePaired(a, b, { iters = 20, samples = 60, warmup = 10 } = {
     for (let i = 0; i < iters; i++) b()
     bx.push(((performance.now() - t0) * 1000) / iters)
   }
+  return pairedResult(ax, bx, iters, samples)
+}
+
+/**
+ * The two series → the reported statistics.
+ *
+ * `ratioP50Paired` is the median of the PER-SAMPLE quotients, and it exists because
+ * `median(a) / median(b)` does not cancel drift and it can: the two sides are measured
+ * alternately, so `a_i` and `b_i` are adjacent in time and a machine that slows down between
+ * sample 10 and sample 40 moves both of them together. `median(a)/median(b)` is the number
+ * design/08 §5 names and stays the gated one; this is the candidate to replace it once the fixed
+ * runner has a distribution to size a budget from (R21). Both are in `report.json`; see
+ * `budget.json`'s `decode._why`.
+ */
+function pairedResult(ax, bx, iters, samples) {
+  const perSample = ax.map((v, i) => v / bx[i])
   ax.sort((x, y) => x - y)
   bx.sort((x, y) => x - y)
+  perSample.sort((x, y) => x - y)
   const stat = (xs) => ({
     p50: percentile(xs, 50),
     p95: percentile(xs, 95),
@@ -106,6 +123,8 @@ export function samplePaired(a, b, { iters = 20, samples = 60, warmup = 10 } = {
     ratioP50: A.p50 / B.p50,
     ratioP95: A.p95 / B.p95,
     ratioP99: A.p99 / B.p99,
+    ratioP50Paired: percentile(perSample, 50),
+    ratioP95Paired: percentile(perSample, 95),
     iters,
     samples,
   }
@@ -127,25 +146,7 @@ export async function samplePairedAsync(a, b, { iters = 1, samples = 60, warmup 
     for (let i = 0; i < iters; i++) await b()
     bx.push((performance.now() - t0) / iters)
   }
-  ax.sort((x, y) => x - y)
-  bx.sort((x, y) => x - y)
-  const stat = (xs) => ({
-    p50: percentile(xs, 50),
-    p95: percentile(xs, 95),
-    p99: percentile(xs, 99),
-    min: xs[0],
-  })
-  const A = stat(ax)
-  const B = stat(bx)
-  return {
-    a: A,
-    b: B,
-    ratioP50: A.p50 / B.p50,
-    ratioP95: A.p95 / B.p95,
-    ratioP99: A.p99 / B.p99,
-    iters,
-    samples,
-  }
+  return pairedResult(ax, bx, iters, samples)
 }
 
 /**
