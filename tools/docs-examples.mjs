@@ -220,7 +220,8 @@ async function runAll(examples) {
     await server.stop()
   }
 
-  report({ examples, ran, ms: Date.now() - t0, substitutions, failures })
+  const pages = new Set(examples.map((e) => e.block.page)).size
+  report({ pages, ran, ms: Date.now() - t0, substitutions, failures })
 }
 
 /**
@@ -254,6 +255,7 @@ async function runAllPg(examples) {
   const failures = []
   const substitutions = []
   const notes = []
+  const ranPages = new Set()
   let ran = 0
   const t0 = Date.now()
 
@@ -288,6 +290,7 @@ async function runAllPg(examples) {
       try {
         result = await runOne(dir, entry, { DATABASE_URL: url, DIRECT_URL: directUrl })
         ran++
+        ranPages.add(ex.block.page)
       } finally {
         if (ex.tier === 'pgbouncer') {
           await resetPooled(pg, bouncerUrl)
@@ -311,7 +314,7 @@ async function runAllPg(examples) {
     await admin.end()
   }
 
-  report({ examples, ran, ms: Date.now() - t0, substitutions, failures, notes })
+  report({ pages: ranPages.size, ran, ms: Date.now() - t0, substitutions, failures, notes })
 }
 
 /** `pg` as the docs workspace resolves it — the same copy an example gets. */
@@ -400,11 +403,8 @@ async function resetPooled(pg, url) {
  * `notes` is where a tier says something true that is not a failure — a `pg-only="pgbouncer"` block
  * with no pooler URL, an example that left a backend behind.
  */
-function report({ examples, ran, ms, substitutions, failures, notes = [] }) {
-  console.log(
-    `${LABEL}: ${ran} example(s) from ${new Set(examples.map((e) => e.block.page)).size} page(s) ` +
-      `in ${(ms / 1000).toFixed(1)} s`,
-  )
+function report({ pages, ran, ms, substitutions, failures, notes = [] }) {
+  console.log(`${LABEL}: ${ran} example(s) from ${pages} page(s) in ${(ms / 1000).toFixed(1)} s`)
   for (const s of substitutions) console.log(`  substituted ${s}`)
   for (const n of notes) console.log(`  ${n}`)
 
