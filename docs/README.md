@@ -9,8 +9,11 @@ pnpm docs:build      # the pooler matrix generator, then `astro build` (Pagefind
 pnpm docs:typecheck  # every fenced ts/tsx block compiles on TypeScript 5.9.3
 pnpm docs:examples   # every `title=` block runs against PGlite
 pnpm docs:coverage   # the pooler matrix is current; every exported name has a reference entry;
-                     # the CLI blocks are the binary's --help; the hazard table is the kit's
+                     # the CLI blocks are the binary's --help; the hazard table is the kit's;
+                     # every `no-run` says why (R22)
 pnpm docs:check      # all four, in that order — what CI's `docs` job runs
+
+pnpm docs:examples:pg  # the `pg-only` blocks, against a real PostgreSQL. NOT in docs:check
 ```
 
 `pnpm build` (the packages) must have run first: all three gates resolve `pg-prime` and
@@ -22,6 +25,12 @@ point at `dist`. The docs therefore describe the **built** packages, not the sou
 **Every fenced `ts`/`tsx` block on this site compiles, and every one with a `title=` runs**
 (design/12 §2 R20). There is no "illustrative pseudo-code" register here: if a block cannot be
 made to compile, it is either wrong or it is not TypeScript, and both have answers below.
+
+And its corollary, design/13 R22: **a block that does not run says why.** `no-run` carries a
+reason — as the block's first line (`// no-run: <why>`, when the reader should see it) or as the
+attribute (`no-run="<why>"`, when the reader should not) — and `docs:coverage` fails without one.
+"It needs a real server" stopped being a reason when `pg-only` was added: that is now a tier, not
+an excuse.
 
 ## Block directives
 
@@ -42,7 +51,8 @@ await db.update(db.h.posts).set({ published: true }).where((p) => eq(p.posts.id,
 | `setup=id` | Register this (visible) block as a prelude that other blocks on the page can `use=`. |
 | `signature` | The block is a declaration, not a program: it is compiled inside `declare namespace` with every type of the page's `apiEntry` in scope. This is how reference signatures are checked. Bodiless functions, bare `interface`s and `type` aliases belong here. |
 | `expect-error` | The block **must** fail to compile. Used where a page claims something is refused; if it starts compiling, the gate fails. |
-| `no-run` | A `title=` block that is a file rather than a program — a `pg-prime.config.ts`, a migration, a snippet of somebody else's library. Still compiled. |
+| `pg-only` | The block is an example, and it runs on the **real-server tier** (`docs:examples:pg`) instead of against PGlite. `pg-only="pgbouncer"` runs it with `DATABASE_URL` pointed at the pooler. Still compiled, and still counted by the one rule. |
+| `no-run` | A `title=` block that is a file rather than a program — a `pg-prime.config.ts`, a migration, a snippet of somebody else's library. Still compiled. **The reason is mandatory** (R22): `no-run="a config file: the kit loads it"`, or `// no-run: …` as the block's first line. |
 | `allow-drops="reason"` | The example is allowed to make the PGlite bridge drop a connection. Only correct when the example opens no transaction — a drop inside one silently un-does it, which is why the gate fails on it by default. |
 | `skip-check="reason"` | Not compiled. The reason is mandatory and is printed by the gate on every run. Use it only for code in another language's TypeScript (a Drizzle or Prisma snippet on a comparison page). |
 | `cli="migrate generate --help"` | The block must be, verbatim, what the built binary prints. `node tools/docs-coverage.mjs --write` regenerates it. |
@@ -89,8 +99,40 @@ runs), so examples never depend on each other. An example that hangs is killed a
 another connection holds an open transaction — on PGlite a "second session" is the same session, and
 silently allowing it is how a broken `SKIP LOCKED` or advisory lock tests green (design/08 F8). So an
 example that needs **two sessions at once** — a concurrent transaction, a real `40001`, lock
-contention, a killed backend — cannot run here. Mark it `no-run` and say so in a sentence; it still
-compiles, and the suite that proves the behaviour is `packages/pg-prime/test/pg/**`.
+contention, a killed backend — cannot run here. Nor can COPY: the socket bridge exits the WASM
+backend on a COPY message and takes the instance with it.
+
+### The real-server tier
+
+Those examples are `pg-only`, and `pnpm docs:examples:pg` runs them:
+
+```sh
+PG_PRIME_TEST_URL=postgres://…            # required; the same variable CI's `pg` job sets
+PG_PRIME_TEST_PGBOUNCER_URL=postgres://…  # the pgbouncer blocks are skipped, loudly, without it
+pnpm build && pnpm docs:examples:pg
+```
+
+Same composition, same one-line URL substitution, same per-example process and 60 s timeout. What
+differs is the isolation and the environment:
+
+| | `pg-only` | `pg-only="pgbouncer"` |
+|---|---|---|
+| `DATABASE_URL` | a scratch database, `docs_ex_<pid>_<n>`, created from `PG_PRIME_TEST_URL` and dropped after | `PG_PRIME_TEST_PGBOUNCER_URL` |
+| `DIRECT_URL` | the same scratch database | `PG_PRIME_TEST_URL` — the direct server, which is what `directConnection:` wants |
+| Isolation | the database is new, and nothing survives it | `drop schema public cascade; create schema public`, before and after |
+
+The pooled blocks get no scratch database because PgBouncer's `DB_NAME` is fixed when the pooler
+starts: a database this gate invents is not reachable through it. Dropping a scratch database
+terminates whatever is still connected to it first, and says so — an example that leaves a backend
+behind after its process is gone has leaked a handle, and that is worth a line of output.
+
+This tier is **not** part of `docs:check`. That gate needs no server, which is what makes it
+runnable on a laptop and in the `docs` CI job; `docs:examples:pg` rides the `pg` job and every
+nightly `pg-matrix` leg instead, after `pnpm test:pg`.
+
+A block that needs neither tier is `no-run` **with its reason written** (R22); it still compiles,
+and where a behaviour is proved instead of shown, the suite that proves it is
+`packages/pg-prime/test/pg/**`.
 
 Most examples begin `use=blog,blog-ddl`: two tables, a relation in each direction, a `db`, and the
 DDL that makes the queries real.

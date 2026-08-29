@@ -113,6 +113,13 @@ jobs:
           done
           echo "pgbouncer never accepted a connection on 6432"; exit 1
       - run: pnpm test:pg
+      # design/13 decision 10, as on the PR's `pg` job: the `pg-only` docs blocks — the ones PGlite
+      # cannot host — against this leg's server and pooler, one scratch database per example. Here
+      # it is also a majors check: COPY, LISTEN/NOTIFY and the pooler probes are exactly the
+      # surfaces where 15 and 18 have differed before. `pnpm build` first, because the examples
+      # resolve the packages through docs/node_modules → packages/* → `dist`.
+      - run: pnpm build
+      - run: pnpm docs:examples:pg
 
   fuzz:
     # design/03 Appendix B: "10k cases/PR, 1M nightly, 0 findings", for all three fuzzers.

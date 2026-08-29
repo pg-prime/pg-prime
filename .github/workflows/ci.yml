@@ -311,6 +311,15 @@ jobs:
           done
           echo "pgbouncer never accepted a connection on 6432"; exit 1
       - run: pnpm test:pg
+      # design/13 decision 10: the docs gate's second tier. `docs:examples` (in the `docs` job)
+      # runs every `title=` block against PGlite and needs no server; the `pg-only` blocks are the
+      # ones PGlite cannot host — COPY, a notification crossing two sessions, a CancelRequest
+      # somebody honours, the pooler probes — so they run here, where both a real PostgreSQL and a
+      # real PgBouncer already exist. One scratch database per example, from PG_PRIME_TEST_URL.
+      # `pnpm build` first because the examples import `pg-prime` and `@pg-prime/kit` through
+      # docs/node_modules → packages/* → `dist`, and this job has otherwise never built anything.
+      - run: pnpm build
+      - run: pnpm docs:examples:pg
 
   perf:
     # design/08 §5: "On PRs labelled `perf`: the runtime benchmark runs and posts a 3-run-median
