@@ -1043,8 +1043,10 @@ reason. Only for a pool pg-prime built: a `pool:` a user passes is theirs, and s
 to do the killing. The oracle needs no assertion, exactly as in `checkout-error.test.ts`: with the
 listener removed the run reports `Uncaught Exception · error: terminating connection due to
 administrator command` and the worker dies (measured, both ways). The assertions add the rest of
-the contract — the event fires once with a `cause`, and the next statement succeeds on a
-*different* `pg_backend_pid()`. A second case holds the connection in a transaction and shows the
+the contract — the event arrives with a `cause` (asserted at least once, not exactly once:
+pg-pool's `_remove` calls `client.end()` on a socket that is already gone, and a second complaint
+from that teardown is not a second fault), and the next statement succeeds on a *different*
+`pg_backend_pid()`. A second case holds the connection in a transaction and shows the
 checked-out path still rejects with the mapped `OperatorInterventionError`.
 
 **Docs.** `guides/observability` lists the new kind and says what it means (and that an unheard
