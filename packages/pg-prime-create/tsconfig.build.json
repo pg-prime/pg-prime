@@ -1,0 +1,14 @@
+{
+  "//": "The publish emit (design/08 §3.1, §3.2), the kit's project with nothing subtracted: `isolatedDeclarations` because every export here is an ordinary function or a data record, `rootDir: src` so `dist/cli.js` is where `bin` says it is. design/13 decision 7 supersedes design/08 §1's `esbuild` line for this package the same way §3.1 AS BUILT superseded it for the kit — a package with zero dependencies has nothing to inline, and `tools/build-package.mjs` copies `templates/` into `dist/templates/`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "isolatedDeclarations": true,
+    "noEmit": false
+  },
+  "include": ["src"]
+}

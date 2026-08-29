@@ -1,20 +1,45 @@
 {
   "name": "@pg-prime/create",
   "version": "0.0.0",
-  "description": "Scaffolder for pg-prime projects. Pre-alpha — not yet usable.",
+  "description": "`npm create @pg-prime` — scaffold a pg-prime project: schema, config, migrations, a first query and a PGlite test fixture. Pre-alpha; the scaffold IS the getting-started guide.",
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pg-prime/pg-prime.git"
   },
+  "bin": {
+    "create-pg-prime": "./dist/cli.js"
+  },
   "files": [
     "dist"
   ],
   "type": "module",
+  "exports": {
+    ".": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "node scripts/versions.mjs && node ../../tools/build-package.mjs",
+    "clean": "node ../../tools/build-package.mjs --clean",
+    "typecheck": "node scripts/versions.mjs && tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
+    "test": "vitest run --project unit",
+    "test:pg": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/pg": "^8.21.0",
+    "pg": "^8.23.0",
+    "vitest": "^4.1.10"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   }
 }

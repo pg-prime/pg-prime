@@ -1,0 +1,10 @@
+{
+  "//": "Type-checks the tests, which the package tsconfig deliberately excludes (it emits declarations from `src` only). `allowJs` is here for one import: `test/templates.test.ts` reads the docs pages through `tools/docs-blocks.mjs`, the same parser every docs gate uses, and inference over that file is better than a hand-written declaration that could disagree with it. Run: node_modules/.bin/tsc --noEmit -p packages/pg-prime-create/test/tsconfig.json",
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "types": ["node"]
+  },
+  "include": ["../src/**/*.ts", "./**/*.ts"]
+}

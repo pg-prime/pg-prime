@@ -1,0 +1,22 @@
+{
+  "name": "{{name}}",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node --env-file-if-exists=.env dist/index.js"
+  },
+  "dependencies": {
+    "pg": "{{pg}}",
+    "pg-prime": "{{pgPrime}}"
+  },
+  "devDependencies": {
+    "@pg-prime/kit": "{{kit}}",
+    "@types/node": "{{typesNode}}",
+    "typescript": "{{typescript}}"
+  }
+}

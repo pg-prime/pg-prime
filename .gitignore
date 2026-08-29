@@ -15,6 +15,12 @@ packages/*/src/**/*.d.ts
 # tools/build-package.mjs copies it into dist/, and the export map points every subpath at it.
 !packages/*/src/unsupported-typescript.d.ts
 
+# The scaffolder's dependency pins, generated from the workspace's own package.json files by
+# packages/pg-prime-create/scripts/versions.mjs (design/13 decision 6: a scaffolder pins what it
+# scaffolds, and a pin read at build time cannot rot). `build`, `typecheck` and the vitest global
+# setup each run the generator first, so a fresh checkout never misses it.
+packages/pg-prime-create/src/versions.ts
+
 # The end-to-end loop test's scratch project. It lives inside the package rather than in
 # os.tmpdir() so that `import { pgTable } from 'pg-prime'` in the generated schema module
 # resolves through the workspace's node_modules, exactly as a user's project does.
