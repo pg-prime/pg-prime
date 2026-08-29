@@ -829,14 +829,16 @@ function makeCopyFrom(state: SessionState, runner: AnyRunner): CopyFromApi {
     opts?: CopyOptions,
   ): Promise<CopyResult> => {
     const meta = metaOf(table, state.env.registry)
+    // One list, and the row key rides ON each column: the default is now a SUBSET of the declared
+    // columns (GENERATED ALWAYS is not insertable), so a second `opts?.columns ?? meta.keys` array
+    // beside this one would be misaligned by exactly the columns that were dropped.
     const columns = copyColumns(meta, opts?.columns)
-    const keys = opts?.columns ?? meta.keys
     const format = opts?.format ?? 'text'
     const text = copyFromSql(meta, columns, format)
     const hwm = opts?.highWaterMark ?? 65_536
     return runner.use(async (conn) => {
       assertCopyIn(conn, state.driver.capabilities.adapter)
-      const res = await conn.copyIn(text, encodeCopyRows(rows, columns, format, keys, hwm), {
+      const res = await conn.copyIn(text, encodeCopyRows(rows, columns, format, hwm), {
         ...(opts?.signal === undefined ? {} : { signal: opts.signal }),
         ...(opts?.highWaterMark === undefined ? {} : { highWaterMark: opts.highWaterMark }),
       })

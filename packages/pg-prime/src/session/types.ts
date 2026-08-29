@@ -276,7 +276,15 @@ export interface CopyOptions {
   readonly signal?: AbortSignal
   /** `'text'` (default) or `'csv'`. Binary COPY is not a v1 format — see `src/session/copy.ts`. */
   readonly format?: 'text' | 'csv'
-  /** Columns to write, in order. Defaults to every column the schema declares as insertable. */
+  /**
+   * Columns to write, in order. Defaults to every column the schema declares as insertable —
+   * declaration order, minus `.generatedAlways()`, the same set an insert may name.
+   *
+   * Naming a `generated always as identity` column here still works and writes your value: COPY
+   * bypasses the rewriter check that makes an INSERT refuse it, which is what makes a restore
+   * possible. That is also why it cannot be in the default list — an absent key would go out as
+   * `\N` and land as a not-null violation.
+   */
   readonly columns?: readonly string[]
   /** Bytes buffered before backpressure is applied to the source. Default 64 KiB. */
   readonly highWaterMark?: number

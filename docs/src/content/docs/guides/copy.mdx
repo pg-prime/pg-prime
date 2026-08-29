@@ -43,12 +43,10 @@ const rows = Array.from({ length: 100_000 }, (_, i) => ({
   createdAt: new Date(),
 }))
 
-// `columns` is not optional here, and the reason is measured: it defaults to every *declared*
-// column, and `posts.id` is `generated always as identity`. The default list would send `\N` for
-// it and PostgreSQL answers `23502`, not-null violation. Name the columns you are writing.
-const result = await db.copyFrom(posts, rows, {
-  columns: ['authorId', 'title', 'body', 'published', 'createdAt'],
-})
+// No `columns`: the default is every column the schema declares as *insertable*, which is the
+// same set an insert may name. `posts.id` is `generated always as identity`, so it is not in it
+// and the server fills it.
+const result = await db.copyFrom(posts, rows)
 console.log(result.rowCount) // → 100000
 ```
 
@@ -68,7 +66,7 @@ than an insert.
 | Option | Default | What it does |
 |---|---|---|
 | `format` | `'text'` | `'csv'` is the other. Binary COPY is not offered — pg-prime's codecs are text. |
-| `columns` | every declared column, in declaration order | The columns to write, in order. The same order `insert into t (…)` uses, so the two paths cannot disagree. **A table with a generated column needs this**: the default list includes it, and `COPY` sends `\N` for a key your rows do not have. |
+| `columns` | every **insertable** column, in declaration order | The columns to write, in order — by default the same set an insert may name, read from the same schema metadata, so the two paths cannot disagree. `.generatedAlways()` columns are not in it; name one explicitly and `COPY` will write your value, which is what makes a restore possible. Your rows must have a key for every column in the list: one they do not have goes out as `\N`, **not** as the column's database default. Narrow the list to let a default apply. |
 | `highWaterMark` | 65 536 | Bytes buffered before backpressure is applied to your source. |
 | `signal` | — | Aborts the load; see [cancellation](/pg-prime/guides/cancellation/). |
 

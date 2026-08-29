@@ -41,7 +41,30 @@ const events = pgTable(
   undefined,
   { schema: NS },
 )
-const schema = defineSchema({ events })
+/**
+ * The generated-column table (design/13 §5, E's F1 — the fix round's item 2).
+ *
+ * `id` is `.generatedAlways()`, so it is NOT insertable and must not be in `copyFrom`'s default
+ * column list. `doubled` is a stored GENERATED expression column, which the DSL cannot declare at
+ * all (`design/05` §2.3's row is not built; the kit's `pull` emits a note instead) — so it is
+ * simply absent from the schema here, which is how a project models one today, and the default
+ * list therefore cannot name it either. COPY *refuses* a generated expression column by name
+ * (`428C9`), so a default list built from the database rather than from the schema would break
+ * this table twice over.
+ */
+const ledger = pgTable(
+  'ledger',
+  (t) => ({
+    id: t.bigint().primaryKey().generatedAlways(),
+    label: t.text(),
+    amount: t.numeric(),
+    createdAt: t.timestamptz().defaultSql('now()'),
+  }),
+  undefined,
+  { schema: NS },
+)
+
+const schema = defineSchema({ events, ledger })
 
 const DDL = `
 create schema ${NS};
@@ -50,6 +73,13 @@ create table ${NS}.events (
   kind text not null,
   amount numeric(12,2) not null,
   at timestamptz not null
+);
+create table ${NS}.ledger (
+  id         bigint generated always as identity primary key,
+  label      text not null,
+  amount     numeric(12,2) not null,
+  doubled    numeric(14,2) generated always as (amount * 2) stored,
+  created_at timestamptz not null default now()
 );
 `
 
@@ -169,6 +199,93 @@ describe('COPY vs insertMany — the crossover (07 §6.6)', () => {
     expect(driver.capabilities.copyIn).toBe(true)
     expect(driver.capabilities.copyOut).toBe(true)
   })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The default column list is the INSERTABLE set (design/13 §5, E's F1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("copyFrom's default columns are the ones an insert may name (07 §6.6)", () => {
+  const clear = async (): Promise<void> => {
+    await db.sql`truncate table pgprime_pg_copy.ledger restart identity`.execute()
+  }
+
+  requiresConcurrency()(
+    'a table with a generated identity and a generated expression loads with no `columns` at all',
+    async () => {
+      await clear()
+      const at = new Date('2026-08-30T09:00:00.000Z')
+      const res = await db.copyFrom(ledger, [
+        { label: 'a', amount: '10.00', createdAt: at },
+        { label: 'b', amount: '20.50', createdAt: at },
+      ])
+      expect(res.rowCount).toBe(2)
+
+      // The server supplied both generated columns, which is the proof neither was in the list:
+      // `\N` into `id` is the `23502` this fix exists to remove, and naming `doubled` at all is a
+      // `428C9`. Read with raw SQL, because `doubled` is not in the schema.
+      const rows = await db.sql`
+        select id::int as id, label, amount::text as amount, doubled::text as doubled
+        from pgprime_pg_copy.ledger order by id
+      `.execute()
+      expect(rows.map((r) => [r['label'], r['amount'], r['doubled']])).toStrictEqual([
+        ['a', '10.00', '20.00'],
+        ['b', '20.50', '41.00'],
+      ])
+      expect(rows.map((r) => Number(r['id']))).toStrictEqual([1, 2])
+    },
+    120_000,
+  )
+
+  requiresConcurrency()(
+    'an explicit `columns` is still honoured — including writing the identity, which COPY allows',
+    async () => {
+      await clear()
+      const at = new Date('2026-08-30T09:00:00.000Z')
+      await db.copyFrom(
+        ledger,
+        [
+          { id: 900, label: 'restored', amount: '1.00', createdAt: at },
+          { id: 901, label: 'also restored', amount: '2.00', createdAt: at },
+        ],
+        { columns: ['id', 'label', 'amount', 'createdAt'] },
+      )
+      const rows = await db.sql`
+        select id::int as id, label from pgprime_pg_copy.ledger order by id
+      `.execute()
+      expect(rows.map((r) => Number(r['id']))).toStrictEqual([900, 901])
+
+      // …and a NARROWER explicit list is how a database default gets to apply: a column left out
+      // of the statement is defaulted by COPY, where a column left IN with no key goes out as `\N`.
+      await db.copyFrom(ledger, [{ label: 'defaulted', amount: '3.00' }], {
+        columns: ['label', 'amount'],
+      })
+      const [fresh] = await db.sql`
+        select created_at is not null as has_default
+        from pgprime_pg_copy.ledger where label = 'defaulted'
+      `.execute()
+      expect(fresh?.['has_default']).toBe(true)
+    },
+    120_000,
+  )
+
+  requiresConcurrency()(
+    'copyTo is unaffected — it is raw SQL, and it reads the generated columns straight back',
+    async () => {
+      await clear()
+      await db.copyFrom(ledger, [
+        { label: 'out', amount: '5.00', createdAt: new Date('2026-08-30T09:00:00.000Z') },
+      ])
+      const lines: string[] = []
+      for await (const line of db.copyTo.lines(
+        `copy (select label, amount, doubled from ${NS}.ledger order by id) to stdout with (format csv)`,
+      )) {
+        lines.push(line)
+      }
+      expect(lines).toStrictEqual(['out,5.00,10.00'])
+    },
+    120_000,
+  )
 })
 
 void liveTarget

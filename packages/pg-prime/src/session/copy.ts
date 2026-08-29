@@ -64,21 +64,51 @@ export function escapeCopyCsv(s: string): string {
 
 /** The columns a typed `copyFrom` writes, and the codec for each. */
 export interface CopyColumn {
+  /**
+   * The key each row is read under — the TS key (`authorId`) for a defaulted list, or verbatim
+   * whatever the caller wrote in `{ columns }`. Carried ON the column rather than in a second
+   * array beside it: the two used to be built from different expressions in `handles.ts`
+   * (`copyColumns(meta, opts?.columns)` and `opts?.columns ?? meta.keys`), which is exactly the
+   * pair that has to stay in step once the default list is a SUBSET of the declared columns.
+   */
+  readonly key: string
   readonly name: string
   readonly codec: AnyCodec
 }
 
 /**
- * Resolve `{ columns }` against the table, or default to every declared column in declaration
- * order — the same order `insert into t (...)` uses, so the two paths cannot disagree.
+ * Resolve `{ columns }` against the table, or default to every column the schema declares as
+ * **insertable** — which is what {@link CopyOptions.columns}' doc comment has always promised.
+ *
+ * That set is `meta.insertableKeys`: declaration order (the order `insert into t (...)` uses),
+ * minus GENERATED ALWAYS. It is read from the metadata the insert path's *types* are derived from
+ * rather than recomputed here, so the two cannot disagree — which is the reason the default exists
+ * and was the property that was broken. An earlier version defaulted to every *declared* column,
+ * so `copyFrom(posts, rows)` against a `bigint generated always as identity` sent `\N` for the id
+ * and PostgreSQL answered `23502` (design/13 §5, E's F1).
+ *
+ * A caller who names a generated column explicitly still gets it: COPY, unlike INSERT, will write
+ * a supplied value into a `generated always as identity` column, and restoring one is a real use.
  */
 export function copyColumns(
   meta: TableCodecMeta,
   requested: readonly string[] | undefined,
 ): readonly CopyColumn[] {
   const all: readonly ColumnMeta[] = meta.columns
-  if (requested === undefined) return all.map((c) => ({ name: c.name, codec: c.codec }))
   const byKey = meta.byKey
+  if (requested === undefined) {
+    if (meta.insertableKeys.length === 0) {
+      throw new UsageError(
+        `pg-prime: copyFrom("${meta.table.name}") has no columns to write — every column the ` +
+          `schema declares is GENERATED ALWAYS, so the default list is empty. Name the columns ` +
+          `explicitly with { columns } if you mean to write into them.`,
+      )
+    }
+    return meta.insertableKeys.map((key) => {
+      const c = byKey[key] as ColumnMeta
+      return { key, name: c.name, codec: c.codec }
+    })
+  }
   const out: CopyColumn[] = []
   for (const key of requested) {
     const hit = byKey[key] ?? all.find((c) => c.name === key)
@@ -88,7 +118,7 @@ export function copyColumns(
           `"${meta.table.name}". Known columns: ${meta.keys.join(', ')}.`,
       )
     }
-    out.push({ name: hit.name, codec: hit.codec })
+    out.push({ key, name: hit.name, codec: hit.codec })
   }
   return out
 }
@@ -114,7 +144,6 @@ export async function* encodeCopyRows(
   rows: AsyncIterable<Record<string, unknown>> | Iterable<Record<string, unknown>>,
   columns: readonly CopyColumn[],
   format: CopyFormat,
-  keys: readonly string[],
   highWaterMark: number,
 ): AsyncIterable<Uint8Array> {
   const encoder = new TextEncoder()
@@ -126,8 +155,7 @@ export async function* encodeCopyRows(
     const cells: string[] = []
     for (let i = 0; i < columns.length; i++) {
       const col = columns[i] as CopyColumn
-      const key = keys[i] as string
-      const value = Object.hasOwn(row, key) ? row[key] : row[col.name]
+      const value = Object.hasOwn(row, col.key) ? row[col.key] : row[col.name]
       if (value === null || value === undefined) {
         cells.push(nullText)
         continue
