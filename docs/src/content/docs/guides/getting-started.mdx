@@ -65,7 +65,7 @@ the opt-in, because in a real database most columns are not nullable and the def
 common case.
 
 {/* docs: setup=schema */}
-```ts title="schema.ts" no-run
+```ts title="schema.ts" no-run="a file: use=schema composes it into the blocks below, and a schema module runs nothing on its own"
 import { defineRelations, defineSchema, pgTable, REFS } from 'pg-prime/schema'
 
 const users = pgTable('users', (t) => ({
@@ -107,7 +107,7 @@ Three things worth noticing before moving on:
 
 The kit reads a `pg-prime.config.ts` from the nearest directory at or above the working directory.
 
-```ts title="pg-prime.config.ts" no-run
+```ts title="pg-prime.config.ts" no-run="a config file: the kit loads it, and as a program it executes nothing"
 import { defineConfig } from '@pg-prime/kit'
 
 export default defineConfig({
@@ -214,7 +214,7 @@ pending and `4` on drift, which is what makes it usable in a deploy script.
 ## Connect and query
 
 {/* docs: setup=db use=schema */}
-```ts title="db.ts" no-run
+```ts title="db.ts" no-run="a file: the handle the blocks below import as ./db.js"
 import { pgPrime } from 'pg-prime'
 import { schema } from './schema.js'
 
@@ -297,7 +297,7 @@ console.log(authors) // [ { name: 'Bob', posts: [], postCount: 0n } ]
 
 Add a column to `posts`:
 
-```ts title="schema.ts (excerpt)" no-run
+```ts title="schema.ts (excerpt)" no-run="an excerpt: the lines of schema.ts that change at this step, not a module"
 import { pgTable } from 'pg-prime/schema'
 
 const posts = pgTable('posts', (t) => ({

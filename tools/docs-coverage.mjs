@@ -322,7 +322,6 @@ function checkNoRunReasons(allPages, sink, noteSink) {
    */
   const PENDING_R22 = new Map([
     ['guides/testing.mdx', 'T rewrites this page around @pg-prime/testing (design/13 §3 T)'],
-    ['guides/getting-started.mdx', 'X rewrites Install around npm create (design/13 §3 X)'],
   ])
   /** A reason has to be a sentence; `no-run="x"` is not one. */
   const MIN_REASON = 12
