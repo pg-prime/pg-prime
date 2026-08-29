@@ -888,6 +888,10 @@ type Role = Infer<typeof memberRole>;              // 'owner' | 'admin' | 'membe
 memberRole.values;                                 // readonly ['owner','admin','member']
 ```
 
+> **AS BUILT 2026-08-29 (design/12 F2).** `renamedValues` is built with the spelling above —
+> `{ [newLabel]: oldLabel }` — and the keys are checked against the declared labels at declaration
+> time. `comment` on `pgEnum` is still not built. See §5.1's AS BUILT note for the emitter half.
+
 **Ordering matters and we honour it.** Adding a label in the middle emits `ALTER TYPE … ADD VALUE 'x' BEFORE 'y'`. Removing or reordering labels is impossible in PG; the generator emits the full rename → create → `ALTER COLUMN … USING` → drop dance, flags it `DS` (destructive) + `MF` (table rewrite), and requires a tombstone. `ADD VALUE` and a same-migration `UPDATE … SET col='new'` are automatically split into two migration files, because PG forbids using a new label in the transaction that added it.
 
 ### 3.3 `pgDomain`
@@ -1207,6 +1211,36 @@ Interactive `--interactive` mode does not "resolve" anything — it **writes the
 > new does not, so an annotation left in the source after its migration shipped is inert.
 >
 > `renamedValues` (`ALTER TYPE … RENAME VALUE`) is still not built.
+
+> **AS BUILT 2026-08-29 (design/12 F2).** `renamedValues` is built, so §5.1 and §3.2 are complete:
+> `pgEnum(name, values, { renamedValues: { member: 'user' } })` — **`{ [newLabel]: oldLabel }`**, as
+> §3.2 writes it — is a carrier like the other four, `annotationHints` turns each pair into an
+> `enumLabel` rename hint, `acceptHints` applies §5.1's firing rule to it unchanged, and the emitter
+> writes `ALTER TYPE … RENAME VALUE 'old' TO 'new'` (hazard **BC105**, new; `06` §3.4).
+>
+> Three things worth recording:
+>
+>  - **The keys are typed.** `PgEnumOptions<V>` maps the keys over the declared labels, so a typo is
+>    a compile error rather than an annotation that never fires. Three shapes that could never fire
+>    are refused at declaration time: a key the enum does not declare, an old label that is *also*
+>    still declared (two labels, not one renamed one), and a label mapped to itself.
+>  - **The dependents come along for free, and that needed one change.** A label is stored as the
+>    `pg_enum` row's oid, so PostgreSQL re-renders every DEFAULT, CHECK and index predicate that
+>    names it — but the *current* IR was extracted before the rename and still says `'user'`, and
+>    `definitionsAgreeUnderRename` compares literals byte for byte (deliberately: §3.3's textual
+>    rewriter used to edit CHECK bodies). `diff/rename.ts` now substitutes a renamed label **only**
+>    where it is immediately cast to the renamed type (`'user'::public.member_role`) and **only**
+>    accepts the result when it reproduces PostgreSQL's own desired text exactly. Without it a
+>    label rename planned a `DROP INDEX` + `CREATE INDEX` and an `ADD CONSTRAINT … NOT VALID` +
+>    `VALIDATE` for objects that were already correct. With it the plan is one statement.
+>  - **Three neighbouring renames were unreachable and now are not.** K4's `type`, `sequence` and
+>    `schema` hints reached an emitter that had branches for `table`/`column`/`constraint`/`index`
+>    only, so `pgEnum(…, { renamedFrom })` produced an `unsupported_rename` **error** and a plan
+>    that renamed the type in its own head and never said so in SQL. `ALTER TYPE … RENAME TO`,
+>    `ALTER SEQUENCE … RENAME TO` and `ALTER SCHEMA … RENAME TO` are emitted.
+>
+> Witness: `fixtures/diff/rename-enum-value/{current,desired}.sql` (R16), D10 `strict`, plus a
+> negative control that runs the same pair with no annotation and gets EN102.
 
 ### 5.2 Destructive-change acknowledgment (D9)
 

@@ -425,7 +425,8 @@ action: it says what the generator should *consider*, and `generate` fires it on
 exists in the live catalog and the new one does not. That makes it idempotent, so it is safe to leave
 in the source for ever and safe to delete after the deploy, with no codemod either way. The same
 annotation exists at table level as the `renamedFrom(...)` extra, and on `pgSchema`, `pgEnum`,
-`pgDomain` and `pgSequence` as a `{ renamedFrom }` option.
+`pgDomain` and `pgSequence` as a `{ renamedFrom }` option. `pgEnum` takes one more,
+`{ renamedValues }`, for renaming a *label* rather than the type — see [`pgEnum`](#pgenum).
 
 ## Table extras
 
@@ -714,6 +715,22 @@ export const memberships = pgTable('memberships', (t) => ({
 
 A duplicate label is refused at declaration: PostgreSQL rejects it in `CREATE TYPE`, and the
 TypeScript union would silently collapse the two.
+
+**Renaming a label** is `renamedValues: { [newLabel]: oldLabel }` beside `renamedFrom` — keys first,
+because the key is the label that exists now and the value is the history:
+
+```ts title="renamed-label.ts" no-run
+import { pgEnum } from 'pg-prime/schema'
+
+export const status = pgEnum('member_status', ['active', 'suspended'], {
+  renamedValues: { suspended: 'banned' },
+})
+```
+
+`generate` plans `ALTER TYPE … RENAME VALUE 'banned' TO 'suspended'` — one catalog-only statement,
+after which every default, CHECK and index predicate that named the old label reads the new one,
+because an enum constant holds the `pg_enum` row's oid rather than text. Without the annotation the
+same edit is a removed label plus an added one, and PostgreSQL can do neither: that is `EN102`.
 
 An enum declared with no `{ schema }` lands in the emitter's default schema — deliberately **not** in
 the schema of whichever table happens to use it, because two tables in two schemas may share one enum

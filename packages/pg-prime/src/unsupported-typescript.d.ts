@@ -524,7 +524,7 @@ export type PgDriverError = Unsupported
 export type PgDriverErrorData = Unsupported
 export type PgEncodeError = Unsupported
 export type PgEnum<T0 = any, T1 = any> = Unsupported
-export type PgEnumOptions = Unsupported
+export type PgEnumOptions<T0 = any> = Unsupported
 export type PgErrorKind = Unsupported
 export type PgExecMode = Unsupported
 export type PgExtension = Unsupported

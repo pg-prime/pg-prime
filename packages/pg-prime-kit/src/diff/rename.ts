@@ -152,6 +152,58 @@ export function definitionsAgreeUnderRename(currentDef: string, desiredDef: stri
 const definitionOf = (f: Fact): string | null =>
   typeof f.payload["definition"] === "string" ? f.payload["definition"] : null;
 
+/* --------------------- enum labels, which live in literals -------------------- */
+
+interface LabelRename {
+  readonly from: string;
+  readonly to: string;
+  readonly schema: string;
+  readonly type: string;
+}
+
+/** Every payload field that holds server-rendered expression text an enum constant can sit in. */
+const RENDERED_TEXT_KEYS = ["definition", "expression", "default"] as const;
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * `'user'` → `'member'`, but **only** where it is immediately cast to the renamed enum type.
+ *
+ * PostgreSQL renders an enum constant as `'label'::[schema.]type` everywhere it appears — a
+ * DEFAULT, a CHECK body, a partial index predicate — and rewrites all of them itself when the
+ * label is renamed, because the constant holds the `pg_enum` row's oid rather than the text. The
+ * cast is what makes this a safe substitution and not the textual rewriting design/06 §3.3 threw
+ * out: a plain `note <> 'user'` on a text column has no cast, is not touched, and stays a real
+ * difference.
+ */
+function substituteLabel(text: string, r: LabelRename): string {
+  const lit = escapeRe(r.from.replaceAll("'", "''"));
+  const part = (name: string): string => `(?:"${escapeRe(name.replaceAll('"', '""'))}"|${escapeRe(name)})`;
+  const cast = `::(?:${part(r.schema)}\\.)?${part(r.type)}(?![\\w$])`;
+  return text.replace(new RegExp(`'${lit}'(?=${cast})`, "g"), `'${r.to.replaceAll("'", "''")}'`);
+}
+
+/**
+ * Adopt the desired side's rendering of a fact whose ONLY difference is a renamed label.
+ *
+ * The adoption is conditional on landing **exactly** on PostgreSQL's own desired text, so this
+ * can never hide a difference: if the substitution does not reproduce the desired string, the
+ * original stays and the differ plans the change it really is.
+ */
+function adoptRenamedLabels(f: Fact, desired: SchemaIR, labels: readonly LabelRename[]): Fact {
+  const target = desired.get(f.id);
+  if (!target) return f;
+  let payload = f.payload;
+  for (const key of RENDERED_TEXT_KEYS) {
+    const have = payload[key];
+    const want = target.payload[key];
+    if (typeof have !== "string" || typeof want !== "string" || have === want) continue;
+    if (labels.reduce((text, r) => substituteLabel(text, r), have) !== want) continue;
+    payload = { ...payload, [key]: want };
+  }
+  return payload === f.payload ? f : { ...f, payload };
+}
+
 /** Payload equality ignoring `definition`, which is compared through the rename map. */
 function payloadAgrees(a: Payload, b: Payload, renames: RenameMap): boolean {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
@@ -183,6 +235,8 @@ export function applyRenameHints(
   let facts = current.facts();
   let edges = current.edges();
   const renames = new Map<string, string>();
+  /** enum-label renames, which the definition comparison above cannot see (see §1b below) */
+  const labelRenames: LabelRename[] = [];
   /** `schema.table` of every table a rename touched — the blast radius of the cascade */
   const affectedTables = new Set<string>();
   /**
@@ -217,7 +271,13 @@ export function applyRenameHints(
 
     const oldName = from.kind === "schema" ? from.schema : (from as { name: string }).name;
     const newName = to.kind === "schema" ? to.schema : (to as { name: string }).name;
-    renames.set(oldName, newName);
+    // A label is not an identifier: it is rendered as `'label'::the_type`, so putting it in
+    // `renames` would make the token comparison treat two literals as interchangeable.
+    if (from.kind === "enumLabel" && to.kind === "enumLabel") {
+      labelRenames.push({ from: from.name, to: to.name, schema: from.schema, type: from.type });
+    } else {
+      renames.set(oldName, newName);
+    }
     if (from.kind === "table" && to.kind === "table") affectedTables.add(`${to.schema}.${to.name}`);
     if (from.kind === "column") affectedTables.add(`${from.schema}.${from.table}`);
 
@@ -252,6 +312,9 @@ export function applyRenameHints(
     if (!definitionsAgreeUnderRename(def, targetDef, renames)) return f;
     return { ...f, payload: { ...f.payload, definition: targetDef } };
   });
+
+  /* ---- 1b. an enum LABEL lives inside a literal, not in an identifier ---- */
+  if (labelRenames.length > 0) facts = facts.map((f) => adoptRenamedLabels(f, desired, labelRenames));
 
   /* ---- 2. auto-named dependents: RENAME, not drop + add ---- */
   const cascade = cascadeRenames(facts, desired, renames, affectedTables);

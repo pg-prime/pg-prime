@@ -645,6 +645,7 @@ when one is reachable; offline, MF rules stay at `error` and must be acknowledge
 | BC102 | Rename column (`renaming-column`) |
 | BC103 | In-place column type change visible to clients |
 | BC104 | Rename an index/constraint referenced by name in app code or hints |
+| BC105 | Rename an enum label (`ALTER TYPE … RENAME VALUE`) — added 2026-08-29, design/12 F2 |
 
 **LK — lock hazards (default `warn`; auto-rewritten when a safe form exists, see §3.5)**
 
@@ -718,7 +719,8 @@ Escape hatch: `-- pg-orm:nolint LK101 "index is on a 200-row lookup table"` — 
 > | BC101 rename table | ✅ | `ddl.ts` rename `table` |
 > | BC102 rename column | ✅ | `ddl.ts` rename `column` |
 > | BC103 in-place column type change | ✅ | `ddl.ts` `alterColumn`; also composite `ALTER ATTRIBUTE` |
-> | BC104 rename an index/constraint | ✅ | `ddl.ts` rename `constraint`/`index`, and the NOT NULL name repair |
+> | BC104 rename an index/constraint | ✅ | `ddl.ts` rename `constraint`/`index`, the NOT NULL name repair, and (design/12 F2) `type`/`sequence` |
+> | BC105 rename an enum label | ✅ | `ddl.ts` rename `enumLabel` (design/12 F2, `05` §3.2's `renamedValues`) |
 > | LK101 `CREATE INDEX` without CONCURRENTLY | ✅ | `ddl.ts` `createIndex` |
 > | LK102 `DROP INDEX` without CONCURRENTLY | ✅ | `ddl.ts` `dropIndex` |
 > | LK103 CONCURRENTLY inside a transaction | ✅ | `lint/rules.ts`, from `plan.segments` |
@@ -1738,6 +1740,34 @@ files, and records nothing: the `pgprime.checkpoints` row is written by `apply`,
 database actually jumps to one. A checkpoint that was written but never applied anywhere has
 no business claiming a row.
 
+### 6.6 AS BUILT · 2026-08-29 (design/12 F2) — three flag semantics, corrected
+
+Three things §6.2 states that the binary did not do. Each was found by writing the
+documentation against the running program (design/12 §4 D), and each now behaves as stated.
+
+**`--statement-timeout` cannot cap an exempt statement.** §5.4 exempts the intentionally long
+builds (`lockClass = shareUpdateExclusive`: CIC, `VALIDATE`, `REINDEX`) by recording
+`timeouts.statement: null` in the plan. The runner read that null as an *absence*
+(`s.timeouts.statement ?? ctx.statementTimeout ?? '0'`), so an explicit `--statement-timeout`
+landed on exactly those statements and on no others — every ordinary statement carries a
+concrete `30s` that `??` preferred. The resolution is now one function
+(`runner/apply.ts: resolveStatementTimeout`): **plan-null wins**, then the operator's value,
+then the plan's own. So the flag does what it says (it raises or lowers the ceiling for
+ordinary DDL) and a concurrent index build still runs with `statement_timeout = 0`.
+`lock_timeout` is unchanged and still applies to everything.
+
+**`--shadow`'s value is parsed in one place, and §3.2's tier 1 is reachable from the config
+file.** `shadow: { url }` failed the config loader's validation and `shadow: 'postgres://…'`
+passed it and then fell through `provisionShadow`'s dispatch to the `auto` ladder with no
+diagnostic — so a config that named a shadow database quietly created one on the target's own
+cluster instead. `ShadowStrategy` now admits both spellings, `parseShadowStrategy` is the one
+parser the flag, the config loader and the ladder all use, and a value that names no tier is a
+`ShadowStrategyError` naming the four rather than a silent demotion.
+
+**`--by` defaults to the OS user**, which every `--help` has claimed since design/11 K1 while
+`buildPlan` recorded the literal `"spike"`. `$USER` / `$USERNAME`, then `os.userInfo()`, then
+`unknown` (`plan/plan.ts: osUser`).
+
 ---
 
 ## 7. Data migrations and seeding — the v1 story
@@ -1893,6 +1923,21 @@ peer installed), on the `db seed` path only, and resolved from the project, so t
 user's own copy of the DSL rather than a second one with different `Symbol.for` slots.
 design/11 §1.3's grep guard is amended to budget exactly that site, by file and by form: a
 static import there still fails the test.
+
+> **AS BUILT 2026-08-29 (design/12 F2) — the `.js` specifier a `.ts` seed has to write.**
+> Node's type stripping resolves specifiers **literally**, so `import { schema } from
+> '../schema.js'` — the specifier TypeScript's `nodenext` resolution requires and the one `tsc`
+> emits — failed with `ERR_MODULE_NOT_FOUND` in a project that has never run `tsc`. The kit now
+> installs one in-thread resolve hook (`module.registerHooks`, Node ≥ 22.15) before it imports
+> anything of the user's: a **relative** specifier ending in `.js`/`.mjs`/`.cjs` whose file is
+> **not on disk** resolves to the `.ts`/`.mts`/`.cts` beside it. It covers all three kinds of
+> file the kit loads — `pg-prime.config.ts`, the schema modules and `.ts` seeds — and it fires
+> only where the JavaScript is genuinely absent, so a project that compiles keeps its own build
+> and the kit's own `dist/` is untouched. The alternative (documenting `.ts` specifiers) was
+> rejected: it needs TypeScript ≥ 5.7 with `allowImportingTsExtensions` **and**
+> `rewriteRelativeImportExtensions` before `tsc` accepts it, and it makes the seed's imports
+> differ from every other import in the same project. `src/config/ts-specifiers.ts`; on
+> Node 22.12–22.14 there is no `registerHooks` and the old message stands.
 
 ---
 

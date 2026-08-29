@@ -18,11 +18,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { pgEnum } from "pg-prime";
 import { extractCatalog } from "../src/catalog/extract.js";
 import { withClient } from "../src/db/pg.js";
 import { diffIR } from "../src/diff/diff.js";
 import { PHASE, type Statement } from "../src/diff/statement.js";
-import { generateFromDatabases as generate } from "../src/generate.js";
+import { annotationHints, generateFromDatabases as generate } from "../src/generate.js";
+import { encodeId, type StableId } from "../src/ir/stable-id.js";
 import { applySegments } from "../src/runner/apply.js";
 import { ADMIN, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
 
@@ -189,4 +191,105 @@ describe("regression #1: ALTER TYPE … ADD VALUE is ordered before every use of
     },
     T,
   );
+});
+
+/**
+ * design/05 §3.2/§5.1's `renamedValues`, and R16's `strict` witness for it (design/12 F2).
+ *
+ * A label is a fact, so a label rename is an ordinary rename hint — but nothing emitted it,
+ * and the emitter answered `unsupported_rename` for every kind it had no branch for. Left
+ * unannotated the same change is a removed label plus an added one: EN102 (the reorder
+ * PostgreSQL cannot express) or DS104's type-replacement dance across every table using it.
+ * The negative control below runs the same two databases with no hint and asserts exactly that.
+ */
+describe("renamedValues: a label rename is ALTER TYPE … RENAME VALUE, not a drop and an add", () => {
+  const CUR = "pgprime_f2_enum_rename_cur";
+  const DES = "pgprime_f2_enum_rename_des";
+  const NEG = "pgprime_f2_enum_rename_neg";
+  const HINT = {
+    from: "enumLabel:public.member_role.user",
+    to: "enumLabel:public.member_role.member",
+  } as const;
+
+  beforeAll(async () => {
+    expect(await serverAvailable(), `no PostgreSQL at ${ADMIN.host}:${ADMIN.port}`).toBe(true);
+    await makeDatabase(CUR, "rename-enum-value/current.sql");
+    await makeDatabase(DES, "rename-enum-value/desired.sql");
+  }, T);
+
+  afterAll(async () => {
+    for (const db of [CUR, DES, NEG]) await destroyDatabase(db).catch(() => undefined);
+  }, T);
+
+  it(
+    "one statement, the D10 witness in strict, and the default/CHECK/index follow for free",
+    async () => {
+      const target = { ...ADMIN, database: CUR };
+      const result = await generate({
+        admin: ADMIN,
+        target,
+        desired: { ...ADMIN, database: DES },
+        schemas: ["public"],
+        seq: 1,
+        name: "rename_enum_value",
+        dumpOracle: "strict",
+        renameHints: [HINT],
+      });
+
+      // The whole migration. Nothing is dropped, nothing is rewritten, and the DEFAULT, the
+      // CHECK and the partial index are not even mentioned: an enum constant holds the
+      // pg_enum oid, so PostgreSQL re-renders all three with the new label by itself.
+      expect(result.plan.statements.map((s) => s.sql)).toEqual([
+        `ALTER TYPE "public"."member_role" RENAME VALUE 'user' TO 'member'`,
+      ]);
+      expect(result.plan.statements[0]!.kind).toBe("enumLabel");
+      expect(result.plan.statements[0]!.hazards).toEqual(["BC105"]);
+      expect(result.diff.renames.map((r) => [r.kind, r.from, r.to, r.source])).toEqual([
+        ["enumLabel", HINT.from, HINT.to, "annotation"],
+      ]);
+      expect(result.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+
+      // D6 and D10: proven on a clone, and PostgreSQL's own serializer agrees, in `strict`.
+      expect(result.plan.proof.status).toBe("passed");
+      expect(result.plan.proof.driftDeltas).toBe(0);
+      expect(result.plan.proof.dumpOracle?.status).toBe("passed");
+      expect(result.plan.proof.dumpOracle?.mode).toBe("strict");
+
+      // And for real (R14): the catalog after the apply is the desired catalog.
+      const report = await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
+      expect(report.error).toBeUndefined();
+      const after = await withClient(target, (c) => extractCatalog(c, { schemas: ["public"] }));
+      expect(diffIR(after.ir, result.desiredIR).deltas).toEqual([]);
+      expect(after.ir.fingerprint).toBe(result.desiredIR.fingerprint);
+    },
+    T,
+  );
+
+  it(
+    "negative control: without the annotation the same change is EN102, not a quiet rename",
+    async () => {
+      const target = await makeDatabase(NEG, "rename-enum-value/current.sql");
+      const result = await generate({
+        admin: ADMIN,
+        target,
+        desired: { ...ADMIN, database: DES },
+        schemas: ["public"],
+        seq: 1,
+        name: "no_hint",
+        prove: false,
+      });
+      expect(result.diff.renames).toEqual([]);
+      expect(result.diagnostics.filter((d) => d.severity === "error").map((d) => d.code)).toContain("EN102");
+      expect(result.plan.statements.map((s) => s.sql).join("\n")).not.toContain("RENAME VALUE");
+    },
+    T,
+  );
+
+  it("the annotation is the hint: `renamedValues` on the DSL produces exactly this pair", () => {
+    const memberRole = pgEnum("member_role", ["owner", "member"], { renamedValues: { member: "user" } });
+    const hints = annotationHints({ tables: {}, enums: [memberRole] });
+    expect(hints.map((h) => [encodeId(h.from as StableId), encodeId(h.to as StableId)])).toEqual([
+      [HINT.from, HINT.to],
+    ]);
+  });
 });

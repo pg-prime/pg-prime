@@ -407,13 +407,34 @@ export interface PgEnum<N extends string, V extends readonly string[]> {
    * new does not) against the current IR.
    */
   readonly renamedFrom: string | undefined
+  /**
+   * design/05 §3.2/§5.1's `{ [newLabel]: oldLabel }` — a carrier, like `renamedFrom`.
+   *
+   * A LABEL rename, which PostgreSQL can do (`ALTER TYPE … RENAME VALUE`) and which the differ
+   * would otherwise see as a removed label plus an added one — i.e. as EN102, the reorder it
+   * refuses, or at best as a drop-and-recreate of the type and every column that uses it.
+   */
+  readonly renamedValues: Readonly<Record<string, string>> | undefined
 }
 
 /** `pgEnum(name, values, options?)` — design/05 §3.2. */
-export interface PgEnumOptions {
+export interface PgEnumOptions<V extends readonly string[] = readonly string[]> {
   readonly schema?: string
   /** design/05 §5.1 — the rename annotation. Inert unless the old type exists and this one does not. */
   readonly renamedFrom?: string
+  /**
+   * `{ [newLabel]: oldLabel }` — design/05 §3.2's own spelling, keys first because the key is
+   * the label that exists *now* and the value is the history.
+   *
+   * ```ts
+   * pgEnum('member_role', ['owner', 'admin', 'member'], { renamedValues: { member: 'user' } })
+   * ```
+   *
+   * The keys are the declared labels, so a typo is a compile error rather than an annotation
+   * that never fires. Like every other `renamedFrom`, it is inert unless the old label exists
+   * in the live type and the new one does not, which makes it safe to leave in the source.
+   */
+  readonly renamedValues?: { readonly [K in V[number]]?: string }
 }
 
 export type AnyPgEnum = PgEnum<string, readonly string[]>
@@ -443,7 +464,7 @@ export function checkName(value: unknown, what: string): void {
 export function pgEnum<N extends string, const V extends readonly [string, ...string[]]>(
   name: N,
   values: V,
-  options?: PgEnumOptions,
+  options?: PgEnumOptions<V>,
 ): PgEnum<N, V> {
   checkName(name, `pgEnum("${name}") type name`)
   if (options?.schema !== undefined) checkName(options.schema, `pgEnum("${name}") schema name`)
@@ -462,7 +483,59 @@ export function pgEnum<N extends string, const V extends readonly [string, ...st
     }
     seen.add(label)
   }
-  return { kind: 'enum', name, values, schema: options?.schema, renamedFrom: options?.renamedFrom }
+  const renamedValues = checkRenamedValues(name, values, options?.renamedValues)
+  return {
+    kind: 'enum',
+    name,
+    values,
+    schema: options?.schema,
+    renamedFrom: options?.renamedFrom,
+    renamedValues,
+  }
+}
+
+/**
+ * `{ [newLabel]: oldLabel }`, checked at declaration time (design/05 §3.2).
+ *
+ * Three refusals, and each is an annotation that could not fire and would therefore be a silent
+ * `DROP TYPE`/`CREATE TYPE` at the next `generate` instead of an `ALTER TYPE … RENAME VALUE`:
+ * a key that is not a declared label (the rename names a label this type does not have), an old
+ * label that is *also* declared (then both exist and the map claims one thing is two), and
+ * `{ x: 'x' }` (a rename to itself, which is either a typo or a leftover).
+ */
+function checkRenamedValues(
+  name: string,
+  values: readonly string[],
+  map: Readonly<Record<string, string | undefined>> | undefined,
+): Readonly<Record<string, string>> | undefined {
+  if (map === undefined) return undefined
+  const declared = new Set(values)
+  const out: Record<string, string> = {}
+  for (const [to, from] of Object.entries(map)) {
+    if (from === undefined) continue
+    if (from !== '') checkName(from, `pgEnum("${name}", { renamedValues }) old label "${from}"`)
+    if (!declared.has(to)) {
+      throw new SchemaError(
+        `pg-prime: pgEnum("${name}", { renamedValues: { ${JSON.stringify(to)}: ${JSON.stringify(from)} } }) ` +
+          `renames a label to "${to}", which this enum does not declare. The KEY is the new label and the ` +
+          `VALUE is the old one (design/05 §3.2).`,
+      )
+    }
+    if (from === to) {
+      throw new SchemaError(
+        `pg-prime: pgEnum("${name}", { renamedValues }) maps "${to}" to itself, which can never fire.`,
+      )
+    }
+    if (declared.has(from)) {
+      throw new SchemaError(
+        `pg-prime: pgEnum("${name}", { renamedValues }) says "${from}" was renamed to "${to}", but "${from}" ` +
+          `is still declared. Both labels exist, so this is two labels rather than one renamed one — remove ` +
+          `"${from}" from the values, or drop the annotation.`,
+      )
+    }
+    out[to] = from
+  }
+  return Object.keys(out).length === 0 ? undefined : out
 }
 
 /** `Infer<typeof memberRole>` → `'owner' | 'admin' | 'member'`. */

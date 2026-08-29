@@ -115,6 +115,31 @@ describe('the annotation spellings design/05 §5.1 lists and K2a did not build',
     const audit = pgSchema('audit', { renamedFrom: 'auditing' })
     expect([audit.kind, audit.name, audit.renamedFrom]).toEqual(['schema', 'audit', 'auditing'])
   })
+
+  /**
+   * design/05 §3.2's `renamedValues: { [newLabel]: oldLabel }` (design/12 F2). A carrier like
+   * every other annotation — the kit turns it into an `ALTER TYPE … RENAME VALUE` hint — but
+   * the three shapes that could never fire are refused where they are written rather than
+   * silently doing nothing, because "nothing" here means a dropped and recreated type.
+   */
+  it('pgEnum carries renamedValues, and refuses a map that could not fire', () => {
+    const role = pgEnum('member_role', ['owner', 'member'], { renamedValues: { member: 'user' } })
+    expect(role.renamedValues).toEqual({ member: 'user' })
+    expect(pgEnum('m', ['a']).renamedValues).toBeUndefined()
+    // An empty map is nothing to say, not an annotation.
+    expect(pgEnum('m', ['a'], { renamedValues: {} }).renamedValues).toBeUndefined()
+
+    // The KEY is the new label: one this enum does not declare cannot be renamed TO.
+    expect(() => pgEnum('m', ['a', 'b'], { renamedValues: { c: 'a' } as never })).toThrow(
+      SchemaError,
+    )
+    // Both labels declared: that is two labels, not one renamed one.
+    expect(() => pgEnum('m', ['a', 'b'], { renamedValues: { b: 'a' } })).toThrow(/still declared/)
+    // A rename to itself never fires.
+    expect(() => pgEnum('m', ['a', 'b'], { renamedValues: { b: 'b' } })).toThrow(
+      /maps "b" to itself/,
+    )
+  })
 })
 
 describe('the standalone declarations (design/05 §3.3 / §3.5 / §3.10)', () => {

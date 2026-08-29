@@ -544,6 +544,24 @@ export function annotationHints(schema: SchemaLike, defaultSchema = "public"): R
     const ns = t.schema ?? defaultSchema;
     out.push({ from: { kind: "type", schema: ns, name: renamedFrom }, to: { kind: "type", schema: ns, name: t.name } });
   }
+  /* design/05 §3.2/§5.1's `renamedValues: { [newLabel]: oldLabel }`. A label is a fact of its own
+   * (`enumLabel`, `06` §2.2), so the annotation is an ordinary rename hint and the rest of the
+   * machinery — the firing rule, the id remap, the `ALTER TYPE … RENAME VALUE` — needs nothing
+   * special. Without it the differ sees one label gone and one arrived, which is EN102 (a reorder
+   * PostgreSQL cannot express) or, if the label happens to sort last, an `ADD VALUE` that leaves
+   * the old label behind for ever. */
+  for (const e of schema.enums ?? []) {
+    const renamedValues = (e as { renamedValues?: Readonly<Record<string, string>> }).renamedValues;
+    if (renamedValues === undefined) continue;
+    const ns = e.schema ?? defaultSchema;
+    for (const [to, from] of Object.entries(renamedValues)) {
+      out.push({
+        from: { kind: "enumLabel", schema: ns, type: e.name, name: from },
+        to: { kind: "enumLabel", schema: ns, type: e.name, name: to },
+      });
+    }
+  }
+
   for (const s of schema.sequences ?? []) {
     if (s.renamedFrom === undefined) continue;
     const ns = s.schema ?? defaultSchema;

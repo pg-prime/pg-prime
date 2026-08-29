@@ -315,6 +315,68 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
           phase: PHASE.rename,
         }),
       );
+    } else if (from.kind === "enumLabel" && to.kind === "enumLabel") {
+      // design/05 §3.2's `renamedValues`. The label is a fact, so this is an ordinary rename —
+      // and it is the ONLY way to change a label: without it the differ sees a removed label
+      // and an added one, which is EN102 (the reorder PostgreSQL cannot express) or a DS104
+      // type replacement that rewrites every table using the type.
+      statements.push(
+        simple(
+          `ALTER TYPE ${quoteQualified(from.schema, from.type)} RENAME VALUE ${quoteLiteral(from.name)} TO ${quoteLiteral(to.name)}`,
+          {
+            verb: "alter",
+            kind: "enumLabel",
+            produces: [id(to)],
+            consumes: [id({ kind: "type", schema: to.schema, name: to.type })],
+            destroys: [id(from)],
+            // Not a table lock at all: `RENAME VALUE` takes it on the TYPE. Every column
+            // default and stored expression that names the label re-renders with the new one,
+            // because a Const of an enum holds the pg_enum oid, not the text.
+            lockClass: "none",
+            hazards: ["BC105"],
+            phase: PHASE.rename,
+          },
+        ),
+      );
+    } else if (from.kind === "type" && to.kind === "type") {
+      // `pgEnum(…, { renamedFrom })` / `pgDomain(…, { renamedFrom })` (design/12 K4) produced a
+      // `type` hint that reached here and fell into `unsupported_rename`, so the plan renamed
+      // the type in its own head and never said so in SQL — a plan whose proof cannot pass.
+      statements.push(
+        simple(`ALTER TYPE ${quoteQualified(from.schema, from.name)} RENAME TO ${quoteIdent(to.name)}`, {
+          verb: "alter",
+          kind: "type",
+          produces: [id(to)],
+          consumes: [id({ kind: "schema", schema: to.schema })],
+          destroys: [id(from)],
+          hazards: ["BC104"],
+          phase: PHASE.rename,
+        }),
+      );
+    } else if (from.kind === "sequence" && to.kind === "sequence") {
+      statements.push(
+        simple(`ALTER SEQUENCE ${quoteQualified(from.schema, from.name)} RENAME TO ${quoteIdent(to.name)}`, {
+          verb: "alter",
+          kind: "sequence",
+          produces: [id(to)],
+          consumes: [id({ kind: "schema", schema: to.schema })],
+          destroys: [id(from)],
+          hazards: ["BC104"],
+          phase: PHASE.rename,
+        }),
+      );
+    } else if (from.kind === "schema" && to.kind === "schema") {
+      statements.push(
+        simple(`ALTER SCHEMA ${quoteIdent(from.schema)} RENAME TO ${quoteIdent(to.schema)}`, {
+          verb: "alter",
+          kind: "schema",
+          produces: [id(to)],
+          consumes: [],
+          destroys: [id(from)],
+          hazards: ["BC101"],
+          phase: PHASE.rename,
+        }),
+      );
     } else {
       diagnostics.push({
         code: "unsupported_rename",

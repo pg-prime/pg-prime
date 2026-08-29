@@ -751,7 +751,7 @@ render, because it is an identifier whose resolved name the schema layer knows.
 function pgEnum<N extends string, const V extends readonly [string, ...string[]]>(
   name: N,
   values: V,
-  options?: PgEnumOptions,
+  options?: PgEnumOptions<V>,
 ): PgEnum<N, V>
 ```
 
@@ -770,6 +770,7 @@ interface PgEnum<N extends string, V extends readonly string[]> {
   readonly values: V
   readonly schema: string | undefined
   readonly renamedFrom: string | undefined
+  readonly renamedValues: Readonly<Record<string, string>> | undefined
 }
 ```
 
@@ -781,11 +782,36 @@ the first user would make the DDL order-dependent.
 
 {/* docs: signature */}
 ```ts
-interface PgEnumOptions {
+interface PgEnumOptions<V extends readonly string[] = readonly string[]> {
   readonly schema?: string
   readonly renamedFrom?: string
+  readonly renamedValues?: { readonly [K in V[number]]?: string }
 }
 ```
+
+`renamedValues` is design/05 §3.2's label rename: **`{ [newLabel]: oldLabel }`**, keys first because
+the key is the label that exists now and the value is the history. The keys are the declared labels,
+so a typo is a compile error rather than an annotation that silently never fires.
+
+```ts title="member-role.ts" no-run
+import { pgEnum } from 'pg-prime/schema'
+
+export const memberRole = pgEnum('member_role', ['owner', 'admin', 'member'], {
+  renamedValues: { member: 'user' },
+})
+```
+
+`generate` turns it into `ALTER TYPE "public"."member_role" RENAME VALUE 'user' TO 'member'` — one
+catalog-only statement, after which every DEFAULT, CHECK and partial index that named the old label
+reads the new one, because PostgreSQL stores an enum constant as the `pg_enum` row's oid rather than
+as text. Without it the same edit is a removed label plus an added one, which is `EN102`: PostgreSQL
+cannot remove or reorder a label, so the alternative is the full type-replacement dance.
+
+Three shapes are refused where they are written, because each is an annotation that could never
+fire: a key this enum does not declare, an old label that is *also* still declared (that is two
+labels, not one renamed one), and a label mapped to itself. Like every `renamedFrom` it is inert
+unless the old label exists in the live type and the new one does not, so it is safe to leave in
+the source after the migration ships.
 
 ### `Infer`
 

@@ -102,6 +102,7 @@ what is deployed.
 | <a id="BC102"/>`BC102` | warn | Renaming a column, with the same window. A generated column or a view under the old name buys you the deploy. |
 | <a id="BC103"/>`BC103` | warn | An in-place column type change that clients can see. Even where nothing fails, the value a running client decodes changes shape — `int8` where it expected `int4`, `numeric` where it expected `float8`. |
 | <a id="BC104"/>`BC104` | warn | Renaming an index or a constraint. Anything that names it stops matching: `ON CONFLICT ON CONSTRAINT`, an index hint, a monitoring query, a `nolint` suppression. |
+| <a id="BC105"/>`BC105` | warn | Renaming an enum label. The catalog rewrites every default, CHECK and index predicate that named it, and a client that still sends the old label gets `22P02 invalid input value for enum` — so the write path has the same expand-and-contract window a column rename has. |
 
 ## LK — lock hazards
 

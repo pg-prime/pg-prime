@@ -13,6 +13,8 @@
 
 import { describe, expect, it } from "vitest";
 import { pgDomain, pgEnum, pgSchema, pgSequence, pgTable, defineSchema } from "pg-prime";
+import { buildStatements } from "../../src/diff/ddl.js";
+import { diffIR } from "../../src/diff/diff.js";
 import { acceptHints, annotationHints } from "../../src/generate.js";
 import { CATALOG_PROVENANCE, SchemaIR, type Fact } from "../../src/ir/fact.js";
 import { encodeId, type StableId } from "../../src/ir/stable-id.js";
@@ -79,6 +81,43 @@ describe("annotationHints reads all four spellings (design/05 §5.1)", () => {
       "sequence:public.order_id_seq -> sequence:public.orders_id_seq",
       "type:public.email_address -> type:public.email",
       "type:public.org_role -> type:public.member_role",
+    ]);
+  });
+
+  /**
+   * design/12 F2. K4 taught `annotationHints` to produce `schema`, `type` and `sequence`
+   * hints, and `acceptHints` to fire them — but `buildStatements` had a branch for four kinds
+   * only, so all three reached the `else` and came out as an error diagnostic. The plan then
+   * renamed the object in its own head (the current IR is remapped) and said nothing about it
+   * in SQL, which is a plan whose proof cannot converge. One statement each, and the emitter
+   * has a branch for every kind the hints can name.
+   */
+  it("every kind annotationHints can produce has a statement in the emitter", () => {
+    const current = SchemaIR.build(
+      [
+        fact({ kind: "schema", schema: "auditing" }, "schema"),
+        fact({ kind: "type", schema: "public", name: "org_role" }, "type"),
+        fact({ kind: "sequence", schema: "public", name: "order_id_seq" }, "sequence"),
+      ],
+      [],
+    );
+    const desired = SchemaIR.build(
+      [
+        fact({ kind: "schema", schema: "audit" }, "schema"),
+        fact({ kind: "type", schema: "public", name: "member_role" }, "type"),
+        fact({ kind: "sequence", schema: "public", name: "orders_id_seq" }, "sequence"),
+      ],
+      [],
+    );
+    const diff = diffIR(current, desired, {
+      renameHints: acceptHints(annotationHints(registry), current, desired),
+    });
+    const built = buildStatements(diff, desired);
+    expect(built.diagnostics.filter((d) => d.code === "unsupported_rename")).toEqual([]);
+    expect(built.statements.map((s) => s.sql)).toEqual([
+      `ALTER SCHEMA "auditing" RENAME TO "audit"`,
+      `ALTER TYPE "public"."org_role" RENAME TO "member_role"`,
+      `ALTER SEQUENCE "public"."order_id_seq" RENAME TO "orders_id_seq"`,
     ]);
   });
 
