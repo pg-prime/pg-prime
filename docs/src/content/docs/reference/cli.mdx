@@ -3,4 +3,449 @@ title: CLI
 description: Every command and option of the pg-prime binary, checked against its own --help.
 ---
 
-TODO
+`@pg-prime/kit` installs one binary, `pg-prime`. Everything below is the binary's own `--help`
+output: `tools/docs-coverage.mjs` runs each command with `--help` and fails if this page and the
+program disagree, so an option that exists here exists there, at this version, spelled this way.
+
+```sh
+pnpm add -D @pg-prime/kit
+pnpm exec pg-prime --help
+```
+
+The kit reads `pg-prime.config.ts` from the nearest directory at or above the working directory; see
+[the config file reference](/pg-prime/reference/config/). For what each command is *for*, read
+[migrations end to end](/pg-prime/guides/migrations/).
+
+## Overview
+
+{/* docs: cli="--help" */}
+```text frame="terminal"
+pg-prime — PostgreSQL schema migrations
+
+Usage: pg-prime <command> [options]
+
+Commands:
+  migrate generate    build a migration from the TypeScript schema: diff, order, lock-safe rewrite, prove, write.
+  migrate apply       apply pending migrations (design/06 §5). Never generates, never introspects the desired state.
+  migrate status      applied vs pending, current fingerprint, stale locks, partially-applied rows. Read-only.
+  migrate baseline    adopt an existing database: write 0000_baseline.sql + .plan.json and record it without executing it.
+  migrate check       the default CI gate: is the repository consistent with the schema, the checksums and the database? No history writes.
+  migrate verify      replay every migration from empty into an ephemeral database and assert the result matches the schema.
+  migrate lint        run the design/06 §3.4 rules over generated or hand-written SQL. Defaults to the unapplied migrations.
+  migrate push        DEV ONLY: apply the diff directly, writing no files and no history rows. Requires the literal --dev.
+  migrate doctor      read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables.
+  migrate unlock      inspect or break a stale migration lease.
+  migrate checkpoint  write a full-schema checkpoint a fresh database jumps to; existing ones ignore it. Nothing is deleted.
+  db seed             run seeds/*.sql and seeds/*.ts. Never recorded in the migration history; refuses on production.
+  pull                introspect the database and write a deterministic TypeScript schema file plus sql/ repeatables.
+
+Global options:
+  --config <path>       path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>           postgres:// connection URL; overrides the config file
+  --migrations <dir>    the migrations directory (default ./migrations)
+  --schema <name>       a managed schema; repeatable (default public)
+  --output <text|json>  output format (default text)
+  --help                print this help
+  --version             print the version
+
+Exit codes (design/06 §6.1, uniform across every command):
+  0 success or nothing to do   1 error   2 missing hints   3 lint
+  4 drift                      5 pending 6 lock unavailable  7 proof failed
+
+Version 0.0.0
+```
+
+### Exit codes
+
+They are uniform across every command, which is what makes a deploy script simple:
+
+| Code | Meaning | What a script should do |
+|---|---|---|
+| `0` | success, or nothing to do | continue |
+| `1` | error | stop and read the message |
+| `2` | a rename or data-loss decision is missing | a human must decide; re-run `generate` with `--hints-file` or `--allow-data-loss --reason` |
+| `3` | lint | fix the hazard or suppress it with a reason |
+| `4` | drift — the database is not what the history says it is | stop; investigate before applying anything |
+| `5` | pending migrations | run `apply` (this is `status`/`check` doing its job in CI) |
+| `6` | the deploy lock was not available | another deploy holds it; retry, or `migrate unlock` if its owner died |
+| `7` | proof failed | the generated migration does not produce the desired state; do not ship it |
+
+### Global options
+
+Every command accepts these, so they are not repeated in each section below:
+
+| Option | Meaning |
+|---|---|
+| `--config <path>` | path to `pg-prime.config.ts` (default: the nearest one at or above the cwd) |
+| `--url <url>` | `postgres://` connection URL; overrides the config file |
+| `--migrations <dir>` | the migrations directory (default `./migrations`) |
+| `--schema <name>` | a managed schema; repeatable (default `public`) |
+| `--output <text\|json>` | output format (default `text`) |
+| `--help` | print this help |
+| `--version` | print the version |
+
+`--output json` prints one envelope per run — the same shape the kit's own golden tests assert — so
+CI can read `status`, `hazards` and `exit` rather than parsing prose.
+
+## `migrate generate`
+
+Builds a migration from the TypeScript schema: diff, order, lock-safe rewrite, prove, write. It is
+the only command that needs a shadow database, and the only one that writes files.
+
+{/* docs: cli="migrate generate --help" */}
+```text frame="terminal"
+pg-prime migrate generate
+
+  build a migration from the TypeScript schema: diff, order, lock-safe rewrite, prove, write.
+
+Options:
+  --name <slug>                             the migration's name; [a-z0-9_]+ (default auto)
+  --seq <n>                                 the migration number (default one past the highest on disk)
+  --interactive                             TTY only: show rename candidates and print the annotation to add
+  --hints-file <path>                       JSON array of { from, to } rename hints
+  --allow-data-loss                         acknowledge every destructive change in this plan (design/06 §3.6)
+  --reason <text>                           recorded beside the acknowledgement in the plan
+  --by <name>                               recorded as the plan's author (default $USER)
+  --shadow <url|temp-schema|createdb|none>  how the desired state is normalized (design/06 §3.2) (default auto)
+  --offline                                 shadow tier 4; refused with a sentence in this release
+  --no-safe-rewrite                         emit the literal diff instead of design/06 §3.5's lock-safe forms
+  --no-prove                                dev only: stamp proof.status = skipped and write anyway
+  --strict-unmodeled                        a non-empty Tier-U census becomes an error (design/06 §2.2)
+  --dump-oracle <off|warn|strict>           the D10 pg_dump witness (default warn)
+  --dry-run                                 print the SQL that would be written; write nothing
+  --empty                                   write a blank hand-written migration and touch no database
+  --data                                    write a data-migration template (design/06 §7 lane 2)
+  --config <path>                           path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>                               postgres:// connection URL; overrides the config file
+  --migrations <dir>                        the migrations directory (default ./migrations)
+  --schema <name>                           a managed schema; repeatable (default public)
+  --output <text|json>                      output format (default text)
+  --help                                    print this help
+  --version                                 print the version
+
+Exit: 0 written or nothing to do · 1 error · 2 a rename or data-loss decision is missing · 3 lint · 7 proof failed
+```
+
+## `migrate apply`
+
+Applies the pending files, in order, under the deploy lock. It never generates and never introspects
+the desired state — what runs is what is on disk.
+
+{/* docs: cli="migrate apply --help" */}
+```text frame="terminal"
+pg-prime migrate apply (alias: deploy)
+
+  apply pending migrations (design/06 §5). Never generates, never introspects the desired state.
+
+Options:
+  --to <id>                       stop after this migration (0007 or 0007_add_orders)
+  --dry-run                       print the exact statement stream, including BEGIN/COMMIT and set_config; write nothing
+  --lock-timeout <duration>       PostgreSQL lock_timeout for every statement (default 3s)
+  --statement-timeout <duration>  PostgreSQL statement_timeout, except for intentionally long builds
+  --lock-wait <duration>          how long to wait for a concurrent deploy's lock (default 30s)
+  --stale-lock-after <duration>   a lease whose heartbeat is older than this is reported stale (default 60s)
+  --heartbeat <duration>          how often the lease is refreshed; must be well under --stale-lock-after (default 5s)
+  --verify-fingerprint            re-extract the catalog instead of trusting the recorded fingerprint_to
+  --dev                           downgrade checksum drift from an error to a warning
+  --yes                           accepted for forward compatibility; apply never prompts
+  --applied-from <id>             recorded in pgprime.migrations.applied_from (design/06 §4.4: hostname / CI run id) (default <hostname>:<pid>)
+  --config <path>                 path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>                     postgres:// connection URL; overrides the config file
+  --migrations <dir>              the migrations directory (default ./migrations)
+  --schema <name>                 a managed schema; repeatable (default public)
+  --output <text|json>            output format (default text)
+  --help                          print this help
+  --version                       print the version
+
+Exit: 0 applied or nothing to do · 1 error · 4 drift · 6 lock unavailable
+```
+
+## `migrate status`
+
+Read-only: applied versus pending, the current fingerprint, stale locks, partially-applied rows.
+
+{/* docs: cli="migrate status --help" */}
+```text frame="terminal"
+pg-prime migrate status
+
+  applied vs pending, current fingerprint, stale locks, partially-applied rows. Read-only.
+
+Options:
+  --verify-fingerprint           re-extract the catalog instead of reading fingerprint_to off the last applied row
+  --stale-lock-after <duration>  a lease whose heartbeat is older than this is reported stale (default 60s)
+  --config <path>                path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>                    postgres:// connection URL; overrides the config file
+  --migrations <dir>             the migrations directory (default ./migrations)
+  --schema <name>                a managed schema; repeatable (default public)
+  --output <text|json>           output format (default text)
+  --help                         print this help
+  --version                      print the version
+
+Exit: 0 up to date · 4 drift · 5 pending
+```
+
+## `migrate check`
+
+The default CI gate: is the repository consistent with the schema, the checksums and the database?
+It writes nothing, not even history rows.
+
+{/* docs: cli="migrate check --help" */}
+```text frame="terminal"
+pg-prime migrate check
+
+  the default CI gate: is the repository consistent with the schema, the checksums and the database? No history writes.
+
+Options:
+  --shadow <url|temp-schema|createdb>  how the desired state is normalized
+  --strict-unmodeled                   a non-empty Tier-U census becomes an error
+  --no-schema                          skip question (a); check only checksums and pending files
+  --config <path>                      path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>                          postgres:// connection URL; overrides the config file
+  --migrations <dir>                   the migrations directory (default ./migrations)
+  --schema <name>                      a managed schema; repeatable (default public)
+  --output <text|json>                 output format (default text)
+  --help                               print this help
+  --version                            print the version
+
+Exit: 0 ok · 1 error · 2 missing hints · 3 lint · 4 the schema changed and no migration was generated · 5 pending
+```
+
+## `migrate verify`
+
+Replays every migration from empty into an ephemeral database and asserts the result matches the
+schema. This is the slow, thorough version of `check`; it belongs in a nightly job.
+
+{/* docs: cli="migrate verify --help" */}
+```text frame="terminal"
+pg-prime migrate verify
+
+  replay every migration from empty into an ephemeral database and assert the result matches the schema.
+
+Options:
+  --to <id>                  replay only up to this migration (bisecting)
+  --shadow <url>             the ephemeral database to replay into (default CREATE DATABASE)
+  --from-checkpoint          replay from the newest checkpoint instead of from empty (design/06 §4.5)
+  --keep                     leave the ephemeral database behind for inspection
+  --against <schema|target>  what the replay is compared to: the TypeScript schema, or the live target database (default schema, or target when the config names no schema)
+  --config <path>            path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>                postgres:// connection URL; overrides the config file
+  --migrations <dir>         the migrations directory (default ./migrations)
+  --schema <name>            a managed schema; repeatable (default public)
+  --output <text|json>       output format (default text)
+  --help                     print this help
+  --version                  print the version
+
+Exit: 0 verified · 1 error or no ephemeral database available · 4 non-empty diff
+```
+
+## `migrate lint`
+
+Runs the hazard rules over generated or hand-written SQL. Defaults to the unapplied migrations. See
+[hazard codes](/pg-prime/reference/hazard-codes/) for every code it can report.
+
+{/* docs: cli="migrate lint --help" */}
+```text frame="terminal"
+pg-prime migrate lint
+
+  run the design/06 §3.4 rules over generated or hand-written SQL. Defaults to the unapplied migrations.
+
+Options:
+  --fail-on <error|warn|off>  the severity that makes this command exit 3 (default error)
+  --rules <codes>             only these hazard codes; repeatable or comma-separated
+  --format <text|json>        output format for the findings (default text)
+  --style                     run the ST101–ST106 style family, whose default is off
+  --all                       lint every migration on disk, not only the unapplied ones
+  --config <path>             path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>                 postgres:// connection URL; overrides the config file
+  --migrations <dir>          the migrations directory (default ./migrations)
+  --schema <name>             a managed schema; repeatable (default public)
+  --output <text|json>        output format (default text)
+  --help                      print this help
+  --version                   print the version
+
+Exit: 0 clean · 1 usage · 3 a finding at or above --fail-on
+```
+
+## `migrate baseline`
+
+Adopts an existing database: writes `0000_baseline.sql` + `.plan.json` and records it **without
+executing it**. See [adopting an existing database](/pg-prime/guides/adopting/).
+
+{/* docs: cli="migrate baseline --help" */}
+```text frame="terminal"
+pg-prime migrate baseline
+
+  adopt an existing database: write 0000_baseline.sql + .plan.json and record it without executing it.
+
+Options:
+  --at <id>             adopt an existing directory instead: mark every file up to and including <id> as baselined, executing nothing
+  --force               proceed even though pgprime.migrations is not empty
+  --by <name>           recorded as the plan's author (default $USER)
+  --config <path>       path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>           postgres:// connection URL; overrides the config file
+  --migrations <dir>    the migrations directory (default ./migrations)
+  --schema <name>       a managed schema; repeatable (default public)
+  --output <text|json>  output format (default text)
+  --help                print this help
+  --version             print the version
+
+Exit: 0 · 1
+```
+
+## `migrate push --dev`
+
+Applies the diff directly, writing no files and no history rows. It requires the literal `--dev`
+flag because it is a development-loop tool: nothing it does is recorded, reviewable or repeatable.
+
+{/* docs: cli="migrate push --help" */}
+```text frame="terminal"
+pg-prime migrate push
+
+  DEV ONLY: apply the diff directly, writing no files and no history rows. Requires the literal --dev.
+
+Options:
+  --dev                                REQUIRED. There is no config key and no default for this.
+  --allow-data-loss                    acknowledge destructive changes; never remembered between runs
+  --prod-pattern <regex>               refuse when the connection matches (default prod|production|live)
+  --dry-run                            print the statements that would be applied; apply nothing
+  --shadow <url|temp-schema|createdb>  how the desired state is normalized
+  --config <path>                      path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>                          postgres:// connection URL; overrides the config file
+  --migrations <dir>                   the migrations directory (default ./migrations)
+  --schema <name>                      a managed schema; repeatable (default public)
+  --output <text|json>                 output format (default text)
+  --help                               print this help
+  --version                            print the version
+
+Exit: 0 pushed or nothing to do · 1 refused or failed · 2 a decision is missing
+```
+
+## `migrate doctor`
+
+A read-only health report: INVALID indexes, `_ccnew` leftovers, NOT VALID constraints, drift, stale
+leases, orphaned repeatables.
+
+{/* docs: cli="migrate doctor --help" */}
+```text frame="terminal"
+pg-prime migrate doctor
+
+  read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables.
+
+Options:
+  --stale-lock-after <duration>  a lease whose heartbeat is older than this is stale (default 60s)
+  --config <path>                path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>                    postgres:// connection URL; overrides the config file
+  --migrations <dir>             the migrations directory (default ./migrations)
+  --schema <name>                a managed schema; repeatable (default public)
+  --output <text|json>           output format (default text)
+  --help                         print this help
+  --version                      print the version
+
+Exit: 0 healthy · 4 findings
+```
+
+## `migrate unlock`
+
+Inspects or breaks a stale migration lease. Read the report before breaking anything: a lease whose
+heartbeat is fresh belongs to a deploy that is still running.
+
+{/* docs: cli="migrate unlock --help" */}
+```text frame="terminal"
+pg-prime migrate unlock
+
+  inspect or break a stale migration lease.
+
+Options:
+  --force                        delete the lease row
+  --stale-lock-after <duration>  a lease whose heartbeat is older than this is stale (default 60s)
+  --config <path>                path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>                    postgres:// connection URL; overrides the config file
+  --migrations <dir>             the migrations directory (default ./migrations)
+  --schema <name>                a managed schema; repeatable (default public)
+  --output <text|json>           output format (default text)
+  --help                         print this help
+  --version                      print the version
+
+Exit: 0 free, stale or released · 6 a live deploy holds it
+```
+
+## `migrate checkpoint`
+
+Writes a full-schema checkpoint that a fresh database jumps to; existing databases ignore it.
+Nothing is deleted. See [checkpoints](/pg-prime/guides/checkpoints/).
+
+{/* docs: cli="migrate checkpoint --help" */}
+```text frame="terminal"
+pg-prime migrate checkpoint
+
+  write a full-schema checkpoint a fresh database jumps to; existing ones ignore it. Nothing is deleted.
+
+Options:
+  --seq <n>             the checkpoint's number (default one past the highest on disk)
+  --by <name>           recorded as the plan's author (default $USER)
+  --dry-run             print what would be written; write nothing
+  --config <path>       path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>           postgres:// connection URL; overrides the config file
+  --migrations <dir>    the migrations directory (default ./migrations)
+  --schema <name>       a managed schema; repeatable (default public)
+  --output <text|json>  output format (default text)
+  --help                print this help
+  --version             print the version
+
+Exit: 0 written or nothing to do · 1 error
+```
+
+## `db seed`
+
+Runs `seeds/*.sql` and `seeds/*.ts`. Seeds are never recorded in the migration history, and the
+command refuses to run against a production database without `--force`.
+
+{/* docs: cli="db seed --help" */}
+```text frame="terminal"
+pg-prime db seed
+
+  run seeds/*.sql and seeds/*.ts. Never recorded in the migration history; refuses on production.
+
+Options:
+  --set <name>            also run seeds/<name>/**; repeatable (default the base set (seeds/*.sql, seeds/*.ts) only)
+  --force                 seed anyway on a production-tagged environment or a --prod-pattern match
+  --prod-pattern <regex>  matched case-insensitively against host:port/database (default prod|production|live)
+  --seeds <dir>           the seeds directory (default ./seeds)
+  --list                  print the files that would run, and run nothing
+  --config <path>         path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>             postgres:// connection URL; overrides the config file
+  --migrations <dir>      the migrations directory (default ./migrations)
+  --schema <name>         a managed schema; repeatable (default public)
+  --output <text|json>    output format (default text)
+  --help                  print this help
+  --version               print the version
+
+Exit: 0 seeded or nothing to do · 1 refused or failed
+```
+
+## `pull`
+
+Introspects the database and writes a deterministic TypeScript schema file plus `sql/` repeatables.
+A second `pull` over the result is byte-identical.
+
+{/* docs: cli="pull --help" */}
+```text frame="terminal"
+pg-prime pull
+
+  introspect the database and write a deterministic TypeScript schema file plus sql/ repeatables.
+
+Options:
+  --out <file>          where the TypeScript schema is written (default ./db/schema.ts)
+  --sql-dir <dir>       where Tier-R objects (views, functions, triggers, policies) are written as repeatables (default the config's `repeatables`, ./sql)
+  --no-sql-dir          do not write repeatables; report every Tier-R object as unsupported instead
+  --dry-run             print the TypeScript that would be written; write nothing
+  --config <path>       path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>           postgres:// connection URL; overrides the config file
+  --migrations <dir>    the migrations directory (default ./migrations)
+  --schema <name>       a managed schema; repeatable (default public)
+  --output <text|json>  output format (default text)
+  --help                print this help
+  --version             print the version
+
+Exit: 0 written · 1 error
+```

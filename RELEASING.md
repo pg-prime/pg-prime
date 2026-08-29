@@ -75,6 +75,21 @@ Packages" PR is.
 
 ---
 
+## 1b. One-time setup for the documentation site (also a human, also once)
+
+`.github/workflows/docs.yml` publishes `docs/dist` to GitHub Pages on every push to `main`, and it
+cannot work until Pages is switched on for the repository:
+
+**Settings → Pages → Build and deployment → Source: GitHub Actions.**
+
+That is the whole step. The workflow already requests `pages: write` and `id-token: write`, which is
+what `actions/deploy-pages` needs; until the setting is flipped, its `deploy` job fails with
+`Get Pages site failed` on `main`. Nothing else in CI depends on it — `ci.yml`'s `docs` job builds
+the site and runs the three content gates on every pull request either way — so the failure is loud
+and harmless. The site is served from `https://pg-prime.github.io/pg-prime/`; for a custom domain,
+set `PG_PRIME_DOCS_SITE` and `PG_PRIME_DOCS_BASE=/` in the workflow's environment and add the CNAME
+in the same settings page.
+
 ## 2. Who may release
 
 Design/08 §6.2 criterion #11 requires **at least two people** with publish rights and repo admin,

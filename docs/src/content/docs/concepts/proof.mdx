@@ -3,4 +3,243 @@ title: Proof and witness
 description: Every migration is replayed on a clone and diffed; pg_dump is the second opinion.
 ---
 
-TODO
+import { Aside, Steps } from '@astrojs/starlight/components'
+
+A diff engine is a program, and programs are wrong. The question is not whether pg-prime's differ
+will ever emit a plan that does not do what it claims — it is where you find out. pg-prime's answer
+is: on a throwaway database, at `generate` time, before the file exists.
+
+## D6 — the plan is replayed before it is written
+
+Every plan is executed on a fresh clone of the state it says it starts from, and the result is
+compared with the desired state. A plan that does not converge is **never written to disk**.
+
+<Steps>
+
+1. **Provision a clone.** `CREATE DATABASE pgprime_shadow_<8 hex> TEMPLATE <target>` where that is
+   available. If the template is in use (SQLSTATE `55006`), pg-prime does not terminate anybody's
+   session: it creates an empty database instead and **materialises** the current state into it from
+   the IR it already holds. The plan records which of the two happened, as
+   `proof.provisioning: "template" | "materialized"`.
+
+2. **Apply the plan, stage by stage.** A `generate` run can emit more than one file — the
+   transactional `NNNN_name.sql` and a `txmode none` `NNNN_name_concurrently.sql` — and they apply in
+   that order. The catalog is re-extracted after **every** stage, not only the last, because the
+   fingerprint after stage *i* is stage *i+1*'s `from.fingerprint` and it cannot be predicted from the
+   IR, only measured. Those measurements are `proof.stageFingerprints`.
+
+3. **Diff the result against the desired state.** A non-empty diff is a failure, and the failing
+   plan records the residual deltas by id: `proof.deltas` holds entries like
+   `add column:public.users.summary`, so the failure names what the plan forgot.
+
+4. **Then require fingerprint equality.** The delta check is exact, but the fingerprint is stronger:
+   it covers the dependency edges too. There is one deliberate waiver — an adopted partition and a
+   retained extension are facts the clone keeps *on purpose*, so when the diff itself reports
+   `adopted_partition` or `extension_retained`, the whole-IR hash is waived and only the delta check
+   stands. Demanding equality there would demand a `DROP` the design forbids, and every plan touching
+   a partitioned table would be refused.
+
+5. **Ask the witness** (below), and only then write the files.
+
+</Steps>
+
+Under [shadow tier 3](/pg-prime/concepts/shadow-ladder/#tier-3-temp-schemas-in-the-target-database),
+where there is no `CREATE DATABASE` to clone with, the proof runs in a second temp-schema set inside
+the target database instead. The gate is not optional, so it does not become optional on a managed
+PostgreSQL.
+
+### `passed`, `failed`, `skipped`
+
+Every plan carries the verdict in its `proof` object, and `generate` prints it:
+
+| Verdict | Meaning | What `generate` does |
+|---|---|---|
+| `passed` | the clone converged on the desired state | writes both files, exit `0` |
+| `failed` | the plan raised an error on the clone, or left a residual diff, or the fingerprints disagreed | writes nothing, exit **`7`** |
+| `skipped` | the proof did not run | writes nothing unless you asked for that |
+
+Exit `7` is reserved for exactly this: *the plan does not converge on a clone*. It is not `1`,
+because "your differ produced something wrong" is a different thing from "your database is
+unreachable", and a CI job is entitled to treat them differently.
+
+`skipped` has three legitimate producers, and each states a reason:
+
+- `--no-prove`, which is a development affordance and pairs with an explicit "write it anyway";
+- `migrate baseline`, which writes a plan whose DDL describes a database that already exists —
+  `reason: "baseline"`;
+- `migrate checkpoint`, for the same argument — `reason: "checkpoint"`. What proves a checkpoint
+  replays is `migrate verify --from-checkpoint`, not the command that wrote it.
+
+A `skipped` with no reason is indistinguishable from `--no-prove`, which is why the reason is always
+recorded.
+
+<Aside type="caution">
+`--no-prove` is a dev-only flag. It stamps `proof.status = "skipped"` and asks `writePlan` to accept
+an unproven plan. It also cannot be combined with a multi-file plan: the fingerprint *between*
+`NNNN_name.sql` and `NNNN_name_concurrently.sql` is measured on the clone, and without it the second
+file has no gate to apply behind. `generate` refuses that combination and says so.
+</Aside>
+
+## D10 — the `pg_dump` witness
+
+D6 has a blind spot, and it is a structural one rather than a bug: the proof extracts with pg-prime's
+extractor, diffs with pg-prime's differ, and hashes with pg-prime's canonicalizer. If a catalog
+attribute is not modelled, then the differ never plans for it **and the proof cannot notice**, because
+both sides of the equality are blind in exactly the same way. That is silent semantic loss passing a
+green gate.
+
+`pg_dump` closes it for free. It is PostgreSQL's own serializer, it models the entire DDL surface by
+definition, and it shares no code with pg-prime. After the clone converges, both databases are dumped
+schema-only and compared:
+
+```sh
+pg_dump --schema-only --no-owner --no-privileges --no-password --schema "public" --dbname …
+```
+
+The verdict lands in the plan beside the proof:
+
+```json
+"dumpOracle": {
+  "status": "passed",
+  "mode": "warn",
+  "pgDumpVersion": "pg_dump (PostgreSQL) 17.11",
+  "statementCount": 12
+}
+```
+
+Zero npm dependencies: `pg_dump` ships with PostgreSQL and is spawned as a subprocess.
+
+### What the comparison normalizes
+
+A dump is not compared line by line — a `;` inside a dollar-quoted function body is not a statement
+boundary, and a `--` inside a string literal is not a comment. The dump goes through a real SQL lexer
+first, and then:
+
+- **Statements, not lines.** Split at semicolons the lexer classified as *code*.
+- **Whitespace is collapsed in code only.** PostgreSQL stores a function body verbatim, so
+  reformatting one is a real difference and is not normalized away.
+- **`\restrict <token>` is stripped.** `pg_dump` 17.6 and later emit these with a *random* token.
+  Left in, the oracle would report a difference on every single run. They are psql meta-commands, not
+  SQL.
+- **Session preamble is dropped, from an allowlist.** `statement_timeout`, `client_encoding`,
+  `row_security` and the rest of the fixed set, plus the `set_config('search_path', …)` line. It is
+  deliberately an allowlist: an unrecognised `SET` is schema-bearing until proven otherwise, because
+  `SET default_table_access_method` is how a non-heap table is expressed.
+- **Comparison is an order-independent multiset.** The dump's emission order encodes dependency
+  order, which is a property of the plan; ordering is already gated by the apply step, since a plan
+  in the wrong order does not apply at all. A duplicated statement on one side is still a difference.
+- **Column order gets its own bucket.** `ADD COLUMN` can only append, so a column declared in the
+  middle of a table always lands last, and no engine can repair that. Two `CREATE TABLE`s differing
+  *only* in the order of their column list are paired off into `reordered`, recorded in the plan by
+  table name, and never blocking. A trailing `WITH (…)` or `PARTITION BY …` is preserved verbatim, so
+  a storage-parameter difference is never mistaken for a reordering.
+
+### Modes, and why the default is `warn`
+
+`--dump-oracle off | warn | strict`, default **`warn`**.
+
+| Mode | Behaviour |
+|---|---|
+| `off` | the oracle is not run; the verdict is `skipped: disabled` |
+| `warn` | any difference is recorded in the plan and reported; the plan is still written |
+| `strict` | a `failed` verdict blocks the plan from disk — and so does a `skipped` one, unless the caller opts out |
+
+`warn` is the default because [Tier-R objects](/pg-prime/concepts/tiers/) are not diffed. The proof's
+clone receives the plan's DDL; the desired shadow also receives everything under `sql/`. So a schema
+with a view or a trigger in it is **expected** to differ by exactly those objects, and a default of
+`strict` would make every `generate` on such a project fail on a known, documented gap. Flipping the
+default is the natural gate to close once repeatables are diffed.
+
+On a schema with no Tier-R objects, `strict` is the right setting and it holds. This is the measured
+state on the third-party corpus:
+
+| Corpus schema | Tier-R files | `generate` after `pull` | Build from empty |
+|---|---|---|---|
+| chinook | 0 | `up_to_date` | proof passed, witness **`strict`** passed |
+| northwind | 0 | `up_to_date` | proof passed, witness **`strict`** passed |
+| adventureworks | 93 (87 view, 2 matview, 3 function, 1 prelude) | `up_to_date` | proof passed, witness `warn` |
+| pagila | 33 (9 function, 15 trigger, 7 view, 1 matview, 1 prelude) | `up_to_date` | proof passed, witness `warn` |
+
+### When the witness cannot run
+
+Unavailability is `skipped`, never `failed`: that is a gap in the environment, not evidence about the
+plan. The reason is always a sentence in the plan, so a `skipped` verdict is never silent.
+
+- no `pg_dump` on `PATH`, or a launcher that will not spawn: `cannot spawn pg_dump: …`;
+- a launcher whose `--version` exits non-zero, or whose output cannot be parsed;
+- a `pg_dump` whose major version is **older than the server**, which PostgreSQL refuses anyway.
+
+Everything else is `failed`, because it says something about this run: a `--schema` pattern that
+matched nothing, a refused connection, a permission error, a timeout (a dump is killed after 120 s).
+Classifying those as `skipped` is how a mixed-case schema once sailed through `strict` unwitnessed.
+
+Under `strict`, a `skipped` oracle blocks the plan too — silence is exactly what the witness exists
+to prevent — and the opt-out has to be asked for explicitly.
+
+If PostgreSQL's client tools live somewhere unusual, or the server only exists inside a container,
+point the launcher at them:
+
+```sh
+# a path, or a whitespace-separated argv, or a JSON array for exact argv
+export PG_PRIME_PG_DUMP='/usr/lib/postgresql/17/bin/pg_dump'
+export PG_PRIME_PG_DUMP='["docker","exec","-i","pg17","pg_dump"]'
+
+# how a database name becomes the conninfo pg_dump receives
+export PG_PRIME_PG_DUMP_URI='postgres://postgres@127.0.0.1:5432/{db}'
+```
+
+A malformed `PG_PRIME_PG_DUMP` is an environment gap too — the oracle skips with a reason, rather
+than turning every `generate` into a failure with a JSON syntax error for a cause.
+
+### The negative control
+
+The repository keeps a fixture whose whole purpose is to fail if the witness ever stops working:
+two databases that differ **only** by `WITH (fillfactor = 70)`, a table storage parameter the
+extractor does not model.
+
+```sql
+-- current.sql
+CREATE TABLE public.widgets (
+  id    integer NOT NULL PRIMARY KEY,
+  label text    NOT NULL
+);
+
+-- desired.sql
+CREATE TABLE public.widgets (
+  id    integer NOT NULL PRIMARY KEY,
+  label text    NOT NULL
+) WITH (fillfactor = 70);
+```
+
+The differ emits zero statements. The IR proof reports zero drift. Both are *correct given what the
+IR models*, and both are wrong about the databases. The witness catches it. That is the entire
+argument for having a second opinion that is not your own code.
+
+## `migrate verify` — the same idea over the whole history
+
+D6 proves one migration against the state in front of it. `migrate verify` proves the **repository**:
+it provisions an ephemeral database, replays every migration from empty through the real runner,
+applies the repeatables, extracts the result, and asserts the diff against the desired state is
+empty.
+
+Two details make it worth its cost:
+
+- **It replays through the runner**, not through a shortcut. The directives, the statement markers,
+  the `txmode` dispatch, the fingerprint gate and the history bookkeeping are all part of "does this
+  repository reproduce that schema", and a fast path past them would verify a different program.
+- **It fails rather than skips** when there is no ephemeral database to be had. A `verify` that
+  quietly reports success because it could not run is worse than no `verify` at all.
+
+`--to <id>` replays only up to one migration, which is what you want when bisecting; `--from-checkpoint`
+replays from the newest checkpoint instead of from empty, and is refused when there is no checkpoint
+on disk rather than silently ignoring the flag.
+
+## Where to go next
+
+- [The migration model](/pg-prime/concepts/migration-model/) — what is being compared, and what a
+  fingerprint covers.
+- [The shadow ladder](/pg-prime/concepts/shadow-ladder/) — where the clone comes from when you cannot
+  create a database.
+- [Tier M, R, O and U](/pg-prime/concepts/tiers/) — why a schema with views is expected to differ
+  under the witness.
+- [Migrations in CI/CD](/pg-prime/operations/ci-cd/) — where `verify` belongs in a pipeline.

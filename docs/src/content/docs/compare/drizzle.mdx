@@ -3,4 +3,210 @@ title: Drizzle
 description: What Drizzle does, what it does not, and what pg-prime took from it.
 ---
 
-TODO
+Drizzle is the closest thing to a sibling this project has, and the largest single influence on its
+schema layer. Everything below is measured against the 2026-08 survey in
+[`research/drizzle.md`](https://github.com/pg-prime/pg-prime/blob/main/research/drizzle.md), which
+read `drizzle-orm@0.45.2`, `drizzle-orm@1.0.0-rc.4`, `drizzle-kit@0.31.10` and
+`drizzle-kit@1.0.0-rc.4` out of their published tarballs. At that date 1.0 had been in beta or RC
+for about nine and a half months and `latest` still resolved to the 0.4x line, so most installed
+copies did not have RQB v2, `defineRelations` or the rewritten kit.
+
+## What it does well
+
+**Schema as ordinary TypeScript values.** `pgTable(name, columns, (t) => [index(...), ...])`, chained
+column builders, and row types inferred straight off the table value with no generated file in the
+loop. The survey's verdict on `$inferSelect` / `$inferInsert` was "the single best idea in Drizzle",
+and pg-prime's schema DSL is descended from it.
+
+**Zero runtime dependencies**, verified rather than claimed: `dependencies` is null in both 0.45.2
+and 1.0.0-rc.4, and the README's ~7.4 KB min+gzip core is real. Driver support is per-entrypoint, so
+tree-shaking works.
+
+**The right execution strategy for relations.** RQB v2 compiles a nested read to
+`LEFT JOIN LATERAL (select coalesce(json_agg(row_to_json(t.*)), '[]') …) ON TRUE` — one round trip,
+no row explosion, and a `LIMIT` that means per parent. This is the correct answer and pg-prime uses
+the same one.
+
+**Nested-select join nullability**, which most builders get wrong: with a nested select shape a
+`leftJoin` makes the whole joined object `| null` rather than each field individually.
+
+**And the omissions that are wisdom**, not gaps: no identity map, no change tracking, no lazy
+loading. That is the same position taken here, and it was taken partly because Drizzle demonstrated
+it works.
+
+## Where pg-prime differs
+
+### One query API, not two
+
+This is the largest difference, and the survey called it the single biggest product gap in Drizzle.
+The relational builder generates exactly the right SQL but its own documentation says
+*"Aggregations are not supported in `extras`; use core queries instead"*; the core builder has full
+SQL power but returns flat rows that the documentation shows you regrouping with a hand-written
+`reduce()`. The two do not compose, so a screen that needs a nested list **and** a count needs two
+queries or a manual join.
+
+{/* docs: skip-check="drizzle-orm is not a dependency of this repository" */}
+```ts
+// Drizzle, RQB v2 (drizzle-orm@1.0.0-rc.4): the nested list is one round trip …
+const authors = await db.query.users.findMany({
+  columns: { name: true },
+  with: { posts: { columns: { title: true }, limit: 2, orderBy: { createdAt: 'desc' } } },
+})
+
+// … but the count is a second query, because `extras` refuses aggregates.
+```
+
+In pg-prime a relation is an accessor on the query's scope rather than a separate API, so the
+nested list, the aggregate over the same relation, and anything else the builder can express are
+one `select`:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="one-query.ts"
+import { desc, eq } from 'pg-prime'
+
+const [ada] = await db
+  .insertInto(db.h.users)
+  .values({ email: 'ada@example.com', name: 'Ada' })
+  .returning((t) => ({ id: t.users.id }))
+  .execute()
+
+await db
+  .insertInto(db.h.posts)
+  .valuesMany([
+    { authorId: ada!.id, title: 'First', body: 'one', published: true },
+    { authorId: ada!.id, title: 'Second', body: 'two', published: true },
+    { authorId: ada!.id, title: 'Draft', body: 'three', published: false },
+  ])
+  .execute()
+
+const authors = await db
+  .from(db.h.users, 'u')
+  .select((t) => ({
+    name: t.u.name,
+    total: t.u.posts.count(),
+    latest: t.u.posts.many((q) =>
+      q
+        .where((p) => eq(p.published, true))
+        .orderBy((p) => desc(p.title))
+        .limit(2)
+        .select((p) => ({ title: p.title })),
+    ),
+  }))
+  .execute()
+
+console.log(authors)
+// [ { name: 'Ada', total: 3n, latest: [ { title: 'Second' }, { title: 'First' } ] } ]
+```
+
+`total` is a `bigint` because `count()` is `int8`, `latest` is `{ title: string }[]`, and the whole
+thing is one statement. The `LIMIT` is inside the lateral, so `limit(2)` is two posts per author.
+
+### The DDL surface is the whole of PostgreSQL
+
+Drizzle's DDL model is the intersection of six dialects. Grepping the 1.0 emitter for `CREATE`
+verbs found tables, views, materialized views, sequences, types, schemas, roles and policies — and
+nothing else. As of the 2026-08 survey it modelled no triggers, functions, procedures, domains,
+composite types, partitions, exclusion constraints or `CREATE EXTENSION`, and there were no column
+builders for ranges, multiranges, `tsvector`, `tsquery`, `xml`, `money` or `bit` (the codec layer
+names them; the builders do not exist). Its own documentation says plainly: *"There is no specific
+code to create an extension inside the Drizzle schema."*
+
+Every one of those is a thing a real PostgreSQL application has, so in practice it keeps a second,
+unmanaged migration path beside the ORM's. Being PostgreSQL-only is what removes the second path:
+here those objects are declared, diffed or hashed, ordered in the dependency graph, and reported
+when they drift — see [the tier model](/pg-prime/concepts/tiers/).
+
+### The migration runner
+
+Three findings from reading `drizzle-kit@1.0.0-rc.4`'s shipped code, all of which pg-prime does
+differently:
+
+- **No advisory lock.** Grepping both packages for `pg_advisory` returned zero hits. Two instances
+  booting concurrently and both calling `migrate()` race — and Drizzle's own documentation
+  recommends running migrations at application startup in serverless. pg-prime takes a session
+  advisory lock with a heartbeat lease before it applies anything, and `migrate unlock` inspects or
+  breaks a stale one.
+- **All pending migrations in one transaction.** Atomic, which is a real property, but a forty-file
+  backlog is then one long transaction holding one set of locks — and it makes
+  `CREATE INDEX CONCURRENTLY` structurally impossible, which for a PostgreSQL-only tool is the
+  headline omission. There is no `concurrently` option on the index builder either. pg-prime wraps
+  each file separately, and a plan that needs `CONCURRENTLY` is emitted as a companion file with
+  `txmode none` at the same sequence number.
+- **Full-state snapshot JSON per migration.** drizzle-kit's own documentation concedes this is
+  review noise and recommends `.gitattributes` to hide the diff, which makes merge conflicts harder
+  to resolve rather than easier. pg-prime writes SQL plus a fingerprinted `.plan.json` and diffs
+  against the live catalog, so there is no whole-schema file to conflict over.
+
+And one thing nobody in the ecosystem does: **nothing reaches disk unproven**. A generated plan is
+replayed on a fresh clone and the result is diffed against the desired state before the file is
+written, with `pg_dump` asked for an independent second opinion.
+[Proof and witness](/pg-prime/concepts/proof/) is the long version.
+
+### The handle you are holding is in the type
+
+The survey names this Drizzle's most common footgun: inside `db.transaction(async (tx) => …)` you
+must use `tx`, and using the outer `db` silently runs the statement outside the transaction, with
+no type-level prevention. Here `Db`, `Tx` and `Session` are mutually non-assignable — none is a
+subtype of the others — so a helper that declares `Tx` cannot be handed the pool-backed root
+handle:
+
+{/* docs: use=blog expect-error */}
+```ts
+import type { Tx } from 'pg-prime'
+
+declare function publish(tx: Tx<typeof schema>, id: bigint): Promise<void>
+
+// `db` is a `Db`, not a `Tx`. This does not compile.
+await publish(db, 1n)
+```
+
+The transaction callback's parameter is also named `db` on purpose, so it shadows the outer handle
+and the mistake is harder to write in the first place.
+
+### Serialization failures
+
+Drizzle offers `isolationLevel: 'serializable'` and no retry. Under serializable isolation
+PostgreSQL *requires* retry logic: `40001` is not an error condition, it is the protocol. pg-prime
+retries `40001` by default at repeatable read and serializable, with full jitter — full rather than
+plain exponential because the conflicting transactions failed at the same instant and would
+otherwise retry in lockstep. It never retries `40P01`, never retries after an indeterminate commit,
+and the callback must be idempotent. See [transactions](/pg-prime/guides/transactions/).
+
+### Types that decode
+
+`sql<T>` in Drizzle is a pure cast — its documentation says so: *"Drizzle cannot perform any type
+casts based on the provided type generic, because that information is not available at runtime."*
+You reach for `.mapWith()` to get an actual decode. So every `sql<number>` over a `bigint` or
+`numeric` column is a latent lie, and `numeric`, `int8`, `date` and `interval` decode differently
+depending on whether you are on `pg` or `postgres.js`. Similarly `text({ enum: [...] })` produces a
+TypeScript union the database does not enforce.
+
+pg-prime owns decoding end to end: a `sql` fragment carries no type parameter at all and a result
+type requires a real codec, `int8` decodes to `bigint`, `numeric` to `string`, `date` to a branded
+`YYYY-MM-DD` string that never shifts a day across time zones, and an enum is a real
+`CREATE TYPE`. [Codecs and decode defaults](/pg-prime/concepts/codecs/) has the table.
+
+### Type-check cost
+
+Drizzle's is the ecosystem's cautionary tale, and it is worth being fair about the direction of
+travel. Prisma's `@ark/attest` benchmark on the Northwind schema measured **41 150** schema type
+instantiations at 0.44.4 against Prisma's 428; the ground-up rewrite of the Tables, Columns and
+Relations types brought it to **5 017** at 1.0.0-beta.1, which is a large and real improvement. But
+the shipped `.d.ts` surface grew **77%** in the same release, to 1.96 MB across 720 files, the
+largest single file being a 34 KB literal-union codec table — and `drizzle-kit@1.0.0-rc.4` unpacks
+to 95 MB because it bundles a payload per dialect, so a PostgreSQL user downloads all six.
+
+pg-prime's budget is a release gate rather than a dashboard, and the number that matters is the
+shape: the marginal cost of one more query does not grow with the schema. The 300-table over
+25-table ratio is **1.00** against a 1.15 CI gate, because no whole-schema type parameter is
+threaded through the builder.
+
+## Choose Drizzle if
+
+You need more than one database, now or later — that is the honest dividing line, and everything
+above is a consequence of it. Choose it if you are deploying to Workers, Deno or Bun and want the
+broadest edge-runtime story in the ecosystem; if the 18.2M-downloads-per-week community and the
+volume of tutorials matter to you; if your schema stays inside the six-dialect intersection and you
+are content to manage triggers and functions with a separate tool; or if you already run Drizzle
+and it is working, in which case the migration engine here is the thing worth looking at first, not
+the query builder.

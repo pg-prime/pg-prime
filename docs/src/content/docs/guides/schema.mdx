@@ -3,4 +3,972 @@ title: The schema DSL
 description: Tables, columns, constraints, indexes, enums, domains, sequences, extensions and partitions.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+A pg-prime schema is ordinary TypeScript: no decorators, no code generation, no separate schema
+language. Every declaration is a plain frozen value, and the file that holds them is read twice —
+once by your application, where it supplies row types, codecs and the objects behind constraint
+errors, and once by `@pg-prime/kit`, where it is the desired state a migration is diffed against.
+
+Two rules explain most of the surface:
+
+- **Every column is `NOT NULL` until you say otherwise.** `.nullable()` is the opt-in, because in a
+  real database most columns are not nullable and the default should be the common case. It is also
+  free at the type level, where a `.notNull()` would cost a distributive `Exclude` per column.
+- **A method or key prefixed with `$` never affects DDL or the migration IR.** `.default(0)` emits
+  `DEFAULT 0`; `.$default(() => 0)` does not. `.$type<T>()` narrows the TypeScript type and changes
+  nothing the database sees. That is one invariant to remember instead of a table to look up.
+
+## `pgTable`
+
+`pgTable` takes a name, the columns, an optional extras callback and optional table options:
+
+```ts
+import type { AnyCol, ColsOf, ColumnKit, RefsOfCols, Table, TableExtra } from 'pg-prime/schema'
+
+interface TableOptions {
+  readonly schema?: string
+  readonly casing?: (key: string) => string
+}
+
+declare function pgTable<N extends string, B extends Record<string, AnyCol>>(
+  name: N,
+  columns: B | ((t: ColumnKit) => B),
+  extras?: (t: RefsOfCols<N, ColsOf<B>>) => readonly TableExtra[],
+  options?: TableOptions,
+): Table<N, ColsOf<B>>
+```
+
+The columns argument is either a plain record or a callback handed the column kit. Prefer the
+callback: it keeps a schema file's import list at about five names and gives extension packs one
+place to hang new column types. The extras callback is handed *this table's own column references*,
+which is how a multi-column constraint or an index names its columns without repeating strings.
+
+`pgTable` validates eagerly, at import time. A bad identifier, two keys mapping to one database
+column, a value that is not a column, a key starting with `$`, and the key `__proto__` are each a
+`SchemaError` on the line that wrote them rather than a diagnostic three commands later.
+
+This is the schema the rest of the page uses:
+
+{/* docs: setup=catalogue */}
+```ts title="catalogue.ts" no-run
+import { defineSchema, index, pgTable, REFS, uniqueIndex } from 'pg-prime/schema'
+
+export const suppliers = pgTable('suppliers', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  name: t.text(),
+  country: t.text().default('GB'),
+}))
+
+export const products = pgTable(
+  'products',
+  (t) => ({
+    id: t.bigint().primaryKey().generatedAlways(),
+    supplierId: t.bigint().references(() => suppliers[REFS].id, { onDelete: 'cascade' }),
+    sku: t.text().unique(),
+    name: t.text(),
+    description: t.text().nullable(),
+    price: t.numeric(),
+    tags: t.text().array().default([]),
+    createdAt: t.timestamptz().defaultSql('now()'),
+  }),
+  (t) => [
+    index('products_supplier_idx').on(t.supplierId),
+    uniqueIndex('products_name_per_supplier_idx').on(t.supplierId, {
+      column: t.name,
+      opclass: 'text_pattern_ops',
+    }),
+  ],
+)
+
+export const schema = defineSchema({ suppliers, products })
+```
+
+Nine columns, one foreign key and two indexes — and every row type in the program follows from them:
+
+{/* docs: use=catalogue */}
+```ts title="insert-and-read.ts"
+import { pgPrime } from 'pg-prime'
+import { schema } from './catalogue.js'
+
+const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema })
+
+await db.sql`
+  create table suppliers (
+    id      bigint generated always as identity primary key,
+    name    text not null,
+    country text not null default 'GB'
+  )
+`.execute()
+
+await db.sql`
+  create table products (
+    id          bigint generated always as identity primary key,
+    supplier_id bigint not null references suppliers (id) on delete cascade,
+    sku         text not null unique,
+    name        text not null,
+    description text,
+    price       numeric not null,
+    tags        text[] not null default '{}',
+    created_at  timestamptz not null default now()
+  )
+`.execute()
+
+const [acme] = await db
+  .insertInto(db.h.suppliers)
+  .values({ name: 'Acme' })
+  .returning((t) => ({ id: t.suppliers.id, country: t.suppliers.country }))
+  .execute()
+
+console.log(acme) // { id: 1n, country: 'GB' }
+
+const [widget] = await db
+  .insertInto(db.h.products)
+  .values({ supplierId: acme!.id, sku: 'W-1', name: 'Widget', price: '9.99' })
+  .returning((t) => ({
+    id: t.products.id,
+    description: t.products.description,
+    tags: t.products.tags,
+    price: t.products.price,
+  }))
+  .execute()
+
+console.log(widget) // { id: 1n, description: null, tags: [], price: '9.99' }
+```
+
+Four things in that output are the schema being read at runtime. `id` is a `bigint` because `int8`
+decodes to `bigint`. `price` is the string `'9.99'` and not the number `9.99`, because `numeric` is
+arbitrary precision and a JavaScript number is not. `description` came back `null` because it is the
+one column declared `.nullable()`, and it was legal to omit at insert for the same reason. `tags` and
+`country` were omitted too, because a column with a DDL `DEFAULT` is optional in `Insertable`.
+
+## The column kit
+
+The callback's `t` is the column kit: eleven typed builders, plus `enum` and the `raw` escape hatch.
+
+| Builder | PostgreSQL type | TypeScript type |
+|---|---|---|
+| `t.uuid()` | `uuid` | `string` |
+| `t.text()` | `text` | `string` |
+| `t.varchar()` | `varchar` | `string` |
+| `t.integer()` | `int4` | `number` |
+| `t.smallint()` | `int2` | `number` |
+| `t.bigint()` | `int8` | `bigint` |
+| `t.boolean()` | `bool` | `boolean` |
+| `t.timestamptz()` | `timestamptz` | `Date` |
+| `t.date()` | `date` | `DateString`, a branded `'YYYY-MM-DD'` string |
+| `t.numeric()` | `numeric` | `string` |
+| `t.jsonb()` | `jsonb` | `unknown`, narrowed with `.$type<T>()` |
+| `t.enum(e)` | the type `e` names | the union of `e`'s labels |
+| `t.raw(pgType)` | whatever you name | `unknown`, narrowed with `.$type<T>()` |
+
+Every builder takes an optional first argument that overrides the derived database name:
+`t.text('email_address')`.
+
+`varchar` is a distinct type, not an alias for `text`: the two have different codecs, so the emitted
+`::type` cast differs, and `varchar(n)` is what every migration from another tool lands on. The
+length lives in the DDL only — PostgreSQL's `varchar` and `varchar(n)` are one type and the limit
+travels in the typmod, so it changes no codec and no decoded value.
+
+The four decode defaults worth memorising are `int8` → `bigint`, `numeric` → `string`, `date` → a
+branded string, and `timestamptz` → `Date`. [Codecs](/pg-prime/concepts/codecs/) explains why, and
+how to choose the alternates.
+
+## Modifiers
+
+Every modifier returns a new column; nothing mutates. Only a handful change the TypeScript type, and
+which ones do is the whole of the type story:
+
+| Modifier | DDL | Effect on the type |
+|---|---|---|
+| `.nullable()` | drops `NOT NULL` | adds `\| null`, and makes the column optional on insert |
+| `.default(v)` | `DEFAULT <literal>` | optional on insert; still non-null on read |
+| `.defaultSql(expr)` | `DEFAULT <expr>` | optional on insert |
+| `.primaryKey()` | `PRIMARY KEY` | marks the column as part of the key |
+| `.unique(name?, opts?)` | `UNIQUE` | none |
+| `.generatedAlways()` | `GENERATED ALWAYS AS IDENTITY` | absent from insert **and** update |
+| `.generatedByDefault()` | `GENERATED BY DEFAULT AS IDENTITY` | optional on insert |
+| `.references(thunk, opts?)` | `FOREIGN KEY` | none |
+| `.check(fragment, name?)` | `CHECK` | none |
+| `.comment(text)` | `COMMENT ON COLUMN` | none |
+| `.renamedFrom(old)` | a rename annotation | none |
+| `.array()` | `[]` on the type | `T[]` |
+| `.$type<T>()` | nothing | narrows to `T` |
+| `.$default(fn)` | nothing | optional on insert |
+| `.$onUpdate(fn)` | nothing | none |
+
+Uniqueness constrains the *values* a column may hold, never its TypeScript type, which is why
+`.unique()` — and every other DDL-only modifier — hands back the column type unchanged.
+
+### `.nullable()`, and the two orders that are refused
+
+`NOT NULL` is the default, so nullability is the thing you write down:
+
+```ts
+import { text } from 'pg-prime/schema'
+
+const required = text() // text not null
+const optional = text().nullable() // text
+```
+
+A primary key and a `GENERATED ALWAYS` column are `NOT NULL` by definition, so combining either with
+`.nullable()` is a contradiction the DDL cannot express. The type layer catches one order:
+
+{/* docs: expect-error */}
+```ts
+import { bigint } from 'pg-prime/schema'
+
+// `.nullable` is not callable here — it has resolved to
+// OrmTypeError<'.nullable() after .primaryKey(): a primary key column is NOT NULL by definition'>
+const id = bigint().primaryKey().nullable()
+```
+
+Written the other way round, `.nullable().primaryKey()`, no type-level gate could catch it without a
+conditional on every column in the program, so the builder throws a `SchemaError` carrying the same
+sentence. A schema module is imported once at process start, so that is still a failure on the first
+import rather than on the first query.
+
+### `.default()` versus `.defaultSql()`
+
+`.default(v)` takes a value of the column's own type and is emitted as a literal.
+`.defaultSql(expr)` takes SQL text and is emitted verbatim, which is what a function call needs:
+
+```ts
+import { boolean, timestamptz, uuid } from 'pg-prime/schema'
+
+const active = boolean().default(true) // DEFAULT true
+const id = uuid().primaryKey().defaultSql('gen_random_uuid()')
+const createdAt = timestamptz().defaultSql('now()')
+```
+
+There are two methods rather than one widened parameter because `.default()`'s parameter is the
+column's TypeScript type, and widening it to accept a fragment as well would put a conditional on the
+hottest signature in the package.
+
+Both make the column optional in `Insertable`, and neither changes the read type: a defaulted column
+is still non-null.
+
+### `.$default()` and `.$onUpdate()`
+
+These are the `$` law's clearest cases. `.$default(fn)` records a client-side factory and makes the
+column optional on insert; `.$onUpdate(fn)` records a value for update. Neither emits a `DEFAULT`,
+and neither emits a trigger — the migration generated for a column carrying only a `.$default()` has
+no default in it at all.
+
+<Aside type="caution">
+On this release the two functions are **recorded but never called**. `Insertable` marks a
+`.$default()` column optional, and the insert builder then omits the column from the statement
+entirely, so a `NOT NULL` column whose only default is a `.$default()` fails at insert with `23502`.
+Until the builder applies them, give such a column a DDL default with `.default()` or
+`.defaultSql()`, or pass the value explicitly.
+</Aside>
+
+### Identity columns
+
+```ts
+import { bigint } from 'pg-prime/schema'
+
+const always = bigint().primaryKey().generatedAlways() // never writable
+const byDefault = bigint().primaryKey().generatedByDefault() // optional on insert, still updatable
+```
+
+`generatedAlways()` removes the column from `Insertable` **and** `Updateable`, which is what
+`GENERATED ALWAYS AS IDENTITY` means: the database always supplies the value. Giving such a column a
+default afterwards is dead code, and `.default()`, `.defaultSql()` and `.$default()` all refuse it —
+at the type level in the forward order, at declaration time in the reverse one.
+
+### `.references()`, and the two circularity notes
+
+A single-column foreign key is declared on the column, and the target is a **thunk**:
+
+```ts
+import { pgTable, REFS } from 'pg-prime/schema'
+
+const orgs = pgTable('orgs', (t) => ({ id: t.uuid().primaryKey() }))
+
+const memberships = pgTable('memberships', (t) => ({
+  id: t.uuid().primaryKey(),
+  orgId: t.uuid().references(() => orgs[REFS].id, { onDelete: 'cascade' }),
+}))
+```
+
+`orgs[REFS].id` and `orgs.cols.id` are the same slot under two names; `cols` exists so a schema file
+can write it without importing the phantom symbol. The options are
+`{ name?, onDelete?, onUpdate?, deferrable?, initiallyDeferred? }`; the five referential actions are
+`'cascade'`, `'restrict'`, `'no action'`, `'set null'` and `'set default'`, validated at declaration
+time so a typo is a `SchemaError` rather than a syntax error on a shadow database later; and
+`initiallyDeferred` implies `deferrable`, exactly as PostgreSQL's own grammar does.
+
+The thunk exists because the referenced table is usually declared further down the same file, and a
+mutually referencing pair has no declaration order that works without one. That handles the *value*
+level. Two cases still need something at the *type* level:
+
+**A self-reference cannot be written here at all.** `.references(() => nodes.cols.id)` inside
+`nodes`'s own initializer is a TS7022 — the thunk's body needs the type that is still being inferred.
+The spelling for a self-referencing key is the `foreignKey` extra, whose callback parameter is this
+table's own references:
+
+```ts
+import { foreignKey, pgTable } from 'pg-prime/schema'
+
+const nodes = pgTable(
+  'nodes',
+  (t) => ({ id: t.uuid().primaryKey(), parentId: t.uuid().nullable() }),
+  (t) => [
+    foreignKey({
+      name: 'nodes_parent_fk',
+      columns: [t.parentId],
+      references: () => [t.id],
+      onDelete: 'set null',
+    }),
+  ],
+)
+```
+
+**A mutual pair needs the thunk's return type stated once**, which is what stops TypeScript walking
+the loop and reporting TS7022 or TS7024. It is the same device as Drizzle's `AnyPgColumn`:
+
+```ts
+import { foreignKey, pgTable } from 'pg-prime/schema'
+import type { RefLike } from 'pg-prime/schema'
+
+const left = pgTable(
+  'left_t',
+  (t) => ({ id: t.uuid().primaryKey(), rightId: t.uuid().nullable() }),
+  (t) => [
+    foreignKey({ columns: [t.rightId], references: (): readonly RefLike[] => [right.cols.id] }),
+  ],
+)
+
+const right = pgTable('right_t', (t) => ({
+  id: t.uuid().primaryKey(),
+  leftId: t
+    .uuid()
+    .nullable()
+    .references((): RefLike => left.cols.id, { onDelete: 'cascade' }),
+}))
+```
+
+`.references()` is single-column only. A composite foreign key is the `foreignKey` extra, which pairs
+its two lists positionally.
+
+### `.check()`
+
+A column-scoped `CHECK`, named `<table>_<column>_check` unless you name it. The expression is a `sql`
+fragment whose **text** is stored:
+
+```ts
+import { integer, text } from 'pg-prime/schema'
+import { sql } from 'pg-prime/sql'
+
+const price = integer().check(sql`price > 0`, 'products_price_positive')
+const code = text().check(sql`length(${sql.ident('code')}) > ${sql.lit(2)}`)
+```
+
+Two `.check()` calls on one column are two `pg_constraint` rows, not an overwrite. A bind parameter
+in the fragment is refused with a sentence: a `CHECK` is stored in the catalog as a parsed
+expression, so there is nowhere for a `$n` to go, and without the check the failure would surface as
+a `42P02` from PostgreSQL three steps and one shadow database away from the line that wrote it. Write
+the value into the template as SQL text, or use `sql.lit(...)` for a number or a boolean.
+
+### `.array()`
+
+```ts
+import { text } from 'pg-prime/schema'
+
+const tags = text().array() // text[], read as string[]
+const maybeTags = text().nullable().array() // text[], read as string[] | null
+```
+
+The element type is the column's own type **without** its `| null`: a nullable `text[]` is
+`string[] | null`, never `(string | null)[]`. One `NOT NULL` in the DDL cannot mean two different
+things, and `.nullable()` set the column, not the element.
+
+Calling `.array()` twice appends a second `[]` to the declared type, and the codec is resolved once
+either way — PostgreSQL has no distinct multi-dimensional array *type*, so `text[]` and `text[][]`
+are both OID 1009 and dimensionality is a property of the value.
+
+### `.$type<T>()`
+
+Narrow-only: `T` must be a subtype of the column's own non-null type, and the `| null` is re-attached
+afterwards.
+
+```ts
+import { jsonb, text } from 'pg-prime/schema'
+
+type UserPrefs = { theme: 'light' | 'dark'; digest: 'daily' | 'off' }
+type Email = string & { readonly __brand: 'Email' }
+
+const prefs = jsonb().$type<UserPrefs>()
+const email = text().$type<Email>()
+```
+
+Widening is refused, which is the difference between this and a cast:
+
+{/* docs: expect-error */}
+```ts
+import { text } from 'pg-prime/schema'
+
+// `number` does not extend `string`
+const bad = text().$type<number>()
+```
+
+Constraining against the bare read type rather than the non-null one would let
+`text().nullable().$type<'a' | 'b'>()` typecheck and then drop the `| null` the DDL still carries —
+order-dependent, and a `NOT NULL` violation at insert time.
+
+### `.comment()` and `.renamedFrom()`
+
+`.comment(text)` emits `COMMENT ON COLUMN`. `.renamedFrom(old)` is an annotation rather than an
+action: it says what the generator should *consider*, and `generate` fires it only when the old name
+exists in the live catalog and the new one does not. That makes it idempotent, so it is safe to leave
+in the source for ever and safe to delete after the deploy, with no codemod either way. The same
+annotation exists at table level as the `renamedFrom(...)` extra, and on `pgSchema`, `pgEnum`,
+`pgDomain` and `pgSequence` as a `{ renamedFrom }` option.
+
+## Table extras
+
+The third argument is a callback returning an array of tagged nodes. It is handed this table's own
+column references, so nothing is named by string twice.
+
+```ts
+import {
+  check,
+  clusterOn,
+  comment,
+  foreignKey,
+  index,
+  pgTable,
+  primaryKey,
+  renamedFrom,
+  unique,
+  uniqueIndex,
+} from 'pg-prime/schema'
+import { sql } from 'pg-prime/sql'
+
+const orgs = pgTable('orgs', (t) => ({ id: t.uuid().primaryKey() }))
+
+const invoices = pgTable(
+  'invoices',
+  (t) => ({
+    orgId: t.uuid(),
+    seq: t.integer(),
+    total: t.integer(),
+    createdAt: t.timestamptz(),
+  }),
+  (t) => [
+    primaryKey({ name: 'PK_Invoices', columns: [t.orgId, t.seq] }),
+    unique('invoices_total_key').nullsNotDistinct().on(t.total),
+    check('invoices_total_positive', sql`${t.total} >= 0`),
+    foreignKey({
+      name: 'invoices_org_fk',
+      columns: [t.orgId],
+      references: () => [orgs.cols.id],
+      onDelete: 'restrict',
+      deferrable: true,
+    }),
+    index('invoices_created_idx').on(t.createdAt),
+    uniqueIndex('invoices_seq_idx').on(t.seq),
+    clusterOn('invoices_created_idx'),
+    comment('One row per invoice.'),
+    renamedFrom('bills'),
+  ],
+)
+```
+
+### Keys and constraints
+
+`primaryKey(t.a, t.b)` is the positional form and lets PostgreSQL choose the name it would have
+chosen anyway, `<table>_pkey`. `primaryKey({ name, columns })` names it, which matters more than it
+looks: a database adopted from another tool routinely names its primary keys `PK_Something`, and
+without the named form the first generated migration renames every primary key in the database.
+
+`unique(name?)` builds a UNIQUE **constraint** and `uniqueIndex(name)` builds a unique **index**.
+Both spellings exist because both objects exist: a constraint is a `pg_constraint` row that a foreign
+key can point at, an index is not, and `pg_dump` prints the two differently. `unique()`'s name is
+optional and falls back to `<table>_<cols>_key`, and `.nullsNotDistinct()` makes two NULLs collide
+instead of both being allowed — PostgreSQL 15 and up, which is the floor.
+
+`check(name, fragment)` takes a **mandatory** name, unlike the column method. PostgreSQL's own
+default for a multi-column check is the bare `<table>_check`, which collides the moment a second one
+is declared.
+
+`foreignKey({ columns, references, … })` is the composite and self-referencing spelling. `references`
+is a thunk returning an array, paired positionally with `columns`, for the same reason
+`.references()` takes one. It is named `references` and not the design sketch's `foreignColumns`
+because the thunk is the load-bearing part.
+
+### Indexes
+
+`index(name, options?)` and `uniqueIndex(name, options?)` return a builder whose `.on(...)` produces
+the node. The four whole-index options can be passed either way round:
+
+```ts
+import { index, pgTable, uniqueIndex } from 'pg-prime/schema'
+import { sql } from 'pg-prime/sql'
+
+const docs = pgTable(
+  'docs',
+  (t) => ({
+    id: t.bigint().primaryKey(),
+    body: t.text(),
+    tag: t.text().nullable(),
+    vec: t.raw('vector(3)'),
+  }),
+  (t) => [
+    // as options…
+    uniqueIndex('docs_tag_idx', {
+      using: 'gin',
+      where: sql`${t.tag} is not null`,
+      include: [t.body],
+      nullsNotDistinct: true,
+    }).on(t.tag),
+
+    // …or as chained methods; the two produce the identical node
+    uniqueIndex('docs_tag_idx2')
+      .using('gin')
+      .where(sql`${t.tag} is not null`)
+      .include(t.body)
+      .nullsNotDistinct()
+      .on(t.tag),
+
+    // per-column options are item objects
+    index('docs_body_idx').on(t.id, {
+      column: t.body,
+      desc: true,
+      nulls: 'last',
+      opclass: 'text_pattern_ops',
+    }),
+
+    index('docs_vec_idx').using('hnsw').on({ column: t.vec, opclass: 'vector_cosine_ops' }),
+  ],
+)
+```
+
+The name comes first because an index's name is the thing a migration renames. A plain column
+reference and an item object may be mixed in one `.on(...)`; the plain form fills the options in with
+"not stated", so the `CREATE INDEX` emitted for an index that uses none of them is byte identical to
+what it was before they existed. A partial index's `where` is a fragment, and rejects a bind
+parameter for the same reason a `CHECK` does.
+
+Per-column `desc` / `nulls` / `opclass` are item objects rather than methods on the column reference
+(`t.b.desc().nullsLast()`, which is how design/05 sketched them). `Ref` is the hottest type in the
+package — it is what the pre-computed references slot holds for every column of every table — and
+three more methods on it would be paid for by every schema in every program, for a feature that
+appears in a handful of index declarations. The item object costs nothing at the type level and says
+exactly the same thing.
+
+Not built, and worth naming so the gap is a row rather than an absence: `.with({ … })` storage
+parameters, `.concurrently(false)`, `.tablespace()`, and **expression** indexes. `pg-prime pull`
+records an expression index as unsupported rather than approximating it.
+
+### Table options and metadata
+
+`comment('…')` emits `COMMENT ON TABLE` and `renamedFrom('old')` is the table-level rename
+annotation. `clusterOn('idx')` emits `ALTER TABLE … CLUSTER ON`, and it is here because
+`pg_index.indisclustered` is a fact the differ models: a fact that is diffed and cannot be declared
+is a fact that gets dropped, and all 68 of AdventureWorks' tables carry one.
+
+### Partitions
+
+`partitionBy(strategy, key)` goes on the parent and `partitionOf(parent, bound, opts?)` on each
+child:
+
+```ts
+import { partitionBy, partitionOf, pgTable, primaryKey } from 'pg-prime/schema'
+
+const events = pgTable(
+  'events',
+  (t) => ({ id: t.bigint(), at: t.timestamptz(), payload: t.jsonb() }),
+  (t) => [primaryKey(t.id, t.at), partitionBy('range', 'at')],
+)
+
+const events2026 = pgTable(
+  'events_2026',
+  (t) => ({ id: t.bigint(), at: t.timestamptz(), payload: t.jsonb() }),
+  () => [partitionOf('events', "FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')")],
+)
+```
+
+The strategy is `'range'`, `'list'` or `'hash'`. The key travels as **text**, not as column
+references, because PostgreSQL's own `pg_get_partkeydef` is an expression — `RANGE (date_trunc(
+'month', at))` is legal — and a column-list-only spelling would round-trip some partitioned tables
+and silently mangle the rest. The bound is verbatim too, and `'DEFAULT'` is a bound.
+
+A child is emitted as a standalone `CREATE TABLE` followed by
+`ALTER TABLE parent ATTACH PARTITION child …`, rather than as `CREATE TABLE … PARTITION OF`. That is
+`pg_dump`'s own form and the only one that round-trips on PostgreSQL 18, where `PARTITION OF` clones
+the parent's constraints *including their names* and a `NOT NULL` is catalogued as a named
+`pg_constraint` row — so the next `generate` would plan a rename of an inherited constraint, which
+PostgreSQL refuses.
+
+`partitions({ manage, unknown })` — adopting partitions somebody else's cron job created — is not
+built.
+
+## Naming
+
+Database names default from the TypeScript key through a casing strategy, and the default is
+`snakeCase`: `authorId` becomes `author_id`, `HTTPStatus` becomes `http_status`.
+
+{/* docs: use=catalogue */}
+```ts title="what-the-names-become.ts"
+import { compileOnly } from 'pg-prime'
+import { schema } from './catalogue.js'
+
+const db = compileOnly(schema)
+
+console.log(
+  db
+    .from(db.h.products)
+    .select((t) => ({ id: t.products.id, supplier: t.products.supplierId }))
+    .compile().sql,
+)
+// select "products"."id" as "id", "products"."supplier_id" as "supplier"
+// from "public"."products" as "products"
+```
+
+`compileOnly(schema)` is a handle with no database: it compiles and never executes, which is what a
+lint rule, a migration tool or a test that only wants the SQL needs.
+
+There are three ways to override the derived name, in increasing scope:
+
+```ts
+import { pgTable, snakeCase } from 'pg-prime/schema'
+
+// per column
+const a = pgTable('a', (t) => ({ authorId: t.bigint('fk_author') }))
+
+// per table, with any strategy you like
+const b = pgTable('b', (t) => ({ authorId: t.bigint() }), undefined, {
+  casing: (key) => key.toUpperCase(),
+})
+
+// …and the default is exported, so a custom strategy can fall back to it
+const c = pgTable('c', (t) => ({ authorId: t.bigint() }), undefined, {
+  casing: (key) => (key === 'authorId' ? 'author' : snakeCase(key)),
+})
+```
+
+Two keys that map to one database name are a `SchemaError` naming both and the strategy that produced
+the collision, because one of the two columns would otherwise be unreachable.
+
+`options.schema` puts the table in a schema other than the default. Where an *unqualified* object
+lands is a property of the migration run rather than of the registry, and defaults to `public`.
+
+## Standalone declarations
+
+Tables are not the only thing a database holds, and a fact the differ models but the DSL cannot
+declare is a fact the first generated migration **drops**. These five exist for that reason.
+
+The kit collects them from the schema module's own exports — `defineSchema` takes tables and
+relations only — so each one has to be `export`ed from the file the config's `schema` points at.
+
+### `pgSchema`
+
+A namespace factory bound to one PostgreSQL schema:
+
+```ts
+import { index, pgSchema } from 'pg-prime/schema'
+
+export const audit = pgSchema('audit', { renamedFrom: 'auditing' })
+
+export const eventKind = audit.enum('event_kind', ['created', 'deleted'])
+
+export const events = audit.table(
+  'events',
+  (t) => ({ id: t.uuid().primaryKey(), at: t.timestamptz(), kind: t.enum(eventKind) }),
+  (t) => [index('events_at_idx').on(t.at)],
+)
+```
+
+`audit.table(...)` is `pgTable(...)` with `{ schema: 'audit' }` already applied, and `audit.enum(...)`
+is `pgEnum(...)` with the same. The binding is what makes moving a schema a one-line edit rather than
+a find-and-replace over every table in the file. `.view()`, `.function()`, `.domain()` and
+`.sequence()` are not built; there is no IR for them yet.
+
+A cross-schema foreign key needs no extra ceremony. A column reference carries its table's schema, so
+`.references(() => events.cols.id)` from a table in `public` is unambiguous even when two schemas
+hold a table of the same name.
+
+### `pgEnum`
+
+```ts
+import { pgEnum, pgTable } from 'pg-prime/schema'
+import type { Infer } from 'pg-prime/schema'
+
+export const memberRole = pgEnum('member_role', ['owner', 'admin', 'member'], {
+  renamedFrom: 'org_role',
+})
+
+export type MemberRole = Infer<typeof memberRole> // 'owner' | 'admin' | 'member'
+
+export const memberships = pgTable('memberships', (t) => ({
+  id: t.uuid().primaryKey(),
+  role: t.enum(memberRole).default('member'),
+}))
+```
+
+A duplicate label is refused at declaration: PostgreSQL rejects it in `CREATE TYPE`, and the
+TypeScript union would silently collapse the two.
+
+An enum declared with no `{ schema }` lands in the emitter's default schema — deliberately **not** in
+the schema of whichever table happens to use it, because two tables in two schemas may share one enum
+and letting the placement follow the first user would make the DDL depend on registry order.
+
+Here is an enum end to end, with an array and a narrowed `jsonb` beside it:
+
+```ts title="enum-array-jsonb.ts"
+import { pgPrime } from 'pg-prime'
+import { defineSchema, pgEnum, pgTable } from 'pg-prime/schema'
+
+const memberRole = pgEnum('member_role', ['owner', 'admin', 'member'])
+
+type Prefs = { theme: 'light' | 'dark' }
+
+const members = pgTable('members', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  role: t.enum(memberRole).default('member'),
+  tags: t.text().array().default([]),
+  prefs: t.jsonb().$type<Prefs>().default({ theme: 'light' }),
+}))
+
+const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema: defineSchema({ members }),
+})
+
+await db.sql`create type member_role as enum ('owner', 'admin', 'member')`.execute()
+await db.sql`
+  create table members (
+    id    bigint generated always as identity primary key,
+    role  member_role not null default 'member',
+    tags  text[] not null default '{}',
+    prefs jsonb not null default '{"theme":"light"}'
+  )
+`.execute()
+
+const [row] = await db
+  .insertInto(db.h.members)
+  .values({ role: 'admin', tags: ['beta', 'staff'], prefs: { theme: 'dark' } })
+  .returning((t) => ({ role: t.members.role, tags: t.members.tags, prefs: t.members.prefs }))
+  .execute()
+
+// `role` is 'owner' | 'admin' | 'member', `tags` is string[], `prefs` is Prefs
+console.log(row) // { role: 'admin', tags: [ 'beta', 'staff' ], prefs: { theme: 'dark' } }
+```
+
+### `pgDomain`, `pgSequence`, `pgExtension`
+
+```ts
+import { pgDomain, pgExtension, pgSequence } from 'pg-prime/schema'
+
+export const email = pgDomain('email', 'text', {
+  notNull: true,
+  checks: [{ name: 'email_shape', expression: "VALUE ~ '^[^@]+@[^@]+$'" }],
+})
+
+export const docsIdSeq = pgSequence('docs_id_seq', {
+  dataType: 'integer',
+  start: '1000',
+  ownedBy: { table: 'docs', column: 'id' },
+})
+
+export const pgcrypto = pgExtension('pgcrypto')
+```
+
+Each returns a frozen plain object with a `kind` discriminant, and none of them introduces a type
+parameter, so none costs a single type instantiation.
+
+A domain's base type and default are **text**, in the server's own spelling
+(`'character varying(25)'`), because that spelling is what round-trips. A domain `CHECK` talks about
+`VALUE`, which is not a column and has no reference to interpolate, so it is text too rather than a
+`sql` fragment.
+
+`ownedBy` on a sequence is what a `serial` column is made of — a sequence owned by a column, plus a
+`DEFAULT nextval(...)` — and without it the sequence survives its table's `DROP`.
+
+An extension is declare-only: created if absent, never dropped. Its version is deliberately not
+declarable, because that is a property of what the DBA installed on the cluster and not of the schema
+in the repository.
+
+### `t.raw` — a column of a type the DSL has no builder for
+
+The typed builders cover eleven types; PostgreSQL has hundreds, plus every domain and composite a
+schema declares. The rule for that gap is that the escape hatch lives **inside** the model, or the
+un-modelled part becomes permanent drift:
+
+```ts
+import { pgTable } from 'pg-prime/schema'
+
+const legacy = pgTable('legacy', (t) => ({
+  code: t.raw('character varying(40)'),
+  doc: t.raw('xml').nullable(),
+  ip: t.raw('inet'),
+  label: t.raw('public."Name"', 'the_label'),
+}))
+```
+
+It is also what lets `pg-prime pull` emit a schema that round-trips a database it did not create: all
+four third-party corpora do, with an empty residue.
+
+The read type is `unknown`, deliberately. The type name is a string this package cannot reason about,
+so pretending to know what a `real` decodes to would be a lie the codec layer cannot honour. Narrow
+it with `.$type<T>()`.
+
+<Aside type="caution">
+Declaring a `t.raw` column and *querying* it are two different things. The query layer resolves a
+codec by the exact type name, so `t.raw('xml')` and `t.raw('inet')` work — the registry knows those
+names — while `t.raw('character varying(40)')` has none, and the first query built against that table
+throws `NoCodecError` naming the column. Register a codec under that name, or use `t.varchar()` where
+a builder exists. A table you migrate but never query needs neither.
+</Aside>
+
+## `defineSchema`
+
+```ts
+import { defineRelations, defineSchema, pgTable, REFS } from 'pg-prime/schema'
+
+const users = pgTable('users', (t) => ({ id: t.bigint().primaryKey().generatedAlways() }))
+const posts = pgTable('posts', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  authorId: t.bigint().references(() => users[REFS].id),
+}))
+
+const relations = defineRelations({ users, posts }, (r) => ({
+  users: { posts: r.many.posts() },
+  posts: { author: r.one.users() },
+}))
+
+export const schema = defineSchema({ users, posts }, relations)
+```
+
+`defineSchema(tables, relations?)` is the registry, and it gives you three things:
+
+- `schema.tables` and `schema.rels`, the records you passed;
+- `schema.h`, one **handle** per registry key. A handle knows which schema it belongs to, which is
+  what makes relations reachable from it: `db.from(db.h.posts)` has `posts.author`, where a bare
+  `pgTable(...)` value would silently have none. This is the one fixed cost per program that is
+  linear in the number of tables;
+- eager validation of the relations. A relation naming a table that is not in the registry, a
+  relation with the same name as a column of its parent, a `from` without a `to`, an ambiguous
+  foreign key, or a correlation between two types PostgreSQL has no `=` for — each is a `SchemaError`
+  on the import of the schema file, naming the candidates, rather than a wrong answer from the first
+  query that touches it.
+
+Relations produce **zero DDL**; they are purely a query-layer artifact.
+[Relations](/pg-prime/concepts/relations/) is the long version.
+
+## What the schema is for
+
+The same values are read by two very different consumers, and knowing which is which explains most of
+the design.
+
+### At runtime
+
+**Row types.** `Selectable<T>`, `Insertable<T>` and `Updateable<T>` — spelled `Row`, `Insert` and
+`Update` as well, and they are the same types — are computed once per table per program and then
+cached, so a hundred queries against `users` pay for `users`'s row shape once.
+
+```ts
+import { pgTable } from 'pg-prime/schema'
+import type { Insertable, Selectable, Updateable } from 'pg-prime/schema'
+
+const users = pgTable('users', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  email: t.text(),
+  name: t.text().nullable(),
+  active: t.boolean().default(true),
+}))
+
+type Row = Selectable<typeof users> // { id: bigint; email: string; name: string | null; active: boolean }
+type New = Insertable<typeof users> // { email: string; name?: string | null; active?: boolean }
+type Patch = Updateable<typeof users> // every writable column, all optional
+```
+
+The rule for `Insertable` is exactly this: a column is **absent** if it is `GENERATED ALWAYS`,
+**optional** if it is nullable or carries any kind of default, and **required** otherwise.
+
+**Codec resolution.** Each column's declared PostgreSQL type is turned into a codec once per (table,
+registry) pair and never per query. That codec drives the `::type` casts the compiler emits, the
+per-column cast inside a relation's `json_build_object`, the positional decoder, and the shape check
+against the server's own OIDs. A column whose type has no codec fails at that seam, once, naming the
+column — never mid-flight with a statement already at the server.
+
+**Constraint errors as schema objects.** The declared constraints are indexed by name, so an
+integrity error arrives carrying the *objects* it violated rather than a string you have to compare:
+
+{/* docs: use=catalogue */}
+```ts title="constraint-errors.ts"
+import { isUniqueViolation, pgPrime } from 'pg-prime'
+import { products, schema } from './catalogue.js'
+
+const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema })
+
+await db.sql`
+  create table suppliers (
+    id      bigint generated always as identity primary key,
+    name    text not null,
+    country text not null default 'GB'
+  )
+`.execute()
+
+await db.sql`
+  create table products (
+    id          bigint generated always as identity primary key,
+    supplier_id bigint not null references suppliers (id) on delete cascade,
+    sku         text not null unique,
+    name        text not null,
+    description text,
+    price       numeric not null,
+    tags        text[] not null default '{}',
+    created_at  timestamptz not null default now()
+  )
+`.execute()
+
+const [acme] = await db
+  .insertInto(db.h.suppliers)
+  .values({ name: 'Acme' })
+  .returning((t) => ({ id: t.suppliers.id }))
+  .execute()
+
+const insert = () =>
+  db
+    .insertInto(db.h.products)
+    .values({ supplierId: acme!.id, sku: 'W-1', name: 'Widget', price: '1.00' })
+    .execute()
+
+await insert()
+
+try {
+  await insert()
+} catch (e) {
+  console.log(isUniqueViolation(e, products.cols.sku)) // true
+  console.log(isUniqueViolation(e, products.cols.name)) // false
+}
+```
+
+`isUniqueViolation(e, products.cols.sku)` survives a rename of the constraint, because it never
+mentions one — and renaming the *column* becomes a compile error instead of a silent change of
+meaning. The same shape exists for `isForeignKeyViolation`, `isCheckViolation` and
+`isNotNullViolation`; [Errors](/pg-prime/guides/errors/) has the whole tree.
+
+### At migration time
+
+`@pg-prime/kit` imports the same module and reads the same values structurally — it never imports
+`pg-prime` at runtime. It collects the tables (from a `defineSchema(...)` registry, or from the
+module's `pgTable(...)` exports when there is none) and the standalone declarations from the module's
+exports, emits DDL for all of it, runs that on a **shadow** database and reads the catalog back. What
+is compared is therefore catalog against catalog: PostgreSQL's own normalization of your DDL rather
+than a guess at it, and anything the DSL can say that PostgreSQL disagrees with fails at generate
+time on a throwaway database instead of at apply time on yours.
+
+Two consequences are worth carrying away:
+
+- **Nothing `$`-prefixed reaches the IR.** A `.$type()`, a `.$default()` and a `.$onUpdate()` are
+  invisible to `migrate generate`. If it is not in the DDL, it is not in the diff.
+- **A declaration the DSL cannot make is a difference the differ will remove.** That is why
+  `clusterOn`, `partitionBy`/`partitionOf`, `primaryKey({ name })`, the index options and the three
+  standalone object kinds exist at all: each is a fact the catalog carries, so a schema that cannot
+  say it produces a migration that drops it.
+
+[Migrations end to end](/pg-prime/guides/migrations/) picks the story up from there.

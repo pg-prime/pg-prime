@@ -3,4 +3,373 @@ title: The sql tag
 description: Fragments, typed fragments, identifier quoting, and the one unsafe escape hatch.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+Every builder eventually runs out of DSL. `sql` is the escape hatch, and it is designed so that
+using it does not cost you the two things the builder was giving you: parameterisation and a result
+type.
+
+```ts
+import { sql } from 'pg-prime'
+```
+
+There are four primitives, three of them safe and one of them named so you cannot use it by
+accident:
+
+| Primitive | Position | What happens to the input |
+|---|---|---|
+| `` sql`…${value}…` `` | a value | **Always** a bind parameter. Never text. |
+| `sql.ident(...parts)` | an identifier | Validated, then always quoted. |
+| `sql.lit(v)` | a literal | Non-strings only; a string here is refused. |
+| `sql.unsafeRaw(text)` | anything | Interpolated verbatim. |
+
+## Every hole is a parameter
+
+A value in a template hole becomes `$n`. Not "unless it looks like a number", not "unless it is a
+string of digits" — always, whatever its JavaScript type:
+
+```ts
+import { sql } from 'pg-prime'
+
+sql`x = ${1}` // x = $1
+sql`x = ${true}` // x = $1
+sql`x = ${null}` // x = $1
+sql`x = ${new Date()}` // x = $1
+sql`x = ${"'; drop table users --"}` // x = $1
+```
+
+That is a *nominal* decision, not a structural one. A `Fragment` is an opaque frozen handle; the
+syntax tree it stands for lives in a module-private `WeakMap` keyed by that handle. `JSON.parse`
+can produce an object that looks exactly like a fragment, but it cannot produce an object that is
+already a key in that map — so a payload arriving from a request body is data, and data is `$n`.
+This is the shape of Kysely's GHSA-pv5w advisory, which bites "even in fully type-safe code";
+here the answer is that provenance, not shape, decides.
+
+Two more consequences of the handle-plus-`WeakMap` representation. Fragments carry no positional
+state, so one fragment can be reused across queries and twice within one query — `$n` numbering is
+assigned once, by the compiler, in a single left-to-right pass. And a fragment holds no strong
+reference from the library, so it is collectable.
+
+`undefined` in a hole is refused rather than bound. `undefined` became `param(undefined)`, which
+encoded as SQL `NULL`, which meant a mistyped property (`row.usr_id`) compiled to `= NULL`, which
+is never true — a query that returned zero rows with no error anywhere. `null` is still accepted,
+because it is the explicit spelling of the same intent.
+
+## Giving a fragment a result type
+
+`.as(codec)` is the only way to give a fragment a TypeScript type, and it supplies the decoder at
+the same moment. There is no `` sql<number>`…` ``: the tag declares **zero** type parameters, so a
+bare cast fails to compile.
+
+{/* docs: expect-error */}
+```ts
+import { sql } from 'pg-prime'
+
+// Expected 0 type arguments, but got 1.
+const total = sql<number>`sum(amount)`
+```
+
+A bare fragment is deliberately not projectable either. You cannot put one in a `select` without
+choosing a codec, because a projection key with no decoder is exactly the thing the type would be
+lying about:
+
+{/* docs: use=blog expect-error */}
+```ts
+import { sql } from 'pg-prime'
+
+await db
+  .from(db.h.posts, 'p')
+  .select((t) => ({ length: sql`char_length(${t.p.body})` }))
+  .execute()
+```
+
+```text
+TS2741: Property '[OUT]' is missing in type 'Fragment<unknown>' but required in type 'Projectable'.
+```
+
+Add the codec and it compiles, decodes, and takes its place in the operator type system —
+`.as(textCodec)` is a `text` operand, so it can be the left-hand side of `ilike`; `.as(int4Codec)`
+is an `int4` one:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="fragment-in-a-query.ts"
+import { boolCodec, eq, int4Codec, sql, textCodec } from 'pg-prime'
+
+const [alice] = await db
+  .insertInto(db.h.users)
+  .values({ email: 'alice@example.com', name: 'Alice' })
+  .returning((t) => ({ id: t.users.id }))
+  .execute()
+
+await db
+  .insertInto(db.h.posts)
+  .valuesMany([
+    { authorId: alice!.id, title: 'Hello', body: 'the quick brown fox', published: true },
+    { authorId: alice!.id, title: 'Draft', body: 'short', published: false },
+  ])
+  .execute()
+
+const rows = await db
+  .from(db.h.posts, 'p')
+  .innerJoin(db.h.users, 'a', (t) => eq(t.p.authorId, t.a.id))
+  .where((t) => sql`char_length(${t.p.body}) > ${10}`.as(boolCodec))
+  .select((t) => ({
+    title: t.p.title,
+    author: sql`upper(${t.a.name})`.as(textCodec),
+    length: sql`char_length(${t.p.body})`.as(int4Codec),
+  }))
+  .execute()
+
+console.log(rows) // [ { title: 'Hello', author: 'ALICE', length: 19 } ]
+```
+
+`rows` is `{ title: string; author: string; length: number }[]`. Notice what went into the holes:
+`t.a.name` is a column reference and renders as the identifier, `10` is a value and renders as
+`$1`. The same tag, the same syntax, and the difference is what the thing *is*.
+
+### `.as()` is a claim, and the claim is checked
+
+A codec says "the server will return this type". pg-prime compares that against the `RowDescription`
+the server actually sends, before decoding a single row, and raises `CodecMismatchError` when they
+disagree — with the file and line of the `.as()` call, because that is where the claim was made:
+
+```text
+CodecMismatchError: column "total" was declared as codec `int4` (oid 23)
+but Postgres returned `numeric` (oid 1700).
+  at src/reports.ts:42:19
+Fix: use codecs.numeric, or cast in SQL.
+```
+
+The call site costs one stack capture per `.as()` call — not per row, not per execution — and it is
+skipped entirely when `NODE_ENV` is `production`. The check itself is `assertShape`, on by default;
+`pgPrime({ assertShape: false })` removes it.
+
+### `.asUnsafe<T>()`, and what it costs
+
+`asUnsafe` is the greppable version of a cast: a result type with **no codec and no decode
+guarantee**.
+
+```ts
+import { sql } from 'pg-prime'
+
+const at = sql`now()`.asUnsafe<Date>()
+```
+
+The value is still decoded correctly — with no declared codec the decoder resolves the column
+dynamically from its `RowDescription` OID, which is the same registry a column goes through. What
+you give up is the compile-time link between the type you wrote and the decoder that will run, so
+nothing checks the `Date` above; if the expression changes to return `text`, you get a string typed
+`Date` and no error anywhere. The other cost is quieter: `asUnsafe` sets the fragment's PostgreSQL
+type slot to `'unknown'`, which is in no operator gate, so an `asUnsafe` fragment can never be a
+class-specific operand. `.as(codec)` can.
+
+## Composing fragments
+
+A fragment in a hole is spliced structurally — no string round-trip, and parameters renumber
+themselves:
+
+```ts
+import { sql } from 'pg-prime'
+
+const lowered = sql`lower(${'ADA'})`
+const predicate = sql`${lowered} = ${'ada'}` // lower($1) = $2
+```
+
+`sql.join(fragments, separator?)` builds a list, with `, ` as the default separator and
+`sql.empty` for the empty case:
+
+```ts
+import { sql } from 'pg-prime'
+
+const columns = sql.join(['id', 'created at'].map((n) => sql.ident(n))) // "id", "created at"
+const conditions = sql.join([sql`a`, sql`b`], sql` and `) // a and b
+```
+
+`sql.lit(v)` inlines a literal, and takes `number | bigint | boolean | null` only. A string is
+refused, at the type level and again at runtime, because escaping string literals in-band is the
+root cause of Kysely's GHSA-8cpq-38p9-67gx and there is deliberately no string-literal quoter on
+the query path to get wrong. A string in a query position is always a bind parameter.
+
+## Identifiers
+
+`sql.ident` is the one remaining sanitizer in the library. The other two positions that produced
+CVEs elsewhere are designed out rather than patched — JSON paths are bind parameters, and `sql.lit`
+refuses strings — which leaves identifier quoting, implemented in about fifteen lines and fuzzed
+against a live PostgreSQL with a dual oracle (`format('%I')` plus a `CREATE TEMP TABLE` round trip).
+
+Five rules, all enforced:
+
+1. **Parts, never a dotted string.** `sql.ident('public', 'my.table')` is `"public"."my.table"` —
+   two identifiers, the second of which contains a dot. `sql.ident('a.b')` is one identifier called
+   `a.b`. No overload anywhere splits a string on `.`, because that overload is precisely how an
+   attacker turns one identifier into two.
+2. **Always quote.** There is no "is this a safe bare identifier" fast path, because that is where
+   `quote_ident`-shaped bugs live and quoting is free.
+3. **Escape by doubling `"`.** Backslashes are left alone: PostgreSQL, unlike MySQL, performs no
+   backslash processing inside a quoted identifier, and doubling one here would mangle the name
+   rather than protect it.
+4. **Reject rather than mangle.** See below.
+5. **Nothing else is transformed** — no case folding, no trimming, no Unicode normalization. NFC
+   would make two *distinct* PostgreSQL identifiers compare equal.
+
+A part is rejected when it is not a string, is empty, contains U+0000, contains a lone UTF-16
+surrogate, or exceeds `MAX_IDENT_BYTES` (63, measured in UTF-8 bytes). Each raises
+`InvalidIdentifierError`, which carries the offending `part`, its `index` in the call, and a
+`reason` you can branch on: `'not-a-string' | 'empty' | 'nul-byte' | 'lone-surrogate' |
+'too-long' | 'no-parts'`.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="identifiers.ts"
+import { InvalidIdentifierError, quoteIdentPath, sql } from 'pg-prime'
+
+// A column name chosen at runtime, validated and quoted.
+const column = 'created_at'
+const rows = await db.sql`select ${sql.ident(column)} as at from users limit 1`.execute()
+console.log(rows.length) // 0 — no users yet, but the statement was valid
+
+// Parts, never a dotted string.
+console.log(quoteIdentPath(['public', 'users'])) // "public"."users"
+console.log(quoteIdentPath(['public.users'])) // "public.users"
+
+// 64 UTF-8 bytes is one too many.
+try {
+  sql.ident('x'.repeat(64))
+} catch (e) {
+  if (e instanceof InvalidIdentifierError) {
+    console.log(e.reason, e.index) // 'too-long' 0
+  }
+}
+```
+
+The 63-byte limit is a rejection and not a truncation, and that is a correctness decision rather
+than a pedantic one. PostgreSQL's `NAMEDATALEN` is 64, so it silently clips a longer name to 63
+bytes — which means two distinct identifiers sharing a 63-byte prefix collapse into the same
+catalog name. A builder that truncated would emit a query that silently addressed the wrong object.
+`format('%I')` does not truncate either; it quotes the full string and lets the parser clip it
+later, and the fuzz suite asserts that divergence explicitly rather than papering over it.
+
+`quoteIdentPart(part, index?)` and `quoteIdentPath(parts)` are the same validators exposed as plain
+functions returning strings, for code that builds DDL or a diagnostic rather than a fragment.
+`isValidIdentPart(part)` is the non-throwing probe.
+
+## `sql.unsafeRaw`
+
+`sql.unsafeRaw(text)` interpolates its argument verbatim into the SQL. It is the only primitive in
+the library that does, and the name is the documentation.
+
+```ts
+import { sql } from 'pg-prime'
+
+declare const ascending: boolean
+
+const direction = ascending ? 'asc' : 'desc'
+const ordered = sql`order by created_at ${sql.unsafeRaw(direction)}`
+```
+
+What it disables is everything above: no parameterisation, no identifier validation, no length
+check, no quoting. Whatever you pass becomes SQL.
+
+<Aside type="caution">
+`sql.unsafeRaw` must never see user input. Not a request body, not a query string, not a header,
+not a value that came from the database having been put there by a user. If the text is chosen at
+runtime, it must be chosen from a set your code owns — a lookup table, a ternary, a `switch` — and
+never assembled from a value you did not write.
+</Aside>
+
+Two things make it auditable. `Compiled.meta.usedUnsafeRaw` is `true` for any statement that
+contains one, so a lint rule or a test can assert that a code path does not use it; and outside
+production the fragment records the call site that created it, so the statement can name where its
+raw text came from. Both exist because the honest position is that this primitive is sometimes
+necessary and always worth grepping for.
+
+## `db.sql` — the fragment-only statement
+
+`db.sql` is a fragment you can run. It exists because a statement whose result types only the
+server knows is the one path with no static decode plan — which is also the only path the
+description cache serves.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="raw-statement.ts"
+await db
+  .insertInto(db.h.users)
+  .valuesMany([
+    { email: 'alice@example.com', name: 'Alice' },
+    { email: 'bob@example.com', name: 'Bob' },
+  ])
+  .execute()
+
+const domain = 'example.com'
+
+const stmt = db.sql`
+  select count(*)        as n,
+         max(created_at) as newest
+  from users
+  where email like ${`%@${domain}`}
+`
+
+// The domain is a parameter; it never reached the SQL text.
+console.log(stmt.toSQL().sql.includes('$1')) // true
+console.log(stmt.toSQL().params) // [ '%@example.com' ]
+
+const row = await stmt.executeTakeFirst()
+const n: unknown = row?.['n']
+const newest: unknown = row?.['newest']
+
+console.log(typeof n) // 'bigint' — int8, decoded from the OID
+console.log(newest instanceof Date) // true — timestamptz
+```
+
+Five terminals: `execute()`, `executeTakeFirst()`, `stream(opts?)`, `explain(opts?)` and `toSQL()`.
+A raw statement is still a query — it gets the same start/end/error events, the same slow-query
+record, the same error mapping and the same per-statement timeout as a builder query.
+
+Three things it deliberately lacks, and it is worth knowing which:
+
+- **The row type is `Record<string, unknown>`.** Not `sql<T>`: a type parameter with no codec is a
+  lie, and one codec on the whole fragment cannot describe a row of five columns. The values are
+  still decoded by OID through the registry, so `n` above really is a `bigint` and `newest` really
+  is a `Date` — what is missing is the compile-time name for it, not the correctness.
+- **Rows are keyed by field name.** This is the one place in the library that is not positional, so
+  `select u.id, p.id` loses one of them, exactly as `pg`'s object mode does. Alias your columns.
+- **No placeholders, no `nest`, no relations, no chunking.** Those are the builder's, and a second
+  half-builder here would be a second thing to keep honest.
+
+If you want a hand-written `FROM` item that *is* fully typed and fully decoded, that is `fromRaw`,
+which takes a fragment plus an explicit column-to-codec map:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="from-raw.ts"
+import { int4Codec, sql } from 'pg-prime'
+
+const series = await db
+  .fromRaw(sql`generate_series(1, 3)`, { n: int4Codec }, { alias: 'g' })
+  .select((t) => ({ n: t.g.n }))
+  .execute()
+
+console.log(series) // [ { n: 1 }, { n: 2 }, { n: 3 } ]
+```
+
+## Where a fragment is accepted
+
+| Position | Spelling |
+|---|---|
+| A projection | `.select((t) => ({ k: sql`…`.as(codec) }))`, and the same in `.returning()` |
+| A predicate | `.where(…)`, `.having(…)`, a join's `on`, `onConflict(...).where(…)` |
+| An operand | either side of an operator, wherever an `Expr` goes |
+| A `FROM` item | `db.fromRaw(frag, shape, opts?)` |
+| A whole statement | ``db.sql`…` `` |
+| A column `CHECK` | `t.integer().check(sql`…`)` |
+| A table `CHECK` | `check('name', sql`…`)` in the extras callback |
+| A partial index | `index('name').where(sql`…`)` |
+
+The last three are DDL positions, and they are stricter: a `CHECK` expression is stored in the
+catalog as a parsed expression, so it can never carry a `$n`. A fragment used there may contain SQL
+text, `sql.ident(...)`, `sql.lit(...)` and column references, and a bind parameter is refused with
+a message that says so. A column default is not a fragment position at all — `.defaultSql(expr)`
+takes raw SQL text.
+
+## Where to go next
+
+- [Queries](/pg-prime/guides/queries/) — what the builder covers before you need this page.
+- [Codecs](/pg-prime/concepts/codecs/) — what `.as(codec)` picks from, and the decode defaults.
+- [pg-prime/sql](/pg-prime/reference/sql/) — every export of the `sql` entry point.

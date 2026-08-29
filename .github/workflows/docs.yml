@@ -1,0 +1,72 @@
+# Publish the documentation site (design/08 §6.4, design/12 §4 D) to GitHub Pages.
+#
+# ─── OPERATOR STEP, ONCE ─────────────────────────────────────────────────────
+# This workflow cannot deploy until Pages is enabled on the repository:
+#
+#   Settings → Pages → Build and deployment → Source: **GitHub Actions**
+#
+# Until then the `deploy` job fails with `Get Pages site failed` — loudly, on `main`, which is the
+# intended behaviour: it is one setting, not a silent degradation. Nothing else is needed; the
+# permissions below are already what `deploy-pages` requires. Recorded in docs/README.md and
+# RELEASING.md.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The gates live in `ci.yml`'s `docs` job, not here: a page whose code does not compile must fail a
+# pull request, not a deployment. This workflow only builds and publishes what already passed.
+
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'tools/pooler-matrix.mjs'
+      - 'packages/**'
+      - '.github/workflows/docs.yml'
+  # So the site can be republished without a commit — after enabling Pages, for instance.
+  workflow_dispatch:
+
+# `contents: read` to check out, `pages: write` + `id-token: write` for deploy-pages' OIDC handshake.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; do not cancel one that is mid-flight, because a half-published site is
+# worse than a stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build the site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The packages, because `tools/pooler-matrix.mjs` reads POOLER_PROFILES out of the BUILT
+      # `pg-prime` and the site's own links are checked against it.
+      - run: pnpm build
+      - uses: actions/configure-pages@v5
+      - run: pnpm docs:build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/dist
+
+  deploy:
+    name: deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

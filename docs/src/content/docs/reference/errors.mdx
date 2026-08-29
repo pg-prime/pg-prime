@@ -1,6 +1,35 @@
 ---
 title: Errors
 description: The error class tree and every error type pg-prime throws.
+apiEntry: pg-prime#.
 ---
 
-TODO
+### `UniqueViolationError`
+
+{/* docs: signature */}
+```ts
+class UniqueViolationError extends IntegrityConstraintError {
+  readonly constraint?: ConstraintRef
+  readonly table?: TableRef
+  readonly columns?: readonly ColumnRef[]
+}
+```
+
+### `IndeterminateCommitError`
+
+{/* docs: signature */}
+```ts
+class IndeterminateCommitError extends PgPrimeError {
+  readonly code: 'INDETERMINATE_COMMIT'
+}
+```
+
+### `ErrorContext`
+
+{/* docs: signature */}
+```ts
+interface ErrorContext {
+  readonly label?: string
+  readonly attempt?: number
+}
+```

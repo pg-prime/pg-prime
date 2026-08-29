@@ -3,4 +3,208 @@ title: The shadow ladder
 description: Four tiers of normalization, three of them built, and why the fourth is refused.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+Human-written DDL is in natural form. PostgreSQL stores canonical form. Diffing the two produces
+endless phantom diffs, so pg-prime never does it: the desired state is round-tripped through a real
+PostgreSQL before it is compared with anything. The database that round-trip runs in is the
+**shadow**, and the ladder is how one is obtained on a server that will not necessarily let you
+create one.
+
+## PostgreSQL is the oracle
+
+Every migration engine needs an answer to "what does this declaration actually mean". pg-prime's
+answer is to execute the declaration and read the result, because the alternative — a second model
+of PostgreSQL's canonicalization, maintained in TypeScript — is exactly the thing that gives every
+parse-only differ its phantom diffs.
+
+Three ordinary cases, none of them exotic:
+
+- **A type is re-spelled.** `t.timestamptz()` emits `timestamptz`; the catalog says
+  `timestamp with time zone`, and that is what the generated migration contains. `varchar(30)` comes
+  back as `character varying(30)`.
+- **A default is re-printed.** `DEFAULT 'US'` on a `text` column is stored as `'US'::text`. Compare
+  the two as strings and you have a difference on every run, for ever.
+- **An index has a canonical form.** `pg_get_indexdef` rewrites your `CREATE INDEX` into
+  `USING btree (…)` with its own spacing, its own parenthesisation, and the operator class made
+  explicit where it is not the default.
+
+Because both sides of the diff are read by the same extractor out of the same kind of catalog, none
+of that reaches the diff. What reaches the diff is what changed.
+
+## The four tiers
+
+| Tier | Mechanism | Selected when |
+|---|---|---|
+| **1** | a shadow database URL you supply | `--shadow postgres://…`, or `shadow: { url }` in the config |
+| **2** | `CREATE DATABASE pgprime_shadow_<8 hex>` on the same cluster, dropped afterwards | the role has `CREATEDB` |
+| **3** | `CREATE SCHEMA pgprime_shadow_<8 hex>_<name>` **inside the target database** | it does not |
+| **4** | `--offline` | never: [refused, with the reason](#tier-4-refused) |
+
+The ladder's design constraint is that it **never requires `CREATEDB`**. That is Prisma's single
+most-reported migration failure, and it is why tier 3 exists.
+
+### Tier 1: a URL you supply
+
+The managed schemas in that database are dropped and recreated before the desired state is loaded,
+and again when the run finishes. That is the same contract as Prisma's `SHADOW_DATABASE_URL`, said
+out loud: pg-prime emits a `shadow_url_reset` warning naming the database and the schemas it is
+about to reset, so nobody points it at something they care about by accident.
+
+Use this when you want the normalization traffic in a database of your own choosing — a scratch
+database in CI, or one on a different host from production.
+
+### Tier 2: `CREATE DATABASE`
+
+```sql
+CREATE DATABASE pgprime_shadow_b5d18627 TEMPLATE template0
+  ENCODING 'UTF8' LC_COLLATE 'en_US.utf8' LC_CTYPE 'en_US.utf8';
+```
+
+The target's `encoding`, `datcollate` and `datctype` are copied, and so is the ICU or builtin locale
+when the provider is one of those. This is not cosmetic: a shadow with a different `LC_COLLATE`
+normalizes index and constraint definitions differently, and every one of those differences is a
+phantom diff. The locale row is read as `to_jsonb(pg_database)` so that `daticulocale` (PG 15/16) and
+`datlocale` (PG 17+) are both found without a version table.
+
+`TEMPLATE template0` is required whenever the locale is stated explicitly, and it is also the
+spelling least likely to hit SQLSTATE `55006` — `CREATE DATABASE … TEMPLATE x` fails if *any* session
+is connected to the template, and nobody connects to `template0`. If it fires anyway, `auto` demotes
+to tier 3 rather than terminating somebody else's sessions.
+
+The shadow is dropped when the run ends.
+
+### Tier 3: temp schemas in the target database
+
+One schema per managed schema, created inside the database you are migrating:
+
+```sql
+CREATE SCHEMA pgprime_shadow_7f3a91c2_public;
+CREATE SCHEMA pgprime_shadow_7f3a91c2_billing;
+```
+
+This is the tier that makes managed PostgreSQL work — Supabase, Neon, a restricted RDS role — and
+the one no comparable tool has. It needs no privilege beyond what you already use to migrate. On
+`dispose` each schema is dropped `CASCADE` and then `pg_namespace` is **asserted** to be clean: a
+temp schema left behind in a user's database is the one failure this tier can cause that the other
+two cannot.
+
+It costs three things, and each is reported rather than hidden.
+
+**Names are remapped, and the map has to be reversed.** The emitter is always schema-qualified, so
+the map is applied at emit time and reversed on the extracted IR — over fact ids, edge endpoints, the
+four payload fields that embed server-produced qualified text (`column.type`, `column.default`,
+`constraint.definition`, `index.definition`) and the encoded id in `sequence.ownedBy`. A missed one
+is not cosmetic, because those fields are hashed. The mapped name keeps your original schema name in
+it when 63 UTF-8 bytes allow, and falls back to a positional `_s0`, `_s1` when they do not — never a
+truncation, because a truncated name is a map that cannot be reversed. The property this buys is
+asserted in the kit's own tests: **the tier-3 IR and the tier-2 IR of the same schema have the same
+fingerprint.**
+
+**An extension cannot be normalized here.** An extension belongs to the database, not to a schema,
+and `CREATE EXTENSION IF NOT EXISTS` matches on the extension's *name*, so writing one into a shadow
+schema would either no-op against the already-installed copy or claim an object the shadow cannot
+have. pg-prime emits it into your own schema and says so with a `shadow_extension_fixed_schema`
+warning naming the extension. The same constraint applies to the other fixed-schema objects — event
+triggers and roles — which degrade to [Tier-O observation](/pg-prime/concepts/tiers/#tier-o-observed).
+
+**The proof runs in a second temp-schema set.** There is no `CREATE DATABASE`, so there is nothing to
+clone; the D6 gate is not optional, so the current state is materialised into a second shadow set
+from the IR pg-prime already holds, the plan is applied there, and the result is extracted and
+diffed. The statements are **re-derived** from remapped IRs rather than text-substituted, because a
+whole-identifier substitution over generated SQL cannot tell `public` the schema from `'public'`
+inside a CHECK's string literal. The statement count of each stage is compared against the artifact's
+so the two plans cannot silently diverge. See [Proof and witness](/pg-prime/concepts/proof/).
+
+### Tier 4, refused
+
+`--offline` reaches the ladder and gets a typed error and exit `1`:
+
+```text frame="terminal"
+shadow tier 4 (--offline) is not implemented: the desired state cannot be normalized
+without a PostgreSQL to load it into, so a plan generated offline would compare human
+DDL against catalog DDL and diff forever. Use --shadow <url>, a role with CREATEDB, or
+the temp-schema tier.
+```
+
+This is the release's answer, not an omission.
+
+`IR(desired)` is a **function of a database**, by construction: emit the DSL as DDL, load it into a
+shadow, extract. That is the whole point of the ladder. A tier 4 would have to obtain `IR(desired)`
+some other way, and the only other way is the second model of PostgreSQL's canonicalization that the
+first section of this page rejects.
+
+[Checkpoints](/pg-prime/guides/checkpoints/) do not change this, which is worth stating now that they
+exist. A checkpoint holds the IR of a **past** state, so `--offline` could diff *current-as-recorded*
+against *checkpoint* — but it still cannot produce `IR(desired)` from TypeScript, and a `generate`
+that cannot see the desired state is not a `generate`. What checkpoints do buy is the ability to
+**name** the drifted objects on a fingerprint mismatch, and that is built.
+
+The case tier 4 was meant to serve — a managed PostgreSQL with no `CREATEDB` — is tier 3, and it is
+tested by creating a `NOCREATEDB NOSUPERUSER` role, asserting that role really does get
+`permission denied to create database`, and running the whole path as it. Tier 4 is for "no database
+reachable at all", and every command except `migrate lint` needs one anyway.
+
+## How the tier is chosen
+
+`--shadow` on the command line wins; then `shadow` in `pg-prime.config.ts`; then `auto`.
+
+```ts title="pg-prime.config.ts" no-run
+import { defineConfig } from '@pg-prime/kit'
+
+export default defineConfig({
+  schema: './schema.ts',
+  migrations: './migrations',
+  url: process.env['DATABASE_URL']!,
+  // 'auto' (the default) · 'createdb' · 'temp-schema' · { url } · 'offline'
+  shadow: 'temp-schema',
+})
+```
+
+`auto` decides in three steps:
+
+1. a URL was supplied → **tier 1**;
+2. `rolcreatedb OR rolsuper` on `current_user` → **tier 2** (demoting to tier 3 if `CREATE DATABASE`
+   raises `55006`);
+3. otherwise → **tier 3**.
+
+`--shadow createdb` and `--shadow temp-schema` pin a tier instead of choosing one, which is what you
+want in CI where "it worked on my machine because my role happened to have `CREATEDB`" is a real
+failure. `--shadow docker` is recognised and refused with a sentence: the kit has no testcontainers
+dependency, and both `createdb` and `temp-schema` need no Docker.
+
+`generate` always says which tier it used and why, on its first line:
+
+```text frame="terminal"
+migrate generate — app (shadow tier 2: the admin role has CREATEDB)
+  0000_init.sql  main  7 statements  txmode transactional
+  proof    passed
+  witness  passed
+```
+
+The tier is also stamped into the plan as `shadowTier`, so a reviewer reading a pull request can see
+how the migration in front of them was normalized.
+
+<Aside type="caution">
+Tier 3 does its work **inside your target database**. Nothing it creates is left behind — the drop is
+asserted, not assumed — but a `generate` against production is still a `generate` against production.
+Use `--shadow <url>` if that is not acceptable in your environment.
+</Aside>
+
+## One more thing the shadow gets right
+
+The schemas on the two sides do not otherwise agree about comments. A fresh tier-2 database's
+`public` carries initdb's `'standard public schema'` comment; a tier-3 shadow schema carries none;
+your real target carries whatever it carries. Since the DSL declares no schema comments, the desired
+state must not assert one — so the target's comment for every managed schema is mirrored onto its
+shadow counterpart after the load (`NULL` when the target has none). Tier-2 and tier-3 fingerprints
+stay byte-identical, and a target whose `public` comment was customised does not get a phantom
+`COMMENT ON SCHEMA` reset.
+
+## Where to go next
+
+- [The migration model](/pg-prime/concepts/migration-model/) — what the IR is and what a fingerprint
+  covers.
+- [Proof and witness](/pg-prime/concepts/proof/) — the clone the plan is replayed on.
+- [Adopting an existing database](/pg-prime/guides/adopting/) — `baseline`, `pull`, and what to do
+  first.

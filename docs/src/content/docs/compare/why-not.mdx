@@ -3,4 +3,203 @@ title: Why not X
 description: Where pg-prime differs from Drizzle, Prisma, Kysely and MikroORM — and what it took from each.
 ---
 
-TODO
+pg-prime is for teams who run **one** PostgreSQL in production, already read SQL, and treat a
+schema change as an operational event rather than a build step. It is three things: a schema you
+write as ordinary TypeScript values, a typed query builder that compiles to SQL you can read in
+`pg_stat_statements`, and a migration engine that diffs the live catalog and then proves its own
+output before any file reaches disk.
+
+The scope is the argument. PostgreSQL 15 to 18 and nothing else. Zero runtime dependencies and one
+optional peer — `pg`, needed only by the `connection:` form. ESM-only, MPL-2.0, TypeScript 5.9 or
+newer. Thirteen CLI commands. Every code sample on this site is compiled on TypeScript 5.9.3 and
+every example is executed against a real PostgreSQL in CI.
+
+## Who should not use it
+
+- **You need MySQL or SQLite**, now or plausibly later. There is no dialect layer to add one to,
+  and adding one would cost exactly the compromises this project exists to avoid.
+- **You want a data-mapper ORM** — entities, an identity map, a unit of work, `em.flush()`. That
+  architecture is deliberately absent, and [MikroORM](/pg-prime/compare/mikroorm/) is the
+  well-engineered version of it.
+- **You want a hosted studio** or a GUI over your data. There is none and there is not going to be
+  one.
+- **You are on CommonJS**, on TypeScript below 5.9, or on PostgreSQL 14 or older. All three are
+  hard floors rather than warnings.
+
+## The comparison
+
+Every figure in the other four columns comes from this repository's own survey of those libraries,
+carried out in **2026-08** against the versions named in the header row; the dossiers are in
+[`research/`](https://github.com/pg-prime/pg-prime/tree/main/research). They will drift, and where
+the survey did not record something the cell says so rather than guessing.
+
+| | Drizzle 0.45.2 / 1.0.0-rc.4 | Prisma 7.9.1 | Kysely 0.29.5 | MikroORM 7.1.11 | pg-prime |
+|---|---|---|---|---|---|
+| **Databases** | six dialects; drizzle-kit ships a payload for each | seven in v7; Prisma Next is PostgreSQL-first | four dialects | multi-database, behind a `Platform` layer | PostgreSQL 15–18, and nothing else |
+| **Schema** | TypeScript values (`pgTable`) | the `.prisma` DSL, compiled by `prisma generate` | none — a `Database` interface you write or generate | TypeScript values (`defineEntity`) | TypeScript values, compiled to an IR |
+| **Migrations: produced** | diff against a full-state snapshot JSON, regenerated per migration | diff against a shadow database that needs `CREATEDB` or superuser | not produced — you write every `ALTER TABLE` | diff entity metadata against introspected PostgreSQL, plus a committed snapshot | diff the live catalog against a shadow-normalised desired state |
+| **Migrations: verified** | not verified before writing; no advisory lock anywhere in either package | shadow-DB dry run for data loss; no replay-and-compare | not applicable | `migration:check` compares entities against the database | replayed on a clone and diffed again, then witnessed by `pg_dump`; nothing reaches disk unproven |
+| **Relational loading** | RQB v2 emits `LEFT JOIN LATERAL` + `json_agg`, one round trip — but aggregations are refused in `extras`, and the core builder returns flat rows you group by hand | `relationLoadStrategy: "join"` is `LATERAL` + `json_agg`, behind the `relationJoins` preview flag since 5.7.0 | no relation graph; `jsonArrayFrom` helpers, with the join predicate restated at every call site | `populate` plus `Loaded` hints; per-parent limiting forces `select-in` and returns a partial, readonly collection | a relation is an accessor on the query's scope, so nesting composes with joins, aggregates, `groupBy` and windows in one query |
+| **Transactions** | isolation, access mode, nested `SAVEPOINT`; the outer handle used inside the callback runs outside the transaction with no type-level signal; no `40001` retry | interactive transactions with isolation levels; `timeout` defaults to 5 000 ms; no savepoints; no retry helper despite offering `Serializable` | type-level savepoint stack and `never`-returning illegal methods; the handle is threaded by hand; no retry | isolation levels, savepoints, seven propagation modes; a rollback detaches the identity map, so a retry loop must discard the `EntityManager` | `Db`, `Tx` and `Session` mutually non-assignable; savepoints; `40001` retry with full jitter, on by default at repeatable read and serializable |
+| **RLS and `SET LOCAL`** | `pgPolicy`, `pgRole`, `withRLS()` and GRANTs are diffable entity kinds in the 1.0 line | no RLS in the schema (issue 12735); no supported `SET LOCAL` for the duration of a request (issue 5128); the community answer is `$extends` | no schema, so a policy is one untyped `sql` call | not recorded in the survey | policies are repeatable objects in the desired state; `tx.setLocal(...)` is a parameterised `set_config(…, true)` |
+| **Poolers** | `postgres-js` prepares statements by default, which breaks under PgBouncer transaction pooling | the `pgbouncer=true` workaround became the bug (issue 21799); the docs now say not to set it on PgBouncer 1.21 or newer | not recorded in the survey | not recorded in the survey | four declared profiles that only ever restrict; a refused capability is a `ConfigError` naming the profile |
+| **Type-check cost** | 41 150 schema instantiations at 0.44.4, 5 017 at 1.0.0-beta.1; the `.d.ts` surface grew 77% to 1.96 MB in the release meant to fix it | emitted per-model conditional types; the docs warn of "several minutes" past 50 tables; one generic default cost 32.8 M instantiations until 7.9.0 | 743 k instantiations at 80 tables and 60 queries, 4.57 M at 300 and 200 — superlinear in *schema* size | `Loaded` and `AutoPath` are the library's most expensive types; v7 cut `em.assign()` by up to 40% | per-query cost independent of schema size: the 300-table over 25-table ratio is 1.00 against a 1.15 CI gate |
+| **Runtime dependencies** | zero, and 47 optional peers; drizzle-kit unpacks to 95 MB across six dialect payloads | the CLI unpacks to 43.8 MB and pulls `mysql2` and `postgres`; the client to 78.4 MB; a Rust schema-engine binary is downloaded at install | zero dependencies and zero peers; 3.4 MB installed | `@mikro-orm/core` has none; a PostgreSQL install measured 21 packages and 8.0 MB, 3.4 MB of it Kysely | zero, plus one optional peer (`pg`) that only `connection:` resolves |
+| **Licence** | `drizzle-orm` Apache-2.0, `drizzle-kit` MIT; Drizzle Studio closed-source | not recorded | MIT | not recorded | MPL-2.0 |
+
+Two cells deserve their nuance restored, because a table flattens it:
+
+- **Drizzle's zero dependencies are real**, and were verified by unpacking the published tarball.
+  The 95 MB is `drizzle-kit`, the dev-time CLI, not what ships to production.
+- **Prisma's numbers are Prisma 7's.** `prisma-next@8.0.0-rc.1`, an RC at the time of the survey, is
+  a pure-TypeScript PostgreSQL-first rewrite that fixes several of them; on Prisma's own published
+  benchmark it is roughly 9× smaller and 5× faster than the version Prisma currently tells you to
+  run in production.
+
+## Drizzle
+
+The closest neighbour, and the one whose philosophy this project shares: schema as values, no
+identity map, no lazy loading, SQL you can predict. What it pays for six dialects is a DDL model
+that stops at their intersection — as of the 2026-08 survey it modelled no triggers, functions,
+domains, composite types, partitions, exclusion constraints or range types — and a migration runner
+with no advisory lock that wraps every pending file in one transaction, which makes
+`CREATE INDEX CONCURRENTLY` structurally impossible.
+[The full comparison](/pg-prime/compare/drizzle/).
+
+## Prisma
+
+The best ergonomics in the ecosystem, and the source of most of what people mean by "type-safe
+database access" in TypeScript: exact result narrowing from a literal `select`, `omit`, relation
+filters, machine-readable error codes, hand-editable SQL migrations. It is also the archive this
+project learned the most from — a closed DSL creates a permanent feature backlog, a five-second
+default transaction timeout is a production surprise, and a client-side pooler workaround can
+outlive the pooler bug and become the bug.
+[The full comparison](/pg-prime/compare/prisma/).
+
+## Kysely
+
+Not an ORM and not trying to be: a query builder with zero dependencies and the most sophisticated
+type-level architecture of any TypeScript database library. That architecture is the one pg-prime's
+type layer is descended from. What Kysely does not have is a schema — so no migrations, no diffing,
+no drift detection, no relation graph — and what it cannot avoid is four dialects showing up in its
+result types.
+[The full comparison](/pg-prime/compare/kysely/).
+
+## MikroORM
+
+The one genuinely different architecture here: a Doctrine-style data mapper with an identity map, a
+unit of work and snapshot-based change tracking. It is well engineered, its PostgreSQL support was
+the best of the multi-database ORMs at the time of the survey, and its v7 release independently
+arrived at three of this project's own constraints — Knex removed, zero core dependencies, an
+in-house migration runner. If your domain model wants `order.addLine(x)` to persist without a
+repository call, use MikroORM; that is not what this is.
+[The full comparison](/pg-prime/compare/mikroorm/).
+
+## What we took from each
+
+Almost none of this is original. The design documents credit these libraries by name, and the
+credit should survive into the documentation.
+
+### Drizzle
+
+**Schema-as-values, wholesale.** `pgTable` with chained column builders, the table-extras array
+form (their own final answer — the object form is deprecated), row types inferred from the table
+value rather than imported from a generated file, and a cast escape hatch for `jsonb`. The survey
+called `$inferSelect` / `$inferInsert` "the single best idea in Drizzle"; pg-prime's schema DSL is
+that idea with the multi-dialect tax removed and the nullability default inverted, because
+nullable-by-default was Drizzle's most-reported footgun.
+
+**The shape of a relational query.** RQB v2's `defineRelations` — one central relation graph, with
+`from`/`to` and a `through` for many-to-many — is what `defineRelations` here is named after, and
+its execution strategy is copied deliberately: `LEFT JOIN LATERAL (select coalesce(json_agg(…),
+'[]') …) ON TRUE`, one round trip, no row explosion, with the `LIMIT` inside the lateral so a
+per-parent limit means per parent. The one change is that nesting is a projection option on any
+query rather than a second API, which closes the seam the survey called the single biggest product
+gap in Drizzle: its relational builder refuses aggregations, and its core builder returns flat rows.
+
+**drizzle-kit's decision protocol**, which the survey rated the highest-value single idea in that
+package: an ambiguous or destructive diff returns a typed `missing_hints` envelope instead of
+guessing, each status maps to an exit code, and `--output json` never prompts, so it cannot hang in
+CI. pg-prime's uniform exit codes and its `renamedFrom` annotations are that protocol, with the
+rename made visible in the pull-request diff.
+
+### Kysely
+
+**The expression builder** — callable and a namespace at once, scoped to the tables in play, with
+`and`/`or` in both array and object form. And the type-level rigour underneath it: the
+`ColumnType<Select, Insert, Update>` phantom triple; `never` erasing a key, so a `GENERATED ALWAYS`
+column is un-insertable at compile time rather than at runtime; optionality derived from the insert
+type rather than declared twice; tuple-wrapped conditionals so an enum column does not distribute;
+`DrainOuterGeneric` to keep instantiation depth flat; branded, human-readable type errors instead
+of inference cascades; type-level savepoint stacks; `never`-returning illegal methods; the JSON
+round-trip degradation model, which almost every library gets wrong; the `excluded` pseudo-table
+synthesised as a scope for `ON CONFLICT`; an always-parameterised `sql` tag whose untyped default
+is `unknown` rather than `any`; `$call`; and the `types@<5.9` export-map gate that turns an
+old-TypeScript failure into one readable sentence.
+
+Four things were fixed on the way in, each because the survey measured the problem: expression
+fragments are generic over the table by ordinary structural typing, which Kysely cannot express at
+all; `$if` has literal-condition overloads, so `$if(true, …)` is not `Partial`; the query's output
+type is invariant, so an imperative build-up in a `let` cannot silently drop a column; and
+aggregate results are exact, because one database has one answer where four dialects have a union.
+
+**And its CVEs.** Three high-severity advisories in 2026 affected Kysely 0.28.16 and earlier; two
+of them were identifier and JSON-path sanitisation. The lesson the survey drew is that the `sql`
+tag's parameterisation guarantee does not extend to positions that are compiled into the SQL string
+by construction. So the equivalent positions here are designed out rather than patched — JSON paths
+are bind parameters and never text in the SQL, and `sql.lit` refuses strings — which leaves
+identifier quoting as the one sanitiser: about fifteen lines, fuzzed against a live PostgreSQL with
+`format('%I')` and a `CREATE TEMP TABLE` round-trip as a dual oracle.
+
+### Prisma
+
+**Product polish**, which is an engineering property and not a marketing one. Exact result narrowing
+from a literal projection; `omit`; relation filters that read like English; migration files that
+are plain, hand-editable SQL a DBA can review in a pull request; `migrate diff --from-* --to-*` as a
+general primitive; the split between a command that authors migrations and a command that applies
+them; machine-readable error codes carrying a suggested fix; types derived from PostgreSQL's own
+describe protocol rather than from an assertion; and, from Prisma Next, a compiled IR as the
+canonical artifact and a codec descriptor that turns "does it support pgvector" from a roadmap item
+into a package.
+
+**And the specific failures it taught us to avoid**, each with its countermeasure here:
+
+- **A silent mode downgrade.** Prisma's `pgbouncer=true` workaround, combined with a PgBouncer new
+  enough to have fixed the bug it worked around, produced the very error it existed to prevent; the
+  issue was closed as not planned and the documented fix is to remove the flag. pg-prime's pooler
+  profiles only ever restrict, and a restriction is a `ConfigError` naming the profile — never a
+  quiet switch to a different execution mode.
+- **A five-second default transaction timeout**, which surprises every backfill written inside a
+  transaction. There is no transaction timeout here by default; `statement_timeout` is a 30 s
+  session default and one config line to change.
+- **`SET LOCAL` refused for RLS.** Prisma has no supported way to scope a setting to a request,
+  which is exactly what row-level security needs, so RLS in a Prisma application lives in a client
+  extension. Here `tx.setLocal('app.user_id', id)` is a parameterised `set_config(…, true)` on the
+  transaction handle, and RLS is a one-line pattern.
+
+Two more from the same source, both stated as rules: no preview flags — Prisma had eight, several
+of them two to three years old — and nothing downloaded at install time, because a CDN
+misconfiguration once broke `prisma generate` worldwide and drew 401 comments in a day.
+
+### MikroORM
+
+**The identity map** — argued through in full, and deliberately not shipped. The survey's verdict
+was that a unit of work is not a feature but an architecture that colonises everything around it:
+`RequestContext`, `AsyncLocalStorage`, `fork()`, `clear()`, three flush modes, seven propagation
+modes, a sixteen-hook lifecycle with "you may not flush in a hook", and entities left detached
+after a rollback so that a retry loop has to discard the `EntityManager`. What it actually buys is
+two things, and both are recovered explicitly here: write batching, as multi-row `VALUES`,
+`UPDATE … FROM (VALUES …)` and `ON CONFLICT`; and foreign-key ordering, as an explicit graph write.
+Nothing writes unless you call a write method, and a read never emits an `UPDATE`.
+
+**Its type system's best idea, kept.** `Loaded<T, Hint>` — relation load state tracked in the type,
+so a function can *demand* that a relation was loaded — is here as `Loaded`, structural rather than
+branded and with no runtime wrapper, so `instanceof`, `structuredClone` and `JSON.stringify` all
+behave normally.
+
+**And its migration story**, the most careful of the four: a committed schema snapshot, so that
+generating migration N+1 while N is still pending produces a correct delta rather than a duplicate;
+`migration:check` as a CI gate; `migration:rollup` for long-lived projects, which is what
+checkpoints are here; an in-house runner, after v7 proved umzug was about two hundred lines of
+replaceable code; and the rule that a migration gets no ORM access, only SQL — which MikroORM's own
+documentation warns about and pg-prime enforces structurally.

@@ -3,4 +3,221 @@ title: Tier M, R, O and U
 description: What the differ owns, what it replays, what it observes and what it leaves alone.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+No migration engine models all of PostgreSQL. The interesting question is what it does about the
+part it does not model, and the usual answer — say nothing — is how a `GRANT` disappears or a text
+search configuration gets dropped by a tool that never mentioned it.
+
+pg-prime splits every object kind into four tiers and applies a **completeness rule**: enumerate
+everything in the catalog, subtract Tiers M, R and O, and report the remainder. Silence is never an
+option.
+
+| Tier | Name | The differ | You |
+|---|---|---|---|
+| **M** | modelled | diffs it, generates versioned SQL for it | declare it in TypeScript |
+| **R** | repeatable | re-applies the file when its content hash changes | write the `.sql`, keep it idempotent |
+| **O** | observed | reads it, reports it, never writes it | manage it yourself |
+| **U** | unmodelled | counts it and names the kind | manage it yourself; `--strict-unmodeled` if you want a gate |
+
+## Tier M: modelled
+
+The tier the migration engine is about. These objects are in the IR, they are diffed, they are
+ordered, and they become numbered `.sql` files:
+
+> schemas · tables (including partitioned parents and partitions) · columns · defaults ·
+> constraints (PK, FK, UNIQUE, CHECK, EXCLUDE — including `NOT VALID` state) · indexes ·
+> types (enum, domain, composite) · enum labels · composite attributes · sequences
+> (including identity and `OWNED BY`) · comments · extensions
+
+Twelve fact kinds, listed with their identity tuples in
+[the migration model](/pg-prime/concepts/migration-model/#the-ir). Three of the mappings are worth
+knowing:
+
+- **Enums, domains and composites share one kind**, `type`, discriminated by `typtype`. All three
+  have the identity `[schema, name]`, so three near-duplicate kinds would be three copies of the
+  same id. A domain's CHECKs live on the type's payload, because they are keyed by `contypid` and
+  cannot be `constraint` facts.
+- **Partitions are tables.** A partitioned parent and each partition are `table` facts carrying
+  `partitionStrategy`, `partitionKey`, `partitionOf` and `partitionBound`; `ATTACH` and `DETACH` are
+  the deltas. An undeclared partition under `partitions({ unknown: 'adopt' })` is removed from
+  **both** sides of the diff, not just from the DROP side: omitting only the DROP would leave it as
+  residual drift and make every plan fail its own proof.
+- **Extensions are declare-only.** Created if absent, **never dropped**, and their member objects are
+  projected out of the IR so a `CREATE EXTENSION` does not turn into a plan that recreates
+  `uuid_generate_v4()`. An extension is keyed `[name]` and not `[schema, name]`, because PostgreSQL
+  allows exactly one of each name per database.
+
+### What you have to do
+
+Declare it. A Tier-M object that your schema does not declare is a Tier-M object the differ will plan
+to **drop**, which is the correct behaviour and the reason `pull` grew declarations for domains,
+sequences and extensions.
+
+### What is Tier M but not modelled
+
+Three shapes are reported as an **error** diagnostic rather than converged on silently, because
+converging silently would mean losing them:
+
+- classic table `INHERITS` (`unsupported_kind`) — partitioning is modelled, table inheritance is not,
+  and such a table is excluded from the IR rather than diffed as a plain table;
+- an in-place composite attribute change while a column uses the type — PostgreSQL refuses it, and
+  `CASCADE` does not reach plain columns;
+- a partition-key change — PostgreSQL requires a new table.
+
+## Tier R: repeatable
+
+> views · materialized views · functions · procedures · triggers · policies (RLS) · rules
+
+These are **not diffed**. They are authored as `.sql` files under `sql/`, hashed, and re-applied
+whole whenever their bytes change.
+
+The reason is not laziness, it is that these are exactly the objects whose diff is hardest.
+PostgreSQL stores a rewritten parse tree, so `pg_get_viewdef` never textually matches what you wrote
+— that is the phantom-diff generator. Making them repeatable needs no differ at all, which is why
+RLS and functions ship in v1 rather than in a later release.
+
+### How the pass works
+
+- **Order is directory-lexicographic, with files and directories in one sort.** A top-level
+  `015_prep.sql` therefore runs between the `010_functions/` and `020_views/` subtrees, which is what
+  the numeric prefixes are for. The sort is by code unit, never `localeCompare`, so two developers
+  with different `LANG` settings run the same files in the same order.
+- **The path is the identity**, always POSIX-separated and always carrying the root directory's own
+  name. It is the primary key of `pgprime.repeatables` and it is what the plan records.
+- **Only changed files are applied.** The stored `checksum` is the sha256 of the bytes that were
+  applied, so a `git checkout` of an older revision re-applies the file — an mtime comparison would
+  not.
+- **All of them, in one transaction.** Repeatables reference each other — a view over a function over
+  a type — so a run that stops halfway leaves a database no file on disk describes. Worse, the
+  history row is written from what the pass returns, so a partial run would record a hash for a file
+  whose objects were rolled back, and the next deploy would consider it unchanged and never re-apply
+  it.
+- **After every versioned migration**, as step 8 of `apply`.
+- **Loaded into the shadow at `generate` time.** A view that references a column the pending
+  migration drops makes the plan fail its proof, at author time, on a throwaway database. That is the
+  entire reason both lanes share one IR.
+
+### Every statement must be idempotent
+
+`migrate lint` enforces it as **TX201**. A repeatable is re-applied on every deploy whose bytes
+changed, so a bare `CREATE INDEX x` that succeeded once and raises `42P07` on the next run does not
+just look untidy — it wedges the deploy at exactly the moment nobody wants to be debugging SQL.
+
+The check lexes rather than greps, so a leading `-- CREATE OR REPLACE …` comment cannot launder a
+bare `CREATE`, and a `DROP TABLE` inside a `$$…$$` body belongs to the body rather than to the
+enclosing (idempotent) `CREATE OR REPLACE FUNCTION`.
+
+### The layout
+
+```text
+sql/
+  000_prelude.sql
+  010_functions/
+    public__bump_updated_at.sql
+  015_aggregates/
+  020_views/
+    public__active_users.sql
+  030_matviews/
+  040_rls/
+  050_policies/
+    public__posts__posts_own.sql
+  070_triggers/
+    public__users__users_bump.sql
+```
+
+That is the tree `pg-prime pull` writes; a hand-written project can use any names it likes, as long
+as the lexicographic order is the order the objects need.
+
+```sql title="sql/010_functions/public__bump_updated_at.sql"
+-- pg-prime:object function public.bump_updated_at()
+CREATE OR REPLACE FUNCTION public.bump_updated_at() RETURNS trigger
+  LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+```
+
+```sql title="sql/070_triggers/public__users__users_bump.sql"
+-- pg-prime:object trigger public.users.users_bump
+DROP TRIGGER IF EXISTS "users_bump" ON "public"."users";
+CREATE TRIGGER users_bump BEFORE UPDATE ON public.users
+  FOR EACH ROW EXECUTE FUNCTION public.bump_updated_at();
+```
+
+The `-- pg-prime:object` line names the catalog object the file owns; it is what `pull` writes so
+that a file's job is readable without opening the SQL. Directives are recognised **only** in the
+leading comment block — the contiguous run of blank and `--` lines from the top of the file — and the
+first line that is neither closes it. Otherwise a `-- pg-prime:nolint …` written above one statement,
+or one that happens to sit inside a quoted function body, would silently reconfigure the whole file.
+
+<Aside type="caution">
+**A repeatable's removal is not auto-detected.** Deleting `sql/020_views/public__active_users.sql`
+leaves the view in the database and nothing in any plan will ever drop it. This is the honest cost of
+the tier, and it is reported rather than hidden: `migrate doctor` names every path recorded in
+`pgprime.repeatables` that is gone from disk, says that the objects it created are still there, and
+exits `4`. Dropping the object is a `generate --empty` migration you write.
+</Aside>
+
+## Tier O: observed
+
+> roles · role memberships · ACLs · default privileges · security labels · publications ·
+> publication relations · publication schemas · subscriptions · foreign-data wrappers · servers ·
+> user mappings · foreign tables · event triggers · collations · aggregates
+
+Sixteen families, read into a census and reported by `migrate doctor`, **excluded from the diff and
+never dropped**.
+
+These are cluster-scoped or owned by a different team. Modelling grants as diff-and-drop by default
+is how a migration tool revokes production access on a Tuesday afternoon.
+
+They are deliberately **not facts**, and that is the load-bearing part: a fact is diffed *and* hashed
+into the fingerprint, so one `GRANT SELECT` would read as drift and refuse every pending migration.
+Each family is read behind its own `SAVEPOINT`, so a `permission denied` on `pg_subscription` — which
+is normal on managed PostgreSQL — degrades to a diagnostic instead of aborting the whole snapshot
+transaction.
+
+One asymmetry worth knowing: **aggregates are Tier O to the extractor and Tier R to `pull`.** The
+census never diffs one, but `pull` writes any it finds into `sql/015_aggregates/` as an idempotent
+`DROP AGGREGATE IF EXISTS` + `CREATE AGGREGATE` pair, because a pulled schema that could not recreate
+its own aggregates would not round-trip.
+
+## Tier U: unmodelled
+
+> casts · operator classes · operator families · text-search configurations, dictionaries, parsers
+> and templates · statistics objects · transforms · user-defined languages · parameter ACLs ·
+> large objects
+
+Not represented in the IR at all. Counted, and surfaced as an `unmodeled_kind` diagnostic naming the
+kind and the count — `2 operatorClass object(s) present and not diffed (Tier U)` — which also lands
+in the plan's `unmodeled` array so the census is part of the artifact a reviewer reads.
+
+The four cluster-scoped kinds (transforms, languages, parameter ACLs, large objects) are counted
+without a schema filter, because they have no namespace to filter on.
+
+`--strict-unmodeled` turns a non-empty Tier-U census into an **error**, which `buildPlan` makes an
+unacknowledged hazard and `writePlan` refuses. It is off by default: a census is a report, and making
+it fatal by default would refuse to migrate any database with a `citext` cast in it.
+
+The escalation covers the **Tier-U half only**. Tier-R kinds are counted by the same query and say
+"Tier R" in their message, but escalating an authored view to an error would make the flag unusable
+on any project that has one.
+
+## What this means in practice
+
+- If it is Tier M, declare it and pg-prime will generate the migration.
+- If it is Tier R, write the `.sql`, keep it idempotent, and remember that deleting the file does not
+  drop the object.
+- If it is Tier O or U, pg-prime will tell you it is there and then leave it alone. Manage it in your
+  own migrations — `generate --empty` writes the file — or accept it as somebody else's.
+
+## Where to go next
+
+- [The migration model](/pg-prime/concepts/migration-model/) — the IR, fingerprints, and why the
+  fingerprint deliberately excludes Tiers O and U.
+- [Proof and witness](/pg-prime/concepts/proof/) — why a project with Tier-R objects runs the
+  `pg_dump` witness in `warn` rather than `strict`.
+- [Adopting an existing database](/pg-prime/guides/adopting/) — `pull` writes both the TypeScript and
+  the `sql/` tree.

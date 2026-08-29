@@ -3,4 +3,325 @@ title: "Handles: Db, Tx and Session"
 description: Three handles, mutually non-assignable, and why the callback parameter is named db.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+A handle is a thing you can run a statement against. pg-prime has three of them — `Db`, `Tx` and
+`Session` — and they share one query surface, `Queryable`, while being **mutually non-assignable**:
+none is a subtype of any other. That is not tidiness. It is what makes "this function must run
+inside a transaction" a compile error rather than a code-review comment.
+
+## `pgPrime` returns a `Db`
+
+{/* docs: use=blog-schema */}
+```ts
+import { pgPrime } from 'pg-prime'
+
+const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema,
+})
+```
+
+`pgPrime` is **synchronous and lazy**. It opens no socket, so importing the module that builds your
+handle costs nothing and a test that never queries never connects; `export const db = pgPrime(...)`
+at the top level of a module is legal and cheap. The first query is what connects, and with
+`connection:` that is also where the lazy `import('pg')` happens — `pg` is an *optional* peer
+dependency, so `pool:` (bring your own) and `driver:` (bring your own everything) are the
+zero-dependency paths.
+
+What is *not* deferred is validation. Everything that can be wrong about the configuration throws a
+`ConfigError` here, naming the key: two of `connection`/`pool`/`driver`, or none; a `statement` mode
+your `poolerMode` forbids. There is no path where a bad config surfaces as a strange failure on the
+first query at three in the morning.
+
+## The three handles
+
+Every handle carries a literal `kind`, and that discriminant is the whole mechanism:
+
+| | `kind` | What it is | Added on top of `Queryable` |
+|---|---|---|---|
+| `Db` | `'db'` | pool-backed; every statement may land on a different backend | `transaction`, `session`, `listen`, `diagnose`, `diagnosePooler`, `observe`, `stats`, `connect`, `end`, `[Symbol.asyncDispose]` |
+| `Tx` | `'tx'` | one connection inside one `BEGIN … COMMIT` | `attempt`, `depth`, `isolation`, `accessMode`, `status`, `transaction`/`savepoint`, `setLocal`, `advisoryLock`, `rollback`, `rollbackWith` |
+| `Session` | `'session'` | one pinned connection, **no** open transaction | `transaction`, `set`, session-level `advisoryLock`, `backendPid` |
+
+`Queryable` itself is the part that never varies: `h`, `schema`, `from`/`insertInto`/`update`/
+`deleteFrom`/`with`/`withRecursive`/`fromRaw`/`sql`, `run`, `explain`, `stream`, `streamBatches`,
+`notify`, `copyFrom`, `copyTo`, `withOptions` and `outsideTransaction`. A helper that genuinely
+works against any of the three should take `Queryable<S>` and say so.
+
+`Session` exists because "I need several statements on the same backend, but I do not want a
+transaction" is a real need that Prisma and Drizzle leave unserved: a session advisory lock held
+across several transactions, a `CREATE TEMP TABLE` staging area, `SET search_path` for a legacy
+code path, `pg_backend_pid()` diagnostics. It also gives the pooler matrix a natural home — a
+transaction pooler is precisely the thing that cannot support a session, so `poolerMode` gates one
+type instead of being sprinkled through the codebase.
+
+## They are not interchangeable, and the compiler says so
+
+A function that declares `Tx<S>` cannot be handed the pool-backed `db`. The `kind` literals differ,
+so the assignment fails on its own:
+
+{/* docs: use=blog expect-error */}
+```ts
+import { eq } from 'pg-prime'
+import type { Tx } from 'pg-prime'
+
+async function debit(tx: Tx<typeof schema>, id: bigint): Promise<void> {
+  await tx
+    .update(tx.h.users)
+    .set(() => ({ name: 'debited' }))
+    .where((t) => eq(t.users.id, id))
+    .execute()
+}
+
+// ✗ TS2345: Argument of type 'Db<…>' is not assignable to parameter of type 'Tx<…>'.
+//     Type 'Db<…>' is missing the following properties from type 'Tx<…>':
+//     attempt, depth, isolation, accessMode, and 6 more.
+await debit(db, 1n)
+```
+
+This is the enforceable half of the footgun story, and it is free: no runtime check, no marker, no
+wrapper. The converse — a helper that is happy with any handle — is spelled out explicitly:
+
+{/* docs: use=blog */}
+```ts
+import { eq } from 'pg-prime'
+import type { Queryable } from 'pg-prime'
+
+async function findByEmail(q: Queryable<typeof schema>, email: string) {
+  return q
+    .from(q.h.users, 'u')
+    .where((t) => eq(t.u.email, email))
+    .select((t) => ({ id: t.u.id, name: t.u.name }))
+    .execute()
+}
+
+await findByEmail(db, 'ada@example.com')
+await db.transaction(async (db) => findByEmail(db, 'ada@example.com'))
+```
+
+## The callback parameter is named `db`
+
+Every `transaction` overload names its parameter `db`, and every example on this site does too. That
+is deliberate, and it is the single highest-yield decision in this section.
+
+Drizzle names it `tx`, which *guarantees* the outer `db` stays visible inside the callback — and
+`db.transaction(async (tx) => { await db.insert(...) })` is its most common reported bug: the inner
+statement silently runs outside the transaction, on a different connection, and can deadlock against
+its own transaction. Naming the parameter `db` shadows the outer binding, so the correct thing is
+what you get by typing the obvious thing, and the mistake takes deliberate effort.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="transaction.ts"
+const summary = await db.transaction(
+  async (db) => {
+    // `db` here is a `Tx`. The outer handle is shadowed and cannot be reached by accident.
+    const [ada] = await db
+      .insertInto(db.h.users)
+      .values({ email: 'ada@example.com', name: 'Ada' })
+      .returning((t) => ({ id: t.users.id }))
+      .execute()
+
+    // Transaction-local GUCs: parameterised `set_config(…, true)`. RLS in one line.
+    await db.setLocal('app.user_id', String(ada!.id))
+
+    return { attempt: db.attempt, depth: db.depth, isolation: db.isolation, status: db.status }
+  },
+  { isolation: 'repeatable read' },
+)
+
+console.log(summary)
+// { attempt: 1, depth: 0, isolation: 'repeatable read', status: 'active' }
+```
+
+`attempt` is `1` on the first try and increments on a serialization retry, so a callback can tell
+whether it is being replayed. `depth` is `0` at the outermost level and greater than zero inside a
+savepoint. `status` is the live server-side transaction state, which is what makes an assertion
+about it worth writing.
+
+A nested `transaction` — or its synonym `savepoint` — is a `SAVEPOINT`, and it takes neither
+`isolation` nor `accessMode` nor `retry`, **by construction**: PostgreSQL cannot change the first
+two mid-transaction, and a `40001` aborts the whole transaction, so retrying at savepoint level is
+meaningless. That is also the only way to attempt something that may fail and carry on, because any
+statement error puts the transaction in the aborted state and every later statement returns `25P02`
+until something rolls back:
+
+{/* docs: use=blog */}
+```ts
+import { UniqueViolationError } from 'pg-prime'
+
+await db.transaction(async (db) => {
+  try {
+    await db.savepoint(async (db) => {
+      await db
+        .insertInto(db.h.users)
+        .values({ email: 'maybe@example.com', name: 'Maybe' })
+        .execute()
+    })
+  } catch (err) {
+    if (!(err instanceof UniqueViolationError)) throw err
+    // Rolling back to the savepoint un-poisoned the transaction, so the next statement works.
+  }
+
+  await db.from(db.h.users).select((t) => ({ id: t.users.id })).execute()
+})
+```
+
+Two ways out that are not exceptions: `db.rollback()` aborts and throws `TransactionRollback`, which
+`db.transaction` rethrows; `db.rollbackWith(value)` aborts and *resolves* the transaction with
+`value`, fully typed and with no `| undefined` bolted onto the result.
+
+## A handle cannot escape its callback
+
+`Tx` and `Session` are closed when their callback returns, so returning one is a mistake the type
+system can catch. `NoHandleEscape<T>` turns the result into a branded error tuple rather than a
+handle:
+
+{/* docs: use=blog expect-error */}
+```ts
+const escaped = await db.transaction(async (db) => db)
+
+// `escaped` is ['Error: a Tx/Session handle escaped its callback. It is closed and unusable.',
+//  never] — so every use of it is an error, at the use site.
+await escaped.from(escaped.h.users).execute()
+```
+
+The check is one conditional and no recursion — deliberately shallow. A deep walk over the return
+type would cost instantiations at every `transaction()` call site in the program, and `return tx` is
+the mistake people actually make.
+
+## The dev guard catches what the types cannot
+
+TypeScript has no effect system and no way to invalidate a binding captured from an enclosing scope.
+No type-level construct can make an outer `db` unusable inside a closure — anyone claiming otherwise
+is describing a lint rule. So the residual case is caught at runtime, by an `AsyncLocalStorage` stack
+of open transactions, and using the root handle while one is open throws `HandleMisuseError`:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="dev-guard.ts"
+import { HandleMisuseError } from 'pg-prime'
+
+// A second name for the pool-backed handle, so it is *not* shadowed inside the callback.
+const pool = db
+
+try {
+  await db.transaction(async (db) => {
+    await db.insertInto(db.h.users).values({ email: 'ada@example.com', name: 'Ada' }).execute()
+    // ✗ this would run on a DIFFERENT connection, outside the transaction.
+    await pool.from(pool.h.users).select((t) => ({ id: t.users.id })).execute()
+  })
+} catch (err) {
+  if (!(err instanceof HandleMisuseError)) throw err
+  console.log(err.message)
+}
+```
+
+The message is four lines: what happened, where the transaction was opened, where the offending
+statement was issued, and what to do instead —
+
+```text
+a statement was issued on the root db handle while transaction t1 is open on this async context. It
+would run on a DIFFERENT connection, outside your transaction, and can deadlock against it — which
+is the single most common bug in this shape of API (07 §1.5).
+  the transaction was opened at …/orders.ts:29:12
+  the statement was issued at …/orders.ts:34:8
+  Fix: name the callback parameter `db` so it shadows the outer handle, or — if you really mean an
+  out-of-band statement that survives a rollback — write db.outsideTransaction().from(...) /
+  run(q, { outsideTransaction: true }).
+```
+
+The guard is on by default when `NODE_ENV !== 'production'`, and `pgPrime({ devGuard: false })`
+turns it off. It costs nothing in production and nothing in a bundle that never opens a
+transaction: `node:async_hooks` is imported **dynamically**, inside `transaction()`, so it does not
+enter the module graph of a Cloudflare Worker or a browser build, and a runtime without it degrades
+to "guard off" rather than to a crash.
+
+False positives are legitimate. An audit row that must survive a rollback is a real, deliberate
+out-of-band statement, so there is an explicit opt-out rather than an argument about it:
+
+{/* docs: use=blog */}
+```ts
+const pool = db
+
+await db.transaction(async (db) => {
+  await db.insertInto(db.h.posts).values({ authorId: 1n, title: 't', body: 'b' }).execute()
+
+  // Deliberately outside: a different connection, and it survives a rollback.
+  await pool
+    .outsideTransaction()
+    .insertInto(pool.h.users)
+    .values({ email: 'audit@example.com', name: 'audit' })
+    .execute()
+})
+```
+
+`run(q, { outsideTransaction: true })` is the same thing for an already-built query.
+
+<Aside type="caution">
+`Promise.all` inside a transaction is **serial**, because a transaction is one connection. The code
+is correct; it is just not doing what it looks like it is doing. pg-prime warns once per transaction
+when it sees concurrent statements on one `Tx`. If you need parallelism, use separate transactions.
+</Aside>
+
+## `Session`: one connection, no transaction
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="session.ts"
+const pid = await db.session(async (s) => {
+  // Session-level GUCs: `set_config(…, false)`. Refused under a transaction-pooler profile,
+  // where the fix is `ALTER ROLE … SET` instead.
+  await s.set('application_name', 'nightly-report')
+
+  await s.sql`create temp table staging (id bigint)`.execute()
+  await s.sql`insert into staging (id) select id from users`.execute()
+
+  return s.backendPid
+})
+
+console.log(typeof pid) // 'number'
+```
+
+Everything in that callback ran on the same backend, which is what makes the temp table visible to
+the statement after it. A `Db` gives no such promise: it is pool-backed, and the second statement
+may well land somewhere else.
+
+## `db.h.users`, not `users`
+
+Queries start from `db.h.<table>`, never from the bare table value exported by your schema file.
+The reason is relations: a handle is a `[SCHEMA]`, `[NAME]` pair that knows which registry it
+belongs to, and relations live on the registry rather than on the table. A bare `users` would
+compile and would silently have no relations at all, which is a worse outcome than a missing
+import. `db.h` is that mapping, one handle per registry key, and it is the one fixed per-program
+cost in the type layer.
+
+## `withOptions`
+
+`withOptions` returns **the same handle type** with per-statement defaults folded in, so a
+`Db.withOptions(...)` is still a `Db` and a `Tx.withOptions(...)` is still a `Tx`:
+
+{/* docs: use=blog */}
+```ts
+const controller = new AbortController()
+
+const rows = await db
+  .withOptions({ signal: controller.signal, timeoutMs: 2_000, label: 'nightly-report' })
+  .from(db.h.posts, 'p')
+  .select((t) => ({ id: t.p.id }))
+  .execute()
+```
+
+`run(q, { signal, timeoutMs, label })` is the other spelling, per call rather than per handle.
+
+## Closing one
+
+`await db.end()` drains the pool. Where your TypeScript `lib` has `Symbol.asyncDispose`,
+`await using db = pgPrime(...)` does the same thing at the end of the scope; where it does not, the
+member is simply absent and `end()` is still there. A `Tx` and a `Session` are closed for you when
+their callback returns — that is what `NoHandleEscape` is protecting.
+
+## Where to go next
+
+- [Transactions](/pg-prime/guides/transactions/) — isolation, savepoints, retry on `40001`, and
+  what a retried callback must not do.
+- [`pg-prime` reference](/pg-prime/reference/pg-prime/) — every member of every handle, and the
+  config surface in full.

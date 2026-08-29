@@ -24,6 +24,8 @@ import { pathToFileURL } from 'node:url'
 import { CONTENT, ROOT, readAllPages } from './docs-blocks.mjs'
 
 const WRITE = process.argv.includes('--write')
+/** `--missing <entry>` prints one name per line, for whoever is writing that page. */
+const MISSING_FOR = process.argv[process.argv.indexOf('--missing') + 1]
 const CLI = join(ROOT, 'packages', 'pg-prime-kit', 'dist', 'cli.js')
 
 const ANCHOR_HEADING = /^#{2,5}\s+`([A-Za-z_$][\w$]*)`\s*$/
@@ -80,15 +82,22 @@ for (const page of pages) {
 const coverageRows = []
 for (const entry of entries.values()) {
   const missing = [...entry.names].filter((n) => !entry.covered.has(n)).sort()
+  if (process.argv.includes('--missing') && entry.spec === MISSING_FOR) {
+    for (const n of missing) console.log(n)
+    process.exit(0)
+  }
   const pct = ((entry.covered.size / entry.names.size) * 100).toFixed(1)
   coverageRows.push(
     `  ${entry.spec.padEnd(18)} ${String(entry.covered.size).padStart(4)}/${String(entry.names.size).padEnd(4)} ` +
       `${pct.padStart(5)} %  ${entry.pages.join(', ') || '(no page claims this entry)'}`,
   )
   if (missing.length > 0) {
+    // Truncated: a full 500-name dump buries every other failure in the same run.
+    const head = missing.slice(0, 30).join(', ')
     failures.push(
       `${entry.spec}: ${missing.length} exported name(s) have no reference entry:\n      ` +
-        missing.join(', '),
+        head +
+        (missing.length > 30 ? `, … (+${missing.length - 30} more; \`node tools/docs-coverage.mjs --missing ${entry.spec}\` lists them)` : ''),
     )
   }
 }
@@ -206,13 +215,40 @@ for (const code of documented.keys()) {
   }
 }
 
+// ── 4. Internal links ────────────────────────────────────────────────────────
+// Astro does not fail a build on a dead internal link, and this site has hundreds of them. The
+// slug set is the pages themselves, so a renamed page fails here rather than 404ing in production.
+const slugs = new Set(
+  pages.map((p) => p.page.replace(/\.mdx?$/, '').replace(/(^|\/)index$/, '')),
+)
+const LINK = /\]\((\/pg-prime\/[^)\s]*)\)/g
+let links = 0
+for (const page of pages) {
+  let fence = false
+  for (let i = 0; i < page.lines.length; i++) {
+    if (/^\s*```/.test(page.lines[i])) {
+      fence = !fence
+      continue
+    }
+    if (fence) continue
+    for (const m of page.lines[i].matchAll(LINK)) {
+      links++
+      const target = m[1].replace(/^\/pg-prime\//, '').replace(/#.*$/, '').replace(/\/$/, '')
+      if (slugs.has(target)) continue
+      failures.push(
+        `${page.page}:${i + 1}: link to /pg-prime/${target}/ — no page has that slug`,
+      )
+    }
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 const totalNames = [...entries.values()].reduce((n, e) => n + e.names.size, 0)
 const totalCovered = [...entries.values()].reduce((n, e) => n + e.covered.size, 0)
 console.log(
   `docs-coverage: ${totalCovered}/${totalNames} exported names have a reference entry ` +
     `(${((totalCovered / totalNames) * 100).toFixed(1)} %), ${cliBlocks} CLI block(s), ` +
-    `${documented.size}/${allCodes.size} hazard codes`,
+    `${documented.size}/${allCodes.size} hazard codes, ${links} internal links`,
 )
 for (const row of coverageRows) console.log(row)
 for (const n of notes) console.log(`  ${n}`)

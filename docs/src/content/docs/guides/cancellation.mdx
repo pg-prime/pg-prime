@@ -3,4 +3,299 @@ title: Cancellation and timeouts
 description: AbortSignal end to end, per-query timeouts, and what each one does to the connection.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+There are two ways to stop a query, and they answer different questions.
+
+An **`AbortSignal`** is you withdrawing interest: the HTTP request went away, the process is
+shutting down, the user closed the tab. A **timeout** is a bound on how long a statement may run,
+enforced either by the backend running it or by a timer in your process. The distinction is not
+academic — after an abort the server may still be executing the statement, and after a server-side
+`statement_timeout` it certainly is not.
+
+## `signal`, at every level
+
+`signal` is accepted wherever a call can wait for something, and it composes downward: a signal on
+the handle and a signal on the call are both live, and whichever fires first wins.
+
+{/* docs: use=blog */}
+```ts
+const ac = new AbortController()
+
+// The whole handle. Aborting drains the pool and closes it — a process lifecycle signal.
+const app = pgPrime({ connection: process.env['DATABASE_URL']!, schema, signal: ac.signal })
+
+// One transaction. The statement is cancelled, the transaction rolls back, and it is never retried.
+await app.transaction(async (db) => db.sql`select 1`.execute(), { signal: ac.signal })
+
+// One statement, two spellings — `run(q, opts)` and a scoped handle.
+const q = app.from(app.h.users, 'u').select((t) => ({ id: t.u.id }))
+await app.run(q, { signal: ac.signal })
+await app.withOptions({ signal: ac.signal }).run(q)
+
+// A cursor stops iterating and closes; a COPY stops writing; a subscription unlistens.
+for await (const row of app.stream(q, { signal: ac.signal })) void row
+await app.copyFrom(users, [], { signal: ac.signal })
+await app.listen('cache', () => {}, { signal: ac.signal })
+```
+
+<Aside type="note">
+`07` §6.1 spells the per-statement form as builder methods — `.signal(s)` and `.timeout(ms)`. As
+built they are `run(q, { signal, timeoutMs })` and `handle.withOptions({ … })` instead, because
+`Query` and the select builder belong to a different workstream than the session layer. The
+behaviour is the same; only the call site moved. `withOptions` on a `Db` returns a `Queryable`, so
+it carries the query surface but not `transaction()` — a signal for a whole transaction goes in
+`TxOptions`.
+</Aside>
+
+## What an abort does depends on when it lands
+
+Four timings, four behaviours:
+
+| The abort lands | What happens |
+|---|---|
+| **Before the acquire** | Nothing is sent and no connection is checked out. `AbortError`, immediately. |
+| **While waiting for a connection** | The acquire rejects with `AbortError`. The client that `pool.connect()` eventually produces is released **and destroyed**, because a slot leaked once per aborted acquire is a pool that is permanently exhausted. |
+| **In flight** | A protocol `CancelRequest` goes out on its own socket, and the promise rejects with `AbortError` **without waiting** for the cancel to take effect. The connection is then destroyed rather than returned to the pool. |
+| **After the response arrived** | Nothing. The result is returned. Aborting is not a rollback. |
+
+Two consequences worth planning for.
+
+**An in-flight cancel costs one pooled connection.** The cancelled statement's `ErrorResponse` and
+`ReadyForQuery` are still on the wire, and there is a real race between draining them and the next
+query's `Bind`. Cancellation is rare, a connection is cheap, and a result set crossing into another
+caller's query is a catastrophe — so the socket is thrown away. The handle keeps working; the pool
+opens a replacement.
+
+**The `CancelRequest` needs a second socket.** With `connection:` pg-prime derives an unconnected
+control client from the same configuration you already gave it, so a cancel works even when the
+pool is exhausted — which is exactly when a cancel matters most. With `pool:` or `driver:` there is
+no such client, and the fallback is `pg_cancel_backend(pid)` issued from a *second pooled*
+connection; if the pool has nothing spare within 5 s that fallback fails, the statement's promise
+is rejected anyway, and the connection is retired. Behind a transaction pooler a cancel is
+best-effort in a deeper sense: the `BackendKeyData` you hold belongs to the pooler, and the mapping
+can be stale by the time the cancel arrives. That is the whole reason timeouts prefer the server.
+
+### An aborted signal never reaches the wire
+
+{/* docs: use=blog */}
+```ts title="already-aborted.ts"
+import { AbortError } from 'pg-prime'
+
+let statements = 0
+db.observe({ onQueryStart: () => void statements++ })
+
+const ac = new AbortController()
+ac.abort()
+
+const q = db.from(db.h.users, 'u').select((t) => ({ id: t.u.id }))
+const err = await db.run(q, { signal: ac.signal }).catch((e: unknown) => e)
+
+console.log(err instanceof AbortError, statements)
+// true 0  — the connection was never checked out, so nothing was sent
+```
+
+### Aborting the handle drains the pool
+
+`pgPrime({ signal })` is the process-lifecycle hook: when the signal fires the handle runs `end()`,
+which closes the `LISTEN` connection and drains the pool. Statements issued afterwards fail with a
+`DbClosedError` that says so, rather than hanging on a pool that will never hand anything out.
+
+{/* docs: use=blog-schema */}
+```ts title="drain-on-shutdown.ts"
+import { DbClosedError, pgPrime } from 'pg-prime'
+
+const shutdown = new AbortController()
+const app = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema,
+  signal: shutdown.signal,
+})
+
+await app.sql`select 1`.execute()
+shutdown.abort()
+
+// `end()` is scheduled by the abort listener, so give it the tick it needs.
+let err: unknown
+for (let i = 0; i < 100 && !(err instanceof DbClosedError); i++) {
+  await new Promise((r) => setTimeout(r, 10))
+  err = await app.sql`select 1`.execute().catch((e: unknown) => e)
+}
+
+console.log(err instanceof DbClosedError)
+// true
+```
+
+## Per-query timeouts
+
+`timeoutMs` is on every call that runs a statement, and on `withOptions`. What it compiles to
+depends on whether there is a transaction to be local to.
+
+**Inside a transaction** — including anything under `db.transaction` — it is
+`SET LOCAL statement_timeout`, sent as a parameterised `set_config(…, true)` before the statement.
+That is correct in every pooler profile and costs one round trip. The transaction remembers the
+value it currently has, so a loop of statements sharing one timeout pays for one `set_config` and
+not *N*.
+
+**Outside a transaction** there is nothing for `SET LOCAL` to be local to, so the default is a
+client-side timer: when it fires, a `CancelRequest` goes out and the promise rejects. It costs
+nothing until it fires and one connection when it does.
+`{ timeoutStrategy: 'transaction' }` opts into the server-side form instead — pg-prime wraps the
+statement in `BEGIN; set_config('statement_timeout', …, true); …; COMMIT` for a hard, backend-
+enforced bound at +2 round trips. `'client'` forces the timer even inside a transaction.
+
+### The restore is `NULL`, not `0`
+
+When a statement's own timeout is over, pg-prime restores the transaction's baseline with
+`set_config('statement_timeout', NULL, true)` — which puts back the value the session would
+otherwise have. Sending `'0'` would look equivalent and is not: in PostgreSQL `0` **disables** the
+timeout, so it would silently convert a per-statement bound into a per-transaction exemption for
+every statement after it. The database itself is the oracle:
+
+{/* docs: use=blog */}
+```ts title="set-local-timeout.ts"
+const seen: string[] = []
+const read = async (h: { sql: typeof db.sql }): Promise<void> => {
+  const [row] = await h.sql`select current_setting('statement_timeout') as v`.execute()
+  seen.push(String(row?.['v']))
+}
+
+await db.transaction(async (tx) => {
+  await read(tx)
+  await read(tx.withOptions({ timeoutMs: 250 }))
+  await read(tx)
+})
+
+console.log(seen)
+// [ '30s', '250ms', '30s' ]  — the third would be '0' if the restore used '0'
+```
+
+The `'30s'` at either end is the session default, described below. The middle value is the one the
+statement asked for, and it is gone again by the next statement.
+
+## `QueryCanceledError` and `QueryTimeoutError`
+
+Both mean "the statement stopped early". They are different classes because the right next move is
+different.
+
+| Class | Raised when | What it tells you |
+|---|---|---|
+| `QueryCanceledError` | The **server** gave up: SQLSTATE `57014`, with `context.reason === 'statement_timeout'` | The statement is over. The backend is free. |
+| `QueryTimeoutError` | **We** gave up: the client-side timer fired and a `CancelRequest` was sent | The cancel is best-effort. The server may still be running the statement. |
+| `AbortError` | Your `signal` fired | Nothing about the server's state is promised; the connection was retired. |
+
+`QueryTimeoutError` extends `TimeoutError`, alongside `ConnectionTimeoutError`, `PoolTimeoutError`
+and `TransactionTimeoutError`; `QueryCanceledError` extends `QueryError`, because it is a SQLSTATE
+the server sent. Neither is ever retried: `AbortError` is excluded from the retry policy by name,
+and a `57014` is not in the default retry set.
+
+{/* docs: use=blog no-run */}
+```ts title="two-classes.ts"
+import { QueryCanceledError, QueryTimeoutError } from 'pg-prime'
+
+// no-run: `pg_sleep` plus a real CancelRequest needs a server that honours one. PGlite is a
+// single WASM backend and ignores CancelRequest, so this pair is a tier-2 test, not a docs example.
+
+// The server gave up — 57014, and it says why.
+const canceled = await db
+  .transaction(async (tx) => tx.withOptions({ timeoutMs: 200 }).sql`select pg_sleep(3)`.execute())
+  .catch((e: unknown) => e)
+console.log(canceled instanceof QueryCanceledError)
+console.log((canceled as QueryCanceledError).context.reason) // 'statement_timeout'
+
+// We gave up — the timer fired first, and the message says the server may not have stopped.
+const timedOut = await db
+  .withOptions({ timeoutMs: 250, timeoutStrategy: 'client' })
+  .sql`select pg_sleep(5)`.execute()
+  .catch((e: unknown) => e)
+console.log(timedOut instanceof QueryTimeoutError, timedOut instanceof QueryCanceledError)
+// true false
+```
+
+## The session default, and why there is one
+
+`session.statementTimeout` defaults to **`'30s'`**. An unbounded `statement_timeout` is how an
+application hangs forever holding a connection that nothing will ever take back, and the cost of
+the default is one `set_config` per *physical* connection — not per query — so it is close to free
+and it reaches every statement, including the ones you forgot about.
+
+Thirty seconds, not Prisma's five: five is tight enough that ordinary reporting queries trip it,
+which is a recurring production surprise. Thirty is generous enough that no normal OLTP query
+notices and tight enough to bound the damage.
+
+{/* docs: use=blog-schema no-run */}
+```ts title="session-defaults.ts"
+import { pgPrime } from 'pg-prime'
+
+export const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema,
+  session: {
+    statementTimeout: '30s', // the default. `null` disables it; `250` means 250 ms
+    lockTimeout: '2s', // default unset — a default here would break legitimate queuing
+    idleInTransactionSessionTimeout: '60s', // bounds "await an HTTP call inside a transaction"
+  },
+})
+```
+
+`Duration` is `string | number`: a PostgreSQL interval as a GUC accepts it (`'30s'`, `'5min'`) or a
+plain number of milliseconds (`250` becomes `'250ms'`). `null` disables a default explicitly, which
+is different from omitting it.
+
+Two limits to know about:
+
+- **Session GUCs apply only to `connection:`, or to `pool:`/`driver:` with an explicit `session:`.**
+  Reaching into a pool you built and setting things you did not ask for is a surprise pg-prime does
+  not spring.
+- **Under a transaction-pooler profile they are not applied at all**, because a `SET` at connect
+  lands on a server connection the pooler will hand to somebody else. pg-prime says so once, at
+  startup, and names the fix: `ALTER ROLE … SET statement_timeout = '30s'`. See
+  [poolers](/pg-prime/operations/poolers/) and [timeouts](/pg-prime/operations/timeouts/).
+
+They also do **not** ride the startup packet. `options=-c statement_timeout=…` is what the design
+originally called for; PgBouncer rejects it with a FATAL `08P01`, which would make `connection:`
+fail to connect at all behind a pooler. Only `application_name` travels that way; everything else
+is one `set_config` batch on first use of each physical connection.
+
+## Streams and COPY are exempt
+
+A cursor that walks ten million rows is not a slow query, and the 30 s default would kill it.
+`stream` and `streamBatches` take `statementTimeoutMs`, and pass `null` to lift the bound for the
+duration of the iteration:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="long-stream.ts"
+const [author] = await db
+  .insertInto(db.h.users)
+  .values({ email: 'ann@example.com', name: 'Ann' })
+  .returning((t) => ({ id: t.users.id }))
+  .execute()
+
+await db
+  .insertInto(db.h.posts)
+  .valuesMany([1, 2, 3].map((n) => ({ authorId: author!.id, title: `p${n}`, body: '…' })))
+  .execute()
+
+const q = db.from(db.h.posts, 'p').select((t) => ({ id: t.p.id, title: t.p.title }))
+
+let rows = 0
+for await (const post of db.stream(q, { batchSize: 500, statementTimeoutMs: null })) {
+  void post
+  rows++
+}
+
+console.log(rows)
+// 3  — a server-side cursor, `FETCH FORWARD 500`, and no 30-second ceiling over it
+```
+
+Nothing is emitted unless you ask: sending `SET LOCAL statement_timeout = 0` on every stream would
+be an extra round trip that usually changes nothing. Pass `statementTimeoutMs` — including `null` —
+and it goes out.
+
+## Where to go next
+
+- [Transactions and sessions](/pg-prime/guides/transactions/) — `TxOptions.timeoutMs`,
+  `lockTimeoutMs`, and why a retried callback must be idempotent.
+- [Errors](/pg-prime/guides/errors/) — the class tree these three errors live in.
+- [Timeouts](/pg-prime/operations/timeouts/) — the operational view, including `ALTER ROLE`.
+- [Poolers](/pg-prime/operations/poolers/) — which of this survives a transaction pooler.

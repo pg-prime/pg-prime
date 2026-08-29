@@ -3,4 +3,392 @@ title: Locks and CREATE INDEX CONCURRENTLY
 description: Lock-safe rewrites, multi-file emission, txmode none, and resuming a failed build.
 ---
 
-TODO
+import { Aside, Steps } from '@astrojs/starlight/components'
+
+A migration that fails is an inconvenience. A migration that takes `ACCESS EXCLUSIVE` on a hot
+table for ninety seconds is an outage, and it is an outage whose cause is invisible in the SQL:
+`CREATE INDEX` and `CREATE INDEX CONCURRENTLY` are one word apart and four orders of magnitude
+apart in blast radius.
+
+This page is about the second problem. It covers what lock each emitted statement takes, which
+statements pg-prime rewrites into a lock-safe form before you ever see them, what the rewrite costs
+(a second file, without a transaction around it), and what to do when a concurrent build dies
+halfway.
+
+## Every statement declares its lock
+
+The `.sql` file is the artifact, and each statement in it carries a header line saying what
+pg-prime believes it will take:
+
+```sql title="migrations/0000_init.sql (excerpt)"
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=3s statement=per-statement
+
+-- pg-prime:segment 0 transactional
+-- pg-prime:stmt 5 lock=accessExclusive non-idempotent
+ALTER TABLE "public"."posts" ADD CONSTRAINT "posts_author_id_fkey" FOREIGN KEY (author_id) REFERENCES public.users(id) NOT VALID;
+
+-- pg-prime:stmt 6 lock=shareUpdateExclusive idempotent
+ALTER TABLE "public"."posts" VALIDATE CONSTRAINT "posts_author_id_fkey";
+```
+
+Three fields, and each answers a different question:
+
+- **`lock=`** is the strongest table-level lock the statement is expected to take. It is *reported,
+  never certified*: it is derived from the statement pg-prime emitted, and PostgreSQL remains the
+  authority. It is right for everything the differ generates, and it is a claim rather than a
+  measurement for a hand-written file.
+- **`idempotent` / `non-idempotent`** says whether re-executing the statement from the top of the
+  file is safe. It matters only in a `txmode none` file, where it is enforced — see
+  [below](#the-second-file-txmode-none).
+- **`hazards=`**, when present, lists the codes `migrate lint` will report on that statement.
+
+The header's `timeout` line summarises the file: `lock=3s` on every statement, and
+`statement=per-statement` when the statements do not agree — a long build carries no
+`statement_timeout` at all while an ordinary DDL statement carries 30 s.
+
+### What each lock class blocks
+
+| `lock=` | PostgreSQL mode | Concurrent `SELECT` | Concurrent `INSERT`/`UPDATE`/`DELETE` |
+|---|---|---|---|
+| `accessExclusive` | `ACCESS EXCLUSIVE` | blocked | blocked |
+| `shareRowExclusive` | `SHARE ROW EXCLUSIVE` | allowed | blocked |
+| `share` | `SHARE` | allowed | blocked |
+| `shareUpdateExclusive` | `SHARE UPDATE EXCLUSIVE` | allowed | allowed |
+| `rowExclusive` | `ROW EXCLUSIVE` | allowed | allowed |
+| `none` | no table lock | allowed | allowed |
+
+The row that matters is the first one against the fourth. `ACCESS EXCLUSIVE` conflicts with every
+other mode including the `ACCESS SHARE` a plain `SELECT` takes, so it stops reads too;
+`SHARE UPDATE EXCLUSIVE` conflicts with nothing an application does and only serialises against
+other schema changes, `VACUUM` and `ANALYZE`. The whole of the next section is about moving work
+from the first row to the fourth.
+
+Duration is the other half. `accessExclusive` for the microsecond of a catalog write is fine;
+`accessExclusive` held across a sequential scan of 200 million rows is the outage. That is why
+`ADD CONSTRAINT … NOT VALID` and `VALIDATE CONSTRAINT` are two statements rather than one: the
+first takes the strong lock and holds it for a catalog write, the second does the scan under a lock
+that lets traffic through.
+
+## The lock-safe rewrites
+
+pg-prime emits the safer equivalent by default wherever an unambiguously equivalent one exists.
+"Equivalent" is not a judgement call here: every rewrite is proven on a clone at generate time and
+witnessed against `pg_dump`, so a rewrite that lands on a different catalog state from the literal
+form fails `generate` rather than reaching your repository.
+
+| What your schema asks for | What pg-prime writes |
+|---|---|
+| `CREATE INDEX` | `DROP INDEX CONCURRENTLY IF EXISTS x` + `CREATE INDEX CONCURRENTLY x`, in a second `txmode none` file |
+| `ADD FOREIGN KEY` | `ADD CONSTRAINT … NOT VALID`, then `VALIDATE CONSTRAINT` |
+| `ADD CHECK` | the same `NOT VALID` + `VALIDATE` split |
+| `SET NOT NULL` (PG ≥ 18) | `ADD CONSTRAINT … NOT NULL … NOT VALID`, then `VALIDATE CONSTRAINT` |
+| `SET NOT NULL` (PG 15–17) | `ADD CONSTRAINT … CHECK (c IS NOT NULL) NOT VALID` → `VALIDATE` → `SET NOT NULL` → `DROP CONSTRAINT` |
+| `ADD PRIMARY KEY` / `ADD UNIQUE` | `DROP CONSTRAINT IF EXISTS` + `DROP INDEX CONCURRENTLY IF EXISTS` + `CREATE UNIQUE INDEX CONCURRENTLY` + `ADD CONSTRAINT … USING INDEX`, in a second file |
+| `ADD COLUMN` with a **volatile** default | add the column nullable, `SET DEFAULT` separately, and scaffold a batched backfill |
+
+Four of these deserve a note.
+
+**The `SET NOT NULL` pair is chosen from the catalog, not from `server_version_num`.** PostgreSQL
+18 records `NOT NULL` as a real `pg_constraint` row, which makes `NOT VALID` a state the catalog
+can hold; on 15–17 it cannot, so pg-prime takes the detour through a temporary `CHECK`. The choice
+is made per column by asking whether the desired IR carries a `NOT NULL` constraint name, so a
+back-ported feature needs no version table. The PG 15–17 detour works because
+`ALTER COLUMN … SET NOT NULL` **skips its scan** when a validated `CHECK (c IS NOT NULL)` already
+proves the predicate — the scan happens under `SHARE UPDATE EXCLUSIVE` during the `VALIDATE`, and
+the `SET NOT NULL` itself is a catalog write. The temporary constraint is named through the same
+rule PostgreSQL uses, so a table that already has a `<table>_<column>_not_null` gets
+`…_not_null1` rather than a duplicate-name error.
+
+**The unique-constraint rewrite is four statements, and their order is load-bearing:**
+
+```sql
+ALTER TABLE "public"."people" DROP CONSTRAINT IF EXISTS "people_email_key";
+DROP INDEX CONCURRENTLY IF EXISTS "public"."people_email_key";
+CREATE UNIQUE INDEX CONCURRENTLY "people_email_key" ON "public"."people" USING btree (email);
+ALTER TABLE "public"."people" ADD CONSTRAINT "people_email_key" UNIQUE USING INDEX "people_email_key";
+```
+
+PostgreSQL names a constraint's backing index after the constraint, so the index and the constraint
+share one name and the resulting catalog state is byte-identical to what the literal
+`ADD CONSTRAINT … UNIQUE` would have produced. The two `IF EXISTS` prefixes are what make the group
+replayable from the top. `DROP CONSTRAINT` comes before `DROP INDEX` because dropping a constraint
+takes its index with it, and `DROP INDEX` on a constraint's index fails with "cannot drop index …
+because constraint … requires it".
+
+**`ADD COLUMN` with a volatile default splits only when the split can converge.** A *nullable*
+column becomes `ADD COLUMN c uuid` (no default, no rewrite) plus `ALTER COLUMN c SET DEFAULT
+gen_random_uuid()` (catalog only), and a `-- pg-prime:data` backfill stub is written beside the
+migration for the rows that were already there. When the desired column is `NOT NULL` the split is
+refused and the literal form stays, because a `NOT NULL` column with a per-row distinct value
+cannot exist without writing every row and no ordering of statements avoids that. You get a warning
+naming the three-migration shape instead; [zero-downtime patterns](/pg-prime/operations/zero-downtime/)
+spells it out.
+
+**Two rewrites are refused rather than approximated.** `CREATE INDEX CONCURRENTLY` is rejected
+outright by PostgreSQL on a partitioned table, and a table created by the same migration has no
+readers to block, so neither gets the concurrent form. A `UNIQUE` definition the rewriter will not
+reconstruct — `DEFERRABLE`, `WITH (…)`, a tablespace, a parenthesised expression — falls back to the
+literal `ADD CONSTRAINT` and carries hazard `LK104` instead.
+
+### Turning it off
+
+```sh
+pg-prime migrate generate --name add_index --no-safe-rewrite
+```
+
+Every row of the table above collapses back to the literal, single-file form. This is not a way to
+make a migration faster — it is a way to see the diff pg-prime is describing, and it is occasionally
+the right answer for a table you know is empty or a database with no traffic on it. The cost is that
+`LK101`, `LK104`, `LK105`, `LK106` and `LK109` become reachable again: the codes exist to describe
+exactly the forms the rewrite removes, so under `--no-safe-rewrite` `migrate lint` starts reporting
+them.
+
+## The second file: `txmode none`
+
+`CREATE INDEX CONCURRENTLY` cannot run inside a transaction block — PostgreSQL raises `25001` — and
+neither can `DROP INDEX CONCURRENTLY`. A plan containing one therefore cannot also be an atomic DDL
+file, and pg-prime does not pretend otherwise. One `generate` run writes **two files at the same
+sequence number**:
+
+```text
+migrations/
+  0002_orders_status.sql               txmode transactional
+  0002_orders_status_concurrently.sql  txmode none
+```
+
+Duplicate `NNNN` prefixes are legal. Files are ordered by `(seq, name)`, and `orders_status` sorts
+before `orders_status_concurrently`, so the transactional half always applies first. Each file gets
+its own `.plan.json`; the second one's `from.fingerprint` is the state *between* the two files,
+which cannot be predicted from the IR and is measured on the clone during the proof — which is why
+`--no-prove` is refused for a two-file plan. When the transactional half turns out to be empty, only
+the concurrent file is written.
+
+The concurrent file looks like this:
+
+```sql title="migrations/0002_orders_status_concurrently.sql"
+-- pg-prime:migration 0002_orders_status_concurrently
+-- pg-prime:plan      0002_orders_status_concurrently.plan.json
+-- pg-prime:from      sha256:…
+-- pg-prime:to        sha256:…
+-- pg-prime:txmode    none
+-- pg-prime:timeout   lock=3s statement=0
+-- pg-prime:requires-pg 150000
+
+SET search_path = pg_catalog;
+
+-- pg-prime:segment 0 bare
+-- pg-prime:stmt 0 lock=shareUpdateExclusive idempotent
+DROP INDEX CONCURRENTLY IF EXISTS "public"."orders_status_idx";
+
+-- pg-prime:stmt 1 lock=shareUpdateExclusive idempotent
+CREATE INDEX CONCURRENTLY "orders_status_idx" ON public.orders USING btree (status);
+```
+
+`segment 0 bare` means "no transaction around this", and `statement=0` in the header is
+PostgreSQL's spelling of "no `statement_timeout`": a concurrent build is intentionally
+long-running, and a 30 s cap on it would guarantee failure on any table worth building an index on
+concurrently. `lock_timeout` still applies to every statement.
+
+<Aside type="caution">
+A `txmode none` file has **no rollback**. If statement 1 of 3 fails, statement 0 stays applied and
+the database is in a state no single file describes. That is not a defect in the runner; it is what
+"cannot run inside a transaction" means.
+</Aside>
+
+The answer to that is not better bookkeeping — the bookkeeping and the DDL cannot share a
+transaction, by definition — but an invariant:
+
+> **TX201.** Every statement in a `txmode none` file must be idempotent.
+
+It is enforced at generate time by `migrate lint`, and it is why the rewrites above all carry
+`IF EXISTS` / `IF NOT EXISTS` prefixes. Given the invariant, resume is unconditionally safe: a
+resumed `txmode none` file restarts at **statement 0**, and running the whole file again is a no-op
+for everything that already succeeded. A hand-written `txmode none` file containing a
+non-idempotent statement fails lint with `TX201` and never reaches production.
+
+Here is what the runner actually executes for that second file — `migrate apply --dry-run` prints
+the stream, and the bookkeeping transactions are the interesting part. (The GUC writes are really
+`SELECT set_config($1, $2, $3)` with bind values; they are folded in below for readability, and
+they are `set_config` rather than `SET LOCAL` because a GUC name cannot be a bind parameter and a
+caller-supplied timeout should not be string-interpolated into DDL.)
+
+```sql
+SELECT set_config('lock_timeout', '3s', false);         -- session-scoped: no transaction to be local to
+SELECT set_config('search_path', 'pg_catalog', false);
+
+BEGIN; UPDATE pgprime.migrations SET statement_uncertain = 0 WHERE id = '0002_index_widgets'; COMMIT;
+SELECT set_config('statement_timeout', '0', false);
+DROP INDEX CONCURRENTLY IF EXISTS public.widgets_name_idx;   -- bare, no transaction
+BEGIN; UPDATE pgprime.migrations SET statements_applied = 1, statement_uncertain = NULL …; COMMIT;
+
+BEGIN; UPDATE pgprime.migrations SET statement_uncertain = 1 WHERE id = '0002_index_widgets'; COMMIT;
+SELECT set_config('statement_timeout', '0', false);
+CREATE INDEX CONCURRENTLY widgets_name_idx ON public.widgets USING btree (name);
+BEGIN; UPDATE pgprime.migrations SET statements_applied = 2, statement_uncertain = NULL …; COMMIT;
+
+RESET lock_timeout; RESET statement_timeout; RESET search_path;
+```
+
+`statement_uncertain` is the irreducible window: statement 1 was in flight, and after a crash there
+is no way to know whether PostgreSQL committed it. When the column is set on resume, the runner
+restarts at 0 rather than guessing.
+
+## Resuming a failed concurrent build
+
+A killed `CREATE INDEX CONCURRENTLY` leaves an **invalid index** behind. It is worse than useless:
+the planner will not use it, and every `INSERT`, `UPDATE` and `DELETE` on the table maintains it
+anyway.
+
+<Steps>
+
+1. **Find out what is there.** `migrate doctor` reads the catalog directly:
+
+   ```sh
+   pg-prime migrate doctor
+   ```
+
+   It reports three things this page cares about, each from a query you can run yourself:
+
+   ```sql
+   -- INVALID indexes: a CREATE INDEX CONCURRENTLY that did not finish
+   SELECT n.nspname || '.' || c.relname
+     FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE NOT i.indisvalid;
+
+   -- _ccnew leftovers: an interrupted REINDEX CONCURRENTLY
+   SELECT n.nspname || '.' || c.relname
+     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relkind = 'i' AND c.relname LIKE '%\_ccnew%';
+
+   -- constraints still NOT VALID: a VALIDATE that never ran
+   SELECT n.nspname || '.' || t.relname || '.' || c.conname
+     FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+     JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE NOT c.convalidated;
+   ```
+
+2. **If the leftover belongs to a pending migration, just run it again.**
+
+   ```sh
+   pg-prime migrate apply
+   ```
+
+   The file resumes at statement 0, its `DROP INDEX CONCURRENTLY IF EXISTS` prefix removes the
+   invalid index, and the build starts over. This is the case the rewrite was designed for, and
+   the case where doing nothing by hand is correct.
+
+3. **If it does not, drop it by hand.** An invalid index left by a hand-written migration, or by
+   somebody at a `psql` prompt, has no prefix to clean it up:
+
+   ```sql
+   DROP INDEX CONCURRENTLY IF EXISTS public.orders_status_idx;
+   ```
+
+   A `_ccnew` leftover is the same story with a different name — it is a `REINDEX CONCURRENTLY`
+   that was interrupted, it is not used by any query, and dropping it is safe.
+
+4. **A `NOT VALID` constraint is not an error.** It is a constraint PostgreSQL enforces for new
+   rows and has not checked against the old ones. If it is one of pg-prime's own rewrites and the
+   `VALIDATE` half has not run yet, `migrate apply` will run it. If it is a leftover, validate it
+   yourself — the scan takes `SHARE UPDATE EXCLUSIVE`, so it is safe to do under traffic:
+
+   ```sql
+   ALTER TABLE public.orders VALIDATE CONSTRAINT orders_customer_id_fkey;
+   ```
+
+</Steps>
+
+`migrate apply` also runs this sweep itself, before it applies anything, and warns when a finding
+is named by a plan it is about to run:
+
+```text
+pre-flight: public.orders_status_idx is invalid or unvalidated and a pending plan names it
+```
+
+That is a warning rather than a refusal, because the pending plan is usually the thing that fixes
+it.
+
+## `lock_timeout`, and why 3 s beats 30 s
+
+Every statement the runner executes is preceded by `lock_timeout = 3s`. That number is small on
+purpose, and the reasoning is not about the migration at all.
+
+A statement waiting for `ACCESS EXCLUSIVE` does not wait politely. It queues, and **every
+subsequent query on that table queues behind it**, including the `SELECT`s that would otherwise have
+run happily alongside the transaction actually holding the table. One long-running `SELECT` plus one
+patient `ALTER TABLE` is enough to stall an entire table indefinitely: the `ALTER` waits for the
+`SELECT`, and the application's next thousand queries wait for the `ALTER`.
+
+A short `lock_timeout` converts that from an outage into a retry. The statement gives up after 3 s
+with SQLSTATE `55P03`, the queue drains, and the runner tries again with exponential backoff and
+full jitter — up to 5 attempts. If the table is genuinely busy every single time, you get a failed
+deploy instead of a stalled database, which is the trade you want.
+
+| SQLSTATE | Meaning | What the runner does |
+|---|---|---|
+| `55P03` | `lock_not_available` | retry, up to 5 attempts |
+| `40001` | `serialization_failure` | retry, up to 5 attempts |
+| `40P01` | `deadlock_detected` | retry the file once |
+| `57014` | `query_canceled` (`statement_timeout`) | never retried — the operation is genuinely too slow |
+
+The retry unit is the unit that rolled back: a whole transactional file, or a single bare statement
+in a `txmode none` file.
+
+Override it per run, or set it in the config file:
+
+```sh
+pg-prime migrate apply --lock-timeout 5s --statement-timeout 60s
+```
+
+Statements whose lock class is `shareUpdateExclusive` — the concurrent builds and the `VALIDATE`
+scans — carry no `statement_timeout` of their own. The plan records `null` for them, the runner
+sets `statement_timeout = 0`, and they are allowed to run for as long as they need; a 30 s cap on a
+`CREATE INDEX CONCURRENTLY` would guarantee failure on exactly the tables that need one.
+`lock_timeout` still applies, which is the point: a concurrent build should be allowed to take an
+hour, and should not be allowed to sit in a lock queue for one. Note that `--statement-timeout` is
+what those statements fall back to when you pass it explicitly, so passing it does cap them — leave
+it unset if you want the builds uncapped.
+
+[Timeouts](/pg-prime/operations/timeouts/) covers the application side of the same three GUCs.
+
+## `--lock-wait` is a different lock
+
+`--lock-timeout` is PostgreSQL's `lock_timeout`, and it is about table locks. `--lock-wait` is about
+the **deploy lease**: the session advisory lock plus heartbeat row that stops two deploys migrating
+the same database at the same time.
+
+```sh
+pg-prime migrate apply --lock-wait 60s --stale-lock-after 120s
+```
+
+The default is 30 s. The lock key is derived from the database name and the managed schema set —
+not a fixed constant — so two unrelated schema sets in one database do not serialise against each
+other.
+
+What happens when two deploys race is deliberately asymmetric:
+
+- The **winner** takes the lock and applies.
+- The **loser** blocks for up to `--lock-wait`, then re-reads history. If nothing is pending — the
+  winner finished — it exits **0** and the pod starts serving. Exiting non-zero because somebody
+  else did the work would be wrong for every init-container topology in existence.
+- If the winner is still mid-run when the wait expires, the loser exits **6** and the orchestrator
+  retries.
+
+If the winner's process dies, its session advisory lock dies with the backend, but its lease row
+does not update. After `--stale-lock-after` (default 60 s) the lease is reported stale:
+
+```sh
+pg-prime migrate unlock            # inspect the lease and its age
+pg-prime migrate unlock --force    # break it
+```
+
+`--force` breaks the *lease row*. It cannot release a session lock that a live backend still holds,
+which is the correct division: if the original backend is alive, the lock is not stale and breaking
+it would be the bug.
+
+[Migrations in CI/CD](/pg-prime/operations/ci-cd/) covers exit code 6 in a pipeline, and
+[troubleshooting](/pg-prime/operations/troubleshooting/) has the symptom table. The full hazard
+list, including every `LK` code mentioned here, is in the
+[hazard-code reference](/pg-prime/reference/hazard-codes/).

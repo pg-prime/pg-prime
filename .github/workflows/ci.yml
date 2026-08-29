@@ -180,6 +180,47 @@ jobs:
       - run: pnpm build
       - run: pnpm package:check
 
+  docs:
+    # design/08 §6.4 and design/12 §4 D. The site is only half the job: the other half is that
+    # every code block on it is a gate.
+    #
+    #   docs:typecheck  every fenced ts/tsx block compiles on TypeScript 5.9.3 — the CONSUMER
+    #                   floor, not the compiler that builds the packages — against the built
+    #                   `dist`, under strict + exactOptionalPropertyTypes.
+    #   docs:examples   every block tagged `title=` runs, against tier-1 PGlite, one clean
+    #                   database per example. No Docker, for the same reason the `live` job needs
+    #                   none.
+    #   docs:coverage   every name in tools/api-snapshot/*.json has a reference entry and every
+    #                   reference entry names something the goldens contain; the CLI page's blocks
+    #                   are the binary's own --help; the hazard table is the kit's own code list.
+    #   docs:build      the pooler matrix is regenerated from POOLER_PROFILES, then `astro build`
+    #                   (which is also where Pagefind builds the search index).
+    #
+    # `pnpm build` first, because all four resolve `pg-prime` and `@pg-prime/kit` through
+    # docs/node_modules → packages/* → their `exports` maps → `dist`. Budget: under 4 minutes.
+    name: docs (design/08 §6.4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm docs:typecheck
+      - run: pnpm docs:examples
+      - run: pnpm docs:coverage
+      - run: pnpm docs:build
+      # The same artifact the Pages workflow deploys from `main`, so a PR can be inspected without
+      # publishing anything.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: docs/dist
+          retention-days: 7
+
   live:
     name: live (tier 1, PGlite) · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

@@ -3,4 +3,485 @@ title: The migration model
 description: IR, fingerprints, the two files per migration, and the history schema.
 ---
 
-TODO
+import { Aside, Steps } from '@astrojs/starlight/components'
+
+pg-prime does not compare your TypeScript to a file it wrote last time. It compares two
+PostgreSQL catalogs: the one your database actually has, and the one your schema produces when
+PostgreSQL itself is asked to create it. Everything else on this page follows from that one
+decision.
+
+## The loop
+
+```text
+  TS schema ─┐
+             ├─► desired DDL ─► [shadow] ─► extract ─► IR(desired) ─┐
+  sql/ ──────┘                                                      │
+  target DB ─────────────────► extract ─► IR(current) ──────────────┴─► diff
+                                                                        │
+                                                                        ▼
+                                                                      Delta[]
+                                                                        ▼
+       order (topological + `evaluates` edges) ────────────────────►  Action[]
+                                                                        ▼
+       lock-safe rewriting + hazard analysis ─────────────────────────► Plan
+                                                                        ▼
+       PROVE on a clone ──► fail ⇒ nothing is written                    │
+                                                                        ▼
+                                            NNNN_name.sql + NNNN_name.plan.json
+```
+
+<Steps>
+
+1. **The desired state is built by creating it.** Your `defineSchema(...)` registry is emitted as
+   DDL and executed on a [shadow database](/pg-prime/concepts/shadow-ladder/), together with every
+   `.sql` file under `sql/`. Then the shadow's catalog is read back. `IR(desired)` is therefore
+   whatever PostgreSQL made of your declarations — the type `varchar(30)` really is, the expression
+   a default is really stored as, the canonical form of an index.
+
+2. **The observed state is read out of `pg_catalog`.** One transaction at `REPEATABLE READ`, roughly
+   twenty queries, one per fact family. `information_schema` is never touched: it cannot represent
+   RLS, partitions, exclusion constraints, `NOT VALID` state or generated columns, and it is slower.
+   Definition text comes from `pg_get_indexdef`, `pg_get_constraintdef` and `pg_get_expr` — never
+   reconstructed by pg-prime.
+
+3. **The two are diffed.** Both sides are the same kind of object built by the same extractor, so a
+   difference in the diff is a difference in the database, not a difference in spelling.
+
+4. **The deltas are ordered.** A topological sort over the dependency edges, plus the synthesized
+   `evaluates` edge that forces a commit boundary between `ALTER TYPE … ADD VALUE` and anything that
+   evaluates the new label. `pg_depend` records a dependency on the enum *type*, not on a label, so
+   that edge cannot be read out of the catalog and has to be manufactured.
+
+5. **The plan is rewritten to its lock-safe form** and every remaining hazard is classified. This is
+   where `ADD FOREIGN KEY` becomes `ADD … NOT VALID` plus `VALIDATE CONSTRAINT`, and where a plain
+   `CREATE INDEX` becomes a `CONCURRENTLY` build in its own file.
+
+6. **The plan is proven.** It is replayed on a fresh clone of the recorded starting state and the
+   result is diffed against the desired state. See [Proof and
+   witness](/pg-prime/concepts/proof/).
+
+7. **Two files are written** — and only then, and only if step 6 passed.
+
+</Steps>
+
+## Why the diff is against the catalog
+
+Most migration tools diff your schema against a record of their own past output: a journal, a
+snapshot per migration, a shadow of the migration folder. That record is a claim about the database
+rather than a reading of it, and the two diverge for ordinary reasons — a hotfix applied by hand, a
+`pg_restore` from a stale dump, an extension that installed its own objects, two branches merged in
+the wrong order.
+
+pg-prime reads the database. The consequences are worth stating plainly:
+
+- **A hand-applied change is a difference pg-prime can see.** The next `generate` plans around it
+  instead of silently generating a migration that will fail on apply.
+- **Adoption needs no ceremony.** An existing database is just a starting catalog; `migrate baseline`
+  records where you came in.
+- **The desired side is normalized by PostgreSQL, not by pg-prime.** There is no second model of
+  PostgreSQL's canonicalization to keep in sync, which is the failure mode of every parse-only
+  differ.
+
+The cost is that `generate` needs a database, and a place to normalize the desired state. That is
+the whole reason the shadow ladder exists, and why `--offline` is
+[refused rather than approximated](/pg-prime/concepts/shadow-ladder/#tier-4-refused).
+
+## The IR
+
+The intermediate representation is a **fact base**, not a tree: a flat set of facts plus a set of
+dependency edges. Hierarchy is derived from the ids.
+
+A fact has an `id`, an optional `parent`, a `payload`, and provenance. Three properties of that
+shape are load-bearing:
+
+- **The payload is identity-free.** A fact's own name lives in its id and never in the bytes that
+  are hashed. That is what makes a rename a hash join rather than a similarity score: two facts with
+  equal rollups and different ids *are* a rename, at any grain.
+- **Provenance is never hashed.** A `users` table declared in TypeScript and the same table read out
+  of `pg_catalog` hash identically. Without this every diff is a phantom diff.
+- **Granularity is one.** A column is a fact, an enum label is a fact, a column default is a fact of
+  its own rather than a field on the column. Sub-entity grain is what lets a `pg_depend` edge land on
+  a real target.
+
+There are twelve fact kinds, and each has one identity tuple:
+
+| Kind | Identity | Notes |
+|---|---|---|
+| `schema` | `[schema]` | |
+| `table` | `[schema, name]` | partitioned parents and partitions are both tables |
+| `column` | `[schema, table, name]` | |
+| `default` | `[schema, table, name]` | keyed by its column, so a default change is not a column change |
+| `constraint` | `[schema, table, name]` | PK, FK, UNIQUE, CHECK, EXCLUDE, including `NOT VALID` state |
+| `index` | `[schema, name]` | |
+| `type` | `[schema, name]` | enum, domain and composite share this kind |
+| `enumLabel` | `[schema, type, name]` | |
+| `typeAttribute` | `[schema, type, name]` | a composite's attribute |
+| `sequence` | `[schema, name]` | including identity and `OWNED BY` |
+| `comment` | `[target]` | one kind covers comments on all of the above |
+| `extension` | `[name]` | database-scoped: PostgreSQL allows one of each name per database |
+
+Edges are `depends`, `owner`, `memberOfExtension`, `managedBy` and `evaluates`. Only the last is
+pg-prime's own: without it a plan happily sets a column's default to an enum label in the same
+transaction that adds the label, and PostgreSQL rejects that with
+`invalid input value for enum`. `pg_depend` cannot supply the edge, so it is synthesized from the
+expression text.
+
+`partition` is deliberately not a kind. A partitioned parent and a partition are both `table` facts
+carrying `partitionStrategy`, `partitionKey`, `partitionOf` and `partitionBound`; `ATTACH` and
+`DETACH` are the deltas.
+
+## Fingerprints
+
+A fingerprint is a `sha256:<hex>` string over the whole managed schema set.
+
+It is built bottom-up. Each fact has a content hash of its canonicalized payload; each fact has a
+**rollup** = its content hash, plus its children's `(name, kind, rollup)` sorted, plus its outgoing
+non-`owner` edges sorted. The fingerprint is the hash of every root fact's `id=rollup` line, sorted.
+
+So a fingerprint covers:
+
+- every Tier-M fact's payload, in the [managed schema set](/pg-prime/concepts/tiers/);
+- every fact's *name*, via its position in its parent's rollup;
+- the dependency graph, via the edge targets in each rollup.
+
+And it deliberately does **not** cover:
+
+- **provenance** — where the fact was read from;
+- **ordinal** — a column's `attnum`, an enum label's rank. PostgreSQL assigns physical order, so
+  hashing it would manufacture a diff between a declared schema and a live catalog that agree;
+- **Tier O and Tier U** objects — a `GRANT SELECT` is not schema state pg-prime owns, and putting one
+  in the fingerprint would make it indistinguishable from drift;
+- **Tier R** objects — views, functions, triggers and policies are re-applied by content hash, never
+  diffed.
+
+`apply` records the fingerprint it moved the database *to* on every row it writes
+(`pgprime.migrations.fingerprint_to`), and the last applied row's value is the current fingerprint of
+record. That is what makes `status` and `check` cheap: neither has to introspect on the fast path.
+Before it runs a file, `apply` compares the live fingerprint with the plan's `from.fingerprint` and
+refuses on a mismatch (exit `4`). One check is simultaneously the drift guard and the
+concurrent-deploy guard.
+
+## Two files per migration
+
+`generate` writes `NNNN_name.sql` and `NNNN_name.plan.json`. The `.sql` is the executable artifact
+and is runnable by `psql` if pg-prime's tooling ever fails; the `.plan.json` is the reviewable one.
+
+```sql title="migrations/0000_init.sql"
+-- pg-prime:migration 0000_init
+-- pg-prime:plan      0000_init.plan.json
+-- pg-prime:from      sha256:bcb83d0e69a2603084b68c868f2ae1ffa396f30223c9b258bb6606bfa4008926
+-- pg-prime:to        sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=3s statement=per-statement
+-- pg-prime:requires-pg 150000
+
+SET search_path = pg_catalog;
+
+-- pg-prime:segment 0 transactional
+-- pg-prime:stmt 0 lock=none non-idempotent
+CREATE TABLE "public"."posts" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  "author_id" bigint NOT NULL,
+  "title" text NOT NULL,
+  "body" text NOT NULL,
+  "published" boolean DEFAULT false NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+
+-- pg-prime:stmt 1 lock=none non-idempotent
+CREATE TABLE "public"."users" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  "email" text NOT NULL,
+  "name" text NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+
+-- pg-prime:stmt 2 lock=accessExclusive non-idempotent
+ALTER TABLE "public"."posts" ADD CONSTRAINT "posts_pkey" PRIMARY KEY (id);
+
+-- pg-prime:stmt 3 lock=accessExclusive non-idempotent
+ALTER TABLE "public"."users" ADD CONSTRAINT "users_email_key" UNIQUE (email);
+
+-- pg-prime:stmt 4 lock=accessExclusive non-idempotent
+ALTER TABLE "public"."users" ADD CONSTRAINT "users_pkey" PRIMARY KEY (id);
+
+-- pg-prime:stmt 5 lock=accessExclusive non-idempotent
+ALTER TABLE "public"."posts" ADD CONSTRAINT "posts_author_id_fkey" FOREIGN KEY (author_id) REFERENCES public.users(id) NOT VALID;
+
+-- pg-prime:stmt 6 lock=shareUpdateExclusive idempotent
+ALTER TABLE "public"."posts" VALIDATE CONSTRAINT "posts_author_id_fkey";
+```
+
+### What each header line means
+
+| Line | Meaning |
+|---|---|
+| `migration NNNN_name` | the file's own id, and the primary key of its history row |
+| `plan NNNN_name.plan.json` | the sibling plan. Absent on a hand-written file |
+| `from sha256:…` | the fingerprint this file expects to find. `apply` refuses if the live one differs |
+| `to sha256:…` | the fingerprint it produces, recorded as `fingerprint_to` when it commits |
+| `txmode transactional\|none\|segmented` | how the runner frames it: one transaction, none at all, or per segment |
+| `timeout lock=… statement=…` | the GUCs the runner sets. `per-statement` means the statements disagree and each carries its own; `0` is PostgreSQL's "no timeout" |
+| `requires-pg 150000` | the `server_version_num` floor. PostgreSQL 15 is the floor for v1 |
+| `data` | present on a [data migration](/pg-prime/guides/data-migrations/), so the runner batches it |
+| `checkpoint` | present on a [checkpoint](/pg-prime/guides/checkpoints/), so a fresh database can jump to it |
+
+Below the header, `-- pg-prime:segment N` opens a transaction boundary and `-- pg-prime:stmt N`
+numbers a statement and declares its lock class, whether it is idempotent, and any hazard codes it
+carries.
+
+<Aside type="caution">
+The `-- pg-prime:stmt N` markers are not decoration. Partial-application resume records a *statement
+index*, and deriving that index by re-splitting the file at resume time would make correctness depend
+on the splitter behaving identically across releases. The marker makes the index part of the artifact
+you reviewed. The splitter is the fallback for hand-written files, and taking it emits a diagnostic.
+</Aside>
+
+### The plan
+
+The `.plan.json` is the same migration as data: what each statement does, what it produces and
+consumes, what it locks, which hazards fired, which renames were resolved and how, and the verdict
+of the proof. Trimmed here to one of the seven statements:
+
+```json title="migrations/0000_init.plan.json"
+{
+  "formatVersion": 1,
+  "migration": {
+    "id": "0000",
+    "name": "init",
+    "file": "0000_init.sql",
+    "sha256": "sha256:61427192289d10fa217d4555f7c01705d0269583ec6b4bf201b13f536e2eb905"
+  },
+  "from": { "fingerprint": "sha256:bcb83d0e69a2603084b68c868f2ae1ffa396f30223c9b258bb6606bfa4008926" },
+  "to": { "fingerprint": "sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392" },
+  "pg": { "minVersion": 150000, "generatedAgainst": 170011 },
+  "schemas": ["public"],
+  "normalized": true,
+  "shadowTier": 2,
+  "txmode": "transactional",
+  "segments": [{ "index": 0, "transactional": true, "statements": [0, 1, 2, 3, 4, 5, 6] }],
+  "statements": [
+    {
+      "index": 5,
+      "sql": "ALTER TABLE \"public\".\"posts\" ADD CONSTRAINT \"posts_author_id_fkey\" FOREIGN KEY (author_id) REFERENCES public.users(id) NOT VALID",
+      "verb": "alter",
+      "kind": "constraint",
+      "produces": ["constraint:public.posts.posts_author_id_fkey"],
+      "consumes": ["table:public.posts", "table:public.users", "constraint:public.users.users_pkey"],
+      "destroys": [],
+      "releases": [],
+      "transactionality": "transactional",
+      "lockClass": "accessExclusive",
+      "idempotent": false,
+      "timeouts": { "lock": "3s", "statement": "30s" },
+      "dataLoss": "none",
+      "rewrite": false,
+      "hazards": []
+    }
+  ],
+  "renames": [],
+  "hazards": [],
+  "unmodeled": [],
+  "repeatables": [],
+  "planId": "sha256:b9d3386577fe303dda783d95ecbe9b1694a36f49a56c11a732cb15d87cd1882f",
+  "acknowledged": null,
+  "proof": {
+    "status": "passed",
+    "shadow": "createdb",
+    "driftDeltas": 0,
+    "stageFingerprints": ["sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392"],
+    "dumpOracle": {
+      "status": "passed",
+      "mode": "warn",
+      "pgDumpVersion": "pg_dump (PostgreSQL) 17.11",
+      "statementCount": 12
+    },
+    "provisioning": "template",
+    "cloneName": "pgprime_shadow_b5d18627",
+    "durationMs": 322
+  }
+}
+```
+
+Two fields are worth knowing about:
+
+- **`planId` excludes `generated` and `proof`.** The same logical plan re-proven by a different
+  person on a different day has a stable id.
+- **`acknowledged` is the review interface.** A destructive change cannot reach disk unacknowledged,
+  and the acknowledgement lands in this file — so it shows up as a diff line in the pull request:
+  `+ "dataLoss": ["column:public.users.legacy_id"]`.
+
+There is deliberately no per-migration schema snapshot. State lives in
+[checkpoints](/pg-prime/guides/checkpoints/), which are taken when you ask for one, not on every
+`generate`.
+
+## There is no journal file
+
+Ordering is resolved from the files on disk, by `(seq, name)`, on every run. `NNNN` is a zero-padded
+monotonic counter and **duplicate numbers are legal**: `0007_a.sql` and `0007_b.sql` from two
+branches both apply, in name order, with no merge conflict in a file nobody reads. There is no
+`_journal.json` to desynchronise from the directory it describes.
+
+What has been applied is recorded in the database, in a schema called `pgprime`:
+
+```sql title="the pgprime schema"
+CREATE SCHEMA IF NOT EXISTS pgprime;
+
+-- one row per migration file the database has seen
+CREATE TABLE IF NOT EXISTS pgprime.migrations (
+  id                  text PRIMARY KEY,      -- '0007_add_orders_status_index'
+  seq                 integer     NOT NULL,
+  name                text        NOT NULL,
+  checksum            text        NOT NULL,  -- sha256 of the .sql bytes
+  plan_id             text,
+  fingerprint_from    text,
+  fingerprint_to      text,
+  txmode              text        NOT NULL,
+  statements_total    integer     NOT NULL,
+  statements_applied  integer     NOT NULL DEFAULT 0,
+  statement_uncertain integer,               -- the one statement a crash left unknown
+  segment_applied     integer     NOT NULL DEFAULT 0,
+  status              text        NOT NULL,  -- running|applied|failed|baselined|superseded
+  started_at          timestamptz NOT NULL DEFAULT now(),
+  finished_at         timestamptz,
+  duration_ms         integer,
+  applied_by          text        NOT NULL DEFAULT current_user,
+  applied_from        text,                  -- hostname / CI run id
+  error               jsonb,
+  engine_version      text        NOT NULL
+);
+
+-- Tier R: which sql/ file was applied, and at which content hash
+CREATE TABLE IF NOT EXISTS pgprime.repeatables (
+  path        text PRIMARY KEY,
+  checksum    text        NOT NULL,
+  applied_at  timestamptz NOT NULL DEFAULT now(),
+  duration_ms integer
+);
+
+-- the checkpoint a fresh database jumped to, and the fingerprint it landed on
+CREATE TABLE IF NOT EXISTS pgprime.checkpoints (
+  id          text PRIMARY KEY,
+  fingerprint text        NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- the heartbeat lease (one row, ever)
+CREATE TABLE IF NOT EXISTS pgprime.lock (
+  singleton    boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+  run_id       uuid        NOT NULL,
+  holder       text        NOT NULL,
+  acquired_at  timestamptz NOT NULL DEFAULT now(),
+  heartbeat_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- data-migration watermarks, so a killed backfill resumes where it stopped
+CREATE TABLE IF NOT EXISTS pgprime.data_progress (
+  migration_id text PRIMARY KEY,
+  watermark    jsonb       NOT NULL,
+  rows_done    bigint      NOT NULL DEFAULT 0,
+  updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+-- readable before anything else, so a future release knows what it is looking at
+CREATE TABLE IF NOT EXISTS pgprime.meta (key text PRIMARY KEY, value text NOT NULL);
+```
+
+Those seven statements run in **one transaction of their own** — a half-created history is worse
+than none — and are retried once on `23505` / `42P06` / `42P07` / `42710`, because
+`CREATE … IF NOT EXISTS` checks for existence before it inserts the catalog row, and two replicas
+starting together is the normal case rather than the exceptional one.
+
+On the transactional path the history `INSERT` is a statement of the migration's own transaction, so
+"applied" and "recorded" commit together and there is no torn state to reconcile. A failure leaves no
+row at all, which is why the runner writes a `failed` row afterwards, in its own statement, with the
+error as `jsonb`.
+
+The managed schema set defaults to `['public']`, so the history tables sit outside the diff's scope
+and never appear in a plan. If you name your schemas explicitly in `pg-prime.config.ts`, leave
+`pgprime` out of the list.
+
+## The lock that serialises deploys
+
+`apply` opens a **dedicated direct connection** — never your application pool — and takes a
+session-scoped advisory lock on it:
+
+```sql
+SELECT pg_try_advisory_lock($1);
+```
+
+The key is derived, not fixed: `sha256(database || ':' || sorted-managed-schemas)`, folded to a signed
+64-bit integer. Two unrelated schema sets in one database therefore do not serialise against each
+other, which a hard-coded key would force them to.
+
+The lock is **session**-scoped rather than transaction-scoped on purpose. A `txmode none` migration
+has no enclosing transaction for `pg_advisory_xact_lock` to be scoped to, so a transaction-scoped
+lock could not cover the one case that most needs covering — a `CREATE INDEX CONCURRENTLY` that runs
+for twenty minutes outside any transaction.
+
+A session lock has one weakness: if the runner's process dies in a way that leaves the backend alive,
+`pg_locks` alone cannot tell you the holder is gone. So the lock is paired with a **heartbeat lease**
+in `pgprime.lock`, updated every five seconds from a second connection (the migration connection is
+busy inside a single long statement and cannot issue anything else). Age is computed server-side, so
+a skewed client clock cannot invent a stale lease. After `--stale-lock-after` (default 60 s)
+`migrate apply` names the stale holder, and `migrate unlock --force` can break it.
+
+<Aside type="caution">
+Session advisory locks are **silently broken** behind a transaction-mode pooler: the unlock lands on
+the wrong backend and the original returns to the pool still holding the lock. `apply` probes for
+this before it does anything else and refuses with the direct-connection port to use. See
+[Poolers](/pg-prime/operations/poolers/).
+</Aside>
+
+## `SET search_path = pg_catalog`
+
+Every generated file begins with it, and the runner sets it again (`SET LOCAL`, or session-scoped
+plus a `RESET` for a bare segment) around every statement it executes.
+
+Every identifier the emitter writes is schema-qualified, and extraction ran under the same
+`search_path`, so pinning it costs nothing and buys two things: a rogue schema earlier on the path
+cannot capture an unqualified reference inside a stored definition being replayed verbatim, and the
+file means exactly the same thing under `psql` as it does under the runner.
+
+## Hand-written migrations are first-class
+
+Not everything is a schema diff. Granting a role, installing an extension you manage outside the
+schema, a one-off `UPDATE` — `generate --empty` writes the file and touches no database:
+
+```sh
+pg-prime migrate generate --empty --name grant_readonly
+```
+
+```sql title="migrations/0003_grant_readonly.sql"
+-- pg-prime:migration 0003_grant_readonly
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=3s statement=30s
+
+-- Hand-written migration. There is no .plan.json beside it, so `apply` runs it with
+-- no fingerprint gate and no checksum gate — it is yours.
+--
+-- Number every statement: the marker IS the resume position (design/06 §4.2), and
+-- without markers the runner falls back to its SQL splitter and says so.
+
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+SELECT 1;
+```
+
+A file with no `.plan.json` is applied without the fingerprint gate and without the checksum gate,
+and `apply` says so in its warnings rather than passing over it in silence. It is still ordered with
+everything else, still recorded in `pgprime.migrations`, still resumable, and still linted:
+`migrate lint` reads the same directives out of a hand-written file as out of a generated one, so
+`txmode none` still means every statement must be idempotent (`TX201`).
+
+`generate --data` writes the other hand-written shape — a resumable, batched
+[data migration](/pg-prime/guides/data-migrations/) with its `-- pg-prime:batch` directive already
+in place.
+
+## Where to go next
+
+- [The shadow ladder](/pg-prime/concepts/shadow-ladder/) — where `IR(desired)` comes from, on a
+  database that will not let you `CREATE DATABASE`.
+- [Proof and witness](/pg-prime/concepts/proof/) — why a plan that does not converge is never
+  written.
+- [Tier M, R, O and U](/pg-prime/concepts/tiers/) — what the differ owns and what it leaves alone.
+- [Migrations end to end](/pg-prime/guides/migrations/) — every command, and what each one refuses.

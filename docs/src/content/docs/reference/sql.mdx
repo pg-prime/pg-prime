@@ -1,6 +1,358 @@
 ---
 title: pg-prime/sql
 description: Every export of the sql entry point.
+apiEntry:
+  - pg-prime#./sql
+  - pg-prime#.
 ---
 
-TODO
+`pg-prime/sql` is the fragment layer: the `sql` tagged template, the identifier quoter every other
+layer routes through, and the root of the error hierarchy. Every name below is re-exported from
+`pg-prime` itself, so the two imports are the same values; the subpath exists for code that wants
+fragments and nothing else.
+
+```ts
+import { sql } from 'pg-prime/sql'
+```
+
+There are four ways to put something into a fragment, three of them safe and one loudly named:
+
+| Written as | Position | What happens to it |
+|---|---|---|
+| `` sql`… ${value} …` `` | value | Always a bind parameter. Never interpolated. |
+| `sql.ident(...parts)` | identifier | Validated, then always quoted. |
+| `sql.lit(v)` | literal | Non-strings only. |
+| `sql.unsafeRaw(text)` | anything | Interpolated verbatim, and greppable because of the name. |
+
+A fragment is an opaque handle, not a string. The SQL it stands for lives in a module-private
+`WeakMap` keyed by the handle, which is what makes the tag's "is this SQL or is this data?"
+decision **nominal**: `JSON.parse` can produce an object shaped exactly like a fragment, but it
+cannot produce an object that is already a key in that map, so untrusted input is always data and
+always a `$n`.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="fragments.ts"
+import { sql } from 'pg-prime/sql'
+
+await db.sql`insert into users (email, name) values (${'alice@example.com'}, ${'Alice'})`.execute()
+const alice = await db.sql`select id from users`.executeTakeFirst()
+await db.sql`
+  insert into posts (author_id, title, body, published)
+  values (${alice!['id']}, ${'Hello'}, ${'first'}, ${true})
+`.execute()
+
+// Fragments carry no positional state, so one value is reusable across holes and across queries.
+const isPublished = sql`published = ${true}`
+const columns = sql.join([sql.ident('title'), sql.ident('published')])
+
+const rows = await db.sql`
+  select ${columns} from ${sql.ident('posts')} where ${isPublished}
+`.execute()
+
+console.log(rows) // [ { title: 'Hello', published: true } ]
+```
+
+## The tag
+
+### `sql`
+
+{/* docs: signature */}
+```ts
+const sql: SqlTag
+```
+
+The tagged template, plus its four helpers as properties. It is frozen, it holds no state, and it
+never touches a connection: a fragment is a value you can build in one module and run in another.
+
+### `SqlTag`
+
+{/* docs: signature */}
+```ts
+interface SqlTag {
+  (strings: TemplateStringsArray, ...values: readonly unknown[]): Fragment<unknown>
+  ident(parts: readonly [string, ...string[]]): Fragment<unknown>
+  ident(...parts: [string, ...string[]]): Fragment<unknown>
+  lit(v: number | bigint | boolean | null): Fragment<unknown>
+  unsafeRaw(text: string): Fragment<unknown>
+  join(fragments: readonly Fragment<unknown>[], separator?: Fragment<unknown>): Fragment<unknown>
+  readonly empty: Fragment<unknown>
+}
+```
+
+The call signature declares **zero type parameters**, so `` sql<number>`…` `` fails to compile with
+"Expected 0 type arguments, but got 1". Result typing goes through [`.as(codec)`](#fragment)
+instead, which supplies the TypeScript type and the decoder together rather than asserting one and
+hoping for the other.
+
+{/* docs: expect-error */}
+```ts
+import { sql } from 'pg-prime/sql'
+
+const n = sql<number>`select count(*) from users`
+```
+
+Each helper, and what is surprising about it:
+
+- **`sql.ident(...)`** takes *parts*, never a dotted string. `sql.ident('a.b')` is one identifier
+  containing a dot; `sql.ident('public', 'users')` is `"public"."users"`. There is deliberately no
+  overload that splits a string on `.`, because that overload is exactly how one identifier becomes
+  two. An array is accepted as well — `sql.ident(['public', 'users'])` — and is copied, not aliased.
+- **`sql.lit(v)`** accepts `number`, `bigint`, `boolean` and `null`, and refuses strings at compile
+  time and again at runtime. A string in a query position is always a parameter, so there is no
+  string-literal quoter on this path to get wrong — which is the structural fix for the CVE class
+  of GHSA-8cpq-38p9-67gx. Non-finite numbers are refused too: `NaN` has no SQL literal form.
+- **`sql.unsafeRaw(text)`** is the one primitive that interpolates caller text verbatim. Outside
+  `NODE_ENV=production` it captures the call site, so a query that used it can say where.
+- **`sql.join(fragments, separator?)`** splices fragments with `, ` by default; `sql.empty` is the
+  zero-length fragment `join` returns for an empty list, and is the value to use for an optional
+  clause you want to omit.
+- Interpolating `undefined` into a hole **throws** rather than binding SQL `NULL`. `null` is still
+  accepted, because it is the explicit spelling of the same intent; `undefined` in that position is
+  almost always a misspelled property or a missing `await`, and binding it silently produced
+  `= NULL`, which is never true and returns no rows with no error anywhere.
+
+Calling the tag as a plain function with a forged template object is refused as well: a real
+template object and its `.raw` are frozen and interned per call site, and the tag checks both.
+
+## Fragments
+
+### `Fragment`
+
+{/* docs: signature */}
+```ts
+interface Fragment<T = unknown> {
+  as<C extends AnyCodec>(codec: C): TypedFragment<CodecOut<C>, CodecPg<C>>
+  asUnsafe<U>(): TypedFragment<U, 'unknown'>
+  readonly __out?: T
+}
+```
+
+`T` is the decoded type and stays `unknown` until `.as(codec)` attaches one. `.asUnsafe<U>()` is the
+escape hatch for the case where no codec says what you mean: the value is still decoded correctly,
+by OID, but the link between the declared type and the decoder is gone — which is what the name is
+for. `T` is covariant here, on purpose: a fragment's result type is set exactly once and never
+accumulates, so invariance would only mean that calling `.as()` made a fragment uncomposable.
+
+### `TypedFragment`
+
+{/* docs: signature */}
+```ts
+// The three keys are the phantom slot symbols `pg-prime/schema` exports. They are re-declared
+// here because a signature block imports types, and a computed key needs the value.
+const OUT: unique symbol
+const META: unique symbol
+const SRC: unique symbol
+
+interface TypedFragment<T, P extends string = string> extends Fragment<T> {
+  readonly [OUT]: T
+  readonly [META]: { readonly pg: P }
+  readonly [SRC]: string
+}
+```
+
+A fragment that has been given a codec, and therefore a place in the operator type system. None of
+the three slots exists at runtime. `OUT` makes the fragment projectable; `META.pg` republishes the
+codec's own PostgreSQL type name, which is the same string a column's metadata carries, so a typed
+fragment is a class-specific operand exactly as a column reference is; `SRC` makes it compose
+anywhere a built expression does. A bare `` sql`…` `` has none of them, so it cannot go in a
+projection without choosing a codec first.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="typed-fragment.ts"
+import { sql } from 'pg-prime/sql'
+import { int8Codec } from 'pg-prime/codecs'
+
+const rows = await db
+  .from(db.h.posts, 'p')
+  .select((t) => ({ posts: sql`count(${t.p.id})`.as(int8Codec) }))
+  .execute()
+
+console.log(rows) // [ { posts: 0n } ]
+```
+
+### `AnyFragment`
+
+{/* docs: signature */}
+```ts
+type AnyFragment = Fragment<unknown>
+```
+
+Any fragment, whatever its result type. This is the parameter position for anything that composes
+fragments rather than reading them — a `CHECK` expression, an index predicate, `sql.join`.
+
+### `isFragment`
+
+{/* docs: signature */}
+```ts
+function isFragment(v: unknown): v is Fragment<unknown>
+```
+
+The nominal check described above: it asks whether the value is a key in the private `WeakMap`, not
+whether it has the right shape. A structurally identical object is data.
+
+### `toNode`
+
+`toNode(f: Fragment<unknown>): RawNode` unwraps a fragment to the AST node it stands for, and
+throws [`InvalidFragmentError`](#InvalidFragmentError) for anything the tag did not create.
+
+### `asExpr`
+
+`asExpr(v: Fragment<unknown> | Expr): Expr` accepts either a fragment handle or a bare AST node
+wherever an expression is wanted. It is the seam that lets the query builder take fragments and its
+own operators in the same argument.
+
+Neither of these two signatures is a checked block, and for the same reason: `RawNode` and the
+compiler's `Expr` are the internal AST node types, which the package does not publish. (The `Expr`
+exported from `pg-prime` is a different, generic type — the query builder's typed expression.) You
+need `toNode` and `asExpr` only when writing something that consumes fragments the way the DDL
+emitter does; everything on the query path takes fragments directly.
+
+## Identifiers
+
+Identifier quoting is the one sanitizer left in the library. The other two positions the 2026
+Kysely advisories covered are designed out rather than patched: JSON paths are bind parameters, and
+`sql.lit` refuses strings. What remains is these functions, which are fuzzed against a live
+PostgreSQL with a dual oracle (`format('%I')` and a `CREATE TEMP TABLE` round trip).
+
+### `quoteIdentPart`
+
+{/* docs: signature */}
+```ts
+function quoteIdentPart(part: unknown, index?: number): string
+```
+
+Validates and quotes one identifier part. Together with `sql.unsafeRaw` this is one of exactly two
+functions in the library that can put a non-`$n`, non-compile-time-constant string into the output
+SQL, so the whole injection audit surface for identifiers is these fifteen lines. It always quotes
+— there is no "this one looks safe" fast path that skips the quotes — and it escapes by doubling
+`"`. PostgreSQL, unlike MySQL, performs no backslash processing inside a quoted identifier, which
+is why `\` needs no handling here and why it did in the advisory.
+
+Nothing else is transformed: no case folding, no trimming, and no Unicode normalisation, because
+NFC would make two identifiers PostgreSQL considers distinct compare equal.
+
+### `quoteIdentPath`
+
+{/* docs: signature */}
+```ts
+function quoteIdentPath(parts: readonly unknown[]): string
+```
+
+`['public', 'users']` becomes `"public"."users"`. Each part is validated and quoted independently,
+so the `.` separators are the only characters in the result the caller did not supply.
+
+### `MAX_IDENT_BYTES`
+
+{/* docs: signature */}
+```ts
+const MAX_IDENT_BYTES = 63
+```
+
+`NAMEDATALEN - 1` — the number of UTF-8 **bytes** PostgreSQL stores in a `name`, not code units and
+not code points. A longer part is **rejected**, not truncated: PostgreSQL truncates silently, so two
+distinct identifiers sharing a 63-byte prefix collapse to one catalog name, and a builder that
+truncated would emit a query addressing the wrong object. That is a documented divergence from
+`format('%I')`, which quotes the full string and lets the parser truncate later.
+
+### `quoteStringLiteral`
+
+{/* docs: signature */}
+```ts
+function quoteStringLiteral(s: string): string
+```
+
+The only string-literal quoter on the query path, and nothing routes caller data to it: it exists
+so the compiler can emit the `json_build_object('key', …)` key names of a projection, which come
+from a compile-time object literal. It is still written to be correct under both settings of
+`standard_conforming_strings` — plain `'…'` with `'` doubled when there is no backslash, and
+PostgreSQL's `E'…'` form with both `'` and `\` doubled when there is — because that difference is
+precisely what produced GHSA-8cpq-38p9-67gx. NUL and lone surrogates are rejected rather than
+mangled.
+
+### `IdentRejectReason`
+
+{/* docs: signature */}
+```ts
+type IdentRejectReason =
+  | 'not-a-string'
+  | 'empty'
+  | 'nul-byte'
+  | 'lone-surrogate'
+  | 'too-long'
+  | 'no-parts'
+```
+
+Why a part was refused, carried on `InvalidIdentifierError.reason` so a caller can branch without
+parsing the message.
+
+Four smaller functions round the module out. They exist because the checks above needed them and
+tooling that wants to report rather than throw needs them too:
+
+| Function | Signature | What it is for |
+|---|---|---|
+| <a id="isValidIdentPart"/>`isValidIdentPart` | `(part: unknown) => part is string` | Non-throwing probe: would `quoteIdentPart` accept this? |
+| <a id="utf8ByteLength"/>`utf8ByteLength` | `(s: string) => number` | UTF-8 byte length, computed rather than delegated to `TextEncoder` so no allocation happens and so the lone-surrogate to U+FFFD substitution can never mask a length. |
+| <a id="hasLoneSurrogate"/>`hasLoneSurrogate` | `(s: string) => boolean` | True iff the string contains an unpaired UTF-16 surrogate, which has no UTF-8 encoding. |
+| <a id="hasNul"/>`hasNul` | `(s: string) => boolean` | True iff the string contains U+0000, which the wire protocol cannot carry. |
+
+## Errors
+
+### `PgPrimeError`
+
+{/* docs: signature */}
+```ts
+class PgPrimeError extends Error {
+  readonly code: string
+  readonly callSite?: string
+  readonly context?: ErrorContext
+}
+```
+
+The single ancestor of everything the library throws, so `instanceof PgPrimeError` reliably answers
+"did this come from the database layer". `code` is the SQLSTATE when the server gave one
+(`'23505'`), and a [`PgPrimeErrorCode`](#pgprimeerrorcode) otherwise — which is why it is typed
+`string` rather than the union. `callSite` is captured when the query starts, so you get the line
+that issued the statement instead of an async stack that ends inside the driver.
+
+### `PgPrimeErrorCode`
+
+{/* docs: signature */}
+```ts
+type PgPrimeErrorCode =
+  | 'INVALID_IDENTIFIER'
+  | 'UNSAFE_LITERAL'
+  | 'UNSUPPORTED_NODE'
+  | 'TOO_MANY_PARAMETERS'
+  | 'INVALID_FRAGMENT'
+  | 'NO_CODEC'
+  | 'NULL_OPERAND'
+  | 'DECODE_PLAN'
+  | 'BUILDER'
+  | 'SCHEMA'
+  | 'CODEC_MISMATCH'
+  | 'CONFIG'
+  | 'USAGE'
+```
+
+The stable vocabulary for the errors that have no SQLSTATE because they never reached the server.
+
+The ten classes this entry point owns are the ones raised before or instead of a round trip. The
+[errors reference](/pg-prime/reference/errors/) has the rest of the tree — the SQLSTATE-mapped
+classes a live server produces.
+
+| Class | `code` | Raised when |
+|---|---|---|
+| <a id="InvalidIdentifierError"/>`InvalidIdentifierError` | `INVALID_IDENTIFIER` | An identifier part cannot be represented losslessly. Carries `reason`, `index` and the offending `part` verbatim — safe to log, because it never reached SQL. The message names neither `sql.ident` nor a table on purpose: `quoteIdentPart` is called from four places and naming one of them was a false lead in three cases out of four. |
+| <a id="UnsafeLiteralError"/>`UnsafeLiteralError` | `UNSAFE_LITERAL` | `sql.lit` was handed a string, a non-finite number, or a type it does not accept. |
+| <a id="InvalidFragmentError"/>`InvalidFragmentError` | `INVALID_FRAGMENT` | A value was passed where a fragment is required — including a structurally identical object that the tag did not create, and `undefined` in a template hole. |
+| <a id="UnsupportedNodeError"/>`UnsupportedNodeError` | `UNSUPPORTED_NODE` | The compiler met an AST node kind it does not implement. Carries `nodeKind`. |
+| <a id="TooManyParametersError"/>`TooManyParametersError` | `TOO_MANY_PARAMETERS` | More than 65 535 bind parameters — the wire protocol's `int16` cap. Carries `count` and `statement`, because the fix differs by statement: an `INSERT` wants `strategy: 'unnest'`, a wide `IN` list wants `= any($1)`. |
+| <a id="NoCodecError"/>`NoCodecError` | `NO_CODEC` | A column's declared PostgreSQL type has no codec in the registry. Raised once, at schema-to-metadata time, never mid-query. Carries `table`, `column` and `pgType`, because registering a codec and fixing the DSL are different fixes. |
+| <a id="NullOperandError"/>`NullOperandError` | `NULL_OPERAND` | `eq(a, null)` and the other comparisons were given `null` at runtime, which would compile to `a = NULL` — itself `NULL`, so never true, so no rows. Deliberately not rewritten to `IS NULL`: the SQL would then depend on a runtime value rather than on the query's shape. Carries `operator`. |
+| <a id="DecodePlanError"/>`DecodePlanError` | `DECODE_PLAN` | A decoder could not be *built* from a result shape. Never raised while decoding a row, so the failure lands once, on `.compile()`, instead of once per row. |
+| <a id="BuilderError"/>`BuilderError` | `BUILDER` | A query cannot be built. Every case is one the type layer already rejects; this is the backstop for the JavaScript caller and for values that arrive untyped. |
+| <a id="SchemaError"/>`SchemaError` | `SCHEMA` | A declaration cannot be resolved — a relation naming a table the registry does not have, a relation colliding with a column name, a `from`/`to` pair of different lengths. Raised at *definition* time, so it lands on the import of the schema file rather than on the first query that touches the relation. |
+
+`TooManyParametersError` extends `UsageError` rather than `PgPrimeError` directly, which puts it in
+the "programmer error, never transient" half of the tree and therefore outside anything the retry
+policy will re-run.

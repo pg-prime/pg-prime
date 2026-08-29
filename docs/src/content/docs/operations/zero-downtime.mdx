@@ -1,6 +1,397 @@
 ---
 title: Zero-downtime patterns
-description: Expand and contract, and the three-migration shape of a NOT NULL.
+description: Expand and contract — the three-migration NOT NULL, renames, drops, type changes and enums.
 ---
 
-TODO
+import { Aside, Steps } from '@astrojs/starlight/components'
+
+Every schema change that is dangerous is dangerous for one of two reasons: it takes a lock that
+stops traffic, or it makes the running application wrong. [Locks](/pg-prime/operations/locks/)
+covers the first, and pg-prime rewrites most of that class away without being asked. This page
+covers the second, which no tool can rewrite away, because it is a property of your deployment
+rather than of your SQL.
+
+The reason is arithmetic. During a rolling deploy there is a window — minutes, sometimes hours if a
+canary is involved — in which **the old code and the new code are both running against one
+database**. A migration is safe when the schema it produces satisfies both. A migration is unsafe
+when it satisfies only one of them, and it does not matter which one.
+
+## Expand and contract
+
+The pattern has three beats and at least two deploys:
+
+<Steps>
+
+1. **Expand.** Change the schema so that it satisfies the *old* code and the *new* code
+   simultaneously. Additive only: a new nullable column, a new table, a second index. Deploy the
+   migration. Nothing is using the new shape yet, so nothing can break.
+
+2. **Migrate the traffic.** Deploy the application change that starts using the new shape.
+   Backfill whatever data the new shape needs, in batches, while both versions run. This is where
+   the time goes, and it is the beat people skip.
+
+3. **Contract.** Once nothing reads or writes the old shape — verified, not assumed — remove it.
+   Deploy that migration. This is the only destructive step, and it is the one pg-prime makes you
+   sign for.
+
+</Steps>
+
+Two rules make the rest of this page follow mechanically:
+
+- **A migration is deployed on its own.** "Add the column and start writing to it" is one
+  pull request but two deploys, and the migration goes first.
+- **A contraction waits for the expansion to be irreversibly done.** Not "the deploy finished" —
+  the deploy finishing means the *new* pods are up, not that every old one is gone, and certainly
+  not that the queue worker that has been retrying the same job for forty minutes has restarted.
+
+## Adding a `NOT NULL` column
+
+This is the canonical case, and it is three migrations with a deploy between each.
+
+The direct route fails outright. `ALTER TABLE … ADD COLUMN … NOT NULL` with no default is rejected
+by PostgreSQL on a table with rows in it, and pg-prime refuses to generate it with hazard `MF103`
+rather than letting you find out in production. Adding a *constant* default makes it legal — since
+PostgreSQL 11 a non-volatile default is stored in `attmissingval` and no table rewrite happens — but
+that only helps when a constant is the right value, and it is usually not.
+
+Here is the shape when it is not.
+
+### Migration 1 — add it nullable, and backfill
+
+```ts title="schema.ts (excerpt)" no-run
+import { pgTable } from 'pg-prime/schema'
+
+export const tickets = pgTable('tickets', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  subject: t.text(),
+  // step 1: nullable, with a default for new rows
+  token: t.uuid().nullable().defaultSql('gen_random_uuid()'),
+}))
+```
+
+```sh
+pg-prime migrate generate --name tickets_token
+```
+
+pg-prime splits this by itself, because the default is volatile:
+
+```sql title="migrations/0004_tickets_token.sql"
+-- pg-prime:stmt 0 lock=accessExclusive idempotent
+ALTER TABLE "public"."tickets" ADD COLUMN IF NOT EXISTS "token" uuid;
+
+-- pg-prime:stmt 1 lock=accessExclusive idempotent
+ALTER TABLE "public"."tickets" ALTER COLUMN "token" SET DEFAULT gen_random_uuid();
+```
+
+Adding the column *and* the volatile default in one statement would rewrite the whole table under
+`ACCESS EXCLUSIVE`, because every existing row needs a distinct value. Adding the column with no
+default and setting the default afterwards is two catalog writes and no rewrite. New rows get a
+token; the rows that were already there stay `NULL`, which is precisely what the third file is for:
+
+```sql title="migrations/0004_tickets_token_data.sql"
+-- pg-prime:data
+-- pg-prime:txmode    none
+-- pg-prime:batch     size=1000 pause=100ms max-replica-lag=10s
+
+-- TODO: backfill public.tickets.token.
+```
+
+That stub is generated with a `DO $$ … RAISE EXCEPTION … $$` as its first statement, so applying it
+unedited **fails loudly** instead of being recorded as done while every row it existed to fix stays
+`NULL`. Behind the guard is a working keyset batch: the runner re-executes the statement, each
+iteration in its own transaction, until it reports zero rows, pausing `pause` between iterations and
+waiting while replica lag exceeds `max-replica-lag`. It commits `{ rows_done, watermark }` in the
+same transaction as the batch, so a killed backfill resumes from its watermark rather than starting
+over. [Data migrations](/pg-prime/guides/data-migrations/) is the long version.
+
+**Deploy.** Ship the application code that writes `token` on every path that creates a ticket. Wait
+for the backfill to finish. Verify:
+
+```sql
+SELECT count(*) FROM public.tickets WHERE token IS NULL;   -- must be 0
+```
+
+### Migration 2 — prove the column is never null
+
+```sql title="migrations/0005_tickets_token_check.sql" no-run
+-- pg-prime:txmode    transactional
+
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+ALTER TABLE "public"."tickets" ADD CONSTRAINT "tickets_token_not_null" CHECK (token IS NOT NULL) NOT VALID;
+
+-- pg-prime:stmt 1 lock=shareUpdateExclusive idempotent
+ALTER TABLE "public"."tickets" VALIDATE CONSTRAINT "tickets_token_not_null";
+```
+
+`NOT VALID` means "enforce this for new and updated rows, do not check the existing ones". It is a
+catalog write, so the `ACCESS EXCLUSIVE` lock is held for microseconds. `VALIDATE CONSTRAINT` then
+does the full scan under `SHARE UPDATE EXCLUSIVE`, which reads and writes pass straight through.
+
+If the `VALIDATE` fails, you have found a row the backfill missed, and you have found it without
+having taken a lock on anything. Fix the row, run the `VALIDATE` again.
+
+### Migration 3 — take the `NOT NULL`, and drop the scaffold
+
+```ts title="schema.ts (excerpt)" no-run
+import { pgTable } from 'pg-prime/schema'
+
+export const tickets = pgTable('tickets', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  subject: t.text(),
+  // step 3: `.nullable()` is gone
+  token: t.uuid().defaultSql('gen_random_uuid()'),
+}))
+```
+
+```sql title="migrations/0006_tickets_token_not_null.sql" no-run
+-- pg-prime:stmt 0 lock=accessExclusive idempotent
+ALTER TABLE "public"."tickets" ALTER COLUMN "token" SET NOT NULL;
+
+-- pg-prime:stmt 1 lock=accessExclusive idempotent
+ALTER TABLE "public"."tickets" DROP CONSTRAINT IF EXISTS "tickets_token_not_null";
+```
+
+The `SET NOT NULL` is **free**: PostgreSQL skips its verification scan when a validated
+`CHECK (col IS NOT NULL)` already proves the predicate, so the statement takes `ACCESS EXCLUSIVE`
+for a catalog write and returns immediately. Without the check it would hold that lock across a
+sequential scan of the entire table, which on a large one is the outage this whole page exists to
+avoid. Then the check itself is dropped, because the column's `NOT NULL` now says the same thing and
+carrying both is duplicated enforcement on every write.
+
+<Aside type="note">
+For an **existing** column you are flipping to `NOT NULL` — no backfill needed, the data is already
+clean — pg-prime writes migrations 2 and 3 as a single file for you, and you never see this. On PG
+15–17 it is exactly the four statements above in one transaction; on PG 18, where `NOT NULL` is a
+real `pg_constraint` row, it is `ADD CONSTRAINT … NOT NULL … NOT VALID` + `VALIDATE` with no
+detour. The three-migration shape is what you need when the column is **new**, because the backfill
+has to be deployed and has to *finish* before the constraint can be true.
+</Aside>
+
+## Renaming a column
+
+There is no safe rename. `ALTER TABLE … RENAME COLUMN` is instant and takes `ACCESS EXCLUSIVE` for a
+catalog write, so it is not a *lock* problem — it is that the old code's `SELECT first_name` starts
+raising `42703 column does not exist` the moment it commits, and the old code is still running.
+
+The zero-downtime rename is five steps and three deploys:
+
+<Steps>
+
+1. **Add the new column**, nullable. One migration, one deploy. Nothing reads it.
+2. **Dual-write.** Deploy application code that writes both `first_name` and `name` on every path
+   that writes either. Reads still come from `first_name`.
+3. **Backfill** the rows that predate the dual-write, in batches:
+   `UPDATE users SET name = first_name WHERE name IS NULL` — batched, with a watermark, as above.
+4. **Switch reads** to `name`. Deploy. Now `first_name` is written and never read.
+5. **Drop `first_name`.** One migration, one deploy, and this is the destructive one.
+
+</Steps>
+
+Steps 2 and 4 are separate deploys on purpose. Collapsing them means there is a window where new
+code reads `name` while old code still writes only `first_name`, and rows written in that window
+come back null.
+
+### Why rename detection is a hint, not a guess
+
+A diff engine sees a dropped `first_name` and an added `name`. It cannot know whether that is a
+rename or a deletion plus an unrelated addition, and the two produce wildly different databases: one
+preserves every value in the column, the other destroys all of them.
+
+pg-prime therefore never decides. **Annotation is the only authority:**
+
+```ts title="schema.ts (excerpt)" no-run
+import { pgTable } from 'pg-prime/schema'
+
+export const users = pgTable('users', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  name: t.text().renamedFrom('first_name'),
+}))
+```
+
+Structural candidates — same type, same position, same constraints — are computed, and they are
+*advisory*: they never apply themselves, they exist to make the prompt good. In a TTY,
+`migrate generate --interactive` shows them and prints the annotation to add. In CI there is no
+prompt and no guess: `generate` exits **2** with the decision spelled out.
+
+```sh
+pg-prime migrate generate --name rename_first_name --output json
+```
+
+The envelope names both sides and the fix:
+
+```json
+{ "status": "missing_hints",
+  "exitCode": 2,
+  "unresolved": [
+    { "type": "rename_or_recreate", "kind": "column",
+      "from": "column:public.users.first_name", "to": "column:public.users.name",
+      "confidence": "unambiguous",
+      "fix": "add .renamedFrom(\"first_name\") to name in your schema, or pass --hints-file with { \"from\": \"column:public.users.first_name\", \"to\": \"column:public.users.name\" }" } ] }
+```
+
+Resolve it by editing the schema, or by passing `--hints-file hints.json` with the same pairs.
+Both are scriptable and neither hangs, which is the property that matters in a pipeline.
+
+An accepted rename cascades: the constraints and indexes on a renamed table are renamed rather than
+dropped and recreated, so a foreign key does not pay for a full `VALIDATE` scan because you changed
+a table's name. It is still hazard `BC101` (table) or `BC102` (column), because your application
+still has to survive it.
+
+## Dropping a column
+
+Dropping is instant and takes `ACCESS EXCLUSIVE` for a catalog write — PostgreSQL marks the
+attribute dropped and reclaims the space on the next rewrite, so the size of the table does not
+matter. The danger is entirely in the application.
+
+<Steps>
+
+1. **Stop reading it.** Deploy. Grep for the column name across every repository that touches this
+   database, including reporting jobs, dashboards and that one Lambda.
+2. **Stop writing it.** Deploy. If it is `NOT NULL` with no default, this step needs the column made
+   nullable first — otherwise the new code's `INSERT` fails.
+3. **Wait.** Long enough that no pod, worker or cached prepared statement from step 0 is still
+   alive.
+4. **Drop it**, and sign for it.
+
+</Steps>
+
+```sh
+pg-prime migrate generate --name drop_legacy_id \
+  --allow-data-loss --reason "removed from the API in v3" --by yohocx
+```
+
+There is no way to skip the acknowledgement. Without it `generate` exits **2** with
+`confirm_data_loss` and the entity named.
+
+Two related hazards are worth knowing before you reach them. `DS106` fires when you drop the *only*
+uniqueness guarantee on a column — an application relying on the database to reject duplicates
+starts accepting them silently. `DS105` fires on dropping a materialized view: the data goes with
+it, and recreating it costs a full refresh.
+
+## Changing a column's type
+
+`ALTER TABLE … ALTER COLUMN … TYPE` rewrites the entire table under `ACCESS EXCLUSIVE`, and there is
+no concurrent form. pg-prime emits it with three hazards at once — `LK108` (the rewrite), `MF105`
+(it may fail on existing data if the new type is narrower) and `BC103` (clients see a different
+type) — and does not rewrite it away, because there is no equivalent that is also safe.
+
+For a small table, take the lock and move on. For a large one, expand and contract:
+
+<Steps>
+
+1. Add a new column of the new type, nullable.
+2. Dual-write both columns.
+3. Backfill in batches, with a watermark.
+4. Switch reads.
+5. Drop the old column, and rename the new one — which is itself the rename dance above, unless you
+   are willing to keep the new name.
+
+</Steps>
+
+Widenings are the exception worth knowing: `varchar(50)` → `varchar(100)` and `varchar(n)` → `text`
+do not rewrite, because the on-disk representation is unchanged. Narrowing always does, and it can
+also fail partway through on the first row that does not fit.
+
+## Adding a unique constraint to a populated table
+
+`ALTER TABLE … ADD CONSTRAINT … UNIQUE` builds its backing index under `ACCESS EXCLUSIVE`. On a
+table with rows in it that means no reads and no writes for the duration of an index build, and it
+fails outright if the column is not already unique.
+
+pg-prime does this one for you. The generated form is four statements in a `txmode none` file:
+
+```sql title="migrations/0007_people_email_concurrently.sql" no-run
+-- pg-prime:txmode    none
+
+ALTER TABLE "public"."people" DROP CONSTRAINT IF EXISTS "people_email_key";
+DROP INDEX CONCURRENTLY IF EXISTS "public"."people_email_key";
+CREATE UNIQUE INDEX CONCURRENTLY "people_email_key" ON "public"."people" USING btree (email);
+ALTER TABLE "public"."people" ADD CONSTRAINT "people_email_key" UNIQUE USING INDEX "people_email_key";
+```
+
+The index is built concurrently under `SHARE UPDATE EXCLUSIVE` — reads and writes continue — and
+`ADD CONSTRAINT … USING INDEX` then adopts it in an instant catalog write. PostgreSQL names a
+constraint's backing index after the constraint, so the two share one name and the catalog state is
+identical to what the literal form would have produced. That equality is not asserted, it is proven:
+the plan is replayed on a clone and witnessed against `pg_dump` before the file is written.
+
+You still have to deal with the duplicates first. A `CREATE UNIQUE INDEX CONCURRENTLY` that meets
+one leaves an **invalid index** behind, which the `DROP INDEX CONCURRENTLY IF EXISTS` prefix cleans
+up on the next attempt. Find them before you deploy:
+
+```sql
+SELECT email, count(*) FROM public.people GROUP BY email HAVING count(*) > 1;
+```
+
+Hazard `MF101` is what pg-prime raises when the table is not provably empty, and it is an `error`:
+you have to acknowledge it or clean the data.
+
+## Enums
+
+Enums are the schema element most likely to produce a migration that is syntactically fine and
+semantically broken, and pg-prime has a rule for each half.
+
+**Adding a label works, but not in the same transaction that uses it.** PostgreSQL commits an
+`ALTER TYPE … ADD VALUE` before the new label becomes usable, so a migration that adds `'archived'`
+and then writes `DEFAULT 'archived'` in the same transaction fails at runtime. pg-prime models the
+`ADD VALUE` as `commitBoundaryAfter`: the segment closes there, and any statement that references
+the new label is forced into the next one. A file that violates the rule is hazard `EN101`, and it
+is an `error`.
+
+```sql
+-- pg-prime:segment 0 transactional
+ALTER TYPE "public"."ticket_state" ADD VALUE 'archived';
+-- segment 0 commits here
+
+-- pg-prime:segment 1 transactional
+ALTER TABLE "public"."tickets" ALTER COLUMN "state" SET DEFAULT 'archived';
+```
+
+**Removing or reordering a label is impossible in every PostgreSQL version.** There is no
+`ALTER TYPE … DROP VALUE`. The only route is a type replacement: rename the old type, create the new
+one, `ALTER COLUMN … TYPE new USING col::text::new`, fix every dependent function signature, default
+and cast, then drop the old type. That path rewrites every table using the type, under
+`ACCESS EXCLUSIVE`. pg-prime generates it as `DS104` — always requiring acknowledgement — with
+`EN102` raised first.
+
+The advice that follows is not smug, it is arithmetic: a lookup table with a foreign key, or `text`
+with a `CHECK`, both make "add a value" an `INSERT` and "remove a value" a `DELETE`. Neither
+requires a migration at all, and the schema DSL makes the lookup-table form as ergonomic as the
+native enum.
+
+## What `--allow-data-loss` acknowledges
+
+`--allow-data-loss` does not disable a check. It records a decision.
+
+```sh
+pg-prime migrate generate --name drop_legacy \
+  --allow-data-loss --reason "removed from the API in v3" --by yohocx
+```
+
+The acknowledgement lands in the plan file:
+
+```json title="migrations/0008_drop_legacy.plan.json (excerpt)"
+{
+  "acknowledged": {
+    "dataLoss": ["column:public.users.legacy_id"],
+    "by": "yohocx",
+    "reason": "removed from the API in v3",
+    "at": "2026-08-29T10:32:11.114Z",
+    "blanket": true
+  }
+}
+```
+
+Because it lands in `.plan.json`, and `.plan.json` is committed, **it shows up as a diff line in the
+pull request**. That is the review interface: a reviewer sees
+`+ "dataLoss": ["column:public.users.legacy_id"]` next to the SQL that does it, with the name of the
+person who signed and the reason they gave. `--by` defaults to `$USER` and `--reason` defaults to
+the literal string `--allow-data-loss`, which is a worse diff line and is meant to look like one.
+
+`blanket: true` records that the whole plan was acknowledged with one flag rather than
+subject-by-subject; a `--hints-file` can list individual subjects instead, and then `blanket` is
+`false`. Either way `migrate lint` fails on any `DS`-class hazard whose subject is not in
+`acknowledged.dataLoss`, so an acknowledgement that stops matching the plan stops counting.
+
+The complete hazard list — every `DS`, `MF`, `BC`, `LK`, `TX`, `EN` and `ST` code with its severity —
+is in the [hazard-code reference](/pg-prime/reference/hazard-codes/).

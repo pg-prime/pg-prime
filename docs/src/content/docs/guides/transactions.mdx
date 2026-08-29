@@ -3,4 +3,544 @@ title: Transactions and sessions
 description: TxOptions, savepoints, serialization retry, SET LOCAL and RLS, advisory locks, rollbackWith.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+A transaction is a callback. Everything inside it runs on **one** connection, inside one
+`BEGIN … COMMIT`; anything that throws rolls the whole thing back and rethrows.
+
+{/* docs: use=blog */}
+```ts
+await db.transaction(async (db) => {
+  // every statement in here is on the transaction
+})
+```
+
+Both argument orders work, so options can come first when they are the interesting part:
+
+```ts
+declare const db: import('pg-prime').Db
+
+await db.transaction(async (db) => {}, { isolation: 'serializable' })
+await db.transaction({ isolation: 'serializable' }, async (db) => {})
+```
+
+## Why the parameter is named `db`
+
+The single most common bug in this shape of API is Drizzle's:
+
+```ts
+declare const db: import('pg-prime').Db
+
+await db.transaction(async (tx) => {
+  await db.insertInto(db.h.users).values({ email: 'a@b.c', name: 'A' }).execute()
+  //    ^^ the OUTER handle. A different connection, outside the transaction.
+})
+```
+
+That statement runs on a different pooled connection, outside your transaction, and it can deadlock
+against its own transaction. No type-level construct prevents it: TypeScript has no effect system
+and no way to invalidate a binding captured from an enclosing scope.
+
+Naming the parameter `db` is the cheapest and highest-yield half of the fix. It **shadows** the
+outer handle, so the mistake stops being possible to write by accident, and every example on this
+site does it. The other half is that `Db`, `Tx` and `Session` are mutually non-assignable — a
+function declaring `tx: Tx<S>` cannot be handed the root `db` — and behind both there is a runtime
+guard, described [at the end of this page](#the-dev-guard).
+
+## What it emits
+
+One statement, one round trip, no separate `SET TRANSACTION`:
+
+| Options | Statement |
+|---|---|
+| `{}` | `begin` |
+| `{ isolation: 'repeatable read' }` | `begin isolation level repeatable read` |
+| `{ accessMode: 'read only' }` | `begin read only` |
+| `{ isolation: 'serializable', accessMode: 'read only' }` | `begin isolation level serializable read only` |
+| `{ isolation: 'serializable', accessMode: 'read only', deferrable: true }` | `begin isolation level serializable read only deferrable` |
+
+Nothing else is emitted unless you asked for it: no probe, no `select 1`, no reset query. When the
+callback returns, `commit`; when it throws, `rollback` and the original error is rethrown
+unchanged. The connection is released in a `finally`.
+
+That `finally` also checks the connection's transaction status, and **destroys** it rather than
+returning it to the pool if it is `T` (in a transaction) or `E` (in a failed one). A connection
+returned in either state becomes the *next* borrower's transaction: their first statement silently
+joins it, and an eventual `ROLLBACK` throws away work they never saw.
+
+## `TxOptions`
+
+| Option | Type | Meaning |
+|---|---|---|
+| `isolation` | `'read committed' \| 'repeatable read' \| 'serializable'` | The level. Absent means the server's default. |
+| `accessMode` | `'read write' \| 'read only'` | |
+| `deferrable` | `boolean` | Only reachable with `serializable` + `read only`. See below. |
+| `retry` | `RetryPolicy \| boolean` | [Serialization retry](#serialization-retry). |
+| `timeoutMs` | `number` | `statement_timeout` for the whole block. |
+| `lockTimeoutMs` | `number` | `lock_timeout` for the whole block. |
+| `localSettings` | `Record<string, string \| number \| boolean>` | GUCs applied right after `BEGIN`, in one round trip. |
+| `signal` | `AbortSignal` | Aborts the transaction. Never retried afterwards. |
+| `label` | `string` | Appears in hooks, spans, slow-query logs and retry warnings. |
+
+`pgPrime({ transaction: { … } })` sets the defaults every `db.transaction()` starts from.
+
+`read uncommitted` is deliberately **not** offered. PostgreSQL accepts the keyword and silently
+gives you `read committed`, and being PostgreSQL-only is the licence not to ship an option that
+does nothing.
+
+`deferrable` is gated by the **type**, not by a runtime check: `TxOptions` is a three-arm union in
+which `deferrable` is only reachable alongside `isolation: 'serializable'` and
+`accessMode: 'read only'`. PostgreSQL accepts and silently ignores it everywhere else, which is
+worse than an error.
+
+{/* docs: expect-error */}
+```ts
+declare const db: import('pg-prime').Db
+
+await db.transaction(async (db) => {}, {
+  isolation: 'repeatable read',
+  deferrable: true,
+})
+```
+
+## Savepoints
+
+`db.savepoint(fn)` inside a transaction — spelled `db.transaction(fn)` if you prefer, they are the
+same function — emits `SAVEPOINT`, then `RELEASE SAVEPOINT` on success or `ROLLBACK TO SAVEPOINT`
+on a throw, before rethrowing. Names are derived from the nesting depth and always quoted:
+`"pgprime_sp_1"`, `"pgprime_sp_2"`. Depth-derived rather than random because nesting is lexical,
+the names show up in logs and `EXPLAIN` output, and determinism makes tests readable.
+
+Here is what a savepoint is actually for. After **any** statement error, PostgreSQL puts the
+transaction in the aborted state, and every subsequent statement fails with
+`25P02 in_failed_sql_transaction` until the transaction ends. A savepoint is the only way to
+attempt something that may fail — a speculative insert, a constraint probe — and carry on:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="savepoint.ts"
+import { isUniqueViolation } from 'pg-prime'
+
+await db.insertInto(db.h.users).values({ email: 'alice@example.com', name: 'Alice' }).execute()
+
+const emails = await db.transaction(async (db) => {
+  await db.insertInto(db.h.users).values({ email: 'bob@example.com', name: 'Bob' }).execute()
+
+  try {
+    await db.savepoint(async (db) => {
+      await db
+        .insertInto(db.h.users)
+        .values({ email: 'alice@example.com', name: 'Alice again' })
+        .execute()
+    })
+  } catch (e) {
+    // Matched on the column, not on the constraint's name: a rename is a compile error.
+    if (!isUniqueViolation(e, users.cols.email)) throw e
+  }
+
+  // Without the savepoint, THIS statement fails with 25P02 and the transaction is lost.
+  await db.insertInto(db.h.users).values({ email: 'dave@example.com', name: 'Dave' }).execute()
+
+  return db
+    .from(db.h.users)
+    .select((t) => ({ email: t.users.email }))
+    .orderBy((t) => t.users.email)
+    .execute()
+})
+
+console.log(emails.map((r) => r.email))
+// [ 'alice@example.com', 'bob@example.com', 'dave@example.com' ]
+```
+
+The failure inside the savepoint poisons the enclosing transaction — it is the same PostgreSQL
+transaction — and `ROLLBACK TO SAVEPOINT` un-poisons it again. Both halves are real: while the
+savepoint was open, a statement on the outer handle would have failed with `25P02`, and after the
+rollback it does not.
+
+`SavepointOptions` carries `timeoutMs`, `lockTimeoutMs`, `localSettings`, `label` and `signal`, and
+nothing else. `isolation`, `accessMode` and `deferrable` are **absent by construction**, because
+PostgreSQL cannot change any of them mid-transaction and both Drizzle and MikroORM accept them on
+nested calls where they are silently ignored. `retry` is absent for a different reason: a `40001`
+aborts the *whole* transaction, so retrying at savepoint level is meaningless and dangerous.
+
+{/* docs: expect-error */}
+```ts
+declare const tx: import('pg-prime').Tx
+
+await tx.savepoint(async (db) => {}, { isolation: 'serializable' })
+```
+
+```text
+TS2353: Object literal may only specify known properties, and 'isolation' does not exist in type
+'SavepointOptions'.
+```
+
+## Serialization retry
+
+**Retry is on by default for `40001 serialization_failure`, and only when the transaction was
+opened at `repeatable read` or `serializable`. It is off by default for `40P01 deadlock_detected`
+at every level.**
+
+Three reasons, in order of how much they matter:
+
+- Offering `isolation: 'serializable'` without retry is handing you a loaded gun. PostgreSQL's own
+  documentation says applications using it **must** retry. Every ORM surveyed offers the level, and
+  none of them ships the retry.
+- `40001` is impossible at `read committed`, so defaulting it on there would be pure ceremony. The
+  default never fires for code that did not opt into an isolation level.
+- A `40P01` is almost always a lock-ordering bug in your application. Silent retry converts a loud,
+  reproducible, fixable bug into an intermittent latency spike and a mystery. You can opt in with
+  `retry: { on: ['40001', '40P01'] }` when you genuinely have an unavoidable one, and
+  `DeadlockDetectedError` keeps PostgreSQL's `DETAIL` verbatim so you can see both processes.
+
+<Aside type="caution">
+**Your transaction callback must be idempotent, because it can run more than once.** A retry
+re-executes the whole callback from the top. Database work is rolled back and replayed, so the
+database stays consistent — but anything with an effect *outside* the database does not roll back.
+An email is sent twice, a queue message is published twice, an in-memory counter is incremented
+twice, a third-party charge is attempted twice.
+
+Every non-database side effect must happen **after** the transaction returns:
+
+```ts
+declare const db: import('pg-prime').Db
+declare function sendWelcomeEmail(to: string): Promise<void>
+
+const user = await db.transaction(
+  async (db) => {
+    const [row] = await db
+      .insertInto(db.h.users)
+      .values({ email: 'new@example.com', name: 'New' })
+      .returning((t) => ({ email: t.users.email }))
+      .execute()
+    return row!
+  },
+  { isolation: 'serializable' },
+)
+
+// Outside. Runs once, and only if the transaction committed.
+await sendWelcomeEmail(user.email)
+```
+</Aside>
+
+`RetryPolicy` and its defaults:
+
+| Field | Default | |
+|---|---|---|
+| `on` | `['40001']` at repeatable read / serializable, `[]` at read committed | The SQLSTATEs to retry. |
+| `maxAttempts` | `5` | So up to four retries. |
+| `baseDelayMs` | `25` | |
+| `maxDelayMs` | `1000` | |
+| `jitter` | `'full'` | `'equal'` and `'none'` are the alternatives. |
+| `shouldRetry` | — | `(err, attempt) => boolean`. The last word on a retryable error. |
+| `onRetry` | — | `({ err, attempt, delayMs, label }) => void`. |
+
+`retry: false` disables it even at serializable; `retry: true` enables it at read committed.
+
+Full jitter means `sleep(random(0, min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1))))` — uniform
+over the interval, not a fixed backoff. Plain exponential is wrong here because serialization
+failures are *inherently correlated*: the two conflicting transactions failed at the same instant
+and would otherwise retry in lockstep, reproducing the conflict. The worst case at the defaults is
+under 1.4 s across four retries.
+
+### The exclusions, which nothing can override
+
+Four conditions are never retried, whatever `on` says and whatever `shouldRetry` returns. They sit
+**above** the user predicate, not beside it:
+
+1. An `IndeterminateCommitError`. The transaction may have committed; re-running the callback is
+   how you double-charge a card.
+2. An aborted `signal`. Retrying contradicts the caller.
+3. A partially consumed stream. Rows have already been delivered.
+4. A throw that is not a `PgPrimeError` — a `TypeError` from your own code is not a transient
+   database condition. `rollback()` is in this category too: it is a `UsageError`, i.e. a
+   deliberate abort wearing an error.
+
+### Watching it happen
+
+`db.attempt` on the handle is `1` on the first try and increments on each retry, and the **first**
+retry logs at `warn` so retries are visible in production rather than silent. `onRetry` and the
+`onRetry` query hook see every one.
+
+```ts
+declare const db: import('pg-prime').Db
+declare const metrics: { increment(name: string, tags: Record<string, string>): void }
+
+await db.transaction(
+  async (db) => {
+    if (db.attempt > 1) console.warn(`replaying, attempt ${db.attempt}`)
+    // …
+  },
+  {
+    isolation: 'serializable',
+    label: 'reserve-seat',
+    retry: {
+      maxAttempts: 4,
+      onRetry: ({ attempt, delayMs }) => {
+        metrics.increment('tx.retry', { attempt: String(attempt), delayMs: String(delayMs) })
+      },
+    },
+  },
+)
+```
+
+`db.attempt` is for observability. It is **not** a way to make a side effect safe: attempt 1 can
+still roll back, so "only do it on the first attempt" means "do it on a transaction that may never
+have committed". The rule above stands — outside the callback, after it returns.
+
+## `setLocal`, and row-level security
+
+`SET LOCAL` cannot take bind parameters. `set_config(name, value, true)` is the transaction-local
+equivalent **and it is an ordinary function call, so it can**. That single fact is the whole
+implementation, and it is what makes RLS a one-line pattern with no injection surface — which
+matters, because the values here are tenant ids, i.e. exactly the security boundary.
+
+Several settings go out as one statement, in one round trip:
+
+```sql
+select set_config($1,$2,true), set_config($3,$4,true)
+```
+
+`localSettings` in `TxOptions` is the same thing, applied in the statement immediately after
+`BEGIN` — together with `timeoutMs` and `lockTimeoutMs`, in that same single round trip.
+
+{/* docs: use=blog */}
+```ts title="set-local.ts"
+const seen = await db.transaction(async (db) => {
+  await db.setLocal({ 'app.tenant_id': 'acme', 'app.user_id': '42' })
+  const row = await db.sql`
+    select current_setting('app.tenant_id') as tenant,
+           current_setting('app.user_id')   as who
+  `.executeTakeFirst()
+  return [row?.['tenant'], row?.['who']]
+})
+
+console.log(seen) // [ 'acme', '42' ]
+
+// A value that looks like SQL is a value. It is a bind parameter, not text.
+const evil = "'; drop table users; --"
+const back = await db.transaction(async (db) => {
+  await db.setLocal('app.tenant_id', evil)
+  const row = await db.sql`select current_setting('app.tenant_id') as tenant`.executeTakeFirst()
+  return row?.['tenant']
+})
+
+console.log(back === evil) // true
+
+// SET LOCAL ends with the transaction.
+const later = await db.transaction(async (db) => {
+  const row = await db.sql`select current_setting('app.tenant_id', true) as tenant`
+    .executeTakeFirst()
+  return row?.['tenant']
+})
+
+console.log(later === 'acme') // false
+```
+
+The GUC *name* is checked against `^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$` as a typo
+catcher. The *value* needs no validation at all, because it is a parameter.
+
+That gives you the whole RLS pattern. Declare the policy once, in a migration:
+
+```sql
+alter table documents enable row level security;
+
+create policy tenant_isolation on documents
+  using (tenant_id = current_setting('app.tenant_id', true));
+```
+
+and set the tenant at the top of every transaction:
+
+```ts
+declare const db: import('pg-prime').Db
+declare const tenantId: string
+
+const documents = await db.transaction(
+  async (db) => db.sql`select id, title from documents`.execute(),
+  { localSettings: { 'app.tenant_id': tenantId }, label: 'tenant-read' },
+)
+```
+
+Every statement in the block is filtered by the database, not by a `where` clause you have to
+remember to write. This is the pattern Prisma issue #5128 has been asking for since 2021.
+
+## Two ways out
+
+`db.rollback()` throws `TransactionRollback`. The runner issues `ROLLBACK` and rethrows it, so the
+caller sees an exception:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="rollback.ts"
+import { TransactionRollback } from 'pg-prime'
+
+const err = await db
+  .transaction(async (db) => {
+    await db.insertInto(db.h.users).values({ email: 'carol@example.com', name: 'Carol' }).execute()
+    db.rollback()
+  })
+  .catch((e: unknown) => e)
+
+console.log(err instanceof TransactionRollback) // true
+
+const rows = await db
+  .from(db.h.users)
+  .select((t) => ({ email: t.users.email }))
+  .execute()
+
+console.log(rows) // [] — the insert is gone
+```
+
+`db.rollbackWith(value)` is the other exit: it rolls back and *resolves* the transaction with
+`value`, at its exact type. There is no `| undefined` anywhere, which is the whole point — the
+caller can tell what happened without a sentinel and without a second `try`:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="rollback-with.ts"
+const outcome = await db.transaction(async (db) => {
+  const [user] = await db
+    .insertInto(db.h.users)
+    .values({ email: 'erin@example.com', name: 'Erin' })
+    .returning((t) => ({ id: t.users.id }))
+    .execute()
+
+  const row = await db.sql`select count(*) as n from posts`.executeTakeFirst()
+  if (Number(row?.['n']) === 0) return db.rollbackWith({ status: 'sold-out' } as const)
+
+  return { status: 'reserved', userId: user!.id } as const
+})
+
+// `{ status: 'sold-out' } | { status: 'reserved'; userId: bigint }`
+console.log(outcome) // { status: 'sold-out' }
+
+const rows = await db
+  .from(db.h.users)
+  .select((t) => ({ email: t.users.email }))
+  .execute()
+
+console.log(rows) // [] — the user was rolled back with the rest
+```
+
+Drizzle's design — a rollback that resolves with `undefined` — is rejected here precisely because
+it makes the rollback path and the success path indistinguishable at the type level. Any statement
+issued on a handle after `rollbackWith` throws `TransactionAbandonedError`.
+
+## `IndeterminateCommitError`
+
+If the connection dies **after** `COMMIT` was written and **before** its acknowledgement was read,
+the transaction may have committed. There is no way to know from here.
+
+pg-prime raises `IndeterminateCommitError` for exactly that window, and it is deliberately a
+sibling of `ConnectionError` rather than a subclass. Had it inherited, every
+`catch (e) { if (e instanceof ConnectionError) retry() }` already in the wild would silently do the
+wrong thing — which, for a payment, is a double charge. Making it a sibling forces a decision.
+
+Nothing in this library will ever re-run the callback that produced one. What you do about it is a
+question only your data can answer:
+
+- Look the outcome up by an **idempotency key** you wrote inside the transaction.
+- Rely on a **unique constraint** to make the replay safe, and treat a `23505` as "it committed".
+- **Read the row back** before acting.
+
+The error carries the underlying connection error as its `cause`, and its `context` has the `txId`,
+the `attempt` and the `label`.
+
+## Sessions
+
+`db.session(fn)` pins one pool connection for the duration of the callback **without** opening a
+transaction. It is the answer to "I need the same backend for several statements but I do not want
+a transaction": a temp table used as a staging area, a session advisory lock held across several
+transactions, `pg_backend_pid()` for diagnostics.
+
+{/* docs: use=blog */}
+```ts title="session.ts"
+const staged = await db.session(async (s) => {
+  await s.sql`create temp table staging (name text not null)`.execute()
+  await s.sql`insert into staging (name) values ('one'), ('two')`.execute()
+
+  // The same backend, so the temp table is still there.
+  const rows = await s.sql`select name from staging order by name`.execute()
+  return rows.map((r) => r['name'])
+})
+
+console.log(staged) // [ 'one', 'two' ]
+```
+
+A `Session` has the full `Queryable` surface plus three things of its own: `set(name, value)` (the
+session-scoped sibling of `setLocal`, i.e. `set_config($1, $2, false)`), `advisoryLock(key, opts?)`
+returning a lock object you release yourself, and `backendPid`. `s.transaction(fn)` opens a real
+transaction on the pinned connection.
+
+`db.session()` is **refused** under a transaction-pooler profile, with a message naming the fix. A
+transaction pooler reassigns the server connection between transactions, so "the same backend for
+several statements" is exactly the guarantee it does not make: a session advisory lock would be
+released under you and a temp table would vanish. See
+[connection poolers](/pg-prime/operations/poolers/) for the full matrix.
+
+## Advisory locks
+
+`db.advisoryLock(key, opts?)` on a `Tx` is `pg_advisory_xact_lock` and its `try`/`shared`
+relatives. The transaction-scoped family is the **only** one that is safe behind a pooler, because
+the lock is released by the transaction ending rather than by a call you have to make on the same
+backend — which is the guarantee a transaction pooler does not give you. It is also the only family
+that cannot leak a lock when a process dies mid-callback.
+
+{/* docs: use=blog */}
+```ts title="advisory-lock.ts"
+const ran = await db.transaction(async (db) => {
+  // A string key is hashed to a bigint with FNV-1a, deterministically across processes and
+  // restarts — two instances that hashed it differently would not exclude each other.
+  const got = await db.advisoryLock('nightly-rollup', { try: true })
+  if (!got) return 'someone else is doing it'
+
+  await db.sql`select 1`.execute()
+  return 'done'
+})
+
+console.log(ran) // 'done'
+```
+
+`AdvisoryLockOptions` has two fields: `try` (take `pg_try_advisory_xact_lock`, returning `false`
+rather than waiting) and `shared` (the `_shared` variant). Without `try`, the call waits and
+resolves `true`. A `bigint` key is used as-is, clamped into the signed 64-bit range PostgreSQL's
+`bigint` uses.
+
+The session-scoped family lives on `Session.advisoryLock`, returns an `AdvisoryLock` with
+`unlock()` and `[Symbol.asyncDispose]`, and is refused under a transaction pooler for the same
+reason `db.session()` is.
+
+## The dev guard
+
+Outside production, pg-prime keeps one `AsyncLocalStorage` frame per open transaction, and a
+statement issued on the **root** `Db` handle while one is open throws `HandleMisuseError` naming
+both call sites — where the transaction was opened, and where the stray statement was issued.
+
+```text
+HandleMisuseError: a statement was issued on the root db handle while transaction tx_3 is open on
+this async context. It would run on a DIFFERENT connection, outside your transaction, and can
+deadlock against it …
+  Fix: name the callback parameter `db` so it shadows the outer handle, or — if you really mean an
+  out-of-band statement that survives a rollback — write db.outsideTransaction()…
+```
+
+`node:async_hooks` is imported lazily, inside an `await` that already exists, so it never enters a
+bundle that does not open a transaction, and a runtime without `AsyncLocalStorage` degrades to
+"guard off" rather than crashing. `pgPrime({ devGuard: false })` turns it off.
+
+There is one legitimate reason to use the outer handle inside a callback: an out-of-band statement
+that must survive the rollback, such as an audit row. That is what `db.outsideTransaction()` and
+`run(q, { outsideTransaction: true })` are for. A nested savepoint is not misuse and never trips
+the guard, and neither is `rootDb.transaction(...)` — a genuinely independent transaction — because
+the guard clears its frames for it.
+
+The same layer makes one other thing loud. `Promise.all` inside a transaction is **serial**,
+because a transaction is one connection; that is the protocol and nothing can change it. pg-prime
+cannot make it parallel, so it warns once per transaction instead. The code is correct; it just is
+not doing what it looks like.
+
+## Where to go next
+
+- [Handles: `Db`, `Tx` and `Session`](/pg-prime/concepts/handles/) — why the three are not
+  interchangeable.
+- [Errors](/pg-prime/guides/errors/) — the class tree, redaction and `isUniqueViolation`.
+- [Connection poolers](/pg-prime/operations/poolers/) — what a transaction pooler takes away.
+- [Timeouts and cancellation](/pg-prime/operations/timeouts/) — `timeoutMs`, `signal`, and what a
+  `57014` means.
