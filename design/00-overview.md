@@ -20,9 +20,12 @@ Research basis: [`../research/SUMMARY.md`](../research/SUMMARY.md).
 
 ## Where the implementation actually is
 
-Four spikes exist and are green. **They are not yet connected to each other**, so there is no
-usable ORM: `schema/` does not import `compile/`, `compile/` does not import `driver/`, and two
-different `Codec` types coexist (`sql/codec.ts` carries a self-described spike-local one).
+*(This paragraph described four disconnected spikes and "no usable ORM" until 2026-08-29. It is kept
+only as a date-stamped marker of where this started: the layers are connected, one `Codec` type
+survives, and the table below is the current reading.)* **A schema file, a `pgPrime(config)`, a
+typed query and `pg-prime migrate generate → apply` all work end to end**, on PostgreSQL 15–18, and
+the documentation site's 83 executed examples are the shortest proof of it that does not require
+reading a test.
 
 | Area | State |
 |---|---|
@@ -34,6 +37,7 @@ different `Codec` types coexist (`sql/codec.ts` carries a self-described spike-l
 | Migration engine — data, seeds, checkpoints, pull | **Done (2026-08-29, [12 §3 K4](./12-v1-completion-plan.md)).** `-- pg-prime:batch` is a runner feature, not a template: one transaction per iteration, the `{ rows_done, watermark }` committed *with* the batch, replica-lag aware, so a SIGKILLed 50 000-row backfill resumes at the row it reached and touches none twice — asserted with `max(touched) = 1` over every row. `db seed` runs `.sql` and typed `.ts` seeds and records nothing. `migrate checkpoint` gives a fresh database the jump and `apply`/`status` the ability to **name** the drifted objects, which [11](./11-kit-v1-loop-plan.md) K1 could not |
 | Migration engine — the 1.0 gate | [01 §11.6 #5](./01-features.md) is **met twice over**: `baseline` → `verify` is green on Pagila, Northwind, AdventureWorks and Chinook, committed under `fixtures/corpus/` from pinned upstreams (empty IR diff on all four; `pg_dump` byte-equal on two and differing only by Tier-R objects on the other two). And `pull` now round-trips **all four** the other way — introspect → TypeScript → `generate` reports `up_to_date`, a second `pull` is byte-identical, and the `-- pull: unsupported` block is **empty** on every one. The corpus found four Tier-M bugs, all fixed ([06 §2.2](./06-migrations.md), [06 §4.5](./06-migrations.md)) |
 | Runtime — the session layer | **Done (2026-08-29).** [07](./07-runtime.md) end to end: `pgPrime(config)` with `connection` / `pool` / `driver`, the `Db`/`Tx`/`Session` handles, `TxOptions` + savepoints + `40001` retry + `setLocal` + advisory locks + `rollbackWith`, the §4.2 error tree with constraint→schema-object resolution, `POOLER_PROFILES` + `diagnosePooler()`/`diagnose()`, `AbortSignal` and per-statement timeouts, `streamBatches`, `listen`/`notify` on a dedicated connection, `copyFrom`/`copyTo`, hooks + `spanAttributes()` + the slow-query log + call-site capture, and the `AsyncLocalStorage` dev guard. `07` §0's snippet runs unchanged on a direct connection **and** through PgBouncer transaction mode. `07` §9's last two open questions are closed by measurement. **914 offline / 1 658 live / 1 718 on PG 17 + PgBouncer**, green on PG 15/16/17/18 |
+| Documentation | **Done (2026-08-29, [12 §4 D](./12-v1-completion-plan.md)).** The site of [08 §6.4](./08-architecture.md) is built and is a **gate**, not a folder: 45 Astro Starlight pages (getting started · 7 concepts · 15 guides · 6 operations · 11 reference · 5 comparison), **531 fenced `ts` blocks compiled on TypeScript 5.9.3 — the consumer floor — against the BUILT packages' export maps**, **83 examples executed against PostgreSQL** (tier-1 PGlite, one clean database each) and **1 181 / 1 181 exported names** with a reference entry, checked in both directions against the api-snapshot goldens. The CLI reference is the binary's own `--help`, the hazard table is the kit's own code list, the pooler matrix is generated from `POOLER_PROFILES`, and every internal link is resolved — four things that can rot, four mechanical checks. [08 §6.2 #10](./08-architecture.md) is met |
 | Packaging | **Done (2026-08-28).** Both packages build (`tsc` → unbundled ESM + `.d.ts` + maps), ship an `exports` map with the `types@<5.9` gate first on every subpath, and install from a `pnpm pack` tarball into a throwaway project — proved on every PR by the `package` CI job. `@pg-prime/testing` and `@pg-prime/create` are still README-only |
 
 **4 881 tests green** (958 runtime offline, 1 729 runtime live, 1 789 runtime on PostgreSQL 17 +
@@ -126,6 +130,10 @@ tree-shake golden contains no `pg` and no `node:async_hooks`. `@pg-prime/kit` de
    third-party corpus schemas to an empty `generate` with an empty unsupported block. Seven DSL
    additions came with it (`05` §2.3/§2.4/§5.1 AS BUILT), all runtime metadata: not one
    per-declaration or per-query `bench:types` number moved.
-8. **The rest of [12](./12-v1-completion-plan.md)**: the session layer (`07`, which has never had
-   a workstream), the builder gaps `09` deferred, release engineering, the docs site, and the perf
-   residue. K4 was one of round A's four.
+8. **The rest of [12](./12-v1-completion-plan.md)**: ~~the session layer (`07`, which has never had
+   a workstream), the builder gaps `09` deferred, release engineering, the docs site,~~ and the perf
+   residue. Round A (C · K4 · S · B) merged 2026-08-29; **D, the docs site, is done** ([12 §4 D](./12-v1-completion-plan.md)),
+   which leaves **P** — the runtime budgets re-sized from runner data, the batch-insert encode path,
+   and `bench/compare` against drizzle-orm and kysely. The nightly is red on one gate until it
+   lands: point-select p50 1.603× against a 1.45 budget, a real per-statement regression from the
+   session layer, deliberately not re-budgeted.

@@ -1287,6 +1287,201 @@ link the site and `08` §6.4 AS BUILT.
 **Gate (R20):** every block compiles, every example runs, coverage 100 %, `astro build` clean, the four
 `08` §6.2 #10 artefacts exist, `docs` job < 4 min.
 
+### D — RESULT (2026-08-29)
+
+Branch `worktree-agent-ad51f76ca877331cc`, seven commits on top of `79edac9` (plus the two
+integration commits `a613570` / `d21ffe6` cherry-picked, without which `package:check` fails on the
+`.js` line and `pnpm format` rewrites the generated stubs). `08` §6.4 is built, `08` §6.2 #10's four
+artefacts exist, and every one of R20's clauses is a gate that has been observed failing.
+
+#### Numbers
+
+| Gate | Result |
+|---|---|
+| `pnpm docs:typecheck` | **526 blocks from 45 pages, TypeScript 5.9.3, 2.2 s** — 321 signature, 17 `expect-error`, 127 with a file name. 5 more blocks are `skip-check`ed with a printed reason (another library's code, on the comparison pages), so 531 `ts` blocks exist and 526 are compiled |
+| `pnpm docs:examples` | **83 examples from 26 pages, 13.9 s** (PGlite 18.3 boot 1.0 s), one process and one clean database each |
+| `pnpm docs:coverage` | **1 181 / 1 181 exported names (100.0 %)**, both directions · 15 CLI blocks verbatim from the binary · 39 / 39 hazard codes · 215 internal links resolved |
+| `pnpm docs:build` | 46 HTML files in **3.2 s**, Pagefind index 1.5 MB, `docs/dist` 8.4 MB |
+| `pnpm docs:check` (all four, cold) | **24 s** |
+| `pnpm lint` · `pnpm format:check` | green |
+| `pnpm test` (tier 0) | **971** / 48 files, 5.3–5.7 s (970 before: +1 for the `valuesMany` regression) |
+| `pnpm test:live` (tier 1) | **1 742 + 6 skipped** / 82 files |
+| `test:pg` on PG 17 (`:54333`) | **1 792 + 10 skipped** / 90 files, COPY suite included |
+| `pnpm package:check` | green — 8/8 size, 4/4 tree-shake, emit parity, `check:dts`, pack smoke |
+| `pnpm api-snapshot:check` | no drift |
+| `actionlint` 1.7.12 | clean on `ci.yml` and `docs.yml`, checked against a deliberately broken `with:` key first |
+
+Per-section census (fenced blocks / of which `ts` / of which executed):
+
+| Section | Pages | Blocks | `ts` | Executed |
+|---|---:|---:|---:|---:|
+| Getting started + guides | 15 | 229 | 130 | 57 |
+| Concepts | 7 | 51 | 30 | 9 |
+| Operations | 6 | 60 | 13 | 2 |
+| Reference | 11 | 369 | 346 | 11 |
+| Compare | 5 | 12 | 12 | 4 |
+| Landing | 1 | 0 | 0 | 0 |
+| **Total** | **45** | **721** | **531** | **83** |
+
+#### What was built
+
+`docs/` is a private workspace (`@pg-prime/docs`, Astro **7.2.9** + `@astrojs/starlight` **0.41.10**,
+Pagefind, no TypeScript of its own — Astro 7 does not need one, so the root's 7.0.2 / 5.9.3 pair is
+untouched). Four tools, one shared front end:
+
+- **`tools/docs-blocks.mjs`** — what a block *is*, defined once: the fence, the directives in an MDX
+  comment above it, and the composition. `use=` means "this code is in scope", two ways: a `setup=`
+  block **with a file name** is written as that file beside the block, which then imports it exactly
+  as a reader's project would; a snippet or an untitled setup is prepended textually. No line of any
+  block is rewritten, and every diagnostic maps back to the page.
+- **`tools/docs-typecheck.mjs`** — composes and type-checks on **5.9.3**, `strict` +
+  `exactOptionalPropertyTypes`, resolving `pg-prime` and `@pg-prime/kit` through `docs/node_modules`
+  → `packages/*` → their `exports` maps → `dist`. No `paths` map and no tarball install, so the
+  resolution a block gets is the resolution a consumer gets. Three block shapes: plain,
+  `signature` (compiled inside `declare namespace` with the page's `apiEntry` names in scope — this
+  is how 321 reference signatures are checked rather than pictured), and `expect-error` (must fail).
+- **`tools/docs-examples.mjs`** — runs the `title=` blocks against tier-1 PGlite through
+  `packages/pg-prime/test/live/_pglite.ts`, bundled with esbuild because Node's type stripping
+  cannot resolve a `./x.js` specifier to the `x.ts` beside it and rewriting the page's import is
+  what this gate exists not to do. `DATABASE_URL` is the seam, so examples run **unchanged**.
+- **`tools/docs-coverage.mjs`** — the api-snapshot goldens both ways, plus the three other things
+  that are generated from code and can rot: the CLI blocks (run the binary, diff), the hazard table
+  (`HAZARD_SEVERITY` + `STYLE_CODES`, with severity read from the built `hazardSeverity()`), and
+  every internal link against the page slugs. `--write` regenerates the CLI blocks.
+- **`tools/pooler-matrix.mjs`** — the pooler page's matrix from the built `POOLER_PROFILES`
+  (decision 6). It runs as the first step of `docs:build` and `docs:dev`, so the published page
+  cannot be stale, and `--check` (in `docs:coverage`) makes a stale *committed* page a visible diff.
+
+CI: a `docs` job in `ci.yml` (Node 24, `pnpm build` then the four, then the site as an artifact) and
+`.github/workflows/docs.yml` deploying to Pages from `main`.
+
+#### Divergences from the brief, with reasons
+
+| # | Brief | Built | Why |
+|---|---|---|---|
+| 1 | "`title=` blocks are extracted into `examples/` and executed" (`08` §6.4) | executed **in place**, from the page | An example that lives in the page it documents cannot drift from it, and a second copy on disk is a second thing to keep in sync. `pnpm-workspace.yaml` keeps the `examples/*` row for whoever wants a standalone sample app |
+| 2 | three tools | four, plus a shared `tools/docs-blocks.mjs` | "What is a block" is one definition used by three gates; duplicating the extractor three times is how the three would disagree |
+| 3 | `docs-coverage` checks names | …and the CLI tables, the hazard table and the internal links | Same argument, same page: a `--help` output, a code list and a link are all generated-from-code facts a hand-written page can contradict. The brief asks for the CLI golden explicitly; the other two cost twenty lines each |
+| 4 | Cloudflare Pages *or* GH Pages (`08` §6.4) | **GitHub Pages** | No second account, no second secret, and `deploy-pages` is OIDC rather than a token. Enabling Pages once is the operator step, recorded in three places |
+| 5 | Hosting/versioning via `starlight-versions` | not installed | `08` §6.4 says "once 1.0 lands"; nothing to version yet |
+| 6 | — | `docs/**/*.mdx` added to `.oxfmtrc.json`'s ignore list | oxfmt formats MDX by re-aligning every markdown table to its widest cell: a one-word edit to a 300-row reference page becomes an unreadable diff. Markdown was already ignored; MDX is Markdown |
+| 7 | — | the examples' shared handle is `poolOptions: { max: 1 }`, `devGuard: false` | Measured, and the reason is F8 rather than taste — see "the harness finding" below |
+
+#### The harness finding, which changed the gate
+
+With the default pool, a `db.transaction` on the PGlite tier **silently stopped being a
+transaction**: two `txid_current()` values inside one callback (753 then 754), a `rollback()` that
+left its row behind, and `SAVEPOINT` answering `25P01`. Diagnosed three ways by three writers and
+confirmed here: PGlite is one backend behind one socket bridge, the bridge drops a connection that
+runs a message while another holds an open transaction (design/08 F8, deliberately), the pool then
+reconnects, and the `BEGIN` is gone. What opens the second connection is design/07 §5.4's dev-mode
+pooler probe — it creates contention on purpose, which is exactly right on a server and fatal on
+one backend — plus pg-pool's own second client. On a **real** PostgreSQL 17 the same code is
+correct (same `txid_current`, same backend pid, rollback removes the row), verified before changing
+anything.
+
+Two things came out of it. `docs/src/snippets/blog.ts` sets `poolOptions: { max: 1 }` and
+`devGuard: false`, with the reason in the file (measured: `max: 1` alone is sufficient;
+`devGuard: false` removes the probe that opens the connections in the first place). And the gate
+now **fails an example the bridge dropped a connection under** — the exit code was 0 while the
+transaction was a lie, which is the one failure mode a "docs examples are tests" claim cannot
+survive. `allow-drops="reason"` is the opt-out and exactly one example uses it (the dev guard's
+own, which has to turn the guard — and therefore the probe — back on).
+
+#### Docs-found bugs
+
+**Fixed (the one licence design/12 §4 D gives to touch `packages/*`):**
+
+1. **`valuesMany` refused a rectangular batch** whose rows differ only in a **boolean or enum
+   value**. The guard asked "did `R` come out a union?", and `boolean` *is* `true | false`, so
+   `[{ published: true }, { published: false }]` — one column list — was refused with a message
+   about columns. It now asks whether any member declares a key it cannot have a value for, which
+   is what the runtime has always checked (`#columnsFor`). Regression: a tier-0 case in
+   `test/query/insert.test.ts` and a probe case in `test/query/types/audit.probe.ts`.
+   `dist/query/types.d.ts` 72 190 → 72 809 B, re-baselined with the reason.
+2. **The `pg`-like seam did not accept `pg`.** `PgLikeClient.on` / `.removeListener` declared their
+   listener `(arg: never) => void` against `EventEmitter`'s `(...args: any[]) => void` — `any` is
+   assignable to everything **except** `never` — so no real client satisfied the seam and twelve
+   call sites in `pg-adapter.ts` carried `as (a: never) => void` to compensate (all twelve now
+   gone). `getTransactionStatus()` omitted the `null` `@types/pg` declares and pg returns before
+   the first `ReadyForQuery`. The three COPY writers are optional now, because `@types/pg` does not
+   declare them at all, with the refusal `copy.ts` already had for `query`.
+   **What still does not assign is upstream:** `@types/pg@8.21.0` types `QueryParse.types` as
+   `string[]` where pg passes OIDs as numbers, so `Connection.parse` cannot match without a
+   declaration we know to be false. `test/driver/pg-types.probe.ts` pins both halves — the two
+   fixed members assign, and the residual is a `@ts-expect-error` that fails the day it is fixed.
+   Budgets: `.js` 890 880 → 891 904 B, tree-shake `connect-one-select` → 72 704 and
+   `root-import-all` → 79 872, each with its reason in `tools/budgets.json`.
+3. **`tools/pooler-matrix.mjs` named the wrong error class** for `db.listen()` under a transaction
+   profile (`ConfigError`; the code throws `UnsupportedInPoolerModeError`). Mine, and regenerated.
+
+**Found, reproduced, NOT fixed** — each is a behaviour change in a file another workstream owns, and
+each has a reproduction:
+
+| # | Finding | Where |
+|---|---|---|
+| a | **`.$default()` / `.$onUpdate()` are recorded and never applied.** Nothing in `packages/*/src` reads `defaultFn` / `onUpdateFn`; `Insertable` marks the column optional and the insert omits it, so a `NOT NULL` column whose only default is a `$default` fails with `23502`. `db.insertInto(t).values({ id: 1 }).compile().sql` → `insert into "public"."t" ("id") values ($1)` | `src/schema/column.ts`, `src/query/insert.ts`. Documented with a caution on `guides/schema` |
+| b | **`set_config('statement_timeout', NULL, true)` does not restore a session value pg-prime itself applied.** `NULL` restores the GUC's *reset* value, and a `SET` (`PGC_S_SESSION`) does not become the reset value — which is how `applyConnectSettings` installs `session.statementTimeout`. Measured on PG 18.3: session `30s` → in-tx `250ms` → in-tx `NULL` → **`0`**, i.e. the per-statement timeout *disables* the timeout for the rest of that transaction. Correct when the default came from `ALTER ROLE`/`postgresql.conf` | `src/session/runner.ts` (`#applyLocalTimeout`). It is S's M10 decision, so it needs S's context; documented with a caution on `guides/cancellation` |
+| c | **`QueryError.paramCount` is always 0** — `runner.ts` passes `params: undefined` unconditionally to `mapError`, so `errors.includeParams` has no effect on a statement error either. `paramTypes` is populated | `src/session/runner.ts:889`. The errors reference claims only `paramTypes` |
+| d | **`TlsError` is unreachable by name** — declared in `errors/classes.ts` and thrown by `map.ts`, exported from neither barrel, so it is not in the api-snapshot and a user can only match `e instanceof ConnectionError && e.name === 'TlsError'` | `src/errors/index.ts`. Said so on the errors page |
+| e | **A pooled handle keeps a connection checked out after `await`** — `{ total: 2, idle: 1 }` after two awaited sequential statements on `pgPrime({ connection })`, which is also why the PGlite bridge sees a second socket at all. Benign on a server, invisible to every existing test because `test/live/**` uses the `driver:` shape | `src/session/runner.ts` / the lazy init path |
+| f | **Shadow tier 1 is unreachable from the config file.** `shadow: { url }` fails validation (`STRING_KEYS`), and `shadow: 'postgres://…'` passes validation and then falls through `provisionShadow`'s match to the `auto` ladder with no diagnostic. Only `--shadow <url>` reaches tier 1 | kit `src/config/load.ts`, `src/shadow/ladder.ts`. Caution on `reference/config` |
+| g | **`--by` advertises a default it does not have** (`$USER`); nothing reads `process.env.USER` and `buildPlan` records `by: "spike"` | kit `src/cli/commands/{generate,baseline}.ts` |
+| h | **`--statement-timeout` reaches statements documented as exempt** — `plan.ts` records `timeouts.statement: null` for `shareUpdateExclusive`, but the resolution is `?? ctx.statementTimeout ?? '0'`, so an explicit flag caps a `CREATE INDEX CONCURRENTLY` | kit `src/runner/run.ts:1044`, `runner/apply.ts:76`. Documented as it behaves |
+| i | Three subject–verb disagreements in refusal messages ("1 row already exist", "1 decision need a human", "holds 5 rows that is not baselined") and `status` printing `0 pendings` | kit `src/cli/commands/{baseline,generate,push}.ts`, `src/runner/status.ts` |
+| j | **A `.ts` seed cannot import `'../schema.js'`** — Node's type stripping resolves specifiers literally, so the conventional `.js` specifier fails at seed time; `'../schema.ts'` works | Documented on `guides/data-migrations` |
+| k | `verify.ts`'s header docblock still says `--from-checkpoint` is refused; K4 shipped it | comment only |
+
+#### R10 — eleven mutations, eleven caught
+
+`node docs/.gen/mutations.mjs` (gitignored) applies each to the shipped tree, runs the gate that
+should catch it, and restores the file. Every row is the observed output.
+
+| # | Mutation | Gate | Observed |
+|---|---|---|---|
+| M1 | a compiling block calls a method that does not exist | typecheck | exit 1 · `guides/getting-started.mdx:240:28: TS2339: Property 'nope' does not exist on type 'Db<…>'` |
+| M2 | an executed example asserts something false | examples | exit 1 · `1 example(s) failed` · the stack rewritten to `guides/getting-started.mdx:247` |
+| M3 | a `### \`quoteIdentPath\`` heading is reworded | coverage | exit 1 · `pg-prime: 1 exported name(s) have no reference entry: quoteIdentPath`, and `pg-prime/sql` drops to 28/29 |
+| M4 | the reference documents `quoteIdentifierPart` | coverage | exit 1 · `reference/sql.mdx:212: reference entry \`quoteIdentifierPart\` is not exported by pg-prime/sql / pg-prime — the api-snapshot goldens do not contain it` |
+| M5 | a CLI option table is edited by hand | coverage | exit 1 · `reference/cli.mdx:135: the block for \`pg-prime migrate apply --help\` is not what the binary prints` + the diff line |
+| M6 | `LK101`'s severity flipped to `error` | coverage | exit 1 · `reference/hazard-codes.mdx:113: hazard LK101 is documented as \`error\`; the kit says \`warn\`` |
+| M7 | the generated pooler matrix edited by hand | pooler-matrix `--check` | exit 1 · `operations/poolers.mdx has drifted from POOLER_PROFILES` |
+| M8 | a cross-page link points at `/concepts/codec/` | coverage | exit 1 · `guides/getting-started.mdx:252: link to /pg-prime/concepts/codec/ — no page has that slug` |
+| M9 | an `expect-error` directive removed from a block that really is refused | typecheck | exit 1 · the block compiles clean **and** the gate reports the TS2345 it was hiding — either half fails it |
+| M10 | a snippet broken (`db` → `never`) | typecheck | exit 1 · `docs/src/snippets/blog-ddl.ts:8:7 (via snippet blog-ddl, used by guides/errors.mdx:190)` — the origin is the snippet, the caller is named |
+| M11 | the shared handle's `max: 1` + `devGuard: false` removed | examples | exit 1 · **5** examples fail with "the PGlite bridge dropped 1 connection(s) while this example ran … may have passed while its transaction silently did not isolate" |
+
+Two of the eleven survived their first run and both were the harness's fault, not the gate's: the
+runner was joining the page filter onto the repo root, so `docs-examples.mjs <filter>` ran zero
+examples and exited 0 (M2, M11). Fixed in the mutation script, and the finding is why M11 exists at
+all: a gate that runs nothing is a gate that passes.
+
+#### Not done, and what the next person should know
+
+- **`pnpm docs:examples` runs only tier 1.** Anything needing two sessions — a real `40001`, a
+  deadlock, LISTEN delivery, a killed backend, COPY (PGlite's socket bridge exits on a COPY
+  message) — is compiled and marked `no-run` with a sentence naming the tier-2 suite that proves
+  it. 44 of the 531 `ts` blocks are `no-run`; every one of them is either a file (a config, a
+  migration, a schema module) or a two-session claim.
+- **The CLI walkthroughs are not executed.** `sh` blocks are shown, and their output was captured
+  by hand from PostgreSQL 17 (`pgprime-k4` :54333, databases `docs_demo`, `docs_guides`,
+  `docs_guides_fresh`, `docs_dev`, `docs_legacy`, all disposable) with `pg_dump` wired through
+  `PG_PRIME_PG_DUMP` + `docker exec`. Nothing on those pages is invented; a handful of transcripts
+  carry an explicit `…` where a hostname or a long `CREATE TABLE` body was elided.
+- **No `starlight-versions`, no search analytics, no i18n, no dark-mode screenshots.**
+- **The reference's signatures are checked for compilation, not for identity with the `.d.ts`.** A
+  signature that compiles but has drifted from the real one (a widened parameter, a dropped
+  overload) is not caught. The mechanical half is coverage; comparing declared types with the
+  built ones through the compiler API is the obvious next gate and is not built.
+- **`docs/.gen/` is gitignored** and holds the scaffolder (`scaffold.mjs`, which prints every
+  name's kind, `.d.ts` signature and JSDoc), the partition that split 1 181 names across the
+  reference pages, the mutation runner, and the walkthrough project. None of it ships; all of it
+  regenerates.
+- **Operator step:** GitHub → Settings → Pages → Source: **GitHub Actions**, once. Until then
+  `docs.yml`'s deploy job fails on `main` with `Get Pages site failed`; `ci.yml`'s `docs` job is
+  unaffected, so a broken page still fails a PR. Recorded in the workflow header, `docs/README.md`
+  and `RELEASING.md` §1b.
+
 ### P — Perf residue (`08` §5)
 
 **Owns:** `bench/runtime/**`, `bench/compare/**` (new), `bench/runtime/budget.json`, `.github/workflows/

@@ -766,6 +766,10 @@ Both are policy failures, so the fix is policy.
 10. **Docs complete:** every public export documented; a 15-minute getting-started a fresh reader can
     finish without opening source; a migrations guide; an operations guide (locks, CIC, zero-downtime
     patterns); a "why not X" comparison page. All code samples type-checked in CI.
+    **Met 2026-08-29** (design/12 §4 D, §6.4 AS BUILT): 1181/1181 exported names have a reference
+    entry and the check runs both ways; `guides/getting-started`; `guides/migrations` plus three
+    more migration guides; six `operations/` pages; `compare/why-not` plus one page per library;
+    531 blocks compiled on the 5.9.3 consumer floor and 83 executed against PostgreSQL, per PR.
 11. **Governance:** ≥ 2 people hold npm publish rights and repo admin; `GOVERNANCE.md` published; the
     release runbook has been executed end-to-end by the *second* person at least once.
 12. **Adoption evidence:** ≥ 3 named production users (or ≥ 1 above 1M req/day), and 8 consecutive
@@ -795,6 +799,49 @@ is the publisher, so adding a second human is a permissions change, not a secret
 - **Docs examples are tests.** Blocks tagged `title=` are extracted into `examples/` and *executed*
   against tier-1 PGlite. Cheap, and it is a differentiator: nobody's ORM docs are green-CI-verified.
 - Hosting: Cloudflare Pages (or GH Pages) from the `docs/` workspace.
+
+**AS BUILT · 2026-08-29 (design/12 §4 D).** The site exists: a private workspace `@pg-prime/docs`
+(Astro **7.2.9** + `@astrojs/starlight` **0.41.10**, Pagefind on by default), **45 pages** —
+getting started, 7 concepts, 15 guides, 6 operations, 11 reference, 5 comparison and a landing
+page — building to 46 HTML files in **3.2 s**. Hosting is **GitHub Pages** rather than Cloudflare:
+`.github/workflows/docs.yml` publishes `docs/dist` on every push to `main` through
+`configure-pages` / `upload-pages-artifact` / `deploy-pages`, which needs no account we do not
+already have and no second secret. Enabling Pages once is an operator step (RELEASING.md §1b).
+
+**No TypeDoc, and the compile gate is real rather than aspirational.** `tools/docs-typecheck.mjs`
+extracts **531** fenced `ts`/`tsx` blocks, composes each with the preludes it declares, and
+type-checks the lot on **TypeScript 5.9.3** — the consumer floor, not the TS 7 that builds the
+packages — under `strict` + `exactOptionalPropertyTypes`, in **2.2 s**. Resolution is not a `paths`
+map: the composed blocks are written under `docs/.gen/`, so Node's own algorithm walks up to
+`docs/node_modules`, where pnpm has linked `pg-prime` → `packages/pg-prime`, whose `exports` map
+points at `dist`. A block therefore compiles against exactly what a consumer installs. 5 blocks are
+`skip-check`ed with a printed reason (each is another library's code on a comparison page); 17 are
+`expect-error` blocks that must FAIL to compile, which is how a page's claim that something is
+refused is itself checked; 321 are reference signatures, compiled inside `declare namespace` with
+the entry point's own names in scope.
+
+**Docs examples are tests, and they run where design/08 §4.2 says.** `tools/docs-examples.mjs`
+executes the **83** blocks tagged `title=` against tier-1 PGlite through the repository's own
+wire-protocol bridge, one process and one `drop schema public cascade` per example, in **13.9 s**.
+They are not extracted into `examples/`: an example that lives in the page it documents cannot
+drift from it, and `pnpm-workspace.yaml` keeps the `examples/*` row for whoever wants it. Two
+harness facts had to be enforced rather than assumed, both consequences of F8: the shared handle is
+`poolOptions: { max: 1 }` (a second pooled connection opened while a transaction is in flight is
+dropped by the bridge, after which the transaction silently stops isolating — measured: two
+`txid_current()` values inside one `db.transaction`, and a rollback that left its row behind), and
+the gate **fails an example the bridge dropped a connection under**, because an exit code of 0 was
+hiding exactly that.
+
+**A third gate the section did not ask for.** `tools/docs-coverage.mjs` compares the reference with
+`tools/api-snapshot/*.json` in both directions — **1181/1181** exported names have an anchor, and
+every anchor is a golden name — and, because the same argument applies to anything else generated
+from code, it also checks the CLI reference's 15 blocks against the binary's own `--help`, the
+hazard table against the kit's `HAZARD_SEVERITY` + `STYLE_CODES` (39 codes), and all 215 internal
+links against the set of page slugs. `tools/pooler-matrix.mjs` generates the pooler page's matrix
+from the built `POOLER_PROFILES` and runs both in the build and as a `--check`.
+
+`pnpm docs:check` (all four, cold) is **24 s** locally; the `docs` job in `ci.yml` adds install and
+`pnpm build` and is budgeted at 4 minutes.
 
 ### 6.5 License
 
