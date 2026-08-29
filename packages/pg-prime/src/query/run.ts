@@ -238,6 +238,20 @@ export function pgPrime<Sc extends AnySchema>(config: PgPrimeOptions<Sc>): Db<Sc
     }
   }
 
+  // pg-pool re-emits an IDLE client's error on the pool, and an unheard `error` event exits the
+  // process (see `buildPool`). We built this pool, so the listener is ours; it reports through
+  // `onInternal`, the one channel `07` §7.1 has for a decision the runtime took on its own.
+  const onIdleError = (which: 'pool' | 'directPool') => (err: unknown) => {
+    hooks.internal({
+      kind: 'idle-connection-error',
+      message:
+        `pg-prime: a connection sitting IDLE in the ${which} failed and pg-pool has already ` +
+        `discarded it; the next statement opens a fresh one, and nothing was in flight. ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      cause: err,
+    })
+  }
+
   const lazy = new LazyDriver(async () => {
     if (source === 'driver') return config.driver as PgDriver
     if (source === 'pool') {
@@ -251,6 +265,7 @@ export function pgPrime<Sc extends AnySchema>(config: PgPrimeOptions<Sc>): Db<Sc
       // `connectSettings` below is then empty so nothing is emitted per connection (07 §3.6).
       settings,
       config.session,
+      onIdleError('pool'),
     )
     lazy.setPool(built.pool)
     lazy.host = built.host
@@ -263,6 +278,7 @@ export function pgPrime<Sc extends AnySchema>(config: PgPrimeOptions<Sc>): Db<Sc
             config.poolOptions,
             settings,
             config.session,
+            onIdleError('directPool'),
           )
     if (direct !== undefined) lazy.setPool(built.pool)
     return pgDriver({

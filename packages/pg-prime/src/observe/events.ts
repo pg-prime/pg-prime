@@ -101,7 +101,8 @@ export interface NoticeEvent {
 
 /**
  * Everything the runtime decided on its own: an exec-mode downgrade, a description-cache flush, a
- * self-heal, a hook that threw and was disabled, a session GUC a pooler profile skipped.
+ * self-heal, a hook that threw and was disabled, a session GUC a pooler profile skipped, an idle
+ * pooled connection the server killed under us.
  */
 export interface InternalEvent {
   readonly kind:
@@ -113,6 +114,7 @@ export interface InternalEvent {
     | 'session-guc-skipped'
     | 'listen-reconnect'
     | 'concurrent-statements'
+    | 'idle-connection-error'
   readonly message: string
   readonly cause?: unknown
   readonly hook?: keyof QueryHooks | undefined

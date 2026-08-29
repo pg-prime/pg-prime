@@ -83,10 +83,19 @@ the mapped `error`.
 `pg-pool`'s and those two events are not on the seam.
 
 `InternalEvent.kind` is one of `downgrade`, `cache-flush`, `self-heal`, `hook-failed`,
-`pooler-mismatch`, `session-guc-skipped`, `listen-reconnect` and `concurrent-statements`. It is
-where the runtime tells you it did something you did not ask for — a `LISTEN` reconnect, a session
-GUC a pooler profile made it skip, a permanent exec-mode downgrade — and it is worth wiring even if
-you wire nothing else.
+`pooler-mismatch`, `session-guc-skipped`, `listen-reconnect`, `concurrent-statements` and
+`idle-connection-error`. It is where the runtime tells you it did something you did not ask for —
+a `LISTEN` reconnect, a session GUC a pooler profile made it skip, a permanent exec-mode
+downgrade — and it is worth wiring even if you wire nothing else.
+
+`idle-connection-error` is the one that reports something the *server* did: a connection sitting
+idle in the pool was killed under you — a failover, a pooler restart, a `pg_terminate_backend`, an
+`idle_session_timeout` shorter than `idleTimeoutMillis`. Nothing was in flight and nothing failed:
+the pool has already thrown that connection away and the next statement opens a fresh one. It is
+reported rather than thrown because there is no caller to throw it to, and pg-prime listens for it
+at all because an unheard `error` event on a pool **exits the process** — which is what `pg` on its
+own does. Only for a pool pg-prime built from `connection:`; a pool you pass as `pool:` is yours,
+and so is its `error` listener.
 
 ### The three timings
 

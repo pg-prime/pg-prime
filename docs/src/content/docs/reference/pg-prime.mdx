@@ -1107,7 +1107,7 @@ The remaining event types are small:
 | <a id="TxEndEvent"/> `TxEndEvent` | `TxStartEvent` + `{ outcome: 'commit' \| 'rollback' \| 'error', durationMs, error? }` | One end event per attempt. |
 | <a id="PoolEvent"/> `PoolEvent` | `{ kind: 'acquire' \| 'release' \| 'create' \| 'destroy' \| 'timeout', waitedMs? }` | The pool's own lifecycle, independent of any query. |
 | <a id="NoticeEvent"/> `NoticeEvent` | `{ notice: PgNoticeData, queryId: string }` | PostgreSQL `NoticeResponse` — `RAISE NOTICE` from your own functions. |
-| <a id="InternalEvent"/> `InternalEvent` | `{ kind, message, cause?, hook? }` | Everything the runtime decided on its own: an exec-mode `'downgrade'`, a `'cache-flush'`, a `'self-heal'`, a `'hook-failed'`, a `'pooler-mismatch'`, a `'session-guc-skipped'`, a `'listen-reconnect'`, `'concurrent-statements'`. |
+| <a id="InternalEvent"/> `InternalEvent` | `{ kind, message, cause?, hook? }` | Everything the runtime decided on its own: an exec-mode `'downgrade'`, a `'cache-flush'`, a `'self-heal'`, a `'hook-failed'`, a `'pooler-mismatch'`, a `'session-guc-skipped'`, a `'listen-reconnect'`, `'concurrent-statements'`, an `'idle-connection-error'` (a pooled connection the server killed while it sat idle; nothing was in flight, and the pool has already discarded it). |
 | <a id="QueryOperation"/> `QueryOperation` | `'select' \| 'insert' \| 'update' \| 'delete' \| 'ddl' \| 'other'` | From the compiled metadata. |
 | <a id="QueryErrorCtor"/> `QueryErrorCtor` | `new (message: string, init: QueryErrorInit) => QueryError` | The constructor every `QueryError` subclass has, for code that maps a SQLSTATE to a class. See [Errors](/pg-prime/reference/errors/). |
 
