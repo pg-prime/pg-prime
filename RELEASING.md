@@ -13,8 +13,8 @@ Nothing in this repository publishes anything until the one-time setup in §1 is
 | | |
 |---|---|
 | Version tool | Changesets (`@changesets/cli@3`), config in `.changeset/config.json` |
-| Version group | **`pg-prime` and `@pg-prime/kit` are `fixed`** — always the same version |
-| Independent | `@pg-prime/testing`, `@pg-prime/create` |
+| Version group | **`pg-prime`, `@pg-prime/kit` and `@pg-prime/create` are `fixed`** — always the same version. The scaffolder is in the group because it *pins what it scaffolds*: the ranges in the `package.json` it writes are generated at build time from the workspace, and that pin is only exact if the scaffolder ships every time the two packages it pins do (design/13 decision 6) |
+| Independent | `@pg-prime/testing` |
 | Publisher | `.github/workflows/release.yml`, on push to `main` |
 | Auth | **npm trusted publishing (OIDC).** There is no npm token anywhere |
 | Provenance | `NPM_CONFIG_PROVENANCE: true`, so every tarball carries an attestation |
@@ -137,8 +137,8 @@ pnpm changeset          # pick the packages, pick the bump, write the entry
 
 **As the releaser.** Read the "Version Packages" PR before merging it:
 
-- Are the version numbers what you expect? `pg-prime` and `@pg-prime/kit` must be **identical** —
-  if they are not, the `fixed` group in `.changeset/config.json` has been broken.
+- Are the version numbers what you expect? `pg-prime`, `@pg-prime/kit` and `@pg-prime/create` must
+  be **identical** — if they are not, the `fixed` group in `.changeset/config.json` has been broken.
 - Does each `CHANGELOG.md` entry read like something a user can act on?
 - Is anything breaking? Then it must be a **minor** (we are pre-1.0), and `MIGRATING.md` must have
   the before/after entry, and a codemod must exist wherever the change is mechanical.
@@ -195,9 +195,9 @@ missing, because `changeset publish` skips versions the registry already has.
 **The "Version Packages" PR keeps reopening.** It is force-updated on every push to `main` that
 carries changesets. That is normal. Merge it when you want to release.
 
-**`pg-prime` and `@pg-prime/kit` came out at different versions.** Stop. The `fixed` group is what
-prevents this and something has edited it. Do not paper over it with a manual publish; fix the
-config and cut a new version of both.
+**`pg-prime`, `@pg-prime/kit` and `@pg-prime/create` came out at different versions.** Stop. The
+`fixed` group is what prevents this and something has edited it. Do not paper over it with a manual
+publish; fix the config and cut a new version of all three.
 
 **A bad version shipped.** Publish a fix as a new version. Do **not** `npm unpublish`, and do not
 `npm dist-tag` a lower version back to `latest` — deprecate the bad one instead:

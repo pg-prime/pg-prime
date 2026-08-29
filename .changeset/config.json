@@ -5,7 +5,7 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "fixed": [["pg-prime", "@pg-prime/kit"]],
+  "fixed": [["pg-prime", "@pg-prime/kit", "@pg-prime/create"]],
   "linked": [],
   "ignore": [],
   "privatePackages": { "version": false, "tag": false }
