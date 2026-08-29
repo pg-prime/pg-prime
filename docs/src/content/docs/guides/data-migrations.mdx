@@ -225,7 +225,7 @@ to, so the progress of a backfill is visible while it runs as well as after it f
 migrate status — docs_guides @ 127.0.0.1:54333
   history      present (v1)
   fingerprint  unknown
-  migrations   3 files, 0 pendings
+  migrations   3 files, 0 pending
   lock         free
   applied   0000_init
   applied   0001_users_email_domain
@@ -459,11 +459,16 @@ export default async ({ db, set, env }: {
 ```
 
 `schema` there is your own schema module, the one the `schema` key in your config points at. Import
-it the way the file will actually be loaded: `db seed` imports a `.ts` seed through Node, which
-resolves the specifier **literally**, so an uncompiled project writes
-`import { schema } from '../schema.ts'` and a project that builds to JavaScript first writes
-`'../schema.js'`. Getting that wrong is a `Cannot find module …/schema.js` at seed time rather than
-a type error.
+it exactly as you would anywhere else in your project — `import { schema } from '../schema.js'`.
+
+That is the specifier TypeScript's `nodenext` resolution requires and the one `tsc` emits, so the
+same line compiles, builds and seeds. Node's type stripping resolves specifiers **literally** and
+would look for a `schema.js` that an uncompiled project does not have, so the kit installs a
+resolve hook before it imports anything of yours: a relative `./x.js` that is not on disk is
+resolved to the `./x.ts` beside it. It fires only when the JavaScript file is genuinely absent, so
+a project that compiles keeps its own build, and it covers the config file and the schema modules
+for the same reason it covers seeds. A `'../schema.ts'` specifier also works if you prefer it and
+your `tsconfig.json` allows it.
 
 `set` is the set the file belongs to (`null` for the base set) and `env` is `PG_PRIME_ENV`
 verbatim. `db` is a **real pg-prime handle** — specifically the transaction handle, so the file's

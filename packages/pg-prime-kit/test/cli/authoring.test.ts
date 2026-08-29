@@ -147,6 +147,15 @@ export default defineSchema({ widgets })
       expect(unresolved.map((u) => u.fix).join(" ")).toContain("--allow-data-loss");
       await expectGolden("generate.missing-hints", e);
 
+      // design/12 F2 item i — the human-readable refusal agrees with its own count. The
+      // expected sentence is computed from the count, so a regression fails in either
+      // direction ("1 decision need", "2 decisions needs").
+      const human = await runCli(["migrate", "generate", "--name", "drop_name", "--config", p.config]);
+      expect(human.code).toBe(EXIT.missingHints);
+      const n = unresolved.length;
+      // A non-zero exit prints the text report on stderr (`main.ts`'s `emit`).
+      expect(human.stderr).toContain(`${String(n)} ${n === 1 ? "decision needs" : "decisions need"} a human`);
+
       // …and with the acknowledgement it goes through and is recorded IN THE PLAN.
       const ok = await cli(
         p,
@@ -409,7 +418,10 @@ CREATE INDEX CONCURRENTLY widgets_name_idx ON public.widgets (name);
       expect((await cli(p, "apply")).code).toBe(EXIT.ok);
       const managed = await cli(p, "push", "--dev");
       expect(managed.code).toBe(EXIT.error);
-      expect((envelopeOf(managed)["error"] as { message: string }).message).toContain("versioned management");
+      const refusal = (envelopeOf(managed)["error"] as { message: string }).message;
+      expect(refusal).toContain("versioned management");
+      // design/12 F2 item i: one applied migration, and the verb agrees with it.
+      expect(refusal).toContain("holds 1 row that is not baselined");
     },
     T,
   );

@@ -234,7 +234,7 @@ pg-prime migrate apply --lock-timeout 3s --statement-timeout 60s
 | Flag | Default | Applies to |
 |---|---|---|
 | `--lock-timeout` | `3s` | every statement, including the concurrent builds |
-| `--statement-timeout` | per statement | ordinary DDL gets `30s`; intentionally long builds get none |
+| `--statement-timeout` | per statement, from the plan | overrides the plan's `30s` for ordinary DDL; the intentionally long builds stay exempt |
 
 A short `lock_timeout` plus a retry is strictly better than a long one, because a statement waiting
 for `ACCESS EXCLUSIVE` collects a queue of every subsequent query on that table. Failing fast with
@@ -250,8 +250,11 @@ need. A 30 s cap on a concurrent index build would guarantee failure on exactly 
 need one. `lock_timeout` still applies, which is the point: such a build should be allowed to take
 an hour, and should not be allowed to sit in a lock queue for one.
 
-Passing `--statement-timeout` explicitly is what those statements fall back to, so it does cap
-them. Leave it unset if you want the long builds uncapped.
+**The exemption wins over the flag.** `--statement-timeout 5m` raises the ceiling on the ordinary
+DDL in the plan — that is what it is for — and leaves the exempt statements at `0`. The resolution
+is: a `null` in the plan is an exemption rather than a gap, so nothing fills it; otherwise your
+value replaces the plan's own. There is no flag that caps a `CREATE INDEX CONCURRENTLY`, because a
+cap that fires there fails after however long it ran and leaves an `INVALID` index behind.
 
 ## Related
 

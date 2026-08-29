@@ -46,6 +46,10 @@ most-reported migration failure, and it is why tier 3 exists.
 
 ### Tier 1: a URL you supply
 
+`--shadow postgres://…` on the command line, or `shadow` in the config file — as a bare
+`postgres://…` string or as `{ url: '…' }`, which are the same thing. A value that is neither a
+keyword nor a usable URL is refused with a sentence naming the tiers, never demoted to `auto`.
+
 The managed schemas in that database are dropped and recreated before the desired state is loaded,
 and again when the run finishes. That is the same contract as Prisma's `SHADOW_DATABASE_URL`, said
 out loud: pg-prime emits a `shadow_url_reset` warning naming the database and the schemas it is
@@ -154,7 +158,7 @@ export default defineConfig({
   schema: './schema.ts',
   migrations: './migrations',
   url: process.env['DATABASE_URL']!,
-  // 'auto' (the default) · 'createdb' · 'temp-schema' · { url } · 'offline'
+  // 'auto' (the default) · 'createdb' · 'temp-schema' · 'postgres://…' or { url } · 'offline'
   shadow: 'temp-schema',
 })
 ```

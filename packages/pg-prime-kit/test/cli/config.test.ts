@@ -103,6 +103,46 @@ describe("loadConfig", () => {
     await expect(loadConfig(undefined, c)).rejects.toThrow(/`schemas` must be an array of strings/);
   });
 
+  /**
+   * design/12 F2 item f. `shadow` was validated as a plain string, so `{ url }` — design/06
+   * §3.2's own tier-1 spelling — was refused by the loader, and a `postgres://…` string was
+   * accepted and then ignored by the ladder. Tier 1 was reachable only from `--shadow`.
+   */
+  it("accepts BOTH tier-1 spellings of `shadow`, and every keyword", async () => {
+    const url = "postgres://u:p@127.0.0.1:5432/shadow";
+    const object = await project("shadow-object", {
+      "pg-prime.config.mjs": `export default { shadow: { url: ${JSON.stringify(url)} } }\n`,
+    });
+    expect((await loadConfig(undefined, object)).config.shadow).toEqual({ url });
+
+    const bare = await project("shadow-string", {
+      "pg-prime.config.mjs": `export default { shadow: ${JSON.stringify(url)} }\n`,
+    });
+    expect((await loadConfig(undefined, bare)).config.shadow).toBe(url);
+
+    for (const keyword of ["auto", "createdb", "temp-schema", "offline"]) {
+      const dir = await project(`shadow-${keyword}`, {
+        "pg-prime.config.mjs": `export default { shadow: ${JSON.stringify(keyword)} }\n`,
+      });
+      expect((await loadConfig(undefined, dir)).config.shadow).toBe(keyword);
+    }
+  });
+
+  it("refuses a `shadow` that names no tier, naming the file — never silently `auto`", async () => {
+    const typo = await project("shadow-typo", {
+      "pg-prime.config.mjs": "export default { shadow: 'postgress://u@h:5432/db' }\n",
+    });
+    await expect(loadConfig(undefined, typo)).rejects.toThrow(/`shadow` is invalid: .*is not a shadow strategy/);
+
+    const noDatabase = await project("shadow-nodb", {
+      "pg-prime.config.mjs": "export default { shadow: { url: 'postgres://u@127.0.0.1:5432' } }\n",
+    });
+    await expect(loadConfig(undefined, noDatabase)).rejects.toThrow(/names no database/);
+
+    const notAString = await project("shadow-shape", { "pg-prime.config.mjs": "export default { shadow: 7 }\n" });
+    await expect(loadConfig(undefined, notAString)).rejects.toThrow(/must be a string or `\{ url: /);
+  });
+
   // The type-stripping failure is NOT tested in-process: vitest resolves the dynamic
   // `import()` through vite, which compiles TypeScript with esbuild and happily accepts
   // syntax Node's stripper refuses. Testing it here would assert vite's behaviour and

@@ -9,11 +9,14 @@
  * a command function and a shell.
  */
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EXIT } from "../../src/cli/exit.js";
 import { withClient } from "../../src/db/pg.js";
 import { readMigrationRows, takeLease } from "../../src/history/store.js";
 import { ensureHistory } from "../../src/history/schema.js";
+import { osUser } from "../../src/plan/plan.js";
 import { envelopeOf, runCli, urlOf } from "../support/cli.js";
 import { dbConn, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
 import { emptyMigrations, migrationsFixture } from "./_fixture.js";
@@ -57,6 +60,13 @@ describe("the JSON envelope, through the binary", () => {
       expect(envelope["status"]).toBe("up_to_date");
       expect((envelope["history"] as { present: boolean }).present).toBe(false);
       await expectGolden("status.empty", envelope);
+
+      // design/12 F2 item i — the human-readable line said "0 pendings". `pending` is the
+      // state a migration is in, not a countable noun, and no count makes it one.
+      const text = await runCli(["migrate", "status", "--url", url, "--migrations", empty]);
+      expect(text.code).toBe(EXIT.ok);
+      expect(text.stdout).toContain("0 files, 0 pending");
+      expect(text.stdout).not.toContain("pendings");
     },
     T,
   );
@@ -236,8 +246,56 @@ describe("the JSON envelope, through the binary", () => {
       expect(refused.code).toBe(EXIT.error);
       const refusal = envelopeOf(refused);
       expect(refusal["status"]).toBe("refused");
+      // design/12 F2 item i: exactly one row, and the verb agrees with it. `error.message`
+      // is masked in the golden (it embeds paths), so the sentence is asserted here.
+      expect((refusal["error"] as { message: string }).message).toContain("1 row already exists in pgprime.migrations");
       await expectGolden("baseline.refused", refusal);
+
+      // …and the plan records the author the flag named.
+      const plan = JSON.parse(await readFile(join(outDir, "0000_baseline.plan.json"), "utf8")) as {
+        generated: { by: string };
+      };
+      expect(plan.generated.by).toBe("k1");
     },
     T,
   );
+
+  /**
+   * design/12 F2 item g. Every `--by` in the CLI has advertised `default $USER` since K1 and
+   * nothing read it: `buildPlan` recorded the literal `"spike"`, so every acknowledgement in
+   * every repository was signed by a word from a spike branch.
+   */
+  it(
+    "--by defaults to the OS user, which is what the help text has always claimed",
+    async () => {
+      const url = await fresh("by");
+      const outDir = (await emptyMigrations("by-out")).dir;
+      await withClient(dbConn("pgprime_k1_cli_by"), (c) =>
+        c.query("CREATE TABLE public.signed (id bigint PRIMARY KEY)"),
+      );
+
+      const r = await runCli(["migrate", "baseline", "--url", url, "--migrations", outDir, "--output", "json"], {
+        USER: "f2-os-user",
+        USERNAME: "f2-os-user",
+      });
+      expect(r.code, r.stdout + r.stderr).toBe(EXIT.ok);
+      const plan = JSON.parse(await readFile(join(outDir, "0000_baseline.plan.json"), "utf8")) as {
+        generated: { by: string };
+      };
+      expect(plan.generated.by).toBe("f2-os-user");
+    },
+    T,
+  );
+
+  it("osUser: the environment, then the passwd entry, then `unknown` — never a placeholder", () => {
+    expect(osUser({ USER: "shell-user", USERNAME: "windows-user" })).toBe("shell-user");
+    expect(osUser({ USERNAME: "windows-user" })).toBe("windows-user");
+    // No environment at all: this process has a passwd entry, so the answer is a real name
+    // and it is never the empty string or the old `"spike"`.
+    const fromPasswd = osUser({});
+    expect(fromPasswd).not.toBe("");
+    expect(fromPasswd).not.toBe("spike");
+    // An empty variable is not an answer — it is an unset one that got exported.
+    expect(osUser({ USER: "  " })).toBe(fromPasswd);
+  });
 });

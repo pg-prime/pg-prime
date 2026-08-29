@@ -347,9 +347,10 @@ scans — carry no `statement_timeout` of their own. The plan records `null` for
 sets `statement_timeout = 0`, and they are allowed to run for as long as they need; a 30 s cap on a
 `CREATE INDEX CONCURRENTLY` would guarantee failure on exactly the tables that need one.
 `lock_timeout` still applies, which is the point: a concurrent build should be allowed to take an
-hour, and should not be allowed to sit in a lock queue for one. Note that `--statement-timeout` is
-what those statements fall back to when you pass it explicitly, so passing it does cap them — leave
-it unset if you want the builds uncapped.
+hour, and should not be allowed to sit in a lock queue for one. `--statement-timeout` does not
+reach them: it replaces the plan's ceiling for the ordinary DDL and leaves an exempted statement
+exempt, because a cap that fires on a concurrent build fails after however long it ran and leaves
+an `INVALID` index behind.
 
 [Timeouts](/pg-prime/operations/timeouts/) covers the application side of the same three GUCs.
 

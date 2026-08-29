@@ -24,7 +24,7 @@ import { buildPlan, ENGINE, type Plan } from "../../plan/plan.js";
 import { readMigrationsDir } from "../../runner/files.js";
 import { bool, str, type OptionSpec, type ParseResult } from "../args.js";
 import { EXIT } from "../exit.js";
-import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
+import { agrees, bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
 
 export const BASELINE_OPTIONS: readonly OptionSpec[] = [
   {
@@ -50,7 +50,7 @@ export async function runBaseline(config: ResolvedConfig, argv: ParseResult): Pr
       return refusal(
         config,
         started,
-        `${plural(rows.length, "row")} already exist in pgprime.migrations (${rows
+        `${plural(rows.length, "row")} already ${agrees(rows.length, "exists", "exist")} in pgprime.migrations (${rows
           .slice(0, 3)
           .map((r) => r.id)
           .join(", ")}` +

@@ -17,8 +17,11 @@
  *  - **It fails rather than skips** when there is no ephemeral database to be had
  *    (design/06 §10.2). A `verify` that quietly reports success because it could not run
  *    is worse than no `verify`.
- *  - **`--from-checkpoint` is refused**, with the sentence saying why: checkpoints are K4,
- *    and a flag that silently ignores its argument is how a bisect lies to you.
+ *  - **`--from-checkpoint` ships, and it is OFF by default** (design/12 K4). `verify` always
+ *    replays into a fresh ephemeral database, which is exactly design/06 §4.5's jump condition,
+ *    so an `auto` would silently turn every `verify` into a partial replay reported as a full
+ *    one. Asking for it with no checkpoint on disk is still a refusal, because a flag that
+ *    quietly ignores its own argument is how a bisect lies to you.
  */
 
 import { extractCatalog } from "../../catalog/extract.js";

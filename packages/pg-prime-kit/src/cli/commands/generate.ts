@@ -32,10 +32,10 @@ import type { RenameHint } from "../../diff/delta.js";
 import type { DumpOracleMode } from "../../prove/pg-dump.js";
 import type { SchemaLike } from "../../schema/types.js";
 import type { ShadowStrategy } from "../../shadow/ladder.js";
-import { OfflineShadowError } from "../../shadow/ladder.js";
+import { OfflineShadowError, parseShadowStrategy } from "../../shadow/ladder.js";
 import { bool, str, type OptionSpec, type ParseResult } from "../args.js";
 import { EXIT, type ExitCode } from "../exit.js";
-import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
+import { agrees, bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -114,22 +114,21 @@ async function nextSeq(dir: string): Promise<number> {
   return max + 1;
 }
 
-function shadowStrategy(raw: string | undefined, offline: boolean): ShadowStrategy | undefined {
+/**
+ * `--shadow <value>` → a strategy, through the ladder's own parser (design/12 F2 item f).
+ *
+ * The parse lives in `shadow/ladder.ts` so that the flag, `pg-prime.config.ts`'s `shadow` key and
+ * `provisionShadow` itself cannot disagree about what a URL is; this wrapper only re-labels the
+ * refusal as the CLI's, so the envelope reports it as `refused` rather than as a crash.
+ */
+export function shadowStrategy(raw: string | undefined, offline: boolean): ShadowStrategy | undefined {
   if (offline) return "offline";
   if (raw === undefined) return undefined;
-  if (raw.startsWith("postgres://") || raw.startsWith("postgresql://")) return { url: raw };
-  if (raw === "temp-schema" || raw === "createdb" || raw === "auto") return raw;
-  if (raw === "none" || raw === "offline") return "offline";
-  if (raw === "docker") {
-    throw new GenerateRefusedError(
-      "--shadow docker is not built in this release: the kit has no testcontainers dependency " +
-        "(design/08 §1.1's dependency budget). Pass a postgres:// URL, or use --shadow createdb / " +
-        "--shadow temp-schema, both of which need no Docker.",
-    );
+  try {
+    return parseShadowStrategy(raw);
+  } catch (err) {
+    throw new GenerateRefusedError(err instanceof Error ? err.message : String(err));
   }
-  throw new GenerateRefusedError(
-    `--shadow ${JSON.stringify(raw)} is not one of: a postgres:// url, createdb, temp-schema, none`,
-  );
 }
 
 function oracleMode(raw: string | undefined): DumpOracleMode | undefined {
@@ -383,7 +382,8 @@ function text(result: GenerateResult, config: ResolvedConfig): string {
     return [
       head,
       "",
-      `${plural(result.unresolved.length, "decision")} need a human (design/06 §3.3). Nothing was written.`,
+      `${plural(result.unresolved.length, "decision")} ${agrees(result.unresolved.length, "needs", "need")} a human ` +
+        `(design/06 §3.3). Nothing was written.`,
       "",
       ...result.unresolved.map((u) =>
         u.type === "rename_or_recreate"

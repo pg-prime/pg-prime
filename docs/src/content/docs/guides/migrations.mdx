@@ -68,7 +68,8 @@ export default defineConfig({
 Two keys are alternatives rather than additions. `url` takes a `postgres://` string; `connection`
 takes the parsed form (`host`, `port`, `user`, `password`, `database`) for the case where the parts
 come from somewhere that never assembles a URL. `shadow` takes `'auto'`, `'temp-schema'`,
-`'createdb'`, `'offline'`, or an object `{ url: '…' }`.
+`'createdb'`, `'offline'`, or a tier-1 shadow database as either a `postgres://…` string or an
+object `{ url: '…' }`; anything else is refused by name rather than treated as `'auto'`.
 
 ### Which database a command connects to
 
@@ -168,7 +169,7 @@ The acknowledgement lands in the `.plan.json`, which is why it is worth recordin
 ```json title="migrations/0005_drop_email_domain.plan.json (excerpt)"
 "acknowledged": {
   "dataLoss": ["column:public.users.email_domain"],
-  "by": "spike",
+  "by": "yohocx",
   "reason": "derived column, replaced by a view in v3",
   "at": "2026-08-29T06:52:02.534Z",
   "blanket": true
@@ -286,7 +287,7 @@ cannot be detected from `pg_locks` alone, while a stale `heartbeat_at` can.
 | Flag | Default | What it bounds |
 |---|---|---|
 | `--lock-timeout` | `3s` | PostgreSQL's `lock_timeout` for every statement |
-| `--statement-timeout` | `30s`, from the plan | PostgreSQL's `statement_timeout`; a `shareUpdateExclusive` statement gets none, because those are the intentionally long builds |
+| `--statement-timeout` | `30s`, from the plan | PostgreSQL's `statement_timeout`. Passing it replaces the plan's `30s`; a `shareUpdateExclusive` statement still gets none, because those are the intentionally long builds and the exemption wins over the flag |
 | `--lock-wait` | `30s` | how long to wait for a concurrent deploy's advisory lock |
 | `--stale-lock-after` | `60s` | the lease age past which a holder is *reported* stale |
 | `--heartbeat` | `5s` | how often the lease is refreshed; keep it well under `--stale-lock-after` |
@@ -324,7 +325,7 @@ pg-prime migrate status
 migrate status — docs_guides @ 127.0.0.1:54333
   history      present (v1)
   fingerprint  sha256:dca6c31896984951853145ac3de96c4a92366135f730f18d8cfd23eac95d61a5 (history)
-  migrations   6 files, 0 pendings
+  migrations   6 files, 0 pending
   lock         free
   applied   0000_init
   applied   0001_users_email_domain
@@ -443,7 +444,7 @@ database connection when you name files on the command line.
 |---|---|---|
 | `DS101`–`DS106` | error | destructive: dropping a schema, table, column, the only uniqueness guarantee |
 | `MF101`–`MF106` | error | may fail on existing data: adding `UNIQUE` or `NOT NULL` to a populated table, narrowing a type |
-| `BC101`–`BC104` | warn | backward-incompatible with running app code: renames, visible type changes |
+| `BC101`–`BC105` | warn | backward-incompatible with running app code: renames (table, column, index, constraint, enum label), visible type changes |
 | `LK101`–`LK112` | warn | lock hazards: an index without `CONCURRENTLY`, a validated FK, a table rewrite |
 | `TX101`, `TX102`, `TX201` | error | transactionality: `CONCURRENTLY` inside a transaction, a non-idempotent statement in a `txmode none` file |
 | `EN101`, `EN102` | error | enums: a new label used before its `ADD VALUE` committed, a removal or reorder |
@@ -534,7 +535,7 @@ history:
 ```text frame="terminal"
 migrate baseline
 
-REFUSED: 1 row already exist in pgprime.migrations (0000_baseline). baseline rewrites the start of history; pass --force if that is what you mean.
+REFUSED: 1 row already exists in pgprime.migrations (0000_baseline). baseline rewrites the start of history; pass --force if that is what you mean.
 ```
 
 **Exit: 0** · **1**. [Adopting an existing database](/pg-prime/guides/adopting/) puts it in
@@ -584,7 +585,7 @@ case-insensitively against `host:port/database`); and any row in `pgprime.migrat
 ```text frame="terminal"
 migrate push
 
-REFUSED: docs_guides is under versioned management: pgprime.migrations holds 5 rows that is not baselined (0000_init, 0001_users_email_domain, 0002_backfill_email_domain, …). Use `migrate generate` and `migrate apply`.
+REFUSED: docs_guides is under versioned management: pgprime.migrations holds 5 rows that are not baselined (0000_init, 0001_users_email_domain, 0002_backfill_email_domain, …). Use `migrate generate` and `migrate apply`.
 ```
 
 `--allow-data-loss` is required for every destructive change, every single time; nothing about the

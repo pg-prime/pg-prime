@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { userInfo } from "node:os";
 import type { Diagnostic } from "../catalog/extract.js";
 import type { RenameRecord } from "../diff/delta.js";
 import type { Segment } from "../diff/order.js";
@@ -7,6 +8,29 @@ import { canonicalize, sha256 } from "../ir/hash.js";
 import type { DumpOracleVerdict } from "../prove/pg-dump.js";
 
 export const ENGINE = { name: "pg-prime-kit", version: "0.0.0-spike", backend: "in-house", irVersion: 1 } as const;
+
+/**
+ * `--by`'s advertised default: the operating-system user (design/12 F2 item g).
+ *
+ * Every `--by` flag in the CLI has said `default $USER` since K1 and nothing read it — the plan
+ * recorded the literal `"spike"`, so every acknowledgement in every repository was signed by a
+ * word from a spike branch. The order is the one an operator can reason about: `USER`/`USERNAME`
+ * first, because that is what a shell exports and what a CI job overrides; `os.userInfo()` next,
+ * for a process started with no environment at all (a systemd unit, a container ENTRYPOINT);
+ * `unknown` last, because a plan with no author is still a plan and a missing passwd entry is not
+ * a reason to fail a `generate`.
+ */
+export function osUser(env: NodeJS.ProcessEnv = process.env): string {
+  const named = env["USER"] ?? env["USERNAME"];
+  if (named !== undefined && named.trim() !== "") return named;
+  try {
+    const username = userInfo().username;
+    if (username.trim() !== "") return username;
+  } catch {
+    // uid with no passwd entry — `userInfo` throws rather than answering
+  }
+  return "unknown";
+}
 
 export interface PlanStatement {
   readonly index: number;
@@ -143,6 +167,7 @@ const HAZARD_SEVERITY: Record<string, "error" | "warn"> = {
   BC102: "warn",
   BC103: "warn",
   BC104: "warn",
+  BC105: "warn",
   LK101: "warn",
   LK102: "warn",
   LK103: "warn",
@@ -282,7 +307,7 @@ export function buildPlan(input: BuildPlanInput): Plan {
       ? null
       : {
           dataLoss: acknowledgedSubjects,
-          by: ack.by ?? input.by ?? "spike",
+          by: ack.by ?? input.by ?? osUser(),
           reason: ack.reason ?? (blanket ? "--allow-data-loss" : "hints-file acknowledgement"),
           at: new Date().toISOString(),
           blanket,
@@ -339,7 +364,7 @@ export function buildPlan(input: BuildPlanInput): Plan {
   return {
     ...core,
     planId,
-    generated: { at: new Date().toISOString(), by: input.by ?? "spike", interactive: false },
+    generated: { at: new Date().toISOString(), by: input.by ?? osUser(), interactive: false },
     acknowledged,
     proof: input.proof ?? { status: "skipped" },
   };

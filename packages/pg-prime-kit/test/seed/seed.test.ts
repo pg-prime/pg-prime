@@ -232,4 +232,69 @@ describe("db seed", () => {
     },
     T,
   );
+
+  /**
+   * design/12 F2 item j. Node's type stripping resolves specifiers **literally**, so a `.ts`
+   * file that imports `'../db/schema.js'` — the specifier `tsc`'s `nodenext` resolution
+   * requires, and the one it emits — looked for a `schema.js` that a project which has never
+   * run `tsc` does not have. Both kit-loaded `.ts` files are covered here, because both import
+   * the same sibling and both used to fail: the config, at `loadConfig`, and the seed, at the
+   * moment its module is imported.
+   *
+   * Through the binary rather than in-process on purpose: vitest resolves a dynamic `import()`
+   * through vite, which does this rewrite itself, so an in-process test would assert vite's
+   * behaviour and report it as Node's.
+   */
+  it(
+    "a .ts config and a .ts seed import a sibling schema with the `.js` specifier tsc requires",
+    async () => {
+      const p = await makeProject("seed-js-specifier", { url: urlOf(dbConn(DATABASE)), schema: BASE_SCHEMA });
+      try {
+        await writeFile(
+          p.config,
+          [
+            // No `schema.js` exists — only `db/schema.ts`.
+            "import { widgets } from './db/schema.js'",
+            "",
+            "export default {",
+            `  url: ${JSON.stringify(urlOf(dbConn(DATABASE)))},`,
+            "  schema: './db/schema.ts',",
+            "  migrations: './migrations',",
+            "  seeds: './seeds',",
+            // Load-bearing: the config does not merely import the module, it reads it.
+            "  schemas: [widgets.$.schema ?? 'public'],",
+            "}",
+            "",
+          ].join("\n"),
+          "utf8",
+        );
+        await mkdir(join(p.dir, "seeds"), { recursive: true });
+        await writeFile(
+          join(p.dir, "seeds", "010_sibling.ts"),
+          [
+            "import { widgets } from '../db/schema.js'",
+            "",
+            "export default async ({ db }) => {",
+            "  await db",
+            "    .insertInto(db.h.widgets)",
+            "    .values({ name: 'sibling-' + widgets.$.name })",
+            "    .onConflict((c) => c.doNothing())",
+            "    .execute()",
+            "}",
+            "",
+          ].join("\n"),
+          "utf8",
+        );
+
+        const r = await runCli(["db", "seed", "--config", p.config, "--output", "json"]);
+        expect(r.code, r.stdout + r.stderr).toBe(EXIT.ok);
+        expect(envelopeOf(r)["status"]).toBe("seeded");
+        // R14 again: the row, not the report.
+        expect(await names()).toContain("sibling-widgets");
+      } finally {
+        await p.dispose().catch(() => undefined);
+      }
+    },
+    T,
+  );
 });

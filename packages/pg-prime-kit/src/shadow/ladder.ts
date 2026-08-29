@@ -8,7 +8,7 @@
  *
  * | tier | mechanism | selected when |
  * |---|---|---|
- * | 1 | a shadow database URL the caller supplies | `shadow: { url }` |
+ * | 1 | a shadow database URL the caller supplies | `shadow: { url }`, or the same URL as a string |
  * | 2 | `CREATE DATABASE pgprime_shadow_<rand>` with the target's locale | the admin role has `rolcreatedb` |
  * | 3 | `CREATE SCHEMA pgprime_shadow_<rand>_<name>` **inside the target database** | everything else |
  * | 4 | `--offline` | a typed refusal in this round (design/11 §3 K2a) |
@@ -27,7 +27,24 @@ import { quoteIdent } from "../sql/ident.js";
 /** `NAMEDATALEN - 1`: a shadow schema name that PostgreSQL would truncate is not reversible. */
 const MAX_IDENT_BYTES = 63;
 
-export type ShadowStrategy = "auto" | "temp-schema" | "createdb" | "offline" | { readonly url: string };
+/**
+ * Tier 1 has **two** spellings and they mean the same thing.
+ *
+ * `{ url }` is the structural one design/06 §3.2 writes; a bare `postgres://…` string is what
+ * anybody actually types into `pg-prime.config.ts` after typing `--shadow postgres://…` on the
+ * command line. Both are accepted here rather than in one caller, because the third possibility —
+ * a string that is neither a keyword nor a URL — must be a refusal and not a silent fall-through
+ * to the `auto` ladder (design/12 F2 item f). The template-literal members keep the keywords
+ * completing in an editor while still accepting a URL a config file holds as a plain string.
+ */
+export type ShadowStrategy =
+  | "auto"
+  | "temp-schema"
+  | "createdb"
+  | "offline"
+  | `postgres://${string}`
+  | `postgresql://${string}`
+  | { readonly url: string };
 
 export interface ProvisionShadowOptions {
   /** Default `'auto'`. */
@@ -75,6 +92,31 @@ export class OfflineShadowError extends Error {
   }
 }
 
+/**
+ * A `--shadow <value>` / `shadow:` value that names no tier.
+ *
+ * It exists so that the flag, the config file and the ladder itself all refuse the same typo with
+ * the same sentence. Before design/12 F2 a string that was not one of the four keywords reached
+ * `provisionShadow` and fell through to `'auto'`: a `shadow: 'postgress://…'` in a config file
+ * silently created a tier-2 database on the very cluster the key was set to stay off.
+ */
+export class ShadowStrategyError extends Error {
+  readonly code = "PG_PRIME_SHADOW_STRATEGY";
+  constructor(
+    readonly value: string,
+    detail?: string,
+  ) {
+    super(
+      detail ??
+        `${JSON.stringify(value)} is not a shadow strategy (--shadow, or \`shadow\` in ` +
+          `pg-prime.config.ts): pass a postgres:// or postgresql:// URL (tier 1), \`createdb\` ` +
+          `(tier 2), \`temp-schema\` (tier 3), \`auto\` (the ladder, the default), or ` +
+          `\`none\`/\`offline\` (tier 4, refused with a sentence).`,
+    );
+    this.name = "ShadowStrategyError";
+  }
+}
+
 export class ShadowNameTooLongError extends Error {
   readonly code = "PG_PRIME_SHADOW_NAME_TOO_LONG";
   constructor(
@@ -97,9 +139,21 @@ const token = (supplied?: string): string => supplied ?? randomBytes(4).toString
 
 /** `postgres://u:p@h:p/db` → `ConnInfo`. Tier 1's only input. */
 export function parseShadowUrl(url: string): ConnInfo {
-  const u = new URL(url);
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new ShadowStrategyError(url);
+  }
+  if (u.protocol !== "postgres:" && u.protocol !== "postgresql:") throw new ShadowStrategyError(url);
   const database = decodeURIComponent(u.pathname.replace(/^\//, ""));
-  if (database === "") throw new Error(`shadow url ${JSON.stringify(url)} names no database`);
+  if (database === "")
+    throw new ShadowStrategyError(
+      url,
+      `shadow url ${JSON.stringify(url)} names no database: the tier-1 shadow is a database that ` +
+        `already exists and whose managed schemas this command DROPs and recreates, so the URL has ` +
+        `to end in one (postgres://user@host:5432/a_throwaway_database).`,
+    );
   return {
     host: u.hostname,
     port: Number(u.port || 5432),
@@ -107,6 +161,28 @@ export function parseShadowUrl(url: string): ConnInfo {
     password: decodeURIComponent(u.password),
     database,
   };
+}
+
+/**
+ * One string → one strategy, for `--shadow <value>` and for `shadow:` in the config file.
+ *
+ * Both spellings go through here so they cannot disagree about what a URL is, and so a typo is a
+ * refusal in exactly one place. `none` is design/06 §6.2's spelling of tier 4 and `offline` is the
+ * ladder's; `docker` is named explicitly because §3.2 offers it and this release does not ship it.
+ */
+export function parseShadowStrategy(raw: string): ShadowStrategy {
+  if (raw === "auto" || raw === "temp-schema" || raw === "createdb" || raw === "offline") return raw;
+  if (raw === "none") return "offline";
+  if (raw === "docker") {
+    throw new ShadowStrategyError(
+      raw,
+      "--shadow docker is not built in this release: the kit has no testcontainers dependency " +
+        "(design/08 §1.1's dependency budget). Pass a postgres:// URL, or use --shadow createdb / " +
+        "--shadow temp-schema, both of which need no Docker.",
+    );
+  }
+  parseShadowUrl(raw); // throws ShadowStrategyError when it is not a usable postgres URL
+  return { url: raw };
 }
 
 /** Does the connected role get to `CREATE DATABASE`? Superusers do, whatever `rolcreatedb` says. */
@@ -200,6 +276,13 @@ export async function provisionShadow(
   if (strategy === "temp-schema") return tier3(target, schemas, options.token, "requested");
   if (strategy === "createdb") {
     return tier2(admin, target, schemas, options.token, "requested");
+  }
+  if (strategy !== "auto") {
+    // A string that is not one of the four keywords is the OTHER tier-1 spelling — or a typo.
+    // Either way it must not reach the ladder below: falling through to `auto` is how
+    // `shadow: 'postgres://…'` in a config file used to create a tier-2 database on the cluster
+    // the key was set to avoid, with no diagnostic (design/12 F2 item f).
+    return tier1(parseShadowUrl(strategy), target, schemas, "shadow url supplied");
   }
 
   // 'auto': the ladder proper.

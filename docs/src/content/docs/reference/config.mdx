@@ -69,7 +69,7 @@ silently ignored.
 | `replicas` | `readonly string[]` | `[]` | Standby URLs, for lag-aware backfills. |
 | `seeds` | `string` | `./seeds` | Where `db seed` looks. |
 | `lockTimeout` | `string` | `"3s"` | PostgreSQL `lock_timeout` for every statement the runner issues. |
-| `statementTimeout` | `string` | none | `statement_timeout` for the statements a plan leaves unbounded. |
+| `statementTimeout` | `string` | none | Replaces the `statement_timeout` a plan carries. Never reaches an exempt statement. |
 | `lockWaitMs` | `number` | `30000` | How long to wait for a concurrent deploy's lease. |
 | `staleLockAfterMs` | `number` | `60000` | A lease whose heartbeat is older than this is reported stale. |
 | `production` | `boolean` | `false` | Forces the production tag on, whatever `PG_PRIME_ENV` says. |
@@ -115,17 +115,27 @@ PostgreSQL is obtained.
 | Value | Tier | What it does |
 |---|---|---|
 | `"auto"` | 2, demoting to 3 | Uses `CREATE DATABASE` when the role has `CREATEDB`; falls back to the temp-schema tier on SQLSTATE `55006`, because the sessions attached to the template belong to somebody else. This is the default and it is almost always right. |
+| `"postgres://…"` or `{ url }` | 1 | A shadow database you supply. Both spellings are the same thing; see below. |
 | `"createdb"` | 2 | `CREATE DATABASE pgprime_shadow_<token>` with the target's locale copied. Copying the locale is not cosmetic: a different `LC_COLLATE` normalises index and constraint definitions differently, and every one of those is a phantom diff. |
 | `"temp-schema"` | 3 | `CREATE SCHEMA pgprime_shadow_<token>_<name>` **inside the target database**. Needs no `CREATEDB`, which is why the ladder exists at all. |
 | `"offline"` | 4 | Refused, with a sentence. Without a PostgreSQL to load the desired state into, a plan compares human DDL against catalog DDL and diffs forever. |
 
-<Aside type="caution">
-A shadow **URL** cannot be set in the config file. `ShadowStrategy` has a `{ url }` member, but
-`loadConfig` validates `shadow` as a string and rejects an object, and a `postgres://…` string in
-this key is not recognised by the ladder — it falls through to `auto` silently. Pass
-`--shadow postgres://…` on the command line instead; that is the path the CLI parses and the one
-that reaches tier 1.
-</Aside>
+A **tier-1 shadow URL** has two spellings in this key and they mean the same thing:
+
+```ts title="pg-prime.config.ts" no-run
+import { defineConfig } from '@pg-prime/kit'
+
+export const asAString = defineConfig({ shadow: 'postgres://user@localhost:5432/app_shadow' })
+export const asAnObject = defineConfig({ shadow: { url: 'postgres://user@localhost:5432/app_shadow' } })
+```
+
+The named database must already exist. Its managed schemas are **dropped and recreated** before
+the desired state is loaded and again on the way out — that is Prisma's `SHADOW_DATABASE_URL`
+contract, and the run says so with a `shadow_url_reset` warning. Point it at a throwaway.
+
+A value that is neither a keyword nor a usable `postgres://` URL is refused by name — the file, the
+key and what the four tiers are. It is never quietly treated as `auto`: a typo that fell through to
+the ladder would create a tier-2 database on the cluster this key was set to stay off.
 
 ### `replicas` is an opt-in
 
@@ -147,9 +157,14 @@ long transaction and block every reader behind *it*.
 `statementTimeout` has **no default at the config level**, because a generated plan carries its own.
 Every statement in a plan is stamped `statement_timeout = 30s` except the intentionally long builds
 — `CREATE INDEX CONCURRENTLY`, `VALIDATE CONSTRAINT`, `REINDEX` — which carry none, since a
-timeout on a two-hour index build is a way to fail after ninety minutes of work. This key is what
-fills that gap: set it and those builds get a ceiling too. `lock_timeout` applies to them either
-way.
+timeout on a two-hour index build is a way to fail after ninety minutes of work. Setting this key
+(or passing `--statement-timeout`) **replaces the plan's `30s`** for everything else, which is what
+a repository with one genuinely slow `ALTER TABLE` wants.
+
+It does not fill the gap the long builds leave, and nothing does: an exemption in the plan wins
+over the flag and over this key. A ceiling that fired on a concurrent build would fail after
+however long it had run and leave an `INVALID` index behind. `lock_timeout` applies to them either
+way, which is the bound those statements actually need.
 
 `lockWaitMs` and `staleLockAfterMs` are about the deploy lease rather than about PostgreSQL locks.
 See [locks and leases](/pg-prime/operations/locks/).
@@ -247,7 +262,7 @@ export default defineConfig({
   // queueing behind a long transaction and blocking every reader behind it.
   lockTimeout: '3s',
   // No default: a plan stamps 30s on every statement except the intentionally long
-  // builds. This is the ceiling for those.
+  // builds. This replaces that 30s; the exempt builds stay exempt.
   statementTimeout: '15min',
 
   // The deploy lease, not a PostgreSQL lock.

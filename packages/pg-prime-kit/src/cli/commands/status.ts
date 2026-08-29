@@ -124,7 +124,8 @@ function text(config: ResolvedConfig, r: StatusReport): string {
           ? "unknown"
           : `${r.fingerprint} (${r.fingerprintSource ?? "?"})${r.fingerprintDrift ? ` — DRIFT, history records ${r.recordedFingerprint ?? "?"}` : ""}`,
       ],
-      ["migrations", `${plural(r.migrations.length, "file")}, ${plural(r.pending.length, "pending")}`],
+      // "0 pending", never "0 pendings": `pending` is the state, not a countable noun.
+      ["migrations", `${plural(r.migrations.length, "file")}, ${String(r.pending.length)} pending`],
       [
         "lock",
         r.lock.lease === null
@@ -148,7 +149,7 @@ function text(config: ResolvedConfig, r: StatusReport): string {
       "data migrations (design/06 §7):",
       r.data.map(
         (d) =>
-          `${d.migrationId}  ${d.migrationState}  ${String(d.rowsDone)} row(s) in ${plural(d.iterations, "batch", "batches")}` +
+          `${d.migrationId}  ${d.migrationState}  ${plural(d.rowsDone, "row")} in ${plural(d.iterations, "batch", "batches")}` +
           `${d.done ? "" : `, statement ${String(d.statement)} in flight`}` +
           `${d.values[String(d.statement)] == null ? "" : `, watermark ${String(d.values[String(d.statement)])}`}`,
       ),

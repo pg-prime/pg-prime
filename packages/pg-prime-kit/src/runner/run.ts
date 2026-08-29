@@ -59,6 +59,7 @@ import {
   detectTransactionPoolerStrict,
   releaseSessionLock,
   resetSessionGucs,
+  resolveStatementTimeout,
   setConfig,
 } from "./apply.js";
 import { executionPlan, readMigrationsDir, type ExecutionPlan, type MigrationFile, type TxMode } from "./files.js";
@@ -1040,8 +1041,14 @@ async function runBare(
     ctx.emit({ kind: "statement", id: file.id, index: i, total });
     await markUncertain(client, file.id, i);
     // Intentionally long-running builds (CIC, VALIDATE, REINDEX) carry `statement: null`
-    // and run without a statement_timeout; lock_timeout still applies (§5.4).
-    await setConfig(client, "statement_timeout", s.timeouts.statement ?? ctx.statementTimeout ?? "0", false);
+    // and run without a statement_timeout — not even the one `--statement-timeout` asks for;
+    // lock_timeout still applies (§5.4, and design/12 F2 item h).
+    await setConfig(
+      client,
+      "statement_timeout",
+      resolveStatementTimeout(s.timeouts.statement, ctx.statementTimeout),
+      false,
+    );
     let attempt = 0;
     for (;;) {
       try {
@@ -1054,11 +1061,9 @@ async function runBare(
             lockTimeout: ctx.lockTimeout,
             ...(ctx.onInfo === undefined ? {} : { onInfo: ctx.onInfo }),
             ...(ctx.replicas === undefined ? {} : { replicas: ctx.replicas }),
-            ...(s.timeouts.statement === null
-              ? ctx.statementTimeout === undefined
-                ? {}
-                : { statementTimeout: ctx.statementTimeout }
-              : { statementTimeout: s.timeouts.statement }),
+            // Same resolution as the bare path above: an exempt statement stays exempt even
+            // under an explicit `--statement-timeout` (design/12 F2 item h).
+            statementTimeout: resolveStatementTimeout(s.timeouts.statement, ctx.statementTimeout),
           });
           progress = {
             rowsDone: done.rowsDone,

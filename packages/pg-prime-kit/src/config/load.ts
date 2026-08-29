@@ -13,7 +13,9 @@ import { access } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ConnInfo } from "../db/pg.js";
+import { parseShadowStrategy } from "../shadow/ladder.js";
 import type { PgPrimeConfig } from "./define.js";
+import { enableTsSpecifiers } from "./ts-specifiers.js";
 
 /** Searched in this order in the starting directory, then in each ancestor. */
 export const CONFIG_FILENAMES: readonly string[] = [
@@ -97,6 +99,9 @@ export async function loadConfig(path?: string, cwd: string = process.cwd()): Pr
 
   let mod: { default?: unknown };
   try {
+    // A `.ts` config that imports a sibling `.ts` module writes `'./db/schema.js'`, because that
+    // is the specifier `tsc` requires and emits. Node resolves it literally (design/12 F2 item j).
+    await enableTsSpecifiers();
     mod = (await import(pathToFileURL(file).href)) as { default?: unknown };
   } catch (err) {
     const code = errCode(err);
@@ -119,14 +124,47 @@ export async function loadConfig(path?: string, cwd: string = process.cwd()): Pr
   return { file, config: validate(value as Record<string, unknown>, file) };
 }
 
-const STRING_KEYS = ["url", "migrations", "repeatables", "seeds", "shadow", "lockTimeout", "statementTimeout"] as const;
+const STRING_KEYS = ["url", "migrations", "repeatables", "seeds", "lockTimeout", "statementTimeout"] as const;
 const NUMBER_KEYS = ["lockWaitMs", "staleLockAfterMs"] as const;
+
+/**
+ * `shadow` is the one key that is not a plain string.
+ *
+ * design/06 §3.2's tier 1 is `{ url }`, and the same thing written as a bare `postgres://…`
+ * string is what a reader of `--shadow postgres://…` types into the file. Both are accepted and
+ * both are *parsed here*, so a typo is a refusal naming the file rather than a silent demotion to
+ * the `auto` ladder — which is what `shadow` was set to avoid (design/12 F2 item f).
+ */
+function validateShadow(raw: Record<string, unknown>, file: string): void {
+  const v = raw["shadow"];
+  if (v === undefined) return;
+  const refuse = (why: string): never => {
+    throw new ConfigError(`${file}: \`shadow\` ${why}`);
+  };
+  if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+    const url = (v as { url?: unknown }).url;
+    if (typeof url !== "string") refuse("must be a string or `{ url: 'postgres://…' }`");
+    try {
+      parseShadowStrategy(url as string);
+    } catch (err) {
+      refuse(`names a shadow database that cannot be reached: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+  if (typeof v !== "string") refuse("must be a string or `{ url: 'postgres://…' }`");
+  try {
+    parseShadowStrategy(v as string);
+  } catch (err) {
+    refuse(err instanceof Error ? `is invalid: ${err.message}` : String(err));
+  }
+}
 
 function validate(raw: Record<string, unknown>, file: string): PgPrimeConfig {
   for (const key of STRING_KEYS) {
     const v = raw[key];
     if (v !== undefined && typeof v !== "string") throw new ConfigError(`${file}: \`${key}\` must be a string`);
   }
+  validateShadow(raw, file);
   for (const key of NUMBER_KEYS) {
     const v = raw[key];
     if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v))) {
@@ -223,6 +261,9 @@ export async function loadSchema(paths: string | readonly string[], base: string
     if (!(await exists(file))) throw new ConfigError(`no schema module at ${file}`);
     let mod: Record<string, unknown>;
     try {
+      // Same reason as `loadConfig`: a schema split over several files imports its own siblings
+      // with `.js` specifiers, and nothing has compiled them (design/12 F2 item j).
+      await enableTsSpecifiers();
       mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
     } catch (err) {
       const code = errCode(err);

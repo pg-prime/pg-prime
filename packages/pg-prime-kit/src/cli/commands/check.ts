@@ -29,6 +29,9 @@ import { OfflineShadowError } from "../../shadow/ladder.js";
 import { bool, str, type OptionSpec, type ParseResult } from "../args.js";
 import { EXIT, type ExitCode } from "../exit.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
+// One parser for `--shadow`, shared with `generate` and `push`: three copies is how
+// `check --shadow none` came to mean something different from `generate --shadow none`.
+import { shadowStrategy } from "./generate.js";
 
 export const CHECK_OPTIONS: readonly OptionSpec[] = [
   {
@@ -74,11 +77,9 @@ export async function runCheck(config: ResolvedConfig, argv: ParseResult): Promi
         prove: false,
         ...(bool(argv.values, "strict-unmodeled") ? { strictUnmodeled: true } : {}),
         ...(() => {
-          const raw = str(argv.values, "shadow");
-          if (raw === undefined) return config.config.shadow === undefined ? {} : { shadow: config.config.shadow };
-          if (raw.startsWith("postgres://") || raw.startsWith("postgresql://")) return { shadow: { url: raw } };
-          if (raw === "temp-schema" || raw === "createdb" || raw === "auto") return { shadow: raw };
-          throw new GenerateRefusedError(`--shadow ${JSON.stringify(raw)} is not a url, createdb or temp-schema`);
+          const flag = shadowStrategy(str(argv.values, "shadow"), false);
+          const s = flag ?? config.config.shadow;
+          return s === undefined ? {} : { shadow: s };
         })(),
       });
       /*

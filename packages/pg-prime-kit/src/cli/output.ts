@@ -42,6 +42,18 @@ export function bullets(title: string, items: readonly string[]): string {
   return `\n${title}\n${items.map((i) => `  - ${i}`).join("\n")}`;
 }
 
+/**
+ * `plural(1, "row")` → `1 row`, `plural(5, "row")` → `5 rows`.
+ *
+ * `agrees` is the same choice without the number, for the rest of the sentence: a refusal that
+ * said "1 row already exist" was reporting a real problem in a way that reads like a bug in the
+ * tool (design/12 F2 item i). Both live here so that the count and the verb cannot disagree.
+ */
 export function plural(n: number, one: string, many = `${one}s`): string {
-  return `${n} ${n === 1 ? one : many}`;
+  return `${n} ${agrees(n, one, many)}`;
+}
+
+/** The form of a word that agrees with `n`, printed without the number. */
+export function agrees(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
 }

@@ -25,7 +25,9 @@ import type { SchemaLike } from "../../schema/types.js";
 import { OfflineShadowError } from "../../shadow/ladder.js";
 import { bool, str, type OptionSpec, type ParseResult } from "../args.js";
 import { EXIT, type ExitCode } from "../exit.js";
-import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
+import { agrees, bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
+// One parser for `--shadow`, shared with `generate` and `check` — see the note there.
+import { shadowStrategy } from "./generate.js";
 
 export const PUSH_OPTIONS: readonly OptionSpec[] = [
   { name: "dev", type: "boolean", describe: "REQUIRED. There is no config key and no default for this." },
@@ -114,7 +116,8 @@ export async function runPush(config: ResolvedConfig, argv: ParseResult): Promis
   if (managed.length > 0) {
     return refuse(
       `${config.connection.database} is under versioned management: pgprime.migrations holds ` +
-        `${plural(managed.length, "row")} that is not baselined (${managed.slice(0, 3).join(", ")}` +
+        `${plural(managed.length, "row")} that ${agrees(managed.length, "is", "are")} not baselined ` +
+        `(${managed.slice(0, 3).join(", ")}` +
         `${managed.length > 3 ? ", …" : ""}). Use \`migrate generate\` and \`migrate apply\`.`,
     );
   }
@@ -138,11 +141,9 @@ export async function runPush(config: ResolvedConfig, argv: ParseResult): Promis
         ? { acknowledge: { allowDataLoss: true, reason: "migrate push --dev --allow-data-loss" } }
         : {}),
       ...(() => {
-        const raw = str(argv.values, "shadow");
-        if (raw === undefined) return config.config.shadow === undefined ? {} : { shadow: config.config.shadow };
-        if (raw.startsWith("postgres://") || raw.startsWith("postgresql://")) return { shadow: { url: raw } };
-        if (raw === "temp-schema" || raw === "createdb" || raw === "auto") return { shadow: raw };
-        throw new GenerateRefusedError(`--shadow ${JSON.stringify(raw)} is not a url, createdb or temp-schema`);
+        const flag = shadowStrategy(str(argv.values, "shadow"), false);
+        const s = flag ?? config.config.shadow;
+        return s === undefined ? {} : { shadow: s };
       })(),
     });
     if (result.status === "up_to_date") {
@@ -165,7 +166,7 @@ export async function runPush(config: ResolvedConfig, argv: ParseResult): Promis
     }
     if (result.unresolved.length > 0) {
       return refuse(
-        `${plural(result.unresolved.length, "decision")} need a human first: ` +
+        `${plural(result.unresolved.length, "decision")} ${agrees(result.unresolved.length, "needs", "need")} a human first: ` +
           result.unresolved.map((u) => u.fix).join("; "),
         EXIT.missingHints,
       );
@@ -178,7 +179,8 @@ export async function runPush(config: ResolvedConfig, argv: ParseResult): Promis
     statements = plan.statements;
     if (hazards.length > 0) {
       return refuse(
-        `${plural(hazards.length, "destructive change")} is unacknowledged (${hazards.map((h) => `${h.code} ${h.subject}`).join(", ")}). ` +
+        `${plural(hazards.length, "destructive change")} ${agrees(hazards.length, "is", "are")} unacknowledged ` +
+          `(${hazards.map((h) => `${h.code} ${h.subject}`).join(", ")}). ` +
           "Pass --allow-data-loss. push never remembers it: you will pass it again next time.",
         EXIT.missingHints,
       );

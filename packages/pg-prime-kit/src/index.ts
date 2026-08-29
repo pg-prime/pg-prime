@@ -264,6 +264,7 @@ export {
   provisionShadow,
   OfflineShadowError,
   ShadowNameTooLongError,
+  ShadowStrategyError,
   type ProvisionShadowOptions,
   type Shadow,
   type ShadowStrategy,

@@ -65,6 +65,7 @@ export declare const STRIP_TYPES_MARKER: Unsupported
 export declare const STYLE_CODES: Unsupported
 export declare const SchemaIR: Unsupported
 export declare const ShadowNameTooLongError: Unsupported
+export declare const ShadowStrategyError: Unsupported
 export declare const SpawnFailure: Unsupported
 export declare const UnacknowledgedHazardError: Unsupported
 export declare const UnsafeCloneNameError: Unsupported
@@ -343,6 +344,7 @@ export type Shadow = Unsupported
 export type ShadowNameTooLongError = Unsupported
 export type ShadowProvisioning = Unsupported
 export type ShadowStrategy = Unsupported
+export type ShadowStrategyError = Unsupported
 export type SpawnFailure = Unsupported
 export type SqlSegment = Unsupported
 export type StableId = Unsupported

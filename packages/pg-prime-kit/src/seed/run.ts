@@ -37,6 +37,7 @@ import type { Dirent } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { CatalogClient } from "../catalog/extract.js";
+import { enableTsSpecifiers } from "../config/ts-specifiers.js";
 import { withClient, type ConnInfo } from "../db/pg.js";
 import { splitStatements } from "../sql/statements.js";
 import { openSeedDb } from "./db.js";
@@ -310,6 +311,9 @@ async function applyOne(file: SeedFile, options: SeedOptions, db: unknown): Prom
     return statements.length;
   }
 
+  // A `.ts` seed imports the project's schema as `'../db/schema.js'` — the specifier `tsc`
+  // requires — and Node's type stripping resolves it literally (design/12 F2 item j).
+  await enableTsSpecifiers();
   const mod = (await import(pathHref(file.absPath))) as SeedModule;
   const fn = mod.default;
   if (typeof fn !== "function") {

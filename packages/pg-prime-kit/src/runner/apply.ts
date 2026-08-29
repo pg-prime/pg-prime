@@ -26,7 +26,32 @@ export interface ApplyReport {
 
 export interface ApplyOptions {
   readonly lockTimeout?: string;
+  /**
+   * `--statement-timeout` / `statementTimeout:` — the operator's ceiling, which overrides the
+   * one the plan carries but never removes an exemption. See {@link resolveStatementTimeout}.
+   */
   readonly statementTimeout?: string;
+}
+
+/**
+ * `statement_timeout` for one statement, resolved in one place (design/12 F2 item h).
+ *
+ * A plan records `null` for the intentionally long builds — `CREATE INDEX CONCURRENTLY`,
+ * `VALIDATE CONSTRAINT`, `REINDEX`, everything the emitter classes `shareUpdateExclusive`
+ * (design/06 §5.4, §6.2). **That null is an exemption, not an absence**, and the old
+ * `s.timeouts.statement ?? options.statementTimeout ?? "0"` read it as an absence: the flag
+ * applied to *exactly* the statements it must not apply to, and to no others, because every
+ * other statement carries a concrete `"30s"` that `??` preferred. An `apply --statement-timeout
+ * 5m` over a plan with a CIC therefore capped a two-hour index build at five minutes — failing
+ * after five minutes of work, leaving an INVALID index behind — while leaving the ordinary DDL
+ * it was aimed at untouched.
+ *
+ * The order is: **plan-null wins**, then the operator's value, then the plan's own. `lock_timeout`
+ * is unaffected either way and still applies to the exempt statements.
+ */
+export function resolveStatementTimeout(planned: string | null, override: string | undefined): string {
+  if (planned === null) return "0";
+  return override ?? planned;
 }
 
 /**
@@ -74,7 +99,7 @@ export async function applySegments(
       for (const i of seg.statements) {
         const s = statements[i]!;
         executing = i;
-        const timeout = s.timeouts.statement ?? options.statementTimeout ?? "0";
+        const timeout = resolveStatementTimeout(s.timeouts.statement, options.statementTimeout);
         await setConfig(client, "statement_timeout", timeout, seg.transactional);
         await client.query(s.sql);
         applied += 1;

@@ -12,9 +12,11 @@ import pg from "pg";
 import { loadDesired } from "../../src/schema/load.js";
 import {
   OfflineShadowError,
+  parseShadowStrategy,
   parseShadowUrl,
   provisionShadow,
   ShadowNameTooLongError,
+  ShadowStrategyError,
 } from "../../src/shadow/ladder.js";
 import { connectionString, withClient, type ConnInfo } from "../../src/db/pg.js";
 import { encodeId } from "../../src/ir/stable-id.js";
@@ -135,6 +137,47 @@ describe("tier selection", () => {
     },
     T,
   );
+
+  it(
+    "the SAME url as a bare string is tier 1 too, and a typo is refused instead of demoted",
+    async () => {
+      // design/12 F2 item f. `shadow: 'postgres://…'` is what a config file holds, and it used to
+      // pass validation, miss every branch of the dispatch and land on `auto` — a tier-2 database
+      // created on the cluster the key was set to keep out of, with no diagnostic. The admin role
+      // here HAS CREATEDB, so a regression would silently come back as tier 2.
+      const url = connectionString(dbConn(URL_SHADOW));
+      const shadow = await provisionShadow(ADMIN, target, { schemas: SCHEMAS, shadow: url as `postgres://${string}` });
+      try {
+        expect(shadow.tier).toBe(1);
+        expect(shadow.conn.database).toBe(URL_SHADOW);
+        expect(shadow.diagnostics.map((d) => d.code)).toContain("shadow_url_reset");
+      } finally {
+        await shadow.dispose();
+      }
+
+      // …and the third possibility is a refusal with a sentence, never the ladder.
+      await expect(
+        provisionShadow(ADMIN, target, { schemas: SCHEMAS, shadow: "postgress://typo/db" as "auto" }),
+      ).rejects.toBeInstanceOf(ShadowStrategyError);
+      await expect(
+        provisionShadow(ADMIN, target, { schemas: SCHEMAS, shadow: "temp_schema" as "auto" }),
+      ).rejects.toThrow(/is not a shadow strategy/);
+    },
+    T,
+  );
+
+  it("one parser for the flag and the config file, and it names every tier", () => {
+    expect(parseShadowStrategy("auto")).toBe("auto");
+    expect(parseShadowStrategy("createdb")).toBe("createdb");
+    expect(parseShadowStrategy("temp-schema")).toBe("temp-schema");
+    // design/06 §6.2 spells tier 4 `none`; the ladder spells it `offline`. Both, one meaning.
+    expect(parseShadowStrategy("none")).toBe("offline");
+    expect(parseShadowStrategy("offline")).toBe("offline");
+    expect(parseShadowStrategy("postgres://u:p@h:5432/db")).toEqual({ url: "postgres://u:p@h:5432/db" });
+    expect(() => parseShadowStrategy("docker")).toThrow(/testcontainers/);
+    expect(() => parseShadowStrategy("mysql://u@h/d")).toThrow(/is not a shadow strategy/);
+    expect(() => parseShadowStrategy("postgres://u@h:5432/")).toThrow(/names no database/);
+  });
 
   it("refuses tier 4 with a typed error naming the alternatives", async () => {
     await expect(provisionShadow(ADMIN, ADMIN, { schemas: ["public"], shadow: "offline" })).rejects.toBeInstanceOf(

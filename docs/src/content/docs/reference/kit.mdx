@@ -555,10 +555,11 @@ a duplicated statement on one side is still a difference.
 
 | Name | Shape | What it is |
 |---|---|---|
-| <a id="ShadowStrategy"/> `ShadowStrategy` | `"auto" \| "temp-schema" \| "createdb" \| "offline" \| { readonly url: string }` | `auto` tries tier 2 and demotes to tier 3 on SQLSTATE `55006`, because the sessions attached to the template belong to somebody else. |
+| <a id="ShadowStrategy"/> `ShadowStrategy` | `"auto" \| "temp-schema" \| "createdb" \| "offline" \| `` `postgres://${string}` `` \| `` `postgresql://${string}` `` \| { readonly url: string }` | `auto` tries tier 2 and demotes to tier 3 on SQLSTATE `55006`, because the sessions attached to the template belong to somebody else. Tier 1 has two spellings — a URL string and `{ url }` — because a config file holds the first and design/06 §3.2 writes the second; anything else is a `ShadowStrategyError`, never a silent `auto`. |
 | <a id="ProvisionShadowOptions"/> `ProvisionShadowOptions` | `{ shadow?: ShadowStrategy; schemas: readonly string[]; token? }` | `token` is supplied only by tests; production mints a random one so two concurrent runs on one cluster cannot collide. |
 | <a id="Shadow"/> `Shadow` | `{ conn; target; schemaMap; tier: 1 \| 2 \| 3; reason; diagnostics; dispose() }` | `reason` is the sentence `migrate generate` prints beside the tier. |
 | <a id="parseShadowUrl"/> `parseShadowUrl` | `(url: string) => ConnInfo` | Tier 1's only input. |
+| <a id="ShadowStrategyError"/> `ShadowStrategyError` | `class extends Error` | A `--shadow` value, or a `shadow` key, that names no tier. Carries `value` and the code `PG_PRIME_SHADOW_STRATEGY`; the message lists the four tiers. The flag, the config loader and `provisionShadow` all raise this one, so a typo cannot be refused in one place and accepted in another. |
 
 ## History and locks
 

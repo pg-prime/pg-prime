@@ -21,6 +21,7 @@
 
 import pg from "pg";
 import { ConfigError } from "../config/load.js";
+import { enableTsSpecifiers } from "../config/ts-specifiers.js";
 import { connectionString, type ConnInfo } from "../db/pg.js";
 
 /**
@@ -115,6 +116,7 @@ export async function openSeedDb(conn: ConnInfo, schemaPaths: readonly string[])
   }
 
   const modules: Record<string, unknown>[] = [];
+  await enableTsSpecifiers(); // a schema module's own `.js` specifiers (design/12 F2 item j)
   for (const path of schemaPaths) {
     modules.push((await import(pathHref(path))) as Record<string, unknown>);
   }
