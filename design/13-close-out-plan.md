@@ -377,7 +377,363 @@ current literal values.
 
 #### E — RESULT
 
-_(pending)_
+**Branch:** `worktree-agent-a1f8c2797885011b3`, from `c2d9649`.
+
+##### 1. What was built
+
+**The attribute.** `tools/docs-blocks.mjs` parses `pg-only` (bare) and `pg-only="pgbouncer"`.
+`isPgExample(block)` returns `'pg' | 'pgbouncer' | null` and throws, naming the page and line, on
+any other value. `isExample` — which was exported and unused — now excludes `pg-only` and is what
+`docs-examples.mjs` selects with, so the two tiers *partition* the `title=` blocks: an example runs
+on exactly one of them, and neither gate can silently stop covering a block. `docs-typecheck`
+compiles a `pg-only` block like any other `ts` block, because the reason it cannot run on PGlite is
+never that it does not compile.
+
+**The runner.** `tools/docs-examples.mjs --pg`, one file, sharing composition, substitution,
+`remap`, the per-example process and the 60 s timeout with the PGlite tier (both now go through
+`materialise()` and `report()`). `PG_PRIME_TEST_URL` is required and its absence is one sentence
+plus exit 1. Per example:
+
+| | `pg-only` | `pg-only="pgbouncer"` |
+|---|---|---|
+| `DATABASE_URL` | a scratch database `docs_ex_<pid>_<n>`, created from the admin URL, dropped after | `PG_PRIME_TEST_PGBOUNCER_URL` (skipped with a sentence when unset — not a failure) |
+| `DIRECT_URL` | the scratch database | the admin URL, which is what `directConnection:` documents |
+| Isolation | a new database each time | `drop schema public cascade; create schema public`, before **and** after, through the pooler itself so it lands on whatever database PgBouncer's fixed `DB_NAME` names |
+
+Dropping a scratch database waits up to 2 s for the example's backends to go (its process is
+already dead, so they normally go in milliseconds), then terminates whatever is left, then drops
+with a retry for the moment between `pg_terminate_backend` returning and the backend leaving
+`pg_stat_activity`. A termination that was actually needed is printed as a note naming the block —
+that is the leaked-handle finding the contract asks for. Nothing printed it on any of the runs
+below.
+
+Root script `docs:examples:pg` (one line in the root `package.json`, nothing else there).
+Deliberately **not** in `docs:check`.
+
+**CI.** `.github/workflows/ci.yml` `pg` job and `ci-nightly.yml` `pg-matrix`: `pnpm build` then
+`pnpm docs:examples:pg`, after `pnpm test:pg`, with one comment each explaining why the step is on
+that job and why the build is in front of it. No other region of either file is touched.
+
+**R22.** `tools/docs-coverage.mjs` grows a fifth check, as a section header plus one call before
+the report and the function itself appended at the very end of the file (T and X add package-list
+lines at the top). It fails on a `no-run` with no reason and on a block that is both `no-run` and
+`pg-only`, and it prints the counts.
+
+**docs/README.md.** `pg-only` in the *Block directives* table, `no-run`'s row says the reason is
+mandatory, a *The real-server tier* subsection under *Runnable examples* with the isolation table
+and the environment, R22 as the corollary of *The one rule*, and `docs:examples:pg` in the script
+list marked "NOT in docs:check".
+
+**The floor note** (decision 12), prose only, in the four named places.
+##### 3. Gate numbers
+
+Local: macOS 15 / arm64, Node 24.14.1, PostgreSQL 17.11 in `pgprime-s` (:54334) and PgBouncer
+1.25 in transaction mode with `max_prepared_statements=200` in `pgprime-s-bouncer` (:56434) — the
+same two variables CI's `pg` job sets.
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | OK (oxlint --type-aware, typecheck, sherif, knip) |
+| `pnpm format:check` | OK, 409 files |
+| `pnpm typecheck` | OK |
+| `pnpm test` (tier 0) | 48 files, **1 013** passed |
+| `pnpm test:live` (tier 1) | 82 files, **1 790** passed, 6 skipped — the count `9be7192` had |
+| `pnpm test:pg` (tier 2) | pg-prime 90 files / **1 862** passed / 0 skipped; @pg-prime/kit 57 files / **426** passed |
+| `pnpm build` | OK |
+| `pnpm package:check` | OK — size-budget, api-snapshot, emit-parity, check-dts, treeshake, pack smoke |
+| `pnpm bench:types` | OK |
+| `pnpm bench:compile` | OK |
+| `pnpm docs:check` | typecheck **529** blocks from 45 pages on TS 5.9.3 (321 signature, 17 expect-error, 131 runnable); examples **88** from 26 pages in 13.2 s; coverage **1 183/1 183** names, 15 CLI blocks, 40/40 hazard codes, 217 links (one new: guides/migrations → reference/config), **R22: 26 explained, 7 waived**; build 46 pages |
+| `pnpm docs:examples:pg` | **10** examples from 5 pages in 3.5 s — 7 `pg-only`, 3 `pg-only="pgbouncer"` |
+
+**Executed examples: 83 → 98.** 88 on PGlite (was 83: +4 blocks that never needed a server, +1 that
+never had a `title=`) and 10 on a real PostgreSQL (was 0).
+
+Degradations, both deliberate and both a single sentence rather than a failure:
+
+```
+$ node tools/docs-examples.mjs --pg            # no PG_PRIME_TEST_URL
+docs-examples --pg: PG_PRIME_TEST_URL is unset, and this tier is the one that needs a server — it
+creates a scratch database per example. `pnpm docs:examples` is the tier that needs none.
+exit 1
+
+$ PG_PRIME_TEST_URL=… node tools/docs-examples.mjs --pg   # no pooler URL
+docs-examples --pg: 7 example(s) from 4 page(s) in 3.0 s
+  skipped operations/poolers.mdx:56 (pooled-db.ts): it is pg-only="pgbouncer" and
+  PG_PRIME_TEST_PGBOUNCER_URL is unset, so there is no pooler to prove anything against
+  … ×3
+docs-examples --pg: OK
+```
+##### 3b. Three runs, back to back
+
+The new examples wait for things — a notification, a server-side cancel, three concurrent probe
+connections — so the question is whether any of them passes on luck. Three consecutive runs of
+`pnpm docs:examples:pg`, no other load, same shell:
+
+```
+===== run 1  docs-examples --pg: 10 example(s) from 5 page(s) in 3.5 s   OK
+===== run 2  docs-examples --pg: 10 example(s) from 5 page(s) in 3.5 s   OK
+===== run 3  docs-examples --pg: 10 example(s) from 5 page(s) in 3.4 s   OK
+```
+
+3.4–3.5 s across the three, and no note printed on any of them — no example left a backend behind,
+nothing was substituted, nothing was skipped. The two LISTEN examples wait on a 5 000 ms deadline
+and `throw` past it, so a machine slow enough to break them fails loudly instead of passing; the
+observed delivery is inside one 10 ms poll every time. The `two-classes.ts` cancel pair is bounded
+by the server's own `statement_timeout` (200 ms) and by a 250 ms client timer against a
+`pg_sleep(5)`, which is four seconds of headroom.
+
+The whole `&&` chain of §2 was run twice end to end. The second finished `CHAIN_EXIT=0`; the first
+stopped at `pnpm test:pg`, on a 10 s hook timeout in the kit's own tier-2 teardown with all 426 of
+its tests passed — F7 below, in a file E does not own.
+##### 2. The audit (R22)
+
+**On the count.** The contract says 63 `no-run` blocks; there are **47**. 63 is the number of lines
+in `docs/src/content/docs/**` that contain the string `no-run`: 43 fences, 11 directive comments
+(seven of them duplicating the fence of the same block), seven `// no-run:` first lines and two
+mentions in prose. Every one of the 47 blocks is below.
+
+Line numbers are the ones at `c2d9649`; where a block moved, the new line is in brackets.
+
+| Block | Why it did not run | Disposition |
+|---|---|---|
+| `concepts/codecs.mdx:35` `schema.ts` | `setup=schema`, composed into the blocks below | stays `no-run`, reason written |
+| `concepts/codecs.mdx:54` `db.ts` | `setup=db`, imported as `./db.js` by them | stays `no-run`, reason written |
+| `concepts/codecs.mdx:62` `ddl.ts` | `setup=ddl`, imported as `./ddl.js` | stays `no-run`, reason written |
+| `concepts/codecs.mdx:255` `decimal-columns.ts` | the decimal library is `declare`d, not depended on | stays `no-run`, reason written |
+| `concepts/codecs.mdx:306` `typed-jsonb.ts` | one table declaration; no handle | stays `no-run`, reason written |
+| `concepts/relations.mdx:20` `schema.ts` | `setup=schema` | stays `no-run`, reason written |
+| `concepts/relations.mdx:206` `db.ts` | `setup=db` | stays `no-run`, reason written |
+| `concepts/relations.mdx:214` `ddl.ts` | `setup=ddl` | stays `no-run`, reason written |
+| `concepts/shadow-ladder.mdx:154` `pg-prime.config.ts` | a config file the kit loads | stays `no-run`, reason written |
+| `guides/adopting.mdx:118` `db/schema.ts` | what `pg-prime pull` writes, shown as it lands | stays `no-run`, reason written |
+| `guides/adopting.mdx:346` `pg-prime.config.ts` | a config file | stays `no-run`, reason written |
+| `guides/cancellation.mdx:218` `two-classes.ts` | `pg_sleep` + a `CancelRequest` a server honours | **`pg-only`** [218] |
+| `guides/cancellation.mdx:252` `session-defaults.ts` | marked `no-run` as "a file" | **runs on PGlite**, unchanged [252] |
+| `guides/copy.mdx:30` `copy-from.ts` | PGlite's bridge cannot carry COPY | **`pg-only`** [31] |
+| `guides/copy.mdx:74` `copy-from-raw.ts` | as above | **`pg-only`** [85] |
+| `guides/copy.mdx:96` `copy-to.ts` | as above | **`pg-only`** [112] |
+| `guides/data-migrations.mdx:282` `pg-prime.config.ts` | a config file | stays `no-run`, reason written |
+| `guides/data-migrations.mdx:435` `seeds/020_posts.ts` | a seed module; `pg-prime seed` calls its default export | stays `no-run`, reason written |
+| `guides/getting-started.mdx:55` `schema.ts` | `setup=schema` | X's page — sentence in §6 |
+| `guides/getting-started.mdx:97` `pg-prime.config.ts` | a config file | X's page — sentence in §6 |
+| `guides/getting-started.mdx:204` `db.ts` | `setup=db` | X's page — sentence in §6 |
+| `guides/getting-started.mdx:287` `schema.ts (excerpt)` | an excerpt | X's page — sentence in §6 |
+| `guides/listen-notify.mdx:94` `invalidate-cache.ts` | delivery needs two backends | **`pg-only`** [94] |
+| `guides/listen-notify.mdx:149` `notify-on-commit.ts` | as above | **`pg-only`** [170] |
+| `guides/migrations.mdx:27` `pg-prime.config.ts` | `setup=config`, a config file | stays `no-run`, reason written |
+| `guides/observability.mdx:18` `db.ts` | marked `no-run` as "a file" | **runs on PGlite** |
+| `guides/observability.mdx:314` `diagnose-pooler.ts` | the pid probe needs concurrent connections | **`pg-only`** [314] |
+| `guides/schema.mdx:54` `catalogue.ts` | `setup=catalogue` | stays `no-run`, reason written |
+| `guides/schema.mdx:732` `renamed-label.ts` | one enum declaration; no handle | stays `no-run`, reason written |
+| `guides/testing.mdx:98` `guards.ts` | a file of test helpers | T's page — sentence in §6 |
+| `guides/testing.mdx:141` `namespace.ts` | a file | T's page — sentence in §6 |
+| `guides/testing.mdx:172` `test-db.ts` | `setup=test-db` | T's page — sentence in §6 |
+| `operations/poolers.mdx:56` `pooled-db.ts` | needs a transaction pooler | **`pg-only="pgbouncer"`** [56] |
+| `operations/poolers.mdx:111` `direct-db.ts` | needs a pooler *and* a direct URL | **`pg-only="pgbouncer"`** [118] |
+| `operations/poolers.mdx:145` `neon-db.ts` | the endpoint is Neon's | stays `no-run`, reason written [159] |
+| `operations/poolers.mdx:175` `check-pooler.ts` | the probes need a real pooler to find | **`pg-only="pgbouncer"`** [189] |
+| `operations/timeouts.mdx:60` `db.ts` | marked `no-run` as "a file" | **runs on PGlite**, with a GUC read-back |
+| `operations/timeouts.mdx:79` `no-statement-timeout.ts` | as above | **runs on PGlite**, with a GUC read-back |
+| `operations/zero-downtime.mdx:61` `schema.ts (excerpt)` | an excerpt | stays `no-run`, reason written |
+| `operations/zero-downtime.mdx:137` `schema.ts (excerpt)` | an excerpt | stays `no-run`, reason written |
+| `operations/zero-downtime.mdx:204` `schema.ts (excerpt)` | an excerpt | stays `no-run`, reason written |
+| `reference/config.mdx:12` `pg-prime.config.ts` | a config file | stays `no-run`, reason written |
+| `reference/config.mdx:125` `pg-prime.config.ts` | a config file | stays `no-run`, reason written |
+| `reference/config.mdx:228` `pg-prime.config.ts` | a config file | stays `no-run`, reason written |
+| `reference/config.mdx:316` `pg-prime.config.ts` | a config file | stays `no-run`, reason written |
+| `reference/schema.mdx:22` `schema.ts` | `setup=schema` | stays `no-run`, reason written |
+| `reference/schema.mdx:796` `member-role.ts` | one enum declaration; no handle | stays `no-run`, reason written |
+
+Totals: **10** blocks moved to the real-server tier (7 `pg-only`, 3 `pg-only="pgbouncer"`), **4**
+turned out to need no server at all and moved to the PGlite tier, **26** stay `no-run` with a
+written reason, **7** belong to T's and X's pages and are waived until their branches land.
+##### 4. Divergences from the contract, with reasons
+
+1. **The reason is written as the fence attribute, not as a `// no-run:` first line, on all 26.**
+   The contract offers both; after the audit no block wanted the comment form, because the six that
+   had one — the COPY, LISTEN and cancel blocks — are `pg-only` now, and what is left is files and
+   excerpts, where a note addressed to whoever edits the page does not belong in the page. Verified
+   in the built HTML: Expressive Code renders `title=` and ignores the rest of the fence meta, so
+   `no-run="…"` and `pg-only` are invisible to the reader. The comment form is still parsed, still
+   documented, and still what the next COPY-shaped block should use.
+
+2. **`operations/timeouts.mdx` `db.ts` / `no-statement-timeout.ts` are on the PGlite tier, not
+   `pg-only`.** The contract asked why they were `no-run` and said they looked runnable. They are:
+   they were marked `no-run` under the "a file, not a program" rule, and `pgPrime()` is lazy, so
+   running them proved only that the config object is accepted — on any server, which makes the
+   real-server tier the wrong home for them. Each now reads its own GUC back, which is the claim
+   the surrounding prose makes and the difference between the two blocks: `10s` against `0`.
+   Measured identical on PGlite 18.3 and PostgreSQL 17.11.
+
+3. **`guides/queries.mdx`'s `streamBatches` block is on the PGlite tier.** Measured, as asked: the
+   bridge carries a `WITHOUT HOLD` cursor. Titled `stream.ts`, `use=blog,blog-ddl,seed`, and it
+   prints the four seeded titles and then `4` — the batch arriving in one `FETCH`.
+
+4. **Two blocks left `no-run` that the contract did not name.** `guides/observability.mdx` `db.ts`
+   is the same shape as the timeouts pair — a handle built from `DATABASE_URL`, which is a program —
+   so it runs. `guides/cancellation.mdx` `session-defaults.ts` runs as-is, as the contract predicted.
+
+5. **`tools/docs-coverage.mjs` carries a two-entry waiver map for `guides/testing.mdx` and
+   `guides/getting-started.mdx`.** R22 fails on their seven unexplained `no-run` blocks and E must
+   not edit either page. The waiver is not a hole: each entry *asserts* that the page still has an
+   unexplained block, so the moment T's or X's branch fixes or removes it the gate fails and names
+   the line to delete. §6 has the sentences.
+
+6. **Five examples grew a few lines so that they prove something.** A `users` row before a COPY
+   into `posts` (the FK is real), a bounded wait for the notification instead of a sleep, a
+   `select 1` through the pooler, `db.listen()` through `directConnection`. Every addition is
+   marked in the block by the comment above it.
+
+7. **The pooled tier also exports `DIRECT_URL`.** `operations/poolers.mdx` `direct-db.ts` reads it,
+   and the pair (pooler URL + direct URL) is exactly what that page is about. Documented in
+   `docs/README.md`.
+
+##### 5. Found and not fixed
+
+**F1 — `copyFrom(table, rows)` fails on any table with a generated column.** The default column
+list is *every declared column*, `posts.id` is `bigint generated always as identity`, the rows have
+no `id` key, so the encoder writes `\N` and PostgreSQL answers `23502`. This is the first thing
+`guides/copy.mdx`'s own first example did when it was executed for the first time.
+
+Repro (`packages/pg-prime/src/session/copy.ts:79`, `copyColumns` — `if (requested === undefined)
+return all.map(…)`):
+
+```
+copy "public"."posts" ("id", "author_id", "title", "body", "published", "created_at") from stdin with (format text)
+ERROR: null value in column "id" of relation "posts" violates not-null constraint
+DETAIL: Failing row contains (null, 1, post 0, xxxx…, t, 2026-08-29 20:03:58.654+00).
+```
+
+`CopyOptions.columns`'s own doc comment says "Defaults to every column the schema declares as
+**insertable**", which is what a reader would expect and is not what the code does; the insert path
+excludes generated columns and COPY does not, so "the two paths cannot disagree" — the reason given
+for the default — is the property that is broken. Not fixed here (no `packages/*/src` edits): the
+example passes `columns` explicitly and says why in a comment, and the `CopyOptions` table on the
+page now says a table with a generated column needs it.
+
+**F2 — the `CancelRequest` path prints a `pg` deprecation warning.**
+`packages/pg-prime/src/driver/pg-adapter.ts:1007` calls `canceller.cancel(target, target.activeQuery)`,
+and `pg` 8.23 answers `DeprecationWarning: Client.activeQuery is deprecated and will be removed in
+pg@9.0`. Every cancel prints it once per process; `guides/cancellation.mdx`'s `two-classes.ts`
+shows it on every run of the real-server tier. Harmless today, a breakage on `pg@9`.
+
+**F3 — the sub-22.15 message is not the one the source claims.**
+`packages/pg-prime-kit/src/config/ts-specifiers.ts:29` says that without `module.registerHooks` the
+user gets "the `ERR_MODULE_NOT_FOUND` plus `stripTypesAdvice`'s sentence". `stripTypesAdvice` is
+reached only for `ERR_UNKNOWN_FILE_EXTENSION`, `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`,
+`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` and `ERR_INVALID_TYPESCRIPT_SYNTAX`
+(`config/load.ts:107` and `:270`); `ERR_MODULE_NOT_FOUND` falls to `throw err` and reaches the user
+raw, with no mention of Node 22.15 or of a build step. The floor note therefore documents what the
+code does, not what the comment says. The fix is one line in each of those two `if`s plus a
+sentence — kit source, so not mine.
+
+**F4 — `pnpm test:pg` needs `PG_PRIME_SPIKE_CONTAINER` on a machine with no `pg_dump`.**
+`packages/pg-prime-kit/test/support/pgdump.ts` falls back to `docker exec … pg_dump` in the
+container named by `PG_PRIME_SPIKE_CONTAINER`, whose default is `pgorm-spike-diff` — a container
+from the spike phase that no longer fronts the tier-2 server. With no `pg_dump` on `PATH` and the
+default in force, 41 kit tests fail with `FATAL: database "pgprime_k2b_corpus_pagila" does not
+exist` (the dump ran in the wrong container). `PG_PRIME_SPIKE_CONTAINER=pgprime-s` makes the suite
+green. Not a product bug and not E's file; recorded because it costs an hour to diagnose and CI
+never sees it (CI installs `postgresql-client-N`).
+
+**F5 — the contract's baseline numbers were a commit or two stale.** 1 182 exported names is
+1 183 (the api-snapshot goldens are byte-identical to `c2d9649`, so nothing E did moved it);
+526 blocks / 46 pages is 529 blocks / 45 pages; 83 executed examples is correct; and the 63
+`no-run` is 63 *occurrences of the string*, over 47 blocks. Every number below is measured on this
+branch.
+
+**F6 (not a bug, recorded).** `guides/observability.mdx`'s `diagnose-pooler.ts` composes
+`docs/src/snippets/blog.ts`, whose pool is `max: 1` for PGlite's sake, and a pool of one cannot
+create the contention the pid probe wants. The probe handles it exactly as designed — 250 ms budget,
+stays silent, reports the original pid — and the verdict against a direct PostgreSQL 17 is
+`direct medium none true`, which is the right answer either way. The block prints it.
+
+**F7 — a latent flake in the kit's tier-2 teardown.** `packages/pg-prime-kit/test/cli/envelope.test.ts`
+writes `beforeAll(async () => { … }, T)` with `T = 120_000` and then `afterAll(async () => { for
+(const d of databases) await destroyDatabase(d).catch(…) })` with **no** timeout, so the teardown
+that drops eight scratch databases one at a time runs under vitest's default 10 000 ms. On the
+first of two whole-chain runs it tripped: `426 passed`, `Test Files 1 failed`,
+`Error: Hook timed out in 10000ms` at `envelope.test.ts:42`. The second whole-chain run and two
+standalone runs of the same suite were green. `authoring.test.ts:51` and `repeatables.test.ts:44`
+have the same shape and fewer databases. The fix is `, T` on the three `afterAll`s; kit test code,
+not E's, so recorded rather than applied.
+##### 6. What the integrator must apply in T's and X's pages
+
+E does not touch `guides/testing.mdx` or `guides/getting-started.mdx`. Three things are owed to
+them; the first two are exact text, the third is a deletion that the gate will demand anyway.
+
+### 6.1 `guides/testing.mdx` (T) — two sentences under *How this site's examples run*
+
+Replace (currently the first sentence of that section):
+
+> Every fenced TypeScript block on this site compiles, and every one with a file name in its tab
+> executes — against exactly this setup.
+
+with:
+
+> Every fenced TypeScript block on this site compiles, and every one with a file name in its tab
+> executes — against exactly this setup, except the handful marked `pg-only`, which need a real
+> server and are covered below.
+
+Replace the paragraph that currently reads:
+
+> That is also why some blocks here are marked `no-run` with a comment saying why: COPY, cross-session
+> `LISTEN`/`NOTIFY` and a real `CancelRequest` are exactly the things PGlite cannot host, so the
+> pages say so rather than showing an example that quietly does not run.
+
+with:
+
+> That is also why the things PGlite cannot host — COPY, cross-session `LISTEN`/`NOTIFY`, a real
+> `CancelRequest`, the pooler probes — are marked `pg-only` rather than left unexecuted. They run on
+> the docs gate's second tier, `pnpm docs:examples:pg`: a real PostgreSQL and a real PgBouncer, one
+> scratch database per example, on CI's `pg` job and every nightly leg. A block that runs on neither
+> tier is `no-run` **with its reason written on the fence** (design/13 R22), so "this one does not
+> run" is never something the reader has to work out.
+
+### 6.2 The seven `no-run` fences, if the rewrites keep them
+
+`guides/testing.mdx` — T's contract says these three become executed examples or are replaced, in
+which case nothing is owed. If any survives, its fence needs a reason:
+
+```
+```ts title="guards.ts" no-run="a file of test helpers: the blocks below import it, and it declares rather than does"
+```ts title="namespace.ts" no-run="a file: the handle a suite imports, and the suite is what runs it"
+```ts title="test-db.ts" no-run="a file: setup=test-db composes it into the blocks below"
+```
+
+`guides/getting-started.mdx` — X's contract adds an `npm create` path at the top of *Install* and
+does not promise to change these four, so all four are likely owed:
+
+```
+```ts title="schema.ts" no-run="a file: use=schema composes it into the blocks below, and a schema module runs nothing on its own"
+```ts title="pg-prime.config.ts" no-run="a config file: the kit loads it, and as a program it executes nothing"
+```ts title="db.ts" no-run="a file: the handle the blocks below import as ./db.js"
+```ts title="schema.ts (excerpt)" no-run="an excerpt: the lines of schema.ts that change at this step, not a module"
+```
+
+(The last three reasons are the exact strings the equivalent blocks carry on
+`concepts/codecs.mdx`, `reference/config.mdx` and `operations/zero-downtime.mdx`.)
+
+### 6.3 Delete the waiver
+
+In `tools/docs-coverage.mjs`, inside `checkNoRunReasons`, delete each page's line from
+`PENDING_R22` once 6.1 and 6.2 are applied. The gate **fails** on a waiver whose page no longer has
+an unexplained `no-run`, so this cannot be forgotten: `pnpm docs:coverage` will say
+
+> docs-coverage: guides/testing.mdx has no unexplained no-run block left, so its PENDING_R22 waiver
+> in tools/docs-coverage.mjs is stale — delete that line (design/13 §3, R22).
+
+and when both are gone the map is empty and the whole construct can go with it.
+
+### 6.4 Two notes, no action
+
+- T moves the PGlite bridge into `@pg-prime/testing` and says `tools/docs-examples.mjs` bundles it
+  through the re-export unchanged (decision 2). It does: `bundleHarness()` still esbuilds
+  `packages/pg-prime/test/live/_pglite.ts`, and `--pg` does not call it at all.
+- X's `create-smoke` and E's `docs:examples:pg` both want a built workspace on the `pg` job. E adds
+  a plain `pnpm build` step before its own; if X's tier-2 `globalSetup` also builds, the second
+  build is a no-op and the step can stay as the explicit thing the comment describes.
 
 ## 4. Q — the `ratioP50Paired` gate (integrator)
 
