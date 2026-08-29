@@ -2239,21 +2239,48 @@ both need the ceil-to-1 KB rule re-applied once to the merged tree's measurement
 
 ## 5. Definition of done — v1 completion
 
-- [ ] `07` §0's snippet runs unchanged on a direct connection and through PgBouncer transaction mode; a
-      real `40001` is retried, a `40P01` is not, an `IndeterminateCommitError` is never retried.
-- [ ] `06` §6.4 lists twelve of twelve commands; `pull` round-trips all four corpus schemas to an empty
-      `generate`; a killed backfill resumes from its watermark; a fresh database applies checkpoint + tail.
-- [ ] Every item on `09` §3.4/§3.5/§3.6's deferred lists is built or re-recorded with a measurement.
-- [ ] `ci.yml` has `lint` (type-aware, < 60 s) and `docs` jobs; `release.yml` dry-run is green;
-      `.changeset/` exists with the fixed group; `RELEASING.md` exists.
-- [ ] `docs/` builds; every code block compiles on TS 5.9.3; every example runs on PGlite; reference
-      coverage is 100 % of the api-snapshot goldens; `08` §6.2 #10's four artefacts exist.
-- [ ] `bench/runtime/budget.json` has no `_overDesign` entry that was not sized from ≥ 5 runner runs; the
-      comparison run exists in the nightly.
-- [ ] Tier 0 ≤ 5 s; tier 1/2 green on PG 15/16/17/18 + PgBouncer; `package:check` green; `bench:types`
-      within +2 % of `fb723f4` per fixture.
+All seven boxes ticked on 2026-08-29 at the closing integration (C `8bb9b8e` → B `ae8e13c` → S + K4 `d0ffa77` →
+format `79edac9` → D `cac7624` → P `ef73a1d` → F2 `7ba5ef6` → F1); every number below was re-measured on the
+merged tree, not taken from a branch report.
 
----
+- [x] `07` §0's snippet runs unchanged on a direct connection and through PgBouncer transaction mode; a
+      real `40001` is retried, a `40P01` is not, an `IndeterminateCommitError` is never retried. (S — RESULT;
+      `test/pg/session-pooler.test.ts`; tier 2 **1 862, zero skips** on PG 17 + PgBouncer.)
+- [x] `06` §6.4 lists twelve of twelve commands (thirteen with `pull`); `pull` round-trips all four corpus
+      schemas to an empty `generate`; a killed backfill resumes from its watermark; a fresh database applies
+      checkpoint + tail. (K4 — RESULT, F2 — RESULT; kit **420 + 6** on PG 17 and 18.)
+- [x] Every item on `09` §3.4/§3.5/§3.6's deferred lists is built or re-recorded with a measurement. (B —
+      RESULT; F1 built S's builder-level option methods.)
+- [x] `ci.yml` has `lint` (type-aware, 26 s on the runner) and `docs` jobs; `release.yml` dry-run is green;
+      `.changeset/` exists with the fixed group; `RELEASING.md` exists. (C — RESULT. Two operator switches
+      remain — decision 20 and Pages — both written down in `RELEASING.md`.)
+- [x] `docs/` builds; every code block compiles on TS 5.9.3; every example runs on PGlite; reference coverage
+      is 100 % of the api-snapshot goldens; `08` §6.2 #10's four artefacts exist. (D — RESULT; 526 blocks,
+      83 examples, **1 182/1 182** names, 46 pages, `docs:check` 26 s.)
+- [x] `bench/runtime/budget.json` has no `_overDesign` entry that was not sized from ≥ 5 runner runs; the
+      comparison run exists in the nightly. (P — RESULT; 17 runner runs; nightly 33242675982 green with
+      the production-mode gate, per-case p99 budgets and the `compare` job.)
+- [x] Tier 0 ≤ 5 s (**1 013 tests, 3.7–4.3 s** — P found the real ceiling: two `tsc`-spawning files); tier 1/2
+      green on PG 15/16/17/18 + PgBouncer; `package:check` green; `bench:types` within +2 % of `fb723f4`
+      per fixture (headline 80 485 → 82 028, +1.9 %, unchanged by S, P, F1).
+
+**Round-B integration — 2026-08-29.** D over P's absence, then P over D, then F2, then F1 — each by
+cherry-pick, each re-verified from scratch on the integration branch before the fast-forward. What
+conflicted was only ever the generated files, the budget files and the design records; `src/` merged
+automatically every time, which is the §3/§4 ownership lines doing their job. Budgets moved at every step
+by the ceil-to-1 KB rule on the *merged* measurement (`tools/budgets.json` `.js` 889 856 → 921 600 across
+the round, `bench/types` package `.d.ts` 524 288 → 550 912), each with its account in the file. Two
+lessons recorded in `08` §3.4 AS BUILT and memory: the integration gate list must include `bench:types`
+and `bench:compile` (CI's `types` job) — two pushes were red for lack of it — and the formatter must not
+touch generated artefacts (api-snapshot stubs, bench reports, envelope goldens, `@ts-expect-error`
+probes), which the first format pass proved by breaking thirty tests.
+
+**What is still open after this plan**, for whoever picks the work up: the operator switches (npm
+trusted publisher per package, *Allow GitHub Actions to create and approve pull requests*, Pages source);
+`ratioP50Paired` as the gate that brings the two widened decode budgets back down (five nightlies from
+now); `@pg-prime/testing` and `@pg-prime/create` are still README-only; the D-found row j's resolve hook
+is a Node ≥ 22.15 `module.registerHooks` dependency worth a floor note; `streamBatches`/COPY/LISTEN have
+no executed docs example (tier-2 claims, `no-run` by design).
 
 ## 6. Risks and fallbacks
 
