@@ -23,6 +23,11 @@
       "entry": ["src/index.ts", "src/cli.ts", "test/**/*.test.ts"],
       "project": ["src/**/*.ts", "test/**/*.ts"]
     },
+    "packages/pg-prime-create": {
+      "entry": ["src/index.ts", "src/cli.ts", "test/**/*.test.ts", "test/**/globalSetup.ts"],
+      "project": ["src/**/*.ts", "scripts/*.mjs", "test/**/*.ts"],
+      "ignore": ["templates/**"]
+    },
     "bench/runtime": {
       "entry": ["run.mjs", "profile.mjs", "statement.mjs"],
       "project": ["**/*.mjs"]

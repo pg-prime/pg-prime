@@ -125,7 +125,10 @@ export function parity(pkgDir, { keep = false } = {}) {
 if (process.argv[1] && process.argv[1].endsWith('emit-parity.mjs')) {
   const argv = process.argv.slice(2)
   const i = argv.indexOf('--package')
-  const packages = i === -1 ? ['packages/pg-prime', 'packages/pg-prime-kit'] : [argv[i + 1]]
+  const packages =
+    i === -1
+      ? ['packages/pg-prime', 'packages/pg-prime-kit', 'packages/pg-prime-create']
+      : [argv[i + 1]]
   let bad = 0
   for (const rel of packages) {
     const r = parity(join(ROOT, rel), { keep: argv.includes('--keep') })

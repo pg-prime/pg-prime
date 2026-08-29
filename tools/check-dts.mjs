@@ -34,6 +34,10 @@ export const COMPILERS = { '5.9.3': TSC_59, '7.0.2': TSC_7 }
 export const PACKAGES = [
   { dir: 'packages/pg-prime', zeroDeps: true },
   { dir: 'packages/pg-prime-kit', zeroDeps: false },
+  // Zero dependencies (asserted where the claim lives, `budgets.json`'s `zeroDependencies` +
+  // `size-budget.mjs`), but not zero SPECIFIERS: `PromptIo` is typed with `node:stream`, and a
+  // builtin is not a dependency. Only `pg-prime` gets the stricter reading of this line.
+  { dir: 'packages/pg-prime-create', zeroDeps: false },
 ]
 
 /**

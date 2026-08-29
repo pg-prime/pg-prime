@@ -28,6 +28,14 @@
       },
       "unpackedBytes": 8388608,
       "zeroDependencies": false
+    },
+    "packages/pg-prime-create": {
+      "_design": {
+        "_why": "design/08 §1.1's table budgets the scaffolder at ≤ 500 KB unpacked, and design/13 decision 7 keeps it at zero dependencies — `node:readline/promises` for the four questions, no prompt library and no chalk. The tarball is `dist/` plus `dist/templates/`, which is the getting-started project as files; nothing here is bundled, so this number moves only when a template does.",
+        "unpackedBytes": 512000
+      },
+      "unpackedBytes": 512000,
+      "zeroDependencies": true
     }
   },
   "treeshake": {

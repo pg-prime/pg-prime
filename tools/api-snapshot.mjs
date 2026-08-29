@@ -51,6 +51,7 @@ const errorText = (pkgName) => `${pkgName} requires TypeScript >= 5.9 — see ht
 export const PACKAGES = [
   { dir: 'packages/pg-prime', name: 'pg-prime', golden: 'pg-prime.json' },
   { dir: 'packages/pg-prime-kit', name: '@pg-prime/kit', golden: 'pg-prime-kit.json' },
+  { dir: 'packages/pg-prime-create', name: '@pg-prime/create', golden: 'pg-prime-create.json' },
 ]
 
 /** The entries of an `exports` map that carry code, in map order. `./package.json` is not one. */

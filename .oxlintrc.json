@@ -26,7 +26,12 @@
     "**/.changeset/**",
     "fixtures/**",
     "docs/**",
-    "**/*.d.ts"
+    "**/*.d.ts",
+    // The scaffolder's templates are a project for somebody else's repository, held byte-equal to
+    // the getting-started page (design/13 decision 5). They are not this repository's source: they
+    // import packages that are not installed here, and the page — not this linter — decides how
+    // they are written.
+    "packages/pg-prime-create/templates/**"
   ],
 
   "rules": {
