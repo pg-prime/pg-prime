@@ -807,3 +807,92 @@ describe('the builder-level option methods on a real server (07 §6.1, §6.2, §
     60_000,
   )
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §6.1 — the protocol CancelRequest, on the path that has one (design/13 §5, E's F2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Everything above cancels through `pg_cancel_backend` on a spare pooled connection, because a
+ * handle built from `driver:` has no `createCancelClient`. `pgPrime({ connection })` does — it
+ * hands the adapter `() => new Client(sameConfig)` — and that is the only path that sends a real
+ * protocol `CancelRequest`, so it is the only path where `pg`'s deprecated `Client.activeQuery`
+ * was ever read.
+ *
+ * `process.throwDeprecation = true` for the duration is `--throw-deprecation` scoped to one
+ * statement: `util.deprecate`'s warning is emitted at call time and node's own listener reads that
+ * flag when it lands, so a re-introduced `canceller.cancel(target, target.activeQuery)` throws out
+ * of a `nextTick` and the file fails loudly. The collected warnings are asserted too, because
+ * `util.deprecate` warns **once per process** — if some earlier file in this worker had already
+ * tripped it the throw would not fire, and only the empty list would still mean something.
+ */
+describe('the protocol CancelRequest (07 §6.1)', () => {
+  requiresConcurrency()(
+    'stops the backend, and reads no deprecated pg property doing it',
+    async () => {
+      const APP = 'pgprime_cancel_probe'
+      const warnings: string[] = []
+      const onWarning = (w: Error): void => {
+        if (w.name === 'DeprecationWarning') warnings.push(w.message)
+      }
+      // `--throw-deprecation` on the command line makes the property READ-ONLY, so the write is
+      // best-effort: when it is already on there is nothing to turn on.
+      const throwBefore = process.throwDeprecation
+      const setThrowDeprecation = (on: boolean): void => {
+        if (process.throwDeprecation === on) return
+        try {
+          process.throwDeprecation = on
+        } catch {
+          /* set by NODE_OPTIONS — already exactly what this test wants */
+        }
+      }
+      process.on('warning', onWarning)
+      setThrowDeprecation(true)
+
+      const app = pgPrime({
+        connection: liveTarget().url,
+        schema,
+        devGuard: false,
+        poolOptions: { max: 2 },
+        session: { applicationName: APP },
+      })
+      const watcher = await client()
+      try {
+        // `timeoutStrategy: 'client'` is the one that arms OUR timer and then cancels — the
+        // server-side `SET LOCAL statement_timeout` path never opens a cancel socket.
+        const err = await app.withOptions({ timeoutMs: 250, timeoutStrategy: 'client' })
+          .sql`select pg_sleep(5)`
+          .execute()
+          .catch((e: unknown) => e)
+        expect(err).toBeInstanceOf(QueryTimeoutError)
+
+        // R18: `pg_stat_activity` is the oracle for "the cancel landed", not our own rejection —
+        // which would look identical if the CancelRequest had gone nowhere at all.
+        const sleeping = async (): Promise<number> => {
+          const r = await watcher.query(
+            `select count(*)::int as n from pg_stat_activity
+               where application_name = $1 and state = 'active' and query like '%pg_sleep(5)%'`,
+            [APP],
+          )
+          return Number((r.rows[0] as { n: number }).n)
+        }
+        let left = await sleeping()
+        for (let i = 0; i < 30 && left > 0; i++) {
+          await new Promise((r) => setTimeout(r, 100))
+          left = await sleeping()
+        }
+        expect(left).toBe(0)
+
+        // A tick after the last await, so a warning emitted by the cancel has landed.
+        await new Promise((r) => setTimeout(r, 50))
+        expect(warnings).toStrictEqual([])
+      } finally {
+        setThrowDeprecation(throwBefore === true)
+        process.off('warning', onWarning)
+        await watcher.end().catch(() => {})
+        await app.end().catch(() => {})
+      }
+    },
+    60_000,
+  )
+})

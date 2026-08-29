@@ -69,7 +69,19 @@ export interface PgLikeClient {
    */
   getTransactionStatus?(): 'I' | 'T' | 'E' | null
   readonly processID?: number
-  /** The in-flight query object, if the driver exposes one. Only used to aim a protocol cancel. */
+  /**
+   * The other half of BackendKeyData, and the other half of a protocol `CancelRequest`. Not in
+   * `@types/pg` — like `processID` above it is a plain field `pg` has set since 8.0 — so it is
+   * declared here and read defensively (`typeof … === 'number'`).
+   */
+  readonly secretKey?: number
+  /**
+   * The in-flight query object, if the driver exposes one.
+   *
+   * ⚠️ **`pg` deprecated this in 8.23** (`Client.activeQuery is deprecated and will be removed in
+   * pg@9.0`) and `pg-adapter.ts` no longer reads it on the path that matters — see
+   * `sendCancelRequest` there for what it does instead and why the property is still declared.
+   */
   readonly activeQuery?: unknown
   /** Private-ish, but stable since pg 6 and required for describe/copy/close (§5.2). */
   readonly connection?: PgLikeConnection
@@ -86,12 +98,26 @@ export interface PgLikeClient {
 /**
  * What `PgDriverConfig.createCancelClient` must return: an UNCONNECTED client that knows how to
  * open its own socket and send a protocol CancelRequest for another client's backend. `pg.Client`
- * satisfies this structurally (`Client.prototype.cancel(target, activeQuery)`), which is the whole
- * point — the caller hands us `() => new Client(sameConfig)` and never a credential of ours.
+ * satisfies this structurally, which is the whole point — the caller hands us
+ * `() => new Client(sameConfig)` and never a credential of ours.
+ *
+ * Two ways to drive it, and the adapter prefers the first (`sendCancelRequest` in
+ * `pg-adapter.ts`):
+ *
+ *  1. **its own socket, driven by us** — `connection`, `host` and `port`, which is exactly what
+ *     `Client.prototype.cancel` uses internally. Preferred because that method reads
+ *     `client.activeQuery`, deprecated in `pg` 8.23 and gone in `pg@9`.
+ *  2. **`cancel(client, query)`** — the fallback for a drop-in that has the method but not the
+ *     parts. Still required, so a non-`pg` canceller keeps working unchanged.
  */
 export interface PgLikeCancelClient {
   cancel(client: PgLikeClient, query?: unknown): void
   end?(): Promise<void> | void
+  /** The protocol writer. `pg.Client` builds one in its constructor; a shim may not have one. */
+  readonly connection?: PgLikeConnection
+  /** Where to open the cancel socket. A leading `/` means a unix socket directory, as in `pg`. */
+  readonly host?: string
+  readonly port?: number
 }
 
 export interface PgLikeQueryConfig {
@@ -192,6 +218,16 @@ export interface PgLikeConnection {
   sendCopyFail?(msg: string): void
   /** Simple query. The path COPY takes — it carries no bind parameters, so there is nothing else. */
   query?(text: string): void
+  /**
+   * Open the socket. `(port, host)` for TCP, or `(path)` for a unix socket — `pg`'s own two
+   * spellings, and `Client.prototype.cancel` picks between them exactly this way.
+   *
+   * Optional for the same reason as the COPY trio above: `@types/pg` does not declare it, so
+   * requiring it here would make `pg.Pool` structurally non-assignable to {@link PgLikePool}.
+   */
+  connect?(portOrPath: number | string, host?: string): void
+  /** The protocol `CancelRequest`, from the target backend's BackendKeyData. */
+  cancel?(processID: number, secretKey: number): void
   on(event: string, listener: (...args: any[]) => void): unknown
   removeListener(event: string, listener: (...args: any[]) => void): unknown
   readonly parsedStatements?: Record<string, string>

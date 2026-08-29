@@ -1004,6 +1004,10 @@ class PgDriverImpl implements PgDriver {
       if (!isCurrent()) return
       // A protocol CancelRequest on its own socket: no pooled connection to borrow, so it works
       // even when the pool is exhausted — which is exactly when a cancel matters most.
+      if (sendCancelRequest(canceller, target)) return
+      // A canceller that is not shaped like `pg.Client`. `activeQuery` is deprecated in pg 8.23,
+      // but a drop-in that only offers `cancel(client, query)` has no other entry point, and its
+      // own property is not necessarily deprecated at all.
       canceller.cancel(target, target.activeQuery)
       return
     }
@@ -1038,6 +1042,69 @@ class PgDriverImpl implements PgDriver {
       client.release()
     }
   }
+}
+
+/**
+ * A protocol `CancelRequest`, sent on the canceller's own socket — **without** reading `pg`'s
+ * deprecated `Client.activeQuery` (design/13 §5, E's F2).
+ *
+ * ## Why not `canceller.cancel(target, target.activeQuery)`
+ *
+ * `pg` 8.23 made `activeQuery` a deprecated accessor (`nodeUtils.deprecate`, "will be removed in
+ * pg@9.0"), so every cancel printed a `DeprecationWarning` — and under `--throw-deprecation` it
+ * *throws*. Passing something else does not help: `Client.prototype.cancel(client, query)` opens
+ * with `if (client.activeQuery === query)`, i.e. it reads the deprecated getter **off the target**
+ * whatever we hand it. The only way not to trigger it is not to call that method.
+ *
+ * ## What was chosen, and what was rejected
+ *
+ * The three candidates in `pg` 8.23 were: `_getActiveQuery()` (underscore-private, and it does not
+ * help anyway — see above); a `cancel()` overload taking no query (**does not exist** in 8.23);
+ * and sending the `CancelRequest` ourselves over the client's `Connection`. The third is what this
+ * is, and its body is line-for-line what `Client.prototype.cancel` does after the `activeQuery`
+ * comparison: open the socket to the same host/port and, on `connect`, write
+ * `con.cancel(processID, secretKey)` from the TARGET's BackendKeyData. Same bytes on the wire,
+ * same lack of TLS on the cancel socket (a `pg` limitation we inherit either way), same
+ * fire-and-forget — the server closes the socket once it has processed the request.
+ *
+ * **A feature test, not a version test.** Every part it needs — `Client#connection`, `#host`,
+ * `#port`, `#processID`, `#secretKey`, `Connection#connect`, `Connection#cancel` — has been on
+ * `pg` since 8.0, so the declared peer floor (`pg >= 8.11`) takes this path too and the deprecated
+ * call is dead code there. Anything that fails the test is not `pg`, and `false` sends it back to
+ * `cancel(client, query)` unchanged. `Connection` is `@internal` in the same sense `parse`/`bind`
+ * already are here (design/02 §5.2: "private-ish, but stable since pg 6").
+ *
+ * The one deliberate difference from `pg`: an `error` listener on the connection. `pg` attaches
+ * none on this path, so a refused or reset cancel socket is an unhandled `'error'` event — a
+ * process exit, during the handling of a timeout. A cancel is best-effort by definition; failing
+ * to send one is not worth a crash.
+ *
+ * @returns `true` when the request was dispatched, `false` when this canceller is not shaped for
+ *   it and the caller should fall back.
+ */
+function sendCancelRequest(canceller: PgLikeCancelClient, target: PgLikeClient): boolean {
+  const con = canceller.connection
+  const pid = target.processID
+  const secret = target.secretKey
+  const port = canceller.port
+  const host = canceller.host
+  if (con === undefined || typeof con.connect !== 'function' || typeof con.cancel !== 'function') {
+    return false
+  }
+  if (typeof pid !== 'number' || typeof secret !== 'number' || typeof port !== 'number') {
+    return false
+  }
+  const send = con.cancel.bind(con)
+  con.on('error', () => {
+    /* best-effort: a cancel we could not send must not be an unhandled 'error' */
+  })
+  con.on('connect', () => {
+    send(pid, secret)
+  })
+  // pg's own two spellings, chosen the same way (`lib/client.js`).
+  if (host !== undefined && host.startsWith('/')) con.connect(`${host}/.s.PGSQL.${String(port)}`)
+  else con.connect(port, host)
+  return true
 }
 
 /**

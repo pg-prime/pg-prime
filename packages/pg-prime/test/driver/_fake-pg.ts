@@ -69,7 +69,24 @@ export class FakeClient implements PgLikePoolClient {
   /** One entry per `release()`, in order. */
   readonly releases: ('reuse' | 'destroy')[] = []
   processID = 4242
-  activeQuery: unknown = { id: 'the-active-query' }
+  /** BackendKeyData's other half — the part a protocol `CancelRequest` needs beside `processID`. */
+  secretKey = 0x5ec4e7
+  /**
+   * An ACCESSOR, not a field, so a read is observable.
+   *
+   * `pg` 8.23 made `Client.activeQuery` a deprecated getter that prints a `DeprecationWarning`
+   * once per process (and throws under `--throw-deprecation`), so "the adapter does not read it on
+   * the path that has an alternative" is a claim worth being able to assert — see `cancel.test.ts`.
+   */
+  activeQueryReads = 0
+  #activeQuery: unknown = { id: 'the-active-query' }
+  get activeQuery(): unknown {
+    this.activeQueryReads += 1
+    return this.#activeQuery
+  }
+  set activeQuery(value: unknown) {
+    this.#activeQuery = value
+  }
   txStatus: 'I' | 'T' | 'E' | null = 'I'
   /** Set to 'binary' to simulate a Pool constructed with `binary: true` (§4.4). */
   gucFieldFormat: 'text' | 'binary' = 'text'
