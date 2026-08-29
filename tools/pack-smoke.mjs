@@ -10,8 +10,11 @@
 //   2. `npm init -y` a throwaway ESM project there and `npm install` the two TARBALLS (not the
 //      workspace directories — a workspace link would resolve through `src/`) plus typescript@5.9.3.
 //   3. Write `consumer.ts` that imports from `pg-prime`, `pg-prime/schema`, `pg-prime/sql`,
-//      `pg-prime/codecs`, `pg-prime/driver` and `@pg-prime/kit`; declares a one-table schema;
-//      compiles a select with `compileOnly` and asserts the exact SQL text; uses the `sql` tag.
+//      `pg-prime/codecs`, `pg-prime/driver`, `@pg-prime/kit` and `@pg-prime/testing`; declares a
+//      one-table schema; compiles a select with `compileOnly` and asserts the exact SQL text; uses
+//      the `sql` tag; and drives `@pg-prime/testing`'s two tier-0 helpers — `createMockPool` behind
+//      a real `pgPrime({ pool })` and `expectSql` on both its passing and its failing branch. Those
+//      two are the package's whole no-I/O surface, and they are the ones a consumer meets first.
 //   4. `tsc --strict --module nodenext --moduleResolution nodenext` it, then RUN the emitted
 //      JavaScript with node. Both must succeed. That is one command each for "the types resolve"
 //      and "the code runs".
@@ -43,7 +46,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
 const BIN = join(ROOT, 'node_modules', '.bin')
 
-const PACKAGES = ['packages/pg-prime', 'packages/pg-prime-kit']
+const PACKAGES = ['packages/pg-prime', 'packages/pg-prime-kit', 'packages/pg-prime-testing']
 
 /** The exact SQL `consumer.ts` asserts. Spelled here too so a change shows up in this file's diff. */
 const EXPECTED_SQL = [
@@ -54,14 +57,16 @@ const EXPECTED_SQL = [
 
 const CONSUMER_TS = `// Written by tools/pack-smoke.mjs. A consumer, not a test fixture: every import below is a
 // package specifier that has to go through the published \`exports\` map.
-import { compileOnly, defineSchema, eq, sql } from 'pg-prime'
+import { compileOnly, defineSchema, eq, pgPrime, sql } from 'pg-prime'
 import { pgTable } from 'pg-prime/schema'
 import { isFragment, quoteIdentPart } from 'pg-prime/sql'
 import { textCodec } from 'pg-prime/codecs'
 import { pgDriver } from 'pg-prime/driver'
 import { MIGRATION_NAME, migrationId } from '@pg-prime/kit'
+import { createMockPool, expectSql, requiresConcurrency } from '@pg-prime/testing'
 import type { Db, PgLikePool } from 'pg-prime'
 import type { Plan } from '@pg-prime/kit'
+import type { MockPool, TestDecl } from '@pg-prime/testing'
 
 const users = pgTable('users', (t) => ({
   id: t.bigint().primaryKey().generatedAlways(),
@@ -74,6 +79,8 @@ const schema = defineSchema({ users })
 export type Handle = Db<typeof schema>
 export type PoolShape = PgLikePool
 export type KitPlan = Plan
+export type TestingPool = MockPool
+export type TestingDecl = TestDecl
 
 const compiled = compileOnly(schema)
   .from(schema.h.users)
@@ -95,6 +102,51 @@ assert(typeof pgDriver === 'function', 'pgDriver is not a function')
 assert(textCodec.name === 'text', 'textCodec.name is ' + String(textCodec.name))
 assert(migrationId(7, 'add_users') === '0007_add_users', 'migrationId is wrong')
 assert(MIGRATION_NAME.test('ok_name'), 'MIGRATION_NAME is wrong')
+
+// ── @pg-prime/testing, through its own export map ────────────────────────────
+// The mock pool has to satisfy \`pgPrime({ pool })\` across the PACKAGE boundary, which is the one
+// thing the workspace's own suites cannot prove: they import both sides from \`src/\`, so a
+// structural mismatch between the published \`PgLikePool\` and the published \`MockPool\` would
+// only ever be found by a user.
+const mock: MockPool = createMockPool({ script: [{ rows: [['1', 'someone@example.com']] }] })
+const mockDb = pgPrime({ pool: mock, schema })
+const mockRows = await mockDb
+  .from(mockDb.h.users)
+  .select(({ users: u }) => ({ id: u.id, email: u.email }))
+  .execute()
+assert(mockRows.length === 1, 'the mock pool replayed ' + String(mockRows.length) + ' rows, not 1')
+assert(mockRows[0]!.id === 1n, 'the schema codec did not decode the mocked bigint')
+assert(mock.queries.length === 1, 'the mock pool recorded ' + String(mock.queries.length))
+assert(mock.queries[0]!.mode === 'unnamed', 'the recorded mode was ' + String(mock.queries[0]!.mode))
+await mockDb.end()
+
+// The guard is runner-agnostic, so the consumer supplies its own two-line \`it\`. With no
+// PG_PRIME_TEST_URL set this must hand back the SKIP half, and say so on stderr.
+const declare = (_name: string, _fn: () => unknown): void => {}
+const runner = Object.assign(declare, { skip: Object.assign(declare, {}) }) as unknown as TestDecl
+const guarded: TestDecl = requiresConcurrency(runner)
+assert(guarded === runner.skip, 'requiresConcurrency did not skip with no PG_PRIME_TEST_URL set')
+
+// expectSql, both branches: the golden matches, and a wrong golden throws a diff.
+expectSql(
+  compileOnly(schema)
+    .from(schema.h.users)
+    .select(({ users: u }) => ({ id: u.id, email: u.email }))
+    .where(({ users: u }) => eq(u.email, 'someone@example.com')),
+  { text: EXPECTED, values: ['someone@example.com'] },
+)
+let diffed = ''
+try {
+  expectSql(
+    compileOnly(schema)
+      .from(schema.h.users)
+      .select(({ users: u }) => ({ id: u.id })),
+    { text: 'select "users"."nope" from "public"."users"' },
+  )
+} catch (e) {
+  diffed = (e as Error).message
+}
+assert(diffed.includes('--- expected sql'), 'expectSql did not fail with a unified diff')
 
 console.log('pack-smoke consumer OK — ' + compiled.sql.split('\\n')[0])
 `

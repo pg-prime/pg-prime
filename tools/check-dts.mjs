@@ -39,6 +39,11 @@ export const PACKAGES = [
   // `PromptIo` takes an `ask` function and two writers instead of streams, and `src/cli.ts` — the
   // one file that touches `node:readline/promises` — exports nothing.
   { dir: 'packages/pg-prime-create', zeroDeps: true },
+  // `zeroDeps` is the "names no external module at all" assertion, and @pg-prime/testing names
+  // exactly one: `pg-prime`, its required peer, in `mock-pool.d.ts`. The list is printed on every
+  // run, so a second specifier — @electric-sql/pglite or @testcontainers/postgresql leaking out of
+  // a lazy import and making an OPTIONAL peer required at the type level — is visible in the log.
+  { dir: 'packages/pg-prime-testing', zeroDeps: false },
 ]
 
 /**

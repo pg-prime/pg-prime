@@ -132,22 +132,37 @@ export function run({ json = false } = {}) {
     }
     if (spec.zeroDependencies) {
       const allowed = spec.optionalPeers ?? []
+      /**
+       * Required peers the budget entry NAMES, and therefore tolerates.
+       *
+       * Default `[]`, which is design/08 §6.2 #7 verbatim and is what `pg-prime` is held to.
+       * `@pg-prime/testing` (design/13 §3 T) has one — `pg-prime` itself, which is the package it
+       * exists to test — and zero runtime dependencies, and the second half of that sentence is
+       * worth a gate. Listing the peer here keeps the zero-dependency assertion switched on for it
+       * instead of turning the whole block off, so a `dependencies` entry appearing in that package
+       * is still a red CI job.
+       */
+      const allowedRequired = spec.requiredPeers ?? []
       const requiredPeers = m.peerDependencies.filter(
         (d) => !m.optionalPeerDependencies.includes(d),
       )
+      const unexpectedRequired = requiredPeers.filter((d) => !allowedRequired.includes(d))
       const unlistedOptional = m.optionalPeerDependencies.filter((d) => !allowed.includes(d))
       const ok =
-        m.dependencies.length === 0 && requiredPeers.length === 0 && unlistedOptional.length === 0
+        m.dependencies.length === 0 &&
+        unexpectedRequired.length === 0 &&
+        unlistedOptional.length === 0
       checks.push({
-        label: `${m.name} zero runtime deps / zero REQUIRED peer deps`,
+        label: `${m.name} zero runtime deps / only the named REQUIRED peer deps`,
         ok,
         why: ok
           ? undefined
-          : `dependencies=[${m.dependencies}] requiredPeers=[${requiredPeers}] unlistedOptionalPeers=[${unlistedOptional}]`,
+          : `dependencies=[${m.dependencies}] unexpectedRequiredPeers=[${unexpectedRequired}] unlistedOptionalPeers=[${unlistedOptional}]`,
       })
+      const budget = `0 / ${allowedRequired.length}`
       const shown = `${m.dependencies.length} / ${requiredPeers.length}${m.optionalPeerDependencies.length > 0 ? ` (+${m.optionalPeerDependencies.length} opt)` : ''}`
       console.log(
-        `  ${'deps / required peerDeps'.padEnd(30)} ${'0 / 0'.padStart(12)} ${shown.padStart(12)} ${'0 / 0'.padStart(12)}  ${ok ? 'ok' : 'FAIL'}`,
+        `  ${'deps / required peerDeps'.padEnd(30)} ${budget.padStart(12)} ${shown.padStart(12)} ${budget.padStart(12)}  ${ok ? 'ok' : 'FAIL'}`,
       )
     }
     const failedDts = checks.some((c) => !c.ok && c.label.includes('.d.ts'))

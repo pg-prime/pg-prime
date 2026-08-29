@@ -52,6 +52,7 @@ export const PACKAGES = [
   { dir: 'packages/pg-prime', name: 'pg-prime', golden: 'pg-prime.json' },
   { dir: 'packages/pg-prime-kit', name: '@pg-prime/kit', golden: 'pg-prime-kit.json' },
   { dir: 'packages/pg-prime-create', name: '@pg-prime/create', golden: 'pg-prime-create.json' },
+  { dir: 'packages/pg-prime-testing', name: '@pg-prime/testing', golden: 'pg-prime-testing.json' },
 ]
 
 /** The entries of an `exports` map that carry code, in map order. `./package.json` is not one. */
@@ -323,5 +324,7 @@ if (process.argv[1] && process.argv[1].endsWith('api-snapshot.mjs')) {
     )
     process.exit(1)
   }
-  console.log(check ? '\nno drift' : `\nrecorded → ${GOLDEN_DIR} and the two types@<5.9 stubs`)
+  console.log(
+    check ? '\nno drift' : `\nrecorded → ${GOLDEN_DIR} and ${PACKAGES.length} types@<5.9 stubs`,
+  )
 }

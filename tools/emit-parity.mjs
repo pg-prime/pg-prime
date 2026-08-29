@@ -128,6 +128,7 @@ if (process.argv[1] && process.argv[1].endsWith('emit-parity.mjs')) {
   const packages =
     i === -1
       ? ['packages/pg-prime', 'packages/pg-prime-kit', 'packages/pg-prime-create']
+      ? ['packages/pg-prime', 'packages/pg-prime-kit', 'packages/pg-prime-testing']
       : [argv[i + 1]]
   let bad = 0
   for (const rel of packages) {

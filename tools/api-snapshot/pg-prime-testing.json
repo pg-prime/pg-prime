@@ -1,0 +1,71 @@
+{
+  "_source": "design/08 §2.3 — the committed public-surface golden. `node tools/api-snapshot.mjs` rewrites it; `--check` is the gate. `values` is Object.keys() of the built entry; `types` is the entry .d.ts read through the TypeScript 5.9.3 compiler API. `_arity` is each type's declared type-parameter count and exists only so the types@<5.9 stub can mirror it.",
+  "package": "@pg-prime/testing",
+  "entries": {
+    ".": {
+      "values": [
+        "DEFAULT_SERVER_PARAMETERS",
+        "SCRATCH_PREFIX",
+        "TEST_URL_ENV",
+        "createMockPool",
+        "databaseUrl",
+        "dockerAvailable",
+        "dropScratchDatabase",
+        "expectSql",
+        "isScratchDatabase",
+        "normaliseSql",
+        "onRealPostgres",
+        "probe",
+        "requiresConcurrency",
+        "requiresRealPostgres",
+        "scratchDatabase",
+        "scratchDatabaseName",
+        "serve",
+        "startPglite",
+        "startPostgres"
+      ],
+      "types": [
+        "CompilableLike",
+        "CompiledLike",
+        "MockError",
+        "MockField",
+        "MockPool",
+        "MockPoolOptions",
+        "MockQueryMode",
+        "MockResult",
+        "MockStep",
+        "PgliteBridge",
+        "PgliteLike",
+        "PgliteServer",
+        "PostgresServer",
+        "RecordedQuery",
+        "ScratchDatabase",
+        "SqlExpectation",
+        "StartPostgresOptions",
+        "TestDecl",
+        "TestServer"
+      ],
+      "_arity": {
+        "MockError": 0,
+        "MockField": 0,
+        "MockPool": 0,
+        "MockPoolOptions": 0,
+        "MockQueryMode": 0,
+        "MockResult": 0,
+        "MockStep": 0,
+        "RecordedQuery": 0,
+        "CompilableLike": 0,
+        "CompiledLike": 0,
+        "SqlExpectation": 0,
+        "TestDecl": 0,
+        "PgliteServer": 0,
+        "TestServer": 0,
+        "PgliteBridge": 0,
+        "PgliteLike": 0,
+        "PostgresServer": 0,
+        "ScratchDatabase": 0,
+        "StartPostgresOptions": 0
+      }
+    }
+  }
+}

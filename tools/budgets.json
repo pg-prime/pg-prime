@@ -36,6 +36,17 @@
       },
       "unpackedBytes": 512000,
       "zeroDependencies": true
+    },
+    "packages/pg-prime-testing": {
+      "_design": {
+        "_why": "design/08 §1.1's table budgets @pg-prime/testing at ≤ 300 KB unpacked and design/13 decision 4 repeats it, so the budget IS design's number — the same shape as the two entries above, where `unpackedBytes` is design/08 §1.2's own column and the measurement is printed beside it on every run. MEASURED 2026-08-30 at the first build (design/13 §3 T): 113 623 B unpacked in 31 files, 63% below design; 43 KB of that is .d.ts and .js and the rest is source maps. It is deliberately NOT ratcheted to the measurement the way the treeshake lines are: those are MINIFIED, so a 1 KB step is real headroom, whereas this line counts the comments tsc keeps — this package is about half docblock by line — and a budget 41 bytes above the measurement would turn a paragraph edit into a red CI job without telling anyone anything. The number to watch is the one the log prints.",
+        "unpackedBytes": 307200
+      },
+      "unpackedBytes": 307200,
+      "zeroDependencies": true,
+      "requiredPeers": ["pg-prime"],
+      "optionalPeers": ["@electric-sql/pglite", "@testcontainers/postgresql"],
+      "_whyPeers": "design/13 decision 3. Zero runtime `dependencies` — the assertion `zeroDependencies` switches on — with `pg-prime` the one REQUIRED peer (it is the package this one exists to test, and the real-server fixtures talk to the admin database through it rather than shipping a second wire client) and the two fixtures' backends OPTIONAL, each behind a lazy `import()` that fails with a sentence naming it. `size-budget.mjs` fails on any peer not named here, in either list, which is what keeps an optional peer from quietly becoming required."
     }
   },
   "treeshake": {
