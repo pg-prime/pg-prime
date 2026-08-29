@@ -26,7 +26,19 @@ import { ROOT, readAllPages } from './docs-blocks.mjs'
 const WRITE = process.argv.includes('--write')
 /** `--missing <entry>` prints one name per line, for whoever is writing that page. */
 const MISSING_FOR = process.argv[process.argv.indexOf('--missing') + 1]
-const CLI = join(ROOT, 'packages', 'pg-prime-kit', 'dist', 'cli.js')
+/**
+ * The binaries a `cli=` block can be goldened against.
+ *
+ * `cli="migrate generate --help"` is the kit's, which is the default and what every block written
+ * before `@pg-prime/create` existed means. A block whose FIRST word is a bin name selects that
+ * binary instead — `cli="create-pg-prime --help"` — which needs no new directive and leaves
+ * `docs/README.md`'s description ("what the built binary prints") true as written.
+ */
+const BINS = {
+  'pg-prime': join(ROOT, 'packages', 'pg-prime-kit', 'dist', 'cli.js'),
+  'create-pg-prime': join(ROOT, 'packages', 'pg-prime-create', 'dist', 'cli.js'),
+}
+const DEFAULT_BIN = 'pg-prime'
 
 const ANCHOR_HEADING = /^#{2,5}\s+`([A-Za-z_$][\w$]*)`\s*$/
 const ANCHOR_TAG = /<a id="([A-Za-z_$][\w$]*)"\s*(?:\/>|><\/a>)/g
@@ -38,7 +50,7 @@ const pages = readAllPages()
 
 // ── 1. API coverage ──────────────────────────────────────────────────────────
 const entries = new Map()
-for (const file of ['pg-prime.json', 'pg-prime-kit.json']) {
+for (const file of ['pg-prime.json', 'pg-prime-kit.json', 'pg-prime-create.json']) {
   const golden = JSON.parse(readFileSync(join(ROOT, 'tools', 'api-snapshot', file), 'utf8'))
   for (const [subpath, entry] of Object.entries(golden.entries)) {
     entries.set(`${golden.package}#${subpath}`, {
@@ -131,7 +143,8 @@ for (const page of pages) {
     if (typeof block.attrs.cli !== 'string') continue
     cliBlocks++
     const argv = block.attrs.cli.split(/\s+/)
-    const res = spawnSync(process.execPath, [CLI, ...argv], { encoding: 'utf8' })
+    const bin = BINS[argv[0]] === undefined ? DEFAULT_BIN : argv.shift()
+    const res = spawnSync(process.execPath, [BINS[bin], ...argv], { encoding: 'utf8' })
     const actual = (res.stdout + res.stderr).replace(/\s+$/, '')
     const expected = block.text.replace(/\s+$/, '')
     if (actual === expected) continue
@@ -144,7 +157,7 @@ for (const page of pages) {
       continue
     }
     failures.push(
-      `${page.page}:${block.line}: the block for \`pg-prime ${block.attrs.cli}\` is not what the ` +
+      `${page.page}:${block.line}: the block for \`${bin} ${argv.join(' ')}\` is not what the ` +
         `binary prints. Run \`node tools/docs-coverage.mjs --write\`.\n` +
         diff(expected, actual)
           .map((l) => `      ${l}`)

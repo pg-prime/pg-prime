@@ -1,0 +1,113 @@
+---
+title: "@pg-prime/create"
+description: npm create @pg-prime — every flag of the scaffolder, checked against its own --help.
+apiEntry: "@pg-prime/create#."
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+`npm create @pg-prime@latest my-app` writes a working pg-prime project into `my-app` and stops. It
+is one command, it installs no dependency tree of its own to run, and what it writes is **[the
+getting-started guide](/pg-prime/guides/getting-started/), file for file** — the same `schema.ts`,
+`db.ts`, `pg-prime.config.ts` and first query, held byte-equal to that page by a test.
+
+```sh
+npm  create @pg-prime@latest my-app
+pnpm create @pg-prime my-app
+yarn create @pg-prime my-app
+bun  create @pg-prime my-app
+```
+
+The binary is `create-pg-prime`, which is what each of those four ends up running.
+
+## Options
+
+Everything below is the binary's own `--help`: `tools/docs-coverage.mjs` runs it and fails if this
+page and the program disagree, so a flag that exists here exists there, spelled this way.
+
+{/* docs: cli="create-pg-prime --help" */}
+```text frame="terminal"
+create-pg-prime — scaffold a pg-prime project
+
+Usage: npm create @pg-prime@latest [directory]
+       create-pg-prime [directory] [options]
+
+Options:
+  --yes, -y         accept every default and ask nothing (implied when stdin is not a TTY)
+  --pm <manager>    npm | pnpm | yarn | bun (default: the one that ran this command)
+  --testing         write the vitest + PGlite fixture (default)
+  --no-testing      leave the tests out
+  --install         install dependencies when the files are written (default)
+  --no-install      write the files and stop
+  --git             run `git init` in the new directory (default)
+  --no-git          do not initialise a repository
+  --help, -h        print this help
+  --version         print the version
+
+The directory is created if it does not exist and must be empty if it does. What lands in it is
+the getting-started guide, file for file: schema.ts, db.ts, pg-prime.config.ts, index.ts, an empty
+migrations/, and — unless --no-testing — a transaction-per-test fixture on PGlite.
+
+Version 0.0.0
+```
+
+Four of those deserve a sentence:
+
+- **`--yes` is implied when stdin is not a TTY.** A CI job, a `curl … | sh`, or an editor task
+  runner has nobody to answer a prompt, and blocking on a question nothing will ever answer is a
+  hang rather than an error. Give the directory as an argument and every default applies.
+- **`--pm` is detected, not guessed.** All four package managers set `npm_config_user_agent` when
+  they run an initializer, so `pnpm create @pg-prime` writes pnpm commands into the README and the
+  "next steps" without being told. The value is only ever *printed* and used to run the install;
+  nothing in the scaffold depends on it.
+- **A non-empty directory is refused**, with the entries it found in the message. `.git` and
+  `.DS_Store` do not count as content, because `git init && npm create @pg-prime .` is a reasonable
+  order to do things in.
+- **`--no-install`** writes the files and prints the install command instead of running it, which
+  is what the smoke test in this repository does and what you want behind a corporate proxy.
+
+## What it writes
+
+| File | What it is |
+|---|---|
+| `schema.ts` | The two tables, the relations and one `defineSchema` — the getting-started block. |
+| `db.ts` | `pgPrime({ connection, schema })`. Synchronous, opens no socket. |
+| `index.ts` | The page's `first-query.ts`: an insert, a `valuesMany`, a join, and a `console.log`. |
+| `pg-prime.config.ts` | What the `pg-prime` binary reads. `DATABASE_URL` with a localhost fallback. |
+| `migrations/` | Empty, with a `.gitkeep`. `pg-prime migrate generate` fills it. |
+| `tsconfig.json` | The page's compiler options plus `outDir` and `include`. |
+| `package.json` | `pg-prime` + `pg` as dependencies, `@pg-prime/kit` + `typescript` as dev. |
+| `.env.example` | `DATABASE_URL=` with the same fallback `pg-prime.config.ts` uses. |
+| `.gitignore`, `README.md` | The usual, and a README that is the first-run sequence. |
+| `vitest.config.ts`, `test/setup.ts`, `test/index.test.ts` | With tests: [PGlite](/pg-prime/guides/testing/) started per test file, `migrations/` applied to it, and every case in a transaction that is always rolled back. |
+
+<Aside>
+The versions in the generated `package.json` are **pinned at build time** from the workspace this
+scaffolder was released from — `@pg-prime/create` is in the same fixed version group as `pg-prime`
+and `@pg-prime/kit` so that it ships every time they do. That is why `npm create @pg-prime@latest`
+is the spelling to use: `@latest` is what makes the pins current.
+</Aside>
+
+## The programmatic API
+
+The package exists for its `bin`. The same scaffolder is also exported, so a template repository or
+a monorepo generator can write the project without spawning a process:
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="scaffold"/> `scaffold` | `(options: ScaffoldOptions) => ScaffoldResult` | Writes the project. Throws if the directory exists and is not empty. |
+| <a id="parseArgs"/> `parseArgs` | `(argv: readonly string[]) => ParseResult` | The flags above, parsed. Errors are collected, never thrown, so `--help` still prints. |
+| <a id="VERSIONS"/> `VERSIONS` | `Versions` | The dependency ranges this build writes into a `package.json`. |
+| <a id="ScaffoldOptions"/> `ScaffoldOptions` | `{ dir: string; name: string; testing: boolean; packageManager: PackageManager }` | `dir` is absolute; `name` is the `package.json` name; nothing here is defaulted or prompted for. |
+| <a id="ScaffoldResult"/> `ScaffoldResult` | `{ dir: string; files: readonly string[] }` | Every file written, relative to `dir`, sorted. |
+| <a id="CliOptions"/> `CliOptions` | `{ dir?, help, version, yes, packageManager?, testing?, install?, git? }` | A flag that was not given is `undefined` rather than its default — which is what decides whether the prompt runs. |
+| <a id="ParseResult"/> `ParseResult` | `{ options: CliOptions; errors: readonly string[] }` | |
+| <a id="PackageManager"/> `PackageManager` | `'npm' \| 'pnpm' \| 'yarn' \| 'bun'` | |
+| <a id="Versions"/> `Versions` | `{ pgPrime, kit, testing, pg, typescript, typesNode, vitest, pglite }` | All strings, all npm ranges. |
+
+## Then what
+
+The scaffold's README is the first-run sequence, and it is short: point `DATABASE_URL` at a
+database, `pg-prime migrate generate --name init`, `pg-prime migrate apply`, run it.
+[Getting started](/pg-prime/guides/getting-started/) is the same sequence with the reasons, and
+[migrations end to end](/pg-prime/guides/migrations/) is every command the kit has.

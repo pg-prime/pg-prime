@@ -14,6 +14,19 @@ PostgreSQL in this project's CI, so what you read is what runs.
 
 ## Install
 
+One command writes everything on this page into a new directory — the same `schema.ts`, `db.ts`,
+`pg-prime.config.ts` and first query, plus a `migrations/` folder and, unless you say otherwise, a
+test fixture on PGlite:
+
+```sh
+npm create @pg-prime@latest my-app
+```
+
+It asks four questions (directory, tests, install, `git init`), takes `--yes` for all of them, and
+refuses a directory that is not empty. [Its reference page](/pg-prime/reference/create/) lists every
+flag. The scaffold's files **are** the blocks below — a test in this repository fails if they drift
+— so you can read on with the project already open, or set it up by hand:
+
 <Steps>
 
 1. Two packages, plus the PostgreSQL driver:

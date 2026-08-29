@@ -47,7 +47,7 @@ const TS_VERSION = JSON.parse(
  */
 function typeNamesByEntry() {
   const out = new Map()
-  for (const file of ['pg-prime.json', 'pg-prime-kit.json']) {
+  for (const file of ['pg-prime.json', 'pg-prime-kit.json', 'pg-prime-create.json']) {
     const golden = JSON.parse(readFileSync(join(ROOT, 'tools', 'api-snapshot', file), 'utf8'))
     for (const [subpath, entry] of Object.entries(golden.entries)) {
       const spec = subpath === '.' ? golden.package : `${golden.package}/${subpath.slice(2)}`

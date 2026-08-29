@@ -94,6 +94,7 @@ export default defineConfig({
             { label: 'pg-prime/codecs', slug: 'reference/codecs' },
             { label: 'pg-prime/driver', slug: 'reference/driver' },
             { label: '@pg-prime/kit', slug: 'reference/kit' },
+            { label: '@pg-prime/create', slug: 'reference/create' },
             { label: 'Errors', slug: 'reference/errors' },
             { label: 'CLI', slug: 'reference/cli' },
             { label: 'Config file', slug: 'reference/config' },
