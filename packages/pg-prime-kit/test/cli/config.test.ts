@@ -21,6 +21,7 @@ import {
   STRIP_TYPES_MARKER,
 } from "../../src/config/load.js";
 import { defineConfig } from "../../src/config/define.js";
+import { typeScriptSibling } from "../../src/config/ts-specifiers.js";
 import { runCli } from "../support/cli.js";
 import { EXIT } from "../../src/cli/exit.js";
 import { PKG_DIR } from "../support/cli.js";
@@ -217,6 +218,39 @@ describe("resolveConfig", () => {
     expect(() => resolveConfig({ ...base, config: {}, env: {} })).toThrow(
       /pass --url, set `url` in pg-prime.config.ts, or export PG_PRIME_DATABASE_URL/,
     );
+  });
+});
+
+/**
+ * design/12 F2 item j, at the grain of the decision: WHEN the hook rewrites a specifier.
+ *
+ * The end-to-end proof is `test/seed/seed.test.ts`, through the binary, because vitest resolves a
+ * dynamic `import()` through vite — which does this rewrite itself, so an in-process test of the
+ * hook would assert vite's behaviour and report it as Node's. What can be asserted here is the
+ * rule, against this package's own two trees: `src/` holds only TypeScript, the built tree holds
+ * the emitted `.js` beside it, and the second one must never be rewritten.
+ */
+describe("typeScriptSibling — the narrowest rule that can work", () => {
+  const inSrc = pathToFileURL(join(PKG_DIR, "src", "config", "load.ts")).href;
+  const inBuilt = pathToFileURL(join(PKG_DIR, "dist", "config", "load.js")).href;
+
+  it("rewrites a relative `.js` whose file is absent and whose TypeScript sibling is not", () => {
+    expect(typeScriptSibling("./define.js", inSrc)).toBe("./define.ts");
+    expect(typeScriptSibling("../config/define.js", inSrc)).toBe("../config/define.ts");
+  });
+
+  it("leaves everything else alone", () => {
+    // The built tree: the `.js` is really there, so a compiled project keeps its own build.
+    expect(typeScriptSibling("./define.js", inBuilt)).toBeNull();
+    // Neither file exists — that is the user's error, and it must keep the user's spelling.
+    expect(typeScriptSibling("./nowhere.js", inSrc)).toBeNull();
+    // Bare specifiers, extensionless ones, and one that is already TypeScript.
+    expect(typeScriptSibling("pg-prime", inSrc)).toBeNull();
+    expect(typeScriptSibling("node:fs", inSrc)).toBeNull();
+    expect(typeScriptSibling("./define", inSrc)).toBeNull();
+    expect(typeScriptSibling("./define.ts", inSrc)).toBeNull();
+    // A resolution with no parent is an entry point, which cannot be relative.
+    expect(typeScriptSibling("./define.js", undefined)).toBeNull();
   });
 });
 

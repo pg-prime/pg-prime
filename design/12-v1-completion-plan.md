@@ -1432,6 +1432,9 @@ each has a reproduction:
 | j | **A `.ts` seed cannot import `'../schema.js'`** — Node's type stripping resolves specifiers literally, so the conventional `.js` specifier fails at seed time; `'../schema.ts'` works | Documented on `guides/data-migrations` |
 | k | `verify.ts`'s header docblock still says `--from-checkpoint` is refused; K4 shipped it | comment only |
 
+> **f–k were fixed in F2** (2026-08-29) — see the F2 RESULT below. Rows **a–e** are still open;
+> they belong to `packages/pg-prime/src/{schema,query,session,errors}`, which F2 does not own.
+
 #### R10 — eleven mutations, eleven caught
 
 `node docs/.gen/mutations.mjs` (gitignored) applies each to the shipped tree, runs the gate that
@@ -1481,6 +1484,142 @@ all: a gate that runs nothing is a gate that passes.
   `docs.yml`'s deploy job fails on `main` with `Get Pages site failed`; `ci.yml`'s `docs` job is
   unaffected, so a broken page still fails a PR. Recorded in the workflow header, `docs/README.md`
   and `RELEASING.md` §1b.
+
+### F2 — RESULT (2026-08-29)
+
+Branch `worktree-agent-afa461cb838e265f2`, three commits on top of `cac7624`. All six of D's
+"found, reproduced, NOT fixed" rows that belong to the kit (**f–k**) are fixed, each with a
+regression test through the binary and with the page that documented the behaviour rewritten to
+describe the fix. `renamedValues` — `05` §5.1's last unbuilt spelling and K4's named open item — is
+built, and building it uncovered a second hole: **K4's `type`, `sequence` and `schema` rename hints
+reached an emitter that had no branch for them**, so `pgEnum(…, { renamedFrom })` produced an
+`unsupported_rename` error and a plan that renamed the type in its own head and never said so in
+SQL. All four kinds are emitted now.
+
+#### Numbers
+
+| Gate | Result |
+|---|---|
+| kit suite, PG 17 (`pgprime-k4` :54333) | **420 passed + 6 pooler-gated skips** / 57 files, 39.5 s (405 + 6 / 56 before) |
+| kit suite, PG 18 (`pgprime-pg18` :54332) | **420 passed + 6 skipped** / 57 files, 41.8 s |
+| `pnpm test` (tier 0) | **972** / 48 files — **5.20 s / 5.34 s / 6.10 s** over three runs (971 before: +1 for `renamedValues`'s declaration-time refusals) |
+| `pnpm test:live` (tier 1) | **1 743 + 6 skipped** / 82 files, 28.3 s |
+| `pnpm lint` · `pnpm format:check` · `pnpm typecheck` | green |
+| `pnpm build && pnpm api-snapshot && pnpm package:check` | green — 8/8 size gates, no api drift, emit parity 0 FAIL, `check:dts` clean, 4/4 tree-shake, pack smoke |
+| `pnpm docs:check` | green — typecheck **529 blocks / 45 pages** (2.3 s), examples **83 / 26 pages** (12.7 s), coverage **1 182 / 1 182 names (100 %)** + **40/40 hazard codes** + 15 CLI blocks + 215 links, build 46 pages (5.1 s) |
+| `pnpm api-snapshot` | `@pg-prime/kit` 174 → **175 values** / 166 → **167 types** (`ShadowStrategyError`); `pg-prime` unchanged in count (`PgEnumOptions` gains a type parameter) |
+| `tools/budgets.json` | one line moved: `packages/pg-prime.jsBytes` 891 904 → **894 976 B** (+2 069 measured), with the reason in `_overDesign`. No tree-shake budget moved |
+
+#### A row per item
+
+| # | Finding (D's words) | Fix | Test | Docs |
+|---|---|---|---|---|
+| **f** | shadow tier 1 unreachable from the config file: `{ url }` fails `STRING_KEYS`, `'postgres://…'` passes and then falls through to the `auto` ladder with no diagnostic | `ShadowStrategy` admits both spellings (the URL members are template literals, so the four keywords still complete in an editor); **`parseShadowStrategy` is the one parser** the flag, `loadConfig` and `provisionShadow` all use; a string that is neither a keyword nor a usable URL is a typed `ShadowStrategyError` naming the four tiers — never a demotion. `--shadow`'s three divergent copies in `generate`/`check`/`push` are now one call | `test/shadow/ladder.test.ts` (the bare URL reaches tier 1 **against an admin role that HAS CREATEDB**, so a regression comes back as tier 2; the `shadow_url_reset` diagnostic; two refusals) · `test/cli/config.test.ts` (both spellings, all four keywords, three refusals naming the file) | `reference/config` (the caution is gone; a tier-1 row in the table and the two spellings), `concepts/shadow-ladder`, `guides/migrations`, `reference/kit` |
+| **g** | `--by` advertises `$USER` and `buildPlan` records `"spike"` | `osUser()`: `USER`/`USERNAME`, then `os.userInfo()`, then `unknown`; `buildPlan` uses it for `generated.by` **and** for an acknowledgement's `by`. Help text unchanged, because it was already right | `test/cli/envelope.test.ts` — `baseline` under `USER=f2-os-user` writes that into `0000_baseline.plan.json`; `--by k1` still wins; a unit for all three fallbacks | `guides/migrations`'s `.plan.json` excerpt no longer shows `"by": "spike"` |
+| **h** | `--statement-timeout` reaches statements the plan exempts | one function, `resolveStatementTimeout(planned, override)`: **plan-null wins**, then the operator's value, then the plan's own. Used by `applySegments` (transactional) and by `runBare` + the batch runner (`txmode none`). The flag was inert for ordinary DDL and live for exactly the CIC/VALIDATE builds; it is now the other way round | `test/runner/timeouts.test.ts` — `apply --statement-timeout 1s` over a hand-written CIC file; the probe statements record `current_setting('statement_timeout')` **from inside the statement** (R14): `0` for the two exempt ones on both paths, `1s` for the capped ones, and the real CIC's `indisvalid` is checked | `operations/timeouts`, `operations/locks`, `guides/migrations`, `reference/config` (all four said the opposite) |
+| **i** | "1 row already exist", "1 decision need a human", "5 rows that is not baselined", "0 pendings" | `agrees(n, one, many)` beside the existing `plural(n, …)` in `cli/output.ts`, used at the four sites; `status` prints `0 pending` because `pending` is a state, not a countable noun. `status`'s `row(s)` hedge became `plural` too | `cli/envelope.test.ts` (`1 row already exists`, `0 files, 0 pending`, and `not.toContain("pendings")`) · `cli/authoring.test.ts` (`holds 1 row that is not baselined`, and the "N decisions need a human" line with the expected agreement **computed from the count**, so a regression fails in either direction) | `guides/migrations`, `guides/adopting`, `guides/checkpoints`, `guides/data-migrations`, `guides/getting-started` (five captured transcripts) |
+| **j** | a `.ts` seed cannot import `'../schema.js'` | **option 1, a resolve hook** (see the decision below): `module.registerHooks` in-thread, installed before `loadConfig`, `loadSchema`, `openSeedDb` and a `.ts` seed's own import. A **relative** specifier ending `.js`/`.mjs`/`.cjs` whose file is **not on disk** resolves to the `.ts`/`.mts`/`.cts` beside it | `test/seed/seed.test.ts` — a project whose **config** imports `./db/schema.js` (and reads a value off it, so the import is load-bearing) and whose **seed** imports `../db/schema.js`; `db seed` through the binary, and the row it wrote is read back · `test/cli/config.test.ts` pins the rule itself against this package's own source and built trees | `guides/data-migrations` (the caution's `.ts`-specifier advice is replaced by the working `.js` spelling and the hook), `06` §7.1 |
+| **k** | `verify.ts`'s docblock says `--from-checkpoint` is refused | rewritten: it ships, it is **off by default** (K4's divergence 5), and asking for it with no checkpoint on disk is still refused | — (comment) | — |
+
+#### `renamedValues`, and the three renames next to it
+
+`pgEnum(name, values, { renamedValues: { member: 'user' } })` — **`{ [newLabel]: oldLabel }`**, which
+is `05` §3.2's own spelling and the opposite of design/12 §4 F2's prompt (`{ old: 'new' }`); `05` is
+the record and §0 says a decision in `05` is not re-opened here. The keys are mapped over the
+declared labels (`PgEnumOptions<V>`), so a typo is a compile error, and three shapes that could
+never fire are refused at declaration time: a key the enum does not declare, an old label that is
+*also* still declared, and a self-map.
+
+Three things it needed beyond `annotationHints`:
+
+1. **An emitter branch.** `buildStatements` handled `table`/`column`/`constraint`/`index` and
+   answered `unsupported_rename` for everything else — which K4's `type`, `sequence` and `schema`
+   hints also reached. Four branches now: `ALTER TYPE … RENAME VALUE`, `ALTER TYPE … RENAME TO`,
+   `ALTER SEQUENCE … RENAME TO`, `ALTER SCHEMA … RENAME TO`.
+2. **The dependents.** PostgreSQL stores an enum constant as the `pg_enum` row's oid, so it
+   re-renders every DEFAULT, CHECK and index predicate when the label is renamed — but the *current*
+   IR was extracted before the rename and still says `'user'`, and `definitionsAgreeUnderRename`
+   compares literals byte for byte on purpose (`06` §3.3: the old textual rewriter edited CHECK
+   bodies). `diff/rename.ts` substitutes a renamed label **only** where it is immediately cast to
+   the renamed type, and **only** adopts the result when it reproduces PostgreSQL's own desired text
+   exactly. Measured: the plan went from **seven statements** (a `DROP INDEX` + `CREATE INDEX` and an
+   `ADD CONSTRAINT … NOT VALID` + `VALIDATE` for objects that were already correct — i.e. the table
+   scan and the index rebuild a rename exists to avoid) to **one**.
+3. **A hazard code, `BC105`** (`warn`): a client that still sends the old label gets `22P02`, so the
+   write path has the same window a column rename has. `06` §3.4, the reference table and
+   `docs-coverage`'s 39 → 40 all agree.
+
+R16's witness is `fixtures/diff/rename-enum-value/{current,desired}.sql` — a label named by a
+DEFAULT, a CHECK and a partial index — run with `--dump-oracle strict`, plus a **negative control**
+that runs the same pair with no annotation and asserts EN102 rather than a quiet rename.
+
+#### R10 — twelve mutations, twelve caught
+
+A throwaway `.f2-mutations.py` (not committed; the same shape as D's `docs/.gen/mutations.mjs`)
+applies each to the shipped tree, runs the gate that should catch it, and restores the file.
+Every row is the observed output.
+
+| # | Mutation | Gate | Observed |
+|---|---|---|---|
+| M1 | `shadow/ladder.ts` — the non-keyword string falls through to the `auto` ladder again | `shadow/ladder` | exit 1 · `expected 2 to be 1` (it came back as tier 2, which is the bug) |
+| M2 | `config/load.ts` — `shadow` is not validated | `cli/config` | exit 1 · `promise resolved "{ …(2) }" instead of rejecting` |
+| M3 | `plan/plan.ts` — `--by` falls back to `"spike"` | `cli/envelope` | exit 1 · `expected 'spike' to be 'f2-os-user'` |
+| M4 | `runner/apply.ts` — the old resolution order (`planned ?? override ?? "0"`) | `runner/timeouts` | exit 1 ×2 · `expected '1s' to be '0'` |
+| M5 | `cli/output.ts` — `agrees` always answers the plural | `cli/envelope` | exit 1 · `expected '1 rows already exist…' to contain '1 row already exists…'` |
+| M6 | `cli/commands/status.ts` — `0 pendings` comes back | `cli/envelope` | exit 1 · `expected 'migrate status — …' not to contain 'pendings'` |
+| M7 | `config/ts-specifiers.ts` — the hook never recognises a JavaScript extension | `seed/seed` | exit 1 · `Cannot find module …/db/schema.js imported from …/seeds/010_sibling.ts` |
+| M8 | `diff/ddl.ts` — the `enumLabel` rename branch is unreachable | `enum` | exit 1 · `expected [] to deeply equal [ Array(1) ]` (the plan is empty; the rename is silently dropped) |
+| M9 | `generate.ts` — `annotationHints` emits the label pair backwards | `enum` | exit 1 · the hint assertion, and the rename stops firing |
+| M10 | `diff/rename.ts` — the label substitution is skipped | `enum` | exit 1 · `expected [ …(7) ] to deeply equal [ Array(1) ]` — the seven-statement plan, exactly |
+| M11 | `diff/ddl.ts` — the `type` rename branch is unreachable again (K4's state) | `generate/annotations` | exit 1 · `unsupported_rename` is back: `expected [ Array(1) ] to deeply equal []` |
+| M12 | `schema/column.ts` — `pgEnum` drops the map instead of carrying it | `schema/k4-additions` (tier 0) | exit 1 · `expected undefined to deeply equal { member: 'user' }` |
+
+Two earlier attempts (M7 and M9 in their first spelling) failed to **compile** once mutated — a
+weaker signal than an assertion, and the same trap K4's record describes — and were rewritten into
+the forms above before being counted.
+
+#### Decisions worth recording
+
+- **Item j is option 1, a resolve hook, and not option 2 or 3.** Option 2 (documenting `.ts`
+  specifiers) needs TypeScript ≥ 5.7 with `allowImportingTsExtensions` **and**
+  `rewriteRelativeImportExtensions` before `tsc` will accept the file, and it makes the seed's
+  imports differ from every other import in the same project — the opposite of "keeps `pnpm
+  build`/`tsc` happy for the user's own project too". Option 3 (rewriting the file) is the kit
+  editing the user's source. The hook is narrow by construction: it fires only when the JavaScript
+  file is genuinely absent and the TypeScript one is genuinely there, so it cannot change a
+  resolution that already worked — a compiled project, and the kit's own `dist/`, never see it. On
+  Node 22.12–22.14 there is no `module.registerHooks` and the old `ERR_MODULE_NOT_FOUND` plus
+  `stripTypesAdvice`'s sentence stand; the engines floor is `>= 22.12` and `registerHooks` landed
+  in 22.15.
+- **`--statement-timeout` had to become live, not merely stop being wrong.** Making plan-null win
+  and nothing else would have left the flag a no-op on every statement, since each carries a
+  concrete `30s`. It now *replaces* the plan's ceiling for the statements the plan bounds, which is
+  what a repository with one genuinely slow `ALTER TABLE` wants, and `reference/config`'s claim that
+  the config key "fills the gap" for the long builds is rewritten rather than left standing.
+- **`ShadowStrategyError` is a new public name** (one reference row, one api-snapshot line), because
+  the flag, the config loader and the ladder must refuse the same typo with the same sentence, and
+  a caller that wants to catch it needs the class.
+- **`pull` was checked for the same `.js` problem and does not have it**: `pull/emit-ts.ts` emits one
+  file whose only imports are `pg-prime/schema` and `pg-prime/sql`, both bare.
+
+#### Not done / uncertain
+
+- **The `--by` value is not masked in any golden**, because no envelope carries it — `generated.by`
+  lives in the `.plan.json` on disk, which the test reads directly. `_mask.ts` is unchanged.
+- **`--shadow` on `verify` still takes a URL only** (`url === undefined ? "createdb" : { url }`). It
+  benefits from the better refusal, but `verify --shadow temp-schema` is parsed as a URL and refused
+  by `parseShadowUrl` rather than by the tier-3 message that would explain it better.
+- **The label substitution is text, and its safety is the equality check.** A CHECK body that
+  compares a *text* column against the same word (`note <> 'user'`) is deliberately not substituted
+  (no cast follows it), so it stays a real difference; a case that somehow slipped through would
+  fail the D6 proof rather than migrate wrongly, because the proof re-extracts and diffs.
+- **`renamedValues` is not wired into `--interactive`.** A label drop/add pair is not offered as a
+  rename candidate the way a column pair is (`renameCandidates` covers `column`/`table`/`type`/
+  `schema`), so the annotation has to be written by hand. EN102 names both label lists, which is the
+  pointer.
+- **Tier 0 measured 5.20–6.10 s** across three runs on a machine also running two PostgreSQL
+  containers; the first run of a cold transform cache is the 6.10 s one. The ceiling design/09 sets
+  is 5 s and the suite is at it, as K4 already recorded.
 
 ### P — Perf residue (`08` §5)
 
