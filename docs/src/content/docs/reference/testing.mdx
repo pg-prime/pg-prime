@@ -1,0 +1,554 @@
+---
+title: "@pg-prime/testing"
+description: Every export of the test-helper package — the mock pool, the two server fixtures, the guards and expectSql.
+apiEntry:
+  - "@pg-prime/testing#."
+  - "pg-prime#."
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+One entry point, three tiers. [Testing](/pg-prime/guides/testing/) is the guide that explains when
+to reach for which; this page is the surface.
+
+```sh
+pnpm add -D @pg-prime/testing
+```
+
+```ts
+import { createMockPool, expectSql, requiresConcurrency, startPglite } from '@pg-prime/testing'
+```
+
+<Aside>
+`pg-prime` is a **required** peer — this is the package that tests it, and the real-server fixtures
+talk to the admin database through it rather than shipping a second wire client.
+`@electric-sql/pglite` and `@testcontainers/postgresql` are **optional** peers, each imported
+lazily by the one fixture that needs it and each failing with a sentence that names it. The package
+itself has zero runtime dependencies and imports no test runner.
+</Aside>
+
+## Tier 0 — the mock pool
+
+### `createMockPool`
+
+{/* docs: signature */}
+```ts
+function createMockPool(options?: MockPoolOptions): MockPool
+```
+
+A `PgLikePool`-shaped object that records every statement and replays a script of answers. It goes
+straight into `pgPrime({ pool })`, so the query builder, the compiler, the executor and the codecs
+all run — only the socket is missing.
+
+Two behaviours worth stating outright:
+
+- the `pg_settings` handshake pg-prime issues once per physical connection is answered from
+  `DEFAULT_SERVER_PARAMETERS`, and neither consumes a script step nor
+  appears in `queries`;
+- a scripted step carrying a `code` is thrown as a **duck-typed** server error — pg-prime detects
+  one by shape and never by `instanceof`, so a `23505` arrives as `UniqueViolationError` with its
+  constraint name.
+
+It refuses `pg`'s Submittable seam (COPY, cursors) with a sentence pointing at `startPglite()`:
+those are protocol conversations, and a script cannot honestly stand in for one.
+
+### `MockPoolOptions`
+
+{/* docs: signature */}
+```ts
+interface MockPoolOptions {
+  readonly script?: readonly MockStep[]
+  readonly serverParameters?: Readonly<Record<string, string>>
+  readonly max?: number
+}
+```
+
+`script` is replayed in order; when it runs out every later statement gets an empty `SELECT`
+result. `serverParameters` is merged over `DEFAULT_SERVER_PARAMETERS` — pass
+`{ server_version_num: '150013' }` to change one and keep the rest. `max` becomes `pool.options.max`,
+which is what pg-prime reads for `capabilities.maxConnections` (default 10).
+
+### `MockPool`
+
+{/* docs: signature */}
+```ts
+interface MockPool extends PgLikePool {
+  readonly queries: readonly RecordedQuery[]
+  readonly texts: readonly string[]
+  readonly stepsUsed: number
+  readonly connectCount: number
+  readonly checkedOut: number
+  readonly ended: boolean
+  push(...steps: MockStep[]): void
+  reset(): void
+}
+```
+
+`texts` is `queries.map((q) => q.text)`, which is the assertion most golden tests actually want.
+`push` appends to the script mid-test; `reset` forgets every recorded statement and every
+unconsumed step. Every connection the pool hands out shares one recording and one script — the pool
+is the unit of assertion, because which pooled connection a statement landed on is not something a
+test that asserts SQL should have to know.
+
+### `RecordedQuery`
+
+{/* docs: signature */}
+```ts
+interface RecordedQuery {
+  readonly text: string
+  readonly values: readonly unknown[]
+  readonly mode: MockQueryMode
+  readonly binary: boolean
+  readonly rowMode: 'array' | undefined
+  readonly name: string | undefined
+  readonly client: number
+  readonly config: PgLikeQueryConfig
+}
+```
+
+The query config as it reached the driver. `values` are the binds **after** encoding; `client` is
+`0` for the first connection the pool handed out; `config` is the whole thing verbatim, for the
+rare assertion the named fields do not cover.
+
+### `MockQueryMode`
+
+{/* docs: signature */}
+```ts
+type MockQueryMode = 'simple' | 'unnamed' | 'named'
+```
+
+Design/02 §5.3's three protocol paths, recovered from the config: `named` when a prepared-statement
+name went out, `unnamed` when the extended protocol was forced without one — which pg-prime does
+even with zero parameters — and `simple` otherwise.
+
+### `MockStep`
+
+{/* docs: signature */}
+```ts
+type MockStep = MockResult | MockError | ((query: RecordedQuery) => MockResult | MockError)
+```
+
+One scripted answer, or a function that produces one from the statement it is answering. The
+function form answers a *class* of statement rather than a position, and so survives the code under
+test emitting one more query.
+
+### `MockResult`
+
+{/* docs: signature */}
+```ts
+interface MockResult {
+  readonly rows?: readonly (readonly (string | null)[])[]
+  readonly fields?: readonly (string | MockField)[]
+  readonly rowCount?: number | null
+  readonly command?: string
+}
+```
+
+**Wire rows**: an array per row, of the text PostgreSQL would send. `'1'`, not `1n` — the schema's
+codecs decode it, which is the point. `fields` is only needed when the result shape is *dynamic* (a
+bare `db.sql` fragment, whose codecs pg-prime picks from the OIDs the server reports); a statement
+built from the schema carries its own. A plain string is shorthand for a `text` column of that name.
+`rowCount` defaults to `rows.length` and `command` to `'SELECT'`.
+
+### `MockField`
+
+{/* docs: signature */}
+```ts
+interface MockField {
+  name: string
+  tableID: number
+  columnID: number
+  dataTypeID: number
+  dataTypeSize: number
+  dataTypeModifier: number
+  format: 'text' | 'binary'
+}
+```
+
+A column description, in `pg`'s own shape. Only `name` and `dataTypeID` are ever read.
+
+### `MockError`
+
+{/* docs: signature */}
+```ts
+interface MockError {
+  readonly code: string
+  readonly message?: string
+  readonly severity?: string
+  readonly detail?: string
+  readonly hint?: string
+  readonly position?: string | number
+  readonly schema?: string
+  readonly table?: string
+  readonly column?: string
+  readonly dataType?: string
+  readonly constraint?: string
+  readonly where?: string
+  readonly routine?: string
+}
+```
+
+The presence of `code` is what makes a step an error rather than a result. Everything else is
+optional and is passed through, so `constraint` / `table` / `detail` land in the message the error
+class prints.
+
+### `DEFAULT_SERVER_PARAMETERS`
+
+{/* docs: signature */}
+```ts
+const DEFAULT_SERVER_PARAMETERS: Readonly<Record<string, string>>
+```
+
+The GUCs pg-prime asserts on each physical connection, all at their defaults: `DateStyle`,
+`IntervalStyle`, `TimeZone`, `standard_conforming_strings`, `client_encoding`, `integer_datetimes`,
+`server_version`, `server_version_num`, `search_path`, `application_name`.
+
+## Tier 0 — `expectSql`
+
+### `expectSql`
+
+{/* docs: signature */}
+```ts
+function expectSql(query: CompilableLike, expected: SqlExpectation): CompiledLike
+```
+
+Assert a query's compiled SQL, and optionally its binds. Both texts are whitespace-normalised
+(`normaliseSql`), so a golden can be indented to fit the code around it.
+On a mismatch it throws an `Error` whose message is a **unified diff** — a SQL golden is read by
+eye, and the only useful failure output is the lines that differ. It returns the compiled artifact,
+so a test that wants to assert something else about it does not compile twice.
+
+Pair it with `compileOnly(schema)`, which builds an executor that can compile a query and cannot
+run one: the assertion then needs no database, no pool and no `await`.
+
+### `SqlExpectation`
+
+{/* docs: signature */}
+```ts
+interface SqlExpectation {
+  readonly text: string
+  readonly values?: readonly unknown[]
+}
+```
+
+`values` are the binds **as they go on the wire** — after the codec encoded them, which is what
+`Compiled.binds` carries. A `bigint` column's bind is `'1'`; a prepared query's unfilled placeholder
+shows as `:name`. Omit it to assert only the text.
+
+### `CompilableLike`
+
+{/* docs: signature */}
+```ts
+interface CompilableLike {
+  compile(): CompiledLike
+}
+```
+
+Anything that compiles to SQL. Every pg-prime query-builder terminal satisfies it.
+
+### `CompiledLike`
+
+{/* docs: signature */}
+```ts
+interface CompiledLike {
+  readonly sql: string
+  readonly binds: readonly unknown[]
+}
+```
+
+The slice of `Compiled<Row>` this assertion reads.
+
+### `normaliseSql`
+
+{/* docs: signature */}
+```ts
+function normaliseSql(sql: string): string
+```
+
+Trim every line, drop the blank ones, collapse internal runs of whitespace. Exported so a test
+asserting something `expectSql` does not cover — a fragment, an `EXPLAIN` plan — uses the same rule
+rather than a second one.
+
+## The guards
+
+### `TestDecl`
+
+{/* docs: signature */}
+```ts
+interface TestDecl {
+  (name: string, fn: () => unknown, timeout?: number): void
+  readonly skip: TestDecl
+}
+```
+
+The smallest shape both `it` and `it.skip` satisfy. vitest's `it`, `node:test`'s `test` and Jest's
+`it` all match it, which is how the guards stay runner-agnostic: nothing in this package imports a
+runner, and `skip` is recursive so a guard can return `it.skip` where a `TestDecl` is expected.
+
+### `requiresRealPostgres`
+
+{/* docs: signature */}
+```ts
+function requiresRealPostgres(it: TestDecl, reason: string): TestDecl
+```
+
+`it` when `PG_PRIME_TEST_URL` is set, `it.skip` when it is not — with `reason` written to **stderr**
+rather than through `console.*`, because a guard runs during collection and vitest drops console
+output from that phase unless a running task owns it, so every "loud" skip would in fact be silent.
+
+Say why. A skip whose reason is "PGlite" is a skip nobody can ever re-evaluate.
+
+### `requiresConcurrency`
+
+{/* docs: signature */}
+```ts
+function requiresConcurrency(it: TestDecl): TestDecl
+```
+
+The specialisation for [limit 1](/pg-prime/guides/testing/#limit-1-it-is-one-backend): advisory-lock
+contention, `40001` and the retry policy, deadlock detection, `SKIP LOCKED`, row- and DDL-lock
+waiting, `lock_timeout` under contention, a killed backend, cross-session `LISTEN`/`NOTIFY`, pool
+semantics and pooler modes. PGlite multiplexes every socket onto one backend, so a test for any of
+them does not fail there — it **passes, for the wrong reason**.
+
+### `onRealPostgres`
+
+{/* docs: signature */}
+```ts
+function onRealPostgres(): boolean
+```
+
+The same question outside a guard, read at call time so a test may set the variable and re-ask. An
+empty string counts as unset.
+
+### `TEST_URL_ENV`
+
+{/* docs: signature */}
+```ts
+const TEST_URL_ENV: string
+```
+
+`'PG_PRIME_TEST_URL'`. The one environment variable this package reads, exported so a suite never
+has to spell it.
+
+## Tier 1 — PGlite
+
+### `startPglite`
+
+{/* docs: signature */}
+```ts
+function startPglite(): Promise<PgliteServer>
+```
+
+Boot one PGlite behind one wire-protocol socket on an **ephemeral port**, so the real `pg` driver
+talks to the embedded server over the real protocol. Call it from the runner's per-file setup:
+PGlite is one backend, and one shared instance leaks temp tables, `set_config`, sequences and open
+transactions between files.
+
+It pins the server's session `TimeZone` to UTC — PGlite takes it from the host and ignores libpq
+startup options, so this is the only place it can be pinned — and restores the process's own `TZ`
+immediately. The version probe goes through PGlite's own handle, so the fixture needs no wire
+client of its own.
+
+`@electric-sql/pglite` is imported lazily here and nowhere else.
+
+### `TestServer`
+
+{/* docs: signature */}
+```ts
+interface TestServer {
+  readonly url: string
+  readonly versionNum: number
+  readonly version: string
+  readonly kind: 'pglite' | 'postgres'
+  stop(): Promise<void>
+}
+```
+
+What both fixtures hand back, so the code under test never knows which it got. `versionNum` is
+`server_version_num` (`180003`), the number to gate a version-dependent test on; `kind` is there for
+a test that must say "not on PGlite" in its own words.
+
+### `PgliteServer`
+
+{/* docs: signature */}
+```ts
+interface PgliteServer extends TestServer {
+  readonly kind: 'pglite'
+}
+```
+
+### `serve`
+
+{/* docs: signature */}
+```ts
+function serve(db: PgliteLike, host?: string): Promise<PgliteBridge>
+```
+
+The bridge on its own, for a PGlite you constructed yourself — with extensions, say, which must be
+injected at construction. It does three things a naive bridge does not: strips the **spurious
+`ReadyForQuery`** PGlite sends after an extended-protocol error (without which `pg` believes the
+next query already finished and the connection dies, on roughly half of all erroring parameterised
+queries); serialises every message onto the one backend; and refuses to let a second socket work
+inside another socket's transaction, which is the one-backend lie made loud.
+
+### `PgliteBridge`
+
+{/* docs: signature */}
+```ts
+interface PgliteBridge {
+  readonly port: number
+  close(): Promise<void>
+}
+```
+
+### `PgliteLike`
+
+{/* docs: signature */}
+```ts
+interface PgliteLike {
+  execProtocolRaw(message: Uint8Array): Promise<Uint8Array>
+  isInTransaction(): boolean
+}
+```
+
+The two methods the bridge drives, declared structurally rather than imported — the same reason
+pg-prime's driver duck-types `pg`. A `.d.ts` that named `@electric-sql/pglite` would make the
+optionality a lie for every consumer whose type-checker reads it. `PGlite` satisfies this.
+
+## Tier 2 — a real server
+
+### `startPostgres`
+
+{/* docs: signature */}
+```ts
+function startPostgres(options?: StartPostgresOptions): Promise<PostgresServer>
+```
+
+Start a PostgreSQL container through `@testcontainers/postgresql` (imported lazily) and wait for it
+to accept connections. Use it when the suite must own the server: a major version, an extension, a
+`postgresql.conf` setting.
+
+### `StartPostgresOptions`
+
+{/* docs: signature */}
+```ts
+interface StartPostgresOptions {
+  readonly image?: string
+  readonly settings?: Readonly<Record<string, string>>
+}
+```
+
+`image` defaults to `postgres:17`, the version CI's `pg` job runs. `settings` become `-c key=value`;
+`TimeZone=UTC` is always applied first, for the reason `startPglite` pins `TZ`.
+
+### `PostgresServer`
+
+{/* docs: signature */}
+```ts
+interface PostgresServer extends TestServer {
+  readonly kind: 'postgres'
+}
+```
+
+### `dockerAvailable`
+
+{/* docs: signature */}
+```ts
+function dockerAvailable(): Promise<boolean>
+```
+
+Is a Docker daemon answering? Asked once and cached. A contributor without Docker should still get
+a green run for everything else, and this is what a suite's own skip guard reads.
+
+### `scratchDatabase`
+
+{/* docs: signature */}
+```ts
+function scratchDatabase(adminUrl: string): Promise<ScratchDatabase>
+```
+
+Create an empty `pgprime_test_<random>` on the server `adminUrl` points at, and hand back a URL for
+it. The cheap tier-2 path: `CREATE DATABASE` is ~100 ms and needs no image. The database part of
+`adminUrl` is used to connect and is replaced in the URL that comes back.
+
+### `ScratchDatabase`
+
+{/* docs: signature */}
+```ts
+interface ScratchDatabase {
+  readonly url: string
+  readonly name: string
+  drop(): Promise<void>
+}
+```
+
+`drop()` is idempotent and safe to call from an `afterAll` that may run twice.
+
+### `dropScratchDatabase`
+
+{/* docs: signature */}
+```ts
+function dropScratchDatabase(adminUrl: string, name: string): Promise<void>
+```
+
+Terminate whatever is still connected, then drop. **It refuses any name that is not
+`pgprime_test_*`**, before it opens a connection. That refusal is not decoration: the admin URL a
+suite is handed is frequently a developer's own server, this function kills sessions, and "the test
+suite dropped my database" is a bug you get to make once.
+
+### `SCRATCH_PREFIX`
+
+{/* docs: signature */}
+```ts
+const SCRATCH_PREFIX: string
+```
+
+`'pgprime_test_'` — the one prefix this module creates, and the only one it will drop. `pgprime_`
+rather than `pg_`, because PostgreSQL reserves `pg_` for system schemas (42939).
+
+### `scratchDatabaseName`
+
+{/* docs: signature */}
+```ts
+function scratchDatabaseName(): string
+```
+
+`pgprime_test_<12 hex>` — short enough to read in `\l`, wide enough not to collide.
+
+### `isScratchDatabase`
+
+{/* docs: signature */}
+```ts
+function isScratchDatabase(name: string): boolean
+```
+
+`true` iff `name` is one of ours. Exported because the refusal is worth asserting in a test of your
+own.
+
+### `probe`
+
+{/* docs: signature */}
+```ts
+function probe(url: string): Promise<{ versionNum: number; version: string }>
+```
+
+`server_version_num` and `version()` of whatever answers at `url`. What both fixtures use to fill in
+`TestServer`, and what a suite pointed at `PG_PRIME_TEST_URL` uses to gate a version-dependent
+case.
+
+### `databaseUrl`
+
+{/* docs: signature */}
+```ts
+function databaseUrl(url: string, database: string): string
+```
+
+Replace the database name in a `postgres://` URL, keeping the host, credentials and query string.
+
+## Where to go next
+
+- [Testing](/pg-prime/guides/testing/) — the guide: which tier proves what, and the two PGlite
+  limits that make the guards necessary.
+- [`pg-prime/driver`](/pg-prime/reference/driver/) — `PgLikePool`, the seam `createMockPool`
+  implements.

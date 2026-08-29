@@ -47,7 +47,7 @@
     "docs": {
       "entry": ["src/snippets/**/*.ts"],
       "project": ["**/*.{ts,mjs}"],
-      "ignoreDependencies": ["@pg-prime/kit", "@electric-sql/pglite"]
+      "ignoreDependencies": ["@pg-prime/kit", "@pg-prime/testing", "@electric-sql/pglite"]
     }
   },
   "rules": {

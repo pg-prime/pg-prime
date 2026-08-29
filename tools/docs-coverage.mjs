@@ -50,7 +50,7 @@ const pages = readAllPages()
 
 // ── 1. API coverage ──────────────────────────────────────────────────────────
 const entries = new Map()
-for (const file of ['pg-prime.json', 'pg-prime-kit.json', 'pg-prime-create.json']) {
+for (const file of ['pg-prime.json', 'pg-prime-kit.json', 'pg-prime-create.json', 'pg-prime-testing.json']) {
   const golden = JSON.parse(readFileSync(join(ROOT, 'tools', 'api-snapshot', file), 'utf8'))
   for (const [subpath, entry] of Object.entries(golden.entries)) {
     entries.set(`${golden.package}#${subpath}`, {

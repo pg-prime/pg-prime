@@ -17,6 +17,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.7",
     "@pg-prime/kit": "workspace:*",
+    "@pg-prime/testing": "workspace:*",
     "@types/pg": "^8.21.0",
     "pg": "^8.23.0",
     "pg-prime": "workspace:*"

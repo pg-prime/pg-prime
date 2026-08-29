@@ -101,6 +101,9 @@ importers:
       '@pg-prime/kit':
         specifier: workspace:*
         version: link:../packages/pg-prime-kit
+      '@pg-prime/testing':
+        specifier: workspace:*
+        version: link:../packages/pg-prime-testing
       '@types/pg':
         specifier: ^8.21.0
         version: 8.21.0
