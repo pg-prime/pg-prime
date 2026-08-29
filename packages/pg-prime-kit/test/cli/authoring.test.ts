@@ -51,7 +51,7 @@ describe("the author-side commands, through the binary", () => {
   afterAll(async () => {
     for (const p of projects) await p.dispose().catch(() => undefined);
     for (const d of databases) await destroyDatabase(d).catch(() => undefined);
-  });
+  }, T);
 
   /* ------------------------------- generate ------------------------------- */
 

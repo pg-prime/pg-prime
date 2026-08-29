@@ -44,7 +44,7 @@ describe("Tier R: the repeatables pass, through the binary", () => {
   afterAll(async () => {
     if (p) await p.dispose().catch(() => undefined);
     await destroyDatabase(database).catch(() => undefined);
-  });
+  }, T);
 
   const cli = (...args: readonly string[]): Promise<{ code: number; stdout: string; stderr: string }> =>
     runCli(["migrate", ...args, "--config", p.config, "--output", "json"]);

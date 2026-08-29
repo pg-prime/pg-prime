@@ -41,7 +41,7 @@ describe("the JSON envelope, through the binary", () => {
 
   afterAll(async () => {
     for (const d of databases) await destroyDatabase(d).catch(() => undefined);
-  });
+  }, T);
 
   const fresh = async (name: string): Promise<string> => {
     const database = `pgprime_k1_cli_${name}`;
