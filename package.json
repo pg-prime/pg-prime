@@ -21,6 +21,7 @@
     "docs:build": "pnpm --filter @pg-prime/docs build:site",
     "docs:typecheck": "node tools/docs-typecheck.mjs",
     "docs:examples": "node tools/docs-examples.mjs",
+    "docs:examples:pg": "node tools/docs-examples.mjs --pg",
     "docs:coverage": "node tools/pooler-matrix.mjs --check && node tools/docs-coverage.mjs",
     "docs:check": "pnpm docs:typecheck && pnpm docs:examples && pnpm docs:coverage && pnpm docs:build",
     "changeset": "changeset",

@@ -288,6 +288,36 @@ export function checkedBlocks(page) {
   return page.blocks.filter((b) => CHECKED_LANGS.has(b.lang) && !b.attrs['skip-check'])
 }
 
+/**
+ * A block the PGlite tier runs: it has a file name and nothing excludes it.
+ *
+ * `pg-only` excludes it here and includes it in `isPgExample` — the two tiers partition the
+ * `title=` blocks, so an example runs on exactly one of them.
+ */
 export function isExample(block) {
-  return typeof block.attrs.title === 'string' && !block.attrs['no-run']
+  return (
+    typeof block.attrs.title === 'string' && !block.attrs['no-run'] && isPgExample(block) === null
+  )
+}
+
+/**
+ * The real-server tier (design/13 decision 10): `'pg'`, `'pgbouncer'`, or `null` for a block that
+ * is not on it.
+ *
+ * `pg-only` is a bare attribute for an example that needs a real PostgreSQL — COPY, two sessions,
+ * a `CancelRequest` somebody honours — and `pg-only="pgbouncer"` for one that needs a transaction
+ * pooler in front of it. `tools/docs-examples.mjs --pg` runs them; `docs-typecheck` compiles them
+ * like any other `ts` block, because the reason they cannot run is never that they do not compile.
+ */
+export function isPgExample(block) {
+  const raw = block.attrs['pg-only']
+  if (raw === undefined || raw === false) return null
+  const value = raw === true ? 'pg' : String(raw)
+  if (value !== 'pg' && value !== 'pgbouncer') {
+    throw new Error(
+      `${block.page}:${block.line}: pg-only="${value}" is not a tier — ` +
+        'write `pg-only` (a real PostgreSQL) or `pg-only="pgbouncer"` (through the pooler)',
+    )
+  }
+  return value
 }
