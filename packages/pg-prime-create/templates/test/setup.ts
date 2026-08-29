@@ -25,5 +25,10 @@ try {
 }
 
 afterAll(async () => {
+  // The pool first, then the server: a pooled connection that is still open when PGlite goes away
+  // surfaces as an `error` on the pool, and vitest reports that as an unhandled exception. `db.ts`
+  // is imported here rather than at the top because it reads DATABASE_URL when it loads.
+  const { db } = await import('../db.js')
+  await db.end()
   await server.stop()
 })

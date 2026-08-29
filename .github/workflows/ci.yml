@@ -166,7 +166,9 @@ jobs:
     # Node is pinned rather than matrixed: the artifact is compiler output, not runtime behaviour,
     # and the gzip baselines in tools/budgets.json are measured against one zlib. `pack-smoke`
     # reaches the npm registry twice (typescript 5.9.3, then 5.8.3). Measured 14.4 s on the design
-    # machine against §4.6's 2-minute budget.
+    # machine against §4.6's 2-minute budget — and 37 s once design/13 appended `create-smoke`, which
+    # scaffolds a project from the @pg-prime/create tarball and installs it from the other three
+    # (one more registry round trip, for typescript, pg and @types/node).
     name: package (design/08 §4.6)
     runs-on: ubuntu-latest
     steps:
