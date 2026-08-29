@@ -1010,7 +1010,7 @@ type-stripping codes. Local-only: the kit's `pg_dump` fallback container default
 
 ### F3 — fix round (2026-08-30)
 
-Branch `worktree-agent-a0733e9c400244d03`, six commits, on `1b2d9ec`. The four items of *Carried
+Branch `worktree-agent-a0733e9c400244d03`, on `1b2d9ec`. The four items of *Carried
 to the fix round* above, plus the local-only note, plus one budget line the four of them broke.
 
 #### 1. `pgPrime({ connection })` attaches no `error` listener (T)
@@ -1232,7 +1232,7 @@ command with the exit code printed, **exit 0**:
 | build | pg-prime 2 313.9 KB · kit 1 751.4 KB · testing 111.0 KB · create 65.0 KB | pg-prime **2 326.0 KB** · kit 1 760.3 KB · testing 111.0 KB · create 65.0 KB |
 | package:check | 12/12 · no api drift | **12/12** (`jsBytes` re-baselined — see above) · api-snapshot **no drift**, four goldens · emit-parity · check-dts · treeshake · pack-smoke · create-smoke |
 | bench:types | green | green (`packageDtsBytes` re-baselined) — headline instantiations **82 073** / **133 996**, budget 200 000 |
-| bench:compile | green | green — `statement · production / pre-session path` **2.013**, budget 2.3, unmoved; production bytes 3 112 B, budget 3 400 |
+| bench:compile | green | green — `statement · production / pre-session path` **1.987**, budget 2.3, unmoved; production bytes 3 113 B, budget 3 400 |
 | docs:check | 575 blocks / 47 pages · 95 PGlite · 1 230/1 230 · R22 33 | **575 blocks / 47 pages** · **95** on PGlite from 26 pages · **1 230 / 1 230 names**, 40/40 hazard codes, 232 links, **R22 33 explained, 0 waived** · build 48 pages |
 | docs:examples:pg | 10 examples / 5 pages | **10 examples from 5 pages** (7 `pg-only`, 3 `pg-only="pgbouncer"`) |
 
@@ -1240,12 +1240,16 @@ The +25 tests are this round's: **10** at tier 0 (`test/session/copy.test.ts` 8,
 `test/query/meta.test.ts` 2), **5** at tier 1 (`test/driver/cancel.test.ts`), **6** in `test/pg/`
 (`pool-error.test.ts` 2, the protocol-cancel case, the three COPY cases) and **4** in the kit
 (`test/cli/config.test.ts`). Tier 0 stays under `08` §4's 5 s ceiling; 4.24 → 4.3 s is one more
-file to transform, and three runs on this machine spread 4.31–4.76 s with the same 1 023 tests, so
+file to transform, and five runs on this machine spread 4.19–4.76 s with the same 1 023 tests, so
 the ceiling is what to watch and not the delta.
 
-Six commits, in order: the pool listener · COPY's insertable default · the protocol cancel · the
-kit's sub-22.15 sentence · the two budget re-baselines · this record. The chain above was run
-whole, from `pnpm lint` to `pnpm docs:examples:pg`, in 231 s.
+The commits, in order: the pool listener · COPY's insertable default · the protocol cancel · the
+kit's sub-22.15 sentence · the two budget re-baselines · this record · one comment-only SQLSTATE
+correction in the COPY test (a generated *expression* column in COPY is `42P10`, not the `428C9`
+an identity column gives an INSERT — both measured). The chain above was run whole, from
+`pnpm lint` to `pnpm docs:examples:pg`, three times end to end at 231, 235 and 233 s; the numbers
+in the table are the last of them, and `statement · production / pre-session path` read
+2.013 · 2.01 · 1.987 across the three.
 
 **Nothing is left open for the integrator** beyond the budget note above. `docs:examples:pg` and
 `docs:check` both need the two URLs; the kit's suite needs `PG_PRIME_SPIKE_CONTAINER` on a machine
