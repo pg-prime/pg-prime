@@ -67,6 +67,7 @@ import {
   sampleAsync,
   samplePaired,
 } from './sampler.mjs'
+import { budgetGateSelfTest, budgetLinkChecks } from './budget-gate.mjs'
 import { statementPathArms } from './statement-path.mjs'
 import { probeEmitterStructure } from './structure.mjs'
 import { sameValue } from './e2e.mjs'
@@ -642,45 +643,22 @@ if (e2e) {
 
 // ── R9's other half: a budget may not drift past its design number in silence ─
 //
-// Every gate above compares a MEASUREMENT with a budget. Nothing there notices the other way a
-// perf gate dies: someone edits `budget.json`, the run goes green, and the design number quietly
-// stops being the target. `_designLinked` names which budget corresponds to which design figure,
-// and a budget looser than its design figure has to be listed in `_overDesign` with a reason. That
-// makes "loosening a budget is a reviewed change to the JSON with a reason" a gate rather than a
-// convention — and the entries that exist today are exactly WS7's two honest misses.
-const at = (obj, path) =>
-  path.split('.').reduce((o, k) => (o === undefined ? undefined : o[k]), obj)
-/** `min` metrics are looser when SMALLER; everything else is looser when larger. */
-const LOWER_IS_LOOSER = new Set(['compile.simpleSelectsPerSecond'])
-for (const [metric, designKey] of Object.entries(B._designLinked)) {
-  if (metric.startsWith('_')) continue
-  const budgeted = at(B, metric)
-  const designed = design[designKey]
-  if (budgeted === undefined || designed === undefined) {
-    checks.push({
-      name: `budget · ${metric} is linked to a design number`,
-      measured: null,
-      limit: designKey,
-      ok: false,
-    })
-    continue
-  }
-  // A per-case map (the e2e budgets) is checked entry by entry against the same design figure, so
-  // widening one of the nine is as visible as widening a scalar.
-  const entries = typeof budgeted === 'object' ? Object.entries(budgeted) : [[metric, budgeted]]
-  const justified = Object.prototype.hasOwnProperty.call(B._overDesign, metric)
-  const worst = entries.reduce(
-    (acc, [, v]) => (LOWER_IS_LOOSER.has(metric) ? Math.min(acc, v) : Math.max(acc, v)),
-    LOWER_IS_LOOSER.has(metric) ? Infinity : -Infinity,
-  )
-  const looser = LOWER_IS_LOOSER.has(metric) ? worst < designed : worst > designed
-  checks.push({
-    name: `budget · ${metric} vs design (${designed})`,
-    measured: worst,
-    limit: justified ? `${designed} — waived in _overDesign` : designed,
-    ok: !looser || justified,
-  })
+// The logic is `./budget-gate.mjs` rather than thirty lines here, and it has controls, because
+// design/12 §4 P's R10 pass mutated it three ways — treat every budget as waived, read only the
+// first entry of a per-case map, forget which metrics are floors — and all three survived every
+// check in the repository. Its controls run here, on every invocation including `--compile-only`:
+// a gate whose own logic is untested is a gate that can stop gating in silence.
+for (const failure of budgetGateSelfTest()) {
+  checks.push({ name: `budget-gate · ${failure}`, measured: null, limit: 'must hold', ok: false })
 }
+checks.push({
+  name: 'budget-gate · the ten controls on the _designLinked / _overDesign gate',
+  measured: 10 - budgetGateSelfTest().length,
+  limit: 10,
+  mode: 'min',
+  ok: budgetGateSelfTest().length === 0,
+})
+for (const c of budgetLinkChecks(B)) checks.push(c)
 
 // ── print ────────────────────────────────────────────────────────────────────
 function medianOf(xs) {

@@ -147,7 +147,11 @@ const table = (label, side) =>
  * every night until somebody mutes the automation. Naming the gate means the same regression
  * dedupes and a *different* one still gets its own issue.
  */
-const title = rows.length === 0 ? '' : `perf regression: ${rows[0].name}`
+function titleFor(regressed) {
+  return regressed.length === 0 ? '' : `perf regression: ${regressed[0].name}`
+}
+
+const title = titleFor(rows)
 
 const body = [
   `design/08 §5: "a >${Math.round(THRESHOLD * 100)}% regression opens an issue automatically". This is that issue.`,
@@ -232,14 +236,57 @@ function selfTest() {
     ],
   ]
   let bad = 0
-  for (const [label, after, shouldFire] of cases) {
-    const fired = regressions(index(base), index(after), 0.25).length > 0
-    const ok = fired === shouldFire
-    if (!ok) bad++
-    console.log(
-      `${ok ? 'PASS' : 'FAIL'}  ${label.padEnd(56)} ${fired ? 'fires' : 'quiet'} (wanted ${shouldFire ? 'fires' : 'quiet'})`,
+  const fail = (label, detail) => {
+    bad++
+    console.log(`FAIL  ${label.padEnd(56)} ${detail}`)
+  }
+  const pass = (label, detail) => {
+    console.log(`PASS  ${label.padEnd(56)} ${detail}`)
+  }
+
+  // The issue title is the DEDUPLICATION KEY, so it has to be stable for the same regression and
+  // different for a different one. A title carrying the count or the percentage looks harmless
+  // and quietly files a fresh issue every night.
+  const worse30 = regressions(
+    index(base),
+    index(moved('e2e · point select by PK · p50 orm/raw', 1.3)),
+    THRESHOLD,
+  )
+  const worse60 = regressions(
+    index(base),
+    index(moved('e2e · point select by PK · p50 orm/raw', 1.6)),
+    THRESHOLD,
+  )
+  const other = regressions(
+    index(base),
+    index(moved('compile · bytes/op, build+compile', 1.3)),
+    THRESHOLD,
+  )
+  const t = titleFor(worse30)
+  if (t === titleFor(worse60)) {
+    pass('the title is stable across two sizes of the same regression', `"${t}"`)
+  } else {
+    fail(
+      'the title is stable across two sizes of the same regression',
+      `"${t}" vs "${titleFor(worse60)}"`,
     )
   }
-  console.log(bad === 0 ? `\n${cases.length}/${cases.length} controls behaved` : `\n${bad} FAILED`)
+  if (t !== titleFor(other)) {
+    pass('a different gate gets a different title', `"${titleFor(other)}"`)
+  } else {
+    fail('a different gate gets a different title', `both "${t}"`)
+  }
+
+  for (const [label, after, shouldFire] of cases) {
+    // `THRESHOLD`, not a literal 0.25: a control that hard-codes the number cannot notice the
+    // default moving away from design/08 §5's.
+    const fired = regressions(index(base), index(after), THRESHOLD).length > 0
+    const detail = `${fired ? 'fires' : 'quiet'} (wanted ${shouldFire ? 'fires' : 'quiet'})`
+    if (fired === shouldFire) pass(label, detail)
+    else fail(label, detail)
+  }
+  console.log(
+    bad === 0 ? `\n${cases.length + 2}/${cases.length + 2} controls behaved` : `\n${bad} FAILED`,
+  )
   process.exit(bad === 0 ? 0 : 1)
 }

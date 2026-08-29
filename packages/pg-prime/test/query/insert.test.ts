@@ -148,6 +148,26 @@ describe('§2.6 — the two bulk strategies and the automatic switch', () => {
     )
   })
 
+  it('every row keeps its OWN values, in order', () => {
+    // The SQL text of a multi-row VALUES is the same whatever the values are — `($1,$2,$3),
+    // ($4,$5,$6)` — so a golden on the text cannot see a row loop that hands every row the same
+    // cells. design/12 §4 P item 2 rewrote that loop for allocation; this is the assertion that
+    // says the rewrite still writes three different rows (R10 M15, which survived until it
+    // existed).
+    const built = db.insertInto(schema.h.users).valuesMany(rowsOf(3))
+    expect(vals(built)).toStrictEqual([
+      'u0',
+      'n0',
+      'member',
+      'u1',
+      'n1',
+      'member',
+      'u2',
+      'n2',
+      'member',
+    ])
+  })
+
   it('unnest is one parameter per column, whatever the row count', () => {
     const built = db.insertInto(schema.h.users).valuesMany(rowsOf(3), { strategy: 'unnest' })
     expect(sqlOf(built)).toBe(

@@ -75,6 +75,7 @@ import {
 } from '../../src/errors/index.js'
 import { HookBus, SEMCONV, spanAttributes, spanName } from '../../src/observe/index.js'
 import { POOLER_MODES, POOLER_PROFILES } from '../../src/pooler/index.js'
+import { eq } from '../../src/query/ops.js'
 import { compileOnly, pgPrime } from '../../src/query/run.js'
 import { defineSchema, pgTable } from '../../src/schema/index.js'
 import { resolveSessionSettings } from '../../src/session/gucs.js'
@@ -1744,13 +1745,15 @@ describe('the per-statement fast path still reports everything (design/12 §4 P 
     const err = await db
       .from(schema.h.users)
       .select(({ users: u }) => ({ id: u.id }))
+      .where(({ users: u }) => eq(u.id, 7n))
       .execute()
       .catch((e: unknown) => e)
     driver.failOn = undefined
     // `paramTypes` is lazy now, and `07` §4.3 calls it "always present, always safe" — an OID
     // names no user value, so it survives redaction and is the one field that tells you which
-    // type the server was handed. A lazy accessor that nobody forced would drop it silently.
-    expect((err as { paramTypes?: readonly number[] }).paramTypes).toStrictEqual([])
+    // type the server was handed. A lazy accessor that nobody forced would hand back nothing, so
+    // the query carries a bind: `int8` is 20.
+    expect((err as { paramTypes?: readonly number[] }).paramTypes).toStrictEqual([20])
     expect((err as { sql?: string }).sql).toContain('select')
   })
 
