@@ -1,5 +1,7 @@
 // design/08 §6.4 ("docs examples are tests") and design/12 §4 D, rule R20: **every fenced `ts`
-// block tagged `title=` on the docs site is executed**, against tier-1 PGlite, in CI.
+// block tagged `title=` on the docs site is executed** in CI — against tier-1 PGlite, or against a
+// real PostgreSQL when the block is marked `pg-only` (design/13 decision 10, the second half of
+// this file).
 //
 //   node tools/docs-examples.mjs                 # the gate
 //   node tools/docs-examples.mjs guides/queries  # only pages whose path contains this
