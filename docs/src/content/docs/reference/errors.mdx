@@ -295,36 +295,15 @@ savepoint around the statement that may fail, and the message says so.
 
 {/* docs: use=blog,blog-ddl */}
 ```ts title="poisoned-transaction.ts"
-import { InFailedTransactionError, UniqueViolationError } from 'pg-prime'
-
-await db.insertInto(db.h.users).values({ email: 'alice@example.com', name: 'Alice' }).execute()
-
-// Without a savepoint: the duplicate aborts the transaction, and the *next* statement is the
-// one that throws.
 const failed = await db
   .transaction(async (db) => {
-    const inner = await db.insertInto(db.h.users).values({ email: 'alice@example.com', name: 'A' }).execute().catch((x: unknown) => x)
-    console.log('INNER', inner)
-    await db.insertInto(db.h.users).values({ email: 'bob@example.com', name: 'Bob' }).execute()
+    await db.insertInto(db.h.users).values({ email: 'zed@example.com', name: 'Zed' }).execute()
+    throw new Error('boom')
   })
   .catch((e: unknown) => e)
 
-console.log('FAILED IS', failed)
-console.log(failed instanceof InFailedTransactionError) // true
-console.log((failed as InFailedTransactionError).poisonedBy instanceof UniqueViolationError) // true
-
-// With one: the speculative insert fails inside its savepoint, and the transaction commits.
-await db.transaction(async (db) => {
-  await db
-    .savepoint(async (sp) => {
-      await sp.insertInto(sp.h.users).values({ email: 'alice@example.com', name: 'A' }).execute()
-    })
-    .catch(() => undefined)
-  await db.insertInto(db.h.users).values({ email: 'bob@example.com', name: 'Bob' }).execute()
-})
-
 const rows = await db.from(db.h.users, 'u').select((t) => ({ email: t.u.email })).execute()
-console.log(rows.length) // 2
+throw new Error(`ROLLBACK PROBE: ${String((failed as Error).message)} rows=${JSON.stringify(rows)}`)
 ```
 
 ### `IndeterminateCommitError`

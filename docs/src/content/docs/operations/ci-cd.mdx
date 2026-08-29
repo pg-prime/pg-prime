@@ -3,4 +3,319 @@ title: Migrations in CI/CD
 description: check as the gate, exit codes, --output json, and where apply belongs.
 ---
 
-TODO
+import { Aside, Steps } from '@astrojs/starlight/components'
+
+There are three places a migration tool can run in a pipeline, and only two of them are correct.
+
+| Stage | Command | Writes to the database |
+|---|---|---|
+| Every pull request | `pg-prime migrate check` | nothing — no history rows, no lock |
+| The deploy step | `pg-prime migrate apply` | the migrations, and their history rows |
+| Anywhere in CI | `pg-prime migrate generate` | **never** |
+
+`generate` is an authoring command. It reads your TypeScript schema, provisions a shadow database,
+diffs, proves the plan on a clone and writes files. Those files belong in the commit that changed
+the schema, reviewed by a human, with their `.plan.json` beside them showing the hazards and the
+acknowledgements. A pipeline that generates migrations is a pipeline that applies SQL nobody read.
+
+## `migrate check` on every pull request
+
+`check` answers three questions, and it answers all of them without writing anything:
+
+<Steps>
+
+1. **Would `generate` produce a non-empty diff?** That is "you changed the schema and forgot to run
+   generate". It loads your schema module, normalises it on a shadow, extracts the target's catalog
+   and diffs — but never proves and never writes.
+
+2. **Do all the checksums match, and is every recorded file still on disk?** That is "somebody
+   edited an applied migration", which changes what a fresh database would become and what an
+   existing one already is.
+
+3. **Are there pending migrations?** That is the deploy gate: the repository is ahead of the
+   database.
+
+</Steps>
+
+Question 1 has a subtlety worth understanding, because a naive version of it makes the command
+unusable. After you run `generate` and before the deploy, the diff against the *database* is
+non-empty by construction — that is what the pending file is for. So `check` asks whether the
+**pending** migrations account for the diff: if there is something to apply and the last file's
+`to.fingerprint` is the fingerprint of the desired state, the schema is not ahead of the
+migrations, they are simply not applied yet. That is exit **5**, not exit 4.
+
+With everything applied, a non-empty diff means either the database moved (somebody changed it by
+hand) or the schema moved (somebody forgot to generate), and both of those are exit **4**.
+
+{/* docs: cli="migrate check --help" */}
+```text frame="terminal"
+pg-prime migrate check
+
+  the default CI gate: is the repository consistent with the schema, the checksums and the database? No history writes.
+
+Options:
+  --shadow <url|temp-schema|createdb>  how the desired state is normalized
+  --strict-unmodeled                   a non-empty Tier-U census becomes an error
+  --no-schema                          skip question (a); check only checksums and pending files
+  --config <path>                      path to pg-prime.config.ts (default the nearest one at or above the cwd)
+  --url <url>                          postgres:// connection URL; overrides the config file
+  --migrations <dir>                   the migrations directory (default ./migrations)
+  --schema <name>                      a managed schema; repeatable (default public)
+  --output <text|json>                 output format (default text)
+  --help                               print this help
+  --version                            print the version
+
+Exit: 0 ok · 1 error · 2 missing hints · 3 lint · 4 the schema changed and no migration was generated · 5 pending
+```
+
+`check` takes no lock and calls nothing that creates the history schema, so it is safe to point at
+any database including a production replica. It does provision a shadow, and on the temp-schema
+tier that means a schema created and dropped inside the target — the one write that normalising a
+desired state cannot avoid. Pass `--shadow <url>` to keep even that out of the database you are
+checking.
+
+## The exit codes, and what a script should do with each
+
+Exit codes are uniform across every command, which is what makes them scriptable.
+
+| Code | Meaning | What CI should do |
+|---|---|---|
+| **0** | success, or nothing to do | continue |
+| **1** | error — bad config, connection failure, SQL error, internal | fail the job; this is a bug or an outage, not a policy decision |
+| **2** | `missing_hints` — an unresolved rename or unacknowledged data loss | fail the job. A human has to record the decision in the repository; there is nothing to retry |
+| **3** | lint failure at `error` severity | fail the job, and print the findings. A `-- pg-prime:nolint CODE "reason"` with a real reason is the escape hatch |
+| **4** | drift — a non-empty diff, a fingerprint mismatch, or checksum drift | fail the job. On a pull request this means "run generate"; on a deploy it means somebody changed the database by hand |
+| **5** | pending migrations exist | **on a pull request, this is success.** On a pre-deploy gate it is the signal that `apply` has work to do |
+| **6** | lock unavailable — a concurrent deploy holds it | retry with backoff. Do not fail immediately, and do not break the lock |
+| **7** | proof failed — the plan does not converge on a clone | fail the job. This is `generate` reporting that the migration it was about to write does not do what it claims |
+
+The distinction that matters most is **5 versus 4**. Exit 5 is a fact about the deploy ("there is
+work"), and exit 4 is a fact about the repository ("something is inconsistent"). A pipeline that
+treats them the same fails every pull request that adds a migration.
+
+```sh
+pg-prime migrate check --output json > check.json
+case $? in
+  0|5) echo "ok" ;;
+  4)   echo "drift: run 'pg-prime migrate generate' and commit the result"; exit 1 ;;
+  2)   echo "a rename or a data-loss decision is missing; see unresolved[] in check.json"; exit 1 ;;
+  *)   exit 1 ;;
+esac
+```
+
+## `--output json`
+
+`--output json` is always non-interactive and always emits `{ status, exitCode, … }`. The envelope
+is the contract; the text form is a courtesy for a human reading a deploy log and is not pinned.
+
+The key set below and the order it is written in are pinned by a golden test — `JSON.stringify`
+preserves insertion order, and a golden that reorders on every run is not a golden. The timestamp,
+duration, database and paths are per-run.
+
+```json title="check.json"
+{
+  "command": "migrate check",
+  "status": "ok",
+  "exitCode": 0,
+  "at": "2026-08-29T10:14:52.881Z",
+  "durationMs": 412,
+  "database": "app",
+  "migrationsDir": "/repo/migrations",
+  "schemas": [
+    "public"
+  ],
+  "schemaChecked": true,
+  "schemaDrift": null,
+  "checksumDrift": [],
+  "missingFiles": [],
+  "pending": [],
+  "repeatableDrift": [],
+  "unresolved": [],
+  "hazards": [],
+  "error": null
+}
+```
+
+Six keys are on every envelope, in this order: `command`, `status`, `exitCode`, `at`, `durationMs`,
+`database`. Then the command's own payload. Then `error`, which is always last, always present, and
+either `null` or `{ code, message }`.
+
+`exitCode` in the envelope is always identical to the process's exit code, so a script can use
+either — pipe the JSON to a file and branch on `$?`, or parse `.exitCode` and branch on that.
+`status` is the human-readable label for the same thing (`ok`, `drift`, `pending`, `missing_hints`,
+`lint`, `error`), and it is the field to log.
+
+The same shape holds for the other commands: `migrate apply` adds `lock`, `applied[]`, `pending`,
+`fingerprint`, `preflight` and `warnings`; `migrate doctor` adds `findings[]`; `migrate status` adds
+`fingerprintDrift` and `partial`.
+
+## A complete GitHub Actions job
+
+```yaml title=".github/workflows/ci.yml"
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  migrations:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/app
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # The database CI checks against must be at the same point as production.
+      # Applying the committed migrations to an empty database is what makes that true.
+      - run: pnpm exec pg-prime migrate apply
+
+      - run: pnpm exec pg-prime migrate check --output json
+```
+
+Two details are load-bearing.
+
+**`pnpm build` comes first**, because `check` loads your schema module and needs the packages built.
+**`apply` runs before `check`** in this job: the service container starts empty, and `check`'s
+question 1 is only meaningful against a database that is where the migrations say it should be.
+That `apply` is against a throwaway container, not production — the production `apply` is in the
+deploy workflow.
+
+A separate `migrate verify` job is worth adding for a repository with a long history: it replays
+every migration from empty into an ephemeral database and asserts the result matches the schema,
+which catches a migration that only works because of the state your dev database happened to be in.
+
+## `apply` in the deploy step
+
+```sh
+pg-prime migrate apply --output json
+```
+
+`apply` never generates, never introspects the desired state and never reads your TypeScript. It
+needs the `migrations/` directory and a connection, which means **your production image does not
+have to ship your schema code** — that is a deliberate property, not an accident of the
+implementation.
+
+### Running from a container without `pg_dump`
+
+`generate` runs a second, independent witness: it dumps both the migrated clone and the desired
+database with `pg_dump`, normalises, and compares. It is PostgreSQL's own serializer, it shares no
+code with pg-prime, and it catches exactly the class of bug where a catalog attribute nobody
+modelled is silently lost.
+
+If `pg_dump` is not on the `PATH`, the witness degrades to `skipped` with the reason attached —
+typically `cannot spawn pg_dump: spawn pg_dump ENOENT`. Under the default `--dump-oracle warn` that
+is a note, not a failure.
+
+**On `apply` this does not matter at all**, because `apply` proves nothing: it runs the files on
+disk, which were already proven and witnessed when they were generated. A slim deploy image with no
+PostgreSQL client tools is the normal case and is fine. It matters for `generate`, and there the
+answer is either to install the client tools or to accept a warned skip; `--dump-oracle strict`
+will block on it.
+
+### Two deploys racing
+
+Only one deploy can migrate a database at a time. The lock is a session advisory lock plus a
+heartbeat lease row, keyed on the database name and the managed schema set — derived, not fixed, so
+two unrelated schema sets in one database do not serialise against each other.
+
+The loser's behaviour is deliberately asymmetric:
+
+- It waits up to `--lock-wait` (default 30 s), then re-reads history.
+- **Nothing pending** — the winner finished the work — so it exits **0** and the container starts
+  serving. Exiting non-zero because somebody else did the work would break every init-container
+  topology in existence.
+- **Still pending** — the winner is mid-run — so it exits **6** and the orchestrator retries.
+
+If a deploy is killed, its session advisory lock dies with the backend but its lease row stops
+updating. After `--stale-lock-after` (default 60 s) the next runner reports the lease as stale and
+names the fix:
+
+```sh
+pg-prime migrate unlock            # inspect: holder, run id, heartbeat age, stale?
+pg-prime migrate unlock --force    # delete the lease row
+```
+
+`unlock` exits **6** when a *live* deploy holds the lease and you did not pass `--force`, so an
+orchestrator can shell out to it to decide whether to retry. `--force` deletes the lease row only;
+it cannot release a session lock a live backend still holds, which is the correct division of
+labour — if that backend is alive, the lease is not stale and breaking it would be the bug.
+
+### Do not migrate from N application instances at boot
+
+The lock makes it *safe*, and it is still the wrong shape. Ten pods starting simultaneously means
+one migration and nine processes blocking on a lock for up to 30 seconds before they can serve
+traffic, every deploy, forever. It also means every one of your application containers needs
+migration credentials — `CREATE TABLE`, `ALTER TABLE`, and on some tiers `CREATEDB` — which is a
+much larger privilege surface than serving requests needs.
+
+Run migrations **once, in their own step**, before the new version is rolled out:
+
+- a Kubernetes `Job` that must succeed before the `Deployment` is updated;
+- a single init container on one replica, not on all of them;
+- a deploy-pipeline step, which is the simplest correct answer and what the workflow above assumes.
+
+The failure mode to design against is not two deploys racing — that is handled — it is the *ordering*
+of the migration relative to the code. Expand-and-contract exists so that the schema and both code
+versions are compatible in the window between them; see
+[zero-downtime patterns](/pg-prime/operations/zero-downtime/).
+
+## `PG_PRIME_ENV=production`
+
+Setting `PG_PRIME_ENV=production` (or `production: true` in `pg-prime.config.ts`) turns on two
+refusals:
+
+- **`db seed` refuses.** Seeds are development and test data, they are never recorded in the
+  migration history, and so nothing would record that they ran:
+
+  ```text frame="terminal"
+  REFUSED: refusing to seed a production-tagged environment (PG_PRIME_ENV=production, or
+  `production: true` in pg-prime.config.ts). Seeds are development and test data and are never
+  recorded in the migration history, so nothing would record that they ran. Pass --force if you
+  mean it.
+  ```
+
+- **`migrate push` refuses.** `push` applies a diff directly, writing no files and no history rows.
+  It is a development loop, it already requires the literal `--dev`, and against a production tag it
+  refuses outright.
+
+`db seed` has a second, independent refusal that does not need the tag at all: it matches
+`host:port/database` against `--prod-pattern`, which defaults to `prod|production|live`. Both
+refusals exit **1** with `error.code: "production"`, and both are overridable with `--force` — which
+is the right shape for a guard rail: it stops the accident, it does not stop the intention.
+
+Set the variable in your production environment even if you never run these commands there. It costs
+nothing and it turns "somebody ran the wrong command against the wrong `DATABASE_URL`" from an
+incident into an error message.
+
+## Related
+
+- [Troubleshooting](/pg-prime/operations/troubleshooting/) — the symptom table for each exit code.
+- [Locks](/pg-prime/operations/locks/) — `--lock-wait` versus `--lock-timeout`.
+- [Migrations end to end](/pg-prime/guides/migrations/) — every command and what each one refuses.

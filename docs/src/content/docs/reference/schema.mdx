@@ -1,6 +1,1274 @@
 ---
 title: pg-prime/schema
 description: Every export of the schema entry point.
+apiEntry:
+  - pg-prime#./schema
+  - pg-prime#.
 ---
 
-TODO
+`pg-prime/schema` is the declaration layer: tables, columns, constraints, indexes, enums, domains,
+sequences, extensions, relations, and the types that read row shapes back out of them. It is pure
+data — nothing here opens a connection, and a schema module is evaluated once, at import. Every
+name is re-exported from `pg-prime` itself; the subpath exists so a schema file, which is also read
+by the migration kit, need not import the query builder.
+
+```ts
+import { defineSchema, pgTable } from 'pg-prime/schema'
+```
+
+A schema file in full:
+
+{/* docs: setup=schema */}
+```ts title="schema.ts" no-run
+import { check, defineRelations, defineSchema, index, pgEnum, pgTable, REFS, sql } from 'pg-prime'
+
+export const postStatus = pgEnum('post_status', ['draft', 'review', 'published'])
+
+export const users = pgTable('users', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  email: t.text().unique(),
+  displayName: t.text().nullable(),
+  createdAt: t.timestamptz().defaultSql('now()'),
+}))
+
+export const posts = pgTable(
+  'posts',
+  (t) => ({
+    id: t.bigint().primaryKey().generatedAlways(),
+    authorId: t.bigint().references(() => users[REFS].id, { onDelete: 'cascade' }),
+    title: t.text(),
+    status: t.enum(postStatus).default('draft'),
+    views: t.integer().default(0),
+  }),
+  (t) => [
+    index('posts_author_idx').on(t.authorId),
+    check('posts_views_nonneg', sql`${t.views} >= 0`),
+  ],
+)
+
+export const relations = defineRelations({ users, posts }, (r) => ({
+  users: { posts: r.many.posts() },
+  posts: { author: r.one.users() },
+}))
+
+export const schema = defineSchema({ users, posts }, relations)
+```
+
+Four rules the rest of this page assumes:
+
+- **Columns are `NOT NULL` until you say otherwise.** `.nullable()` is the opt-in, because in a real
+  database most columns are not nullable and the default should be the common case.
+- **Names are converted, not copied.** `authorId` is `author_id`; see [`snakeCase`](#snakecase).
+- **`.references()` takes a thunk**, because the referenced table is usually declared later in the
+  same file and a mutually referencing pair has no declaration order that works without one.
+- **Relations live on the schema, not on the table.** A fully cyclic relation graph cannot be
+  declared table by table without thunks, so `defineRelations` takes the whole registry at once.
+
+## Declaring a table
+
+### `pgTable`
+
+{/* docs: signature */}
+```ts
+function pgTable<N extends string, B extends Record<string, AnyCol>>(
+  name: N,
+  columns: B | ((t: ColumnKit) => B),
+  extras?: (t: RefsOfCols<N, ColsOf<B>>) => readonly TableExtra[],
+  options?: TableOptions,
+): Table<N, ColsOf<B>>
+```
+
+Columns may be a plain record or a `(t) => record` callback; the callback form keeps a schema file's
+import list at about five names and gives extension packs one place to hang new column types. The
+`extras` callback is passed this table's own column references, which is what makes a
+self-referencing foreign key and a multi-column index expressible without a second declaration pass.
+
+The returned value is frozen: a table is the single source of truth for DDL, for the migration IR
+and for every compiled query, and all three memoise off it. Two column keys that map to the same
+database name are refused by name, as is a key starting with `$` or spelled `__proto__`.
+
+```ts title="table-runtime.ts"
+import { pgTable } from 'pg-prime/schema'
+
+const events = pgTable('events', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  payloadJson: t.jsonb().$type<{ ok: boolean }>(),
+  occurredAt: t.timestamptz(),
+}))
+
+console.log(events.$.columns.map((c) => [c.key, c.dbName, c.column.ddl.pgType]))
+// [ [ 'id', 'id', 'int8' ], [ 'payloadJson', 'payload_json', 'jsonb' ],
+//   [ 'occurredAt', 'occurred_at', 'timestamptz' ] ]
+```
+
+### `table`
+
+{/* docs: signature */}
+```ts
+const table: <N extends string, B extends Record<string, AnyCol>>(
+  name: N,
+  columns: B | ((t: ColumnKit) => B),
+  extras?: (t: RefsOfCols<N, ColsOf<B>>) => readonly TableExtra[],
+  options?: TableOptions,
+) => Table<N, ColsOf<B>>
+```
+
+The same function under the shorter name — the declaration is literally `typeof pgTable`. Both
+spellings exist because both appear in the design documents; there is no behavioural difference.
+
+### `TableOptions`
+
+{/* docs: signature */}
+```ts
+interface TableOptions {
+  readonly schema?: string
+  readonly casing?: (key: string) => string
+}
+```
+
+`schema` places the table in a PostgreSQL schema other than the emitter's default; `casing` replaces
+[`snakeCase`](#snakecase) for this table only. Prefer [`pgSchema`](#pgschema) over repeating
+`{ schema: 'audit' }` on every table.
+
+### `snakeCase`
+
+{/* docs: signature */}
+```ts
+function snakeCase(key: string): string
+```
+
+The default naming strategy: `authorId` becomes `author_id`, `HTTPStatus` becomes `http_status`. It
+runs on the TypeScript key only when the column builder was given no explicit name, so
+`t.bigint('author_id')` and `t.text('Name')` always win. Every derived name is then validated as a
+PostgreSQL identifier at declaration time, so a name that is too long fails on the import of the
+schema file rather than at the first query.
+
+## Column builders
+
+The callback parameter of `pgTable` is a [`ColumnKit`](#columnkit). Every builder takes an optional
+explicit database name and returns a [`Col`](#col) whose five metadata slots start at
+`opt: false, ro: false, pk: false` — that is, required on insert, writable, and not part of the
+primary key until a modifier says so.
+
+The decoded types are the library's decode defaults and are deliberate: `int8` is a `bigint` because
+`Number` cannot hold it, `numeric` is a `string` because it is lossless, `date` is a branded
+`'YYYY-MM-DD'` string because a `Date` would introduce a timezone that a calendar date does not
+have, and `timestamptz` is a `Date`. [Codecs](/pg-prime/concepts/codecs/) is the long answer.
+
+### `kit`
+
+{/* docs: signature */}
+```ts
+const kit: ColumnKit
+```
+
+The same object `pgTable` passes to the column callback, exported so that a plain-record table
+(`pgTable('t', { id: kit.uuid() })`) and a helper that builds columns outside a table can reach it.
+
+### `ColumnKit`
+
+Thirteen properties, each declared as `typeof` the exported builder of the same name, so the kit and
+the standalone functions can never drift. Its only job is to keep a schema file's import list short
+and to give extension packs one place to hang new column types.
+
+Two keys are spelled differently from the function they hold: `t.enum` is
+[`enumColumn`](#enumcolumn), and `t.raw` is [`raw`](#raw), the escape hatch for the several hundred
+PostgreSQL types that have no builder. The other eleven — `uuid`, `text`, `varchar`, `integer`,
+`smallint`, `bigint`, `boolean`, `timestamptz`, `date`, `numeric`, `jsonb` — match.
+
+### `uuid`
+
+{/* docs: signature */}
+```ts
+function uuid(name?: string): Col<{ t: string; pg: 'uuid'; opt: false; ro: false; pk: false }>
+```
+
+`uuid`, decoded as a lower-case canonical string.
+
+### `text`
+
+{/* docs: signature */}
+```ts
+function text(name?: string): Col<{ t: string; pg: 'text'; opt: false; ro: false; pk: false }>
+```
+
+`text`. Unbounded, and the right default in PostgreSQL: a length limit is a `CHECK` that costs a
+table rewrite to change.
+
+### `varchar`
+
+{/* docs: signature */}
+```ts
+function varchar(name?: string): Col<{ t: string; pg: 'varchar'; opt: false; ro: false; pk: false }>
+```
+
+A distinct codec, not an alias for `text`, because the emitted cast differs (`$1::varchar`). The
+length lives in the DDL only — `varchar` and `varchar(n)` are one PostgreSQL type and the limit
+travels in the typmod — so write `t.raw('varchar(50)')` when you need one.
+
+### `integer`
+
+{/* docs: signature */}
+```ts
+function integer(name?: string): Col<{ t: number; pg: 'int4'; opt: false; ro: false; pk: false }>
+```
+
+`int4`, decoded as a `number`.
+
+### `smallint`
+
+{/* docs: signature */}
+```ts
+function smallint(name?: string): Col<{ t: number; pg: 'int2'; opt: false; ro: false; pk: false }>
+```
+
+`int2`, decoded as a `number`.
+
+### `bigint`
+
+{/* docs: signature */}
+```ts
+function bigint(name?: string): Col<{ t: bigint; pg: 'int8'; opt: false; ro: false; pk: false }>
+```
+
+`int8`, decoded as a **`bigint`**, not a `number`. This is the decode default that surprises people
+most often and the one that is hardest to change later, so it is the strict one: `2^53` is reachable
+in a sequence and a silently rounded identity is not a bug you find in testing.
+
+### `boolean`
+
+{/* docs: signature */}
+```ts
+function boolean(name?: string): Col<{ t: boolean; pg: 'bool'; opt: false; ro: false; pk: false }>
+```
+
+`bool`.
+
+### `timestamptz`
+
+{/* docs: signature */}
+```ts
+function timestamptz(
+  name?: string,
+): Col<{ t: Date; pg: 'timestamptz'; opt: false; ro: false; pk: false }>
+```
+
+`timestamp with time zone`, decoded as a `Date`. There is no `timestamp` builder: `timestamp without
+time zone` is almost always a mistake in an application schema, and `t.raw('timestamp')` is there
+when it is not.
+
+### `date`
+
+{/* docs: signature */}
+```ts
+function date(name?: string): Col<{ t: DateString; pg: 'date'; opt: false; ro: false; pk: false }>
+```
+
+`date`, decoded as a branded `'YYYY-MM-DD'` string and never as a `Date` — a calendar date has no
+time and no zone, so the round trip through `Date` is where day shifts come from.
+
+### `numeric`
+
+{/* docs: signature */}
+```ts
+function numeric(name?: string): Col<{ t: string; pg: 'numeric'; opt: false; ro: false; pk: false }>
+```
+
+`numeric`, decoded as a **`string`**, losslessly. A `number` would silently round exactly the values
+`numeric` exists to hold. Pass it to your decimal library of choice.
+
+### `jsonb`
+
+{/* docs: signature */}
+```ts
+function jsonb(name?: string): Col<{ t: unknown; pg: 'jsonb'; opt: false; ro: false; pk: false }>
+```
+
+`jsonb`, decoded as `unknown`. Narrow it with `.$type<T>()`, which is the documented, honest cast:
+the database cannot promise the shape, so the DSL does not pretend it can.
+
+### `raw`
+
+{/* docs: signature */}
+```ts
+function raw(
+  pgType: string,
+  name?: string,
+): Col<{ t: unknown; pg: string; opt: false; ro: false; pk: false }>
+```
+
+A column of any PostgreSQL type, named as text: `t.raw('varchar(50)')`, `t.raw('xml')`,
+`t.raw('public."Name"')`. The typed builders cover eleven types and PostgreSQL has hundreds, plus
+every domain and composite a schema declares — so the escape hatch lives *inside* the model, where
+the differ can still see the column, rather than outside it, where the unmodelled part becomes
+permanent drift. It is also what lets `pg-prime pull` emit a round-tripping schema for a database it
+did not create. The read type is `unknown` because the type name is a string this package cannot
+reason about; narrow it with `.$type<T>()`.
+
+### `enumColumn`
+
+{/* docs: signature */}
+```ts
+function enumColumn<E extends AnyPgEnum>(
+  e: E,
+  name?: string,
+): Col<{ t: E['values'][number]; pg: E['name']; opt: false; ro: false; pk: false }>
+```
+
+`t.enum(postStatus)` — a column of a declared [`pgEnum`](#pgenum), typed as the union of its labels.
+The enum's own schema travels with it, so a shared enum does not move because one of its users does.
+
+## Column modifiers
+
+### `Col`
+
+{/* docs: signature */}
+```ts
+// `META` is the exported phantom slot symbol, re-declared here because a signature block imports
+// types and a computed key needs the value.
+const META: unique symbol
+
+interface Col<M extends ColMeta> {
+  readonly [META]: M
+  readonly $: ColumnRuntime
+  nullable(): Col<{ t: M['t'] | null; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  default(v: M['t']): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  defaultSql(expr: string): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  generatedAlways(): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: true; pk: M['pk'] }>
+  generatedByDefault(): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  primaryKey(): Col<{ t: M['t']; pg: M['pg']; opt: M['opt']; ro: M['ro']; pk: true }>
+  unique(name?: string, options?: { readonly nullsNotDistinct?: boolean }): Col<M>
+  references(target: () => RefLike, options?: ForeignKeyOptions): Col<M>
+  check(expression: AnyFragment, name?: string): Col<M>
+  comment(text: string): Col<M>
+  renamedFrom(old: string): Col<M>
+  array(): Col<{ t: M['t'][]; pg: `${M['pg']}[]`; opt: M['opt']; ro: M['ro']; pk: M['pk'] }>
+  $type<T extends M['t']>(): Col<{ t: T; pg: M['pg']; opt: M['opt']; ro: M['ro']; pk: M['pk'] }>
+  $default(fn: () => M['t']): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  $onUpdate(fn: () => M['t']): Col<M>
+}
+```
+
+Every modifier returns a new column; nothing mutates. The block above is the shape after the
+nullability gates are removed for readability — the real declaration types `nullable`, `default`,
+`defaultSql` and `$default` as *properties* rather than methods, so that an impossible combination
+resolves to an [`OrmTypeError`](#the-type-layer) instead of a constraint mismatch. Writing
+`t.bigint().primaryKey().nullable()` then fails with "This expression is not callable" and the
+sentence "a primary key column is NOT NULL by definition" in the diagnostic:
+
+{/* docs: expect-error */}
+```ts
+import { pgTable } from 'pg-prime/schema'
+
+const bad = pgTable('bad', (t) => ({
+  id: t.bigint().primaryKey().nullable(),
+}))
+```
+
+Only the forward order can be caught by the type system; the reverse
+(`.nullable().primaryKey()`) throws the same sentence as a [`SchemaError`](/pg-prime/reference/sql/)
+at declaration time, which is still the import of the schema file.
+
+Four modifiers worth reading twice:
+
+- **The `$` law.** A `$`-prefixed modifier is TypeScript-only and never reaches the DDL or the
+  migration IR. `.default(0)` emits `DEFAULT 0`; `.$default(() => 0)` fills the value client-side on
+  insert and emits nothing. `.$onUpdate(fn)` likewise emits no trigger.
+- **`.array()`** takes the element type from the column's own type *without* its `| null`, so a
+  nullable `text[]` is `string[] | null` and never `(string | null)[]`. One `NOT NULL` in the DDL
+  cannot mean two different things, and `.nullable()` set the column, not the element.
+- **`.references(target, options?)`** is single-column and lazy. A *self*-reference cannot be written
+  here at all — the thunk's body would need the type still being inferred — so use the
+  [`foreignKey`](#foreignkey) extra, whose callback parameter is this table's own refs. A mutually
+  referencing pair needs the thunk's return type stated once:
+  `.references((): RefLike => orgs.cols.id)`.
+- **`.check(expression)`** takes a `sql` fragment whose bind parameters are refused; see
+  [`fragmentDdlText`](#fragmentddltext). Two `.check()` calls are two constraints, not one
+  overwriting the other.
+
+### `ColMeta`
+
+{/* docs: signature */}
+```ts
+interface ColMeta {
+  readonly t: unknown
+  readonly pg: string
+  readonly opt: boolean
+  readonly ro: boolean
+  readonly pk: boolean
+}
+```
+
+The flat five-field payload every column carries, and the only thing about a column the type layer
+reads. `t` is the type *as read*, already including `| null` when the column is nullable, so the row
+shapes need no conditionals. `opt` is "optional at insert" (nullable, defaulted, or identity by
+default); `ro` is "never writable" (`GENERATED ALWAYS`); `pk` records primary-key membership **as
+declared per column**, and is deliberately incomplete — a composite key declared through the
+[`primaryKey`](#primarykey) extra is runtime-only and leaves every `pk` false. The one consumer, the
+`GROUP BY` guard in the query layer, reads that as "cannot prove it is ungrouped" and allows, so an
+unmodelled key can never produce a false rejection.
+
+Nothing in the runtime metadata below is reachable from `ColMeta`, which is why adding a modifier
+costs zero type instantiations.
+
+## Table extras
+
+The third argument to `pgTable` returns an array of [`TableExtra`](#tableextra) nodes. They are the
+table-level constraints and the objects that hang off a table.
+
+### `TableExtra`
+
+{/* docs: signature */}
+```ts
+type TableExtra =
+  | { readonly node: 'primaryKey'; readonly name: string | undefined; readonly columns: readonly string[] }
+  | { readonly node: 'unique'; readonly name: string | undefined; readonly columns: readonly string[]; readonly nullsNotDistinct: boolean }
+  | { readonly node: 'check'; readonly name: string; readonly expression: string }
+  | { readonly node: 'comment'; readonly text: string }
+  | { readonly node: 'renamedFrom'; readonly from: string }
+  | { readonly node: 'clusterOn'; readonly index: string }
+  | { readonly node: 'partitionBy'; readonly strategy: 'range' | 'list' | 'hash'; readonly key: string }
+```
+
+One heterogeneous array of tagged nodes, so an extension pack can add a node kind without an API
+change. The union above is shortened: the `index`, `foreignKey` and `partitionOf` members carry more
+fields, and are described under their own functions below. Every node is plain frozen data apart
+from `foreignKey`'s one thunk.
+
+### `primaryKey`
+
+{/* docs: signature */}
+```ts
+function primaryKey(...refs: [PrimaryKeyInput] | AnyRef[]): TableExtra
+```
+
+`primaryKey(t.a, t.b)` for a composite key, or `primaryKey({ name: 'pk_ab', columns: [t.a, t.b] })`
+when the constraint's name matters. The named form exists because PostgreSQL's `<table>_pkey` is only
+a default: a database adopted from another tool routinely names its keys `PK_Something`, and a DSL
+that could not say so would make `pg-prime pull` emit a schema whose first migration renames every
+primary key in the database.
+
+A table-level primary key leaves each column's `pk` metadata false — see [`ColMeta`](#colmeta).
+
+### `PrimaryKeyInput`
+
+{/* docs: signature */}
+```ts
+interface PrimaryKeyInput {
+  readonly name?: string
+  readonly columns: readonly AnyRef[]
+}
+```
+
+### `unique`
+
+{/* docs: signature */}
+```ts
+interface UniqueBuilder {
+  nullsNotDistinct(): UniqueBuilder
+  on(...refs: AnyRef[]): TableExtra
+}
+
+function unique(name?: string): UniqueBuilder
+```
+
+`unique('u_ab').on(t.a, t.b)` — a UNIQUE **constraint**, which is a `pg_constraint` row a foreign key
+can point at. [`uniqueIndex`](#uniqueindex) is a different object: an index, which one cannot. Both
+spellings exist because both objects exist, and `pg_dump` prints them differently.
+
+`.nullsNotDistinct()` is PostgreSQL 15 and later: two NULLs collide instead of both being allowed.
+
+### `index`
+
+{/* docs: signature */}
+```ts
+interface IndexBuilder {
+  using(method: string): IndexBuilder
+  where(expression: AnyFragment): IndexBuilder
+  include(...refs: AnyRef[]): IndexBuilder
+  nullsNotDistinct(): IndexBuilder
+  on(...columns: IndexColumnLike[]): TableExtra
+}
+
+function index(name: string, options?: IndexOptions): IndexBuilder
+function uniqueIndex(name: string, options?: IndexOptions): IndexBuilder
+```
+
+`index('posts_author_idx').on(t.authorId)`. The name is required, because an index PostgreSQL named
+for you is an index a later migration cannot match by name. Everything `IndexOptions` carries is also
+available as a chained method, so `index('i', { using: 'gin' })` and `index('i').using('gin')` are
+the same node.
+
+Per-column options are item objects rather than methods on the column reference —
+`index('i').on(t.a, { column: t.b, desc: true, nulls: 'last' })`. That is a deliberate deviation from
+the design document: `Ref` is the hottest type in the package, and three more methods on it would be
+paid for by every column of every table in every program, to serve a handful of index declarations.
+
+### `uniqueIndex`
+
+Declared beside `index` above, and identical to it but for `unique: true` on the emitted node. See [`unique`](#unique) for which of the two you want.
+
+### `IndexOptions`
+
+{/* docs: signature */}
+```ts
+interface IndexOptions {
+  readonly using?: string
+  readonly where?: AnyFragment
+  readonly include?: readonly AnyRef[]
+  readonly nullsNotDistinct?: boolean
+}
+```
+
+`using` is the access method (`gin`, `gist`, `hnsw`; `undefined` is PostgreSQL's default b-tree) and
+is not validated against a list, because extensions add methods. `where` makes the index partial and
+refuses bind parameters like every other DDL expression. `include` is the covering payload —
+columns stored in the index but not part of its key.
+
+### `check`
+
+{/* docs: signature */}
+```ts
+function check(name: string, expression: AnyFragment): TableExtra
+```
+
+A table-level `CHECK`. The name is mandatory here, unlike `.check()` on a column: PostgreSQL's own
+default for a multi-column check is the bare `<table>_check`, which collides the moment a second one
+is declared. Interpolate column references into the fragment — `` sql`${t.views} >= 0` `` — and they
+render as their resolved database names.
+
+### `foreignKey`
+
+{/* docs: signature */}
+```ts
+function foreignKey(input: ForeignKeyExtraInput): TableExtra
+```
+
+The composite and self-referencing spelling of a foreign key:
+`foreignKey({ columns: [t.parentId], references: () => [t.id], onDelete: 'cascade' })`. Because the
+extras callback is given this table's own refs, `() => [t.id]` needs no forward declaration and no
+type annotation. For a mutually referencing pair, annotate the thunk once —
+`(): readonly RefLike[] => [...]` — or TypeScript reports TS7022 while walking the inference loop.
+
+### `ForeignKeyExtraInput`
+
+{/* docs: signature */}
+```ts
+interface ForeignKeyExtraInput extends ForeignKeyOptions {
+  readonly columns: readonly AnyRef[]
+  readonly references: () => readonly RefLike[]
+}
+```
+
+`columns` and the thunk's result are paired positionally, and must be the same length.
+
+### `ForeignKeyOptions`
+
+{/* docs: signature */}
+```ts
+interface ForeignKeyOptions {
+  readonly name?: string
+  readonly onDelete?: FkAction
+  readonly onUpdate?: FkAction
+  readonly deferrable?: boolean
+  readonly initiallyDeferred?: boolean
+}
+```
+
+Shared by `.references()` and `foreignKey()`. `initiallyDeferred: true` implies `deferrable`.
+
+### `FkAction`
+
+{/* docs: signature */}
+```ts
+type FkAction = 'cascade' | 'restrict' | 'no action' | 'set null' | 'set default'
+```
+
+Lower case, spelled as PostgreSQL prints them. Anything else is a `SchemaError` naming the five.
+
+### `comment`
+
+{/* docs: signature */}
+```ts
+function comment(text: string): TableExtra
+```
+
+`COMMENT ON TABLE`. `.comment()` on a column is the per-column form.
+
+### `renamedFrom`
+
+{/* docs: signature */}
+```ts
+function renamedFrom(from: string): TableExtra
+```
+
+The rename annotation: it says what the schema *claims*, and `migrate generate` decides whether it
+fires — a rename is emitted only when the old name exists in the catalog and the new one does not, so
+the annotation is inert once it has been applied and can be deleted at leisure. The same spelling
+exists on a column (`.renamedFrom()`), on [`pgEnum`](#pgenum), on [`pgDomain`](#pgdomain), on
+[`pgSequence`](#pgsequence) and on [`pgSchema`](#pgschema).
+
+### `clusterOn`
+
+{/* docs: signature */}
+```ts
+function clusterOn(index: string): TableExtra
+```
+
+`ALTER TABLE … CLUSTER ON`. It is here because `pg_index.indisclustered` is a fact the differ owns,
+and a fact the differ can drop is a fact the DSL has to be able to declare — otherwise the first
+migration of an adopted database un-clusters every table in it. Found missing on all 68 of
+AdventureWorks' tables by the corpus round trip.
+
+### `partitionBy`
+
+{/* docs: signature */}
+```ts
+function partitionBy(strategy: 'range' | 'list' | 'hash', key: string): TableExtra
+```
+
+Declares the parent of a partitioned table. The key travels as **text**, not as column references,
+because PostgreSQL's own `pg_get_partkeydef` is an expression — `RANGE (date_trunc('month', at))` is
+legal — and a column-list-only spelling would round-trip some partitioned tables and silently mangle
+the rest.
+
+### `partitionOf`
+
+{/* docs: signature */}
+```ts
+function partitionOf(parent: string, bound: string, options?: PartitionOfOptions): TableExtra
+```
+
+Declares a child: `partitionOf('payment', "FOR VALUES FROM ('2022-01-01') TO ('2022-02-01')")`, or
+`'DEFAULT'`. The bound is verbatim DDL text, for the same reason the key is.
+
+### `PartitionOfOptions`
+
+{/* docs: signature */}
+```ts
+interface PartitionOfOptions {
+  readonly schema?: string
+}
+```
+
+The parent's schema. `undefined` means "the same as this table's".
+
+### `fragmentDdlText`
+
+{/* docs: signature */}
+```ts
+function fragmentDdlText(fragment: AnyFragment, what: string): string
+```
+
+Renders a [`sql` fragment](/pg-prime/reference/sql/) to DDL text with **bind parameters rejected**,
+and is what every DDL-position expression on this page goes through. A `CHECK` is stored in the
+catalog as a parsed expression tree: there is no `$1` in a `pg_constraint` row and no way to supply
+one, so `` sql`${userInput} > 0` `` cannot mean what it looks like it means. Without this check the
+failure is a `42P02` from PostgreSQL at apply time, three steps and one shadow database away from the
+line that wrote it. A column *reference* in a hole is the one interpolated value this position can
+render, because it is an identifier whose resolved name the schema layer knows.
+
+## Enums
+
+### `pgEnum`
+
+{/* docs: signature */}
+```ts
+function pgEnum<N extends string, const V extends readonly [string, ...string[]]>(
+  name: N,
+  values: V,
+  options?: PgEnumOptions,
+): PgEnum<N, V>
+```
+
+`pgEnum('post_status', ['draft', 'review', 'published'])`. The `const` type parameter captures the
+labels as literals with no `as const` at the call site. A duplicate label is refused at declaration
+time: PostgreSQL rejects it in `CREATE TYPE`, and the TypeScript union would have silently collapsed
+the two. An empty label is allowed, because PostgreSQL allows it.
+
+### `PgEnum`
+
+{/* docs: signature */}
+```ts
+interface PgEnum<N extends string, V extends readonly string[]> {
+  readonly kind: 'enum'
+  readonly name: N
+  readonly values: V
+  readonly schema: string | undefined
+  readonly renamedFrom: string | undefined
+}
+```
+
+`schema: undefined` means "the emitter's default schema", **not** "the schema of whichever table
+happens to use it": two tables in two schemas may share one enum, and letting the placement follow
+the first user would make the DDL order-dependent.
+
+### `PgEnumOptions`
+
+{/* docs: signature */}
+```ts
+interface PgEnumOptions {
+  readonly schema?: string
+  readonly renamedFrom?: string
+}
+```
+
+### `Infer`
+
+{/* docs: signature */}
+```ts
+type Infer<E extends AnyPgEnum> = E['values'][number]
+```
+
+`Infer<typeof postStatus>` is `'draft' | 'review' | 'published'` — the union, for a function
+signature or a form validator that has to name it without importing a column.
+
+## Schemas, domains, sequences and extensions
+
+These four exist because the differ models them as facts it owns, and a fact it owns is a fact it
+will **drop** if the desired state cannot name it. A DSL with no `CREATE DOMAIN` turns every domain
+in an adopted database into a `DROP DOMAIN` in the first generated migration. Each function returns
+a frozen plain object, introduces no type parameter, and is collected from the schema module's
+exports exactly as tables are.
+
+### `pgSchema`
+
+{/* docs: signature */}
+```ts
+function pgSchema(name: string, options?: PgSchemaOptions): PgSchema
+```
+
+A namespace factory bound to one PostgreSQL schema: `audit.table(...)` is `pgTable(...)` with
+`{ schema: 'audit' }` already applied, and `audit.enum(...)` is `pgEnum` likewise. The binding is
+what makes moving a schema a one-line edit rather than a find-and-replace over every table in the
+file.
+
+### `PgSchema`
+
+{/* docs: signature */}
+```ts
+interface PgSchema {
+  readonly kind: 'schema'
+  readonly name: string
+  readonly renamedFrom: string | undefined
+  table<N extends string, B extends Record<string, AnyCol>>(
+    name: N,
+    columns: B | ((t: ColumnKit) => B),
+    extras?: (t: RefsOfCols<N, ColsOf<B>>) => readonly TableExtra[],
+    options?: Omit<TableOptions, 'schema'>,
+  ): Table<N, ColsOf<B>>
+  enum<EN extends string, const V extends readonly [string, ...string[]]>(
+    name: EN,
+    values: V,
+  ): PgEnum<EN, V>
+}
+```
+
+### `PgSchemaOptions`
+
+{/* docs: signature */}
+```ts
+interface PgSchemaOptions {
+  readonly renamedFrom?: string
+}
+```
+
+### `pgDomain`
+
+{/* docs: signature */}
+```ts
+function pgDomain(name: string, baseType: string, options?: PgDomainOptions): PgDomain
+```
+
+`pgDomain('email', 'text', { checks: [{ name: 'email_at', expression: "VALUE LIKE '%@%'" }] })`.
+
+### `PgDomain`
+
+{/* docs: signature */}
+```ts
+interface PgDomain {
+  readonly kind: 'domain'
+  readonly name: string
+  readonly baseType: string
+  readonly schema: string | undefined
+  readonly notNull: boolean
+  readonly default: string | undefined
+  readonly collation: string | undefined
+  readonly checks: readonly { readonly name: string; readonly expression: string }[]
+  readonly renamedFrom: string | undefined
+}
+```
+
+`baseType` is `format_type`'s spelling — `character varying(25)`, not `varchar(25)` — because that is
+what round-trips against the catalog.
+
+### `PgDomainOptions`
+
+{/* docs: signature */}
+```ts
+interface PgDomainOptions {
+  readonly schema?: string
+  readonly notNull?: boolean
+  readonly default?: string
+  readonly collation?: string
+  readonly checks?: readonly { readonly name: string; readonly expression: string }[]
+  readonly renamedFrom?: string
+}
+```
+
+The checks are DDL **text**, not `sql` fragments, on purpose: a domain's `CHECK` talks about `VALUE`,
+which is not a column and has no reference to interpolate, so the fragment tag would buy nothing and
+cost the caller an import.
+
+### `pgSequence`
+
+{/* docs: signature */}
+```ts
+function pgSequence(name: string, options?: PgSequenceOptions): PgSequence
+```
+
+A standalone sequence. `ownedBy` is the field that matters: a `serial` column is exactly a sequence
+owned by a column plus a `DEFAULT nextval(...)`, and without the ownership the sequence survives its
+table's `DROP`.
+
+### `PgSequence`
+
+{/* docs: signature */}
+```ts
+interface PgSequence {
+  readonly kind: 'sequence'
+  readonly name: string
+  readonly schema: string | undefined
+  readonly dataType: string | undefined
+  readonly start: string | undefined
+  readonly increment: string | undefined
+  readonly minValue: string | undefined
+  readonly maxValue: string | undefined
+  readonly cache: string | undefined
+  readonly cycle: boolean
+  readonly ownedBy:
+    | { readonly schema?: string; readonly table: string; readonly column: string }
+    | undefined
+  readonly renamedFrom: string | undefined
+}
+```
+
+The numeric fields are strings because a sequence's bounds run past `Number.MAX_SAFE_INTEGER` and the
+catalog's own spelling is what compares equal.
+
+### `PgSequenceOptions`
+
+{/* docs: signature */}
+```ts
+interface PgSequenceOptions {
+  readonly schema?: string
+  readonly dataType?: string
+  readonly start?: string
+  readonly increment?: string
+  readonly minValue?: string
+  readonly maxValue?: string
+  readonly cache?: string
+  readonly cycle?: boolean
+  readonly ownedBy?: { readonly schema?: string; readonly table: string; readonly column: string }
+  readonly renamedFrom?: string
+}
+```
+
+### `pgExtension`
+
+{/* docs: signature */}
+```ts
+function pgExtension(name: string, options?: PgExtensionOptions): PgExtension
+```
+
+`pgExtension('uuid-ossp')`. Declare-only: created if absent, **never dropped**, and the version is
+deliberately not declarable — it is a property of what the operator installed on the cluster, not of
+the schema in your repository.
+
+### `PgExtension`
+
+{/* docs: signature */}
+```ts
+interface PgExtension {
+  readonly kind: 'extension'
+  readonly name: string
+  readonly schema: string | undefined
+}
+```
+
+### `PgExtensionOptions`
+
+{/* docs: signature */}
+```ts
+interface PgExtensionOptions {
+  readonly schema?: string
+}
+```
+
+## The registry
+
+### `defineSchema`
+
+{/* docs: signature */}
+```ts
+function defineSchema<T extends Tables, R extends RelsRecord<T> = {}>(
+  tables: T,
+  rels?: R,
+): Schema<T, R>
+```
+
+Binds tables to their relations and mints one handle per table. Relations are resolved and validated
+**eagerly**, here, so a relation naming a table the registry does not have fails on the import of the
+schema file rather than on the first query that happens to touch it. The result is memoised on the
+`(tables, rels)` pair, so the query layer's own resolution is a map lookup.
+
+### `Schema`
+
+{/* docs: signature */}
+```ts
+// `AnySchema` and `Handle` are re-declared here, shortened, because the phantom slot symbols they
+// are keyed by are values and a signature block imports types.
+const TABLES: unique symbol
+const RELS: unique symbol
+const SCHEMA: unique symbol
+const NAME: unique symbol
+
+interface AnySchema {
+  readonly [TABLES]: any
+  readonly [RELS]: any
+}
+
+interface Handle<Sc extends AnySchema, N extends string> {
+  readonly [SCHEMA]: Sc
+  readonly [NAME]: N
+  readonly $: TableRuntime
+}
+
+interface Schema<T extends Tables, R extends RelsRecord<T>> {
+  readonly [TABLES]: T
+  readonly [RELS]: R
+  readonly tables: T
+  readonly rels: R
+  readonly h: { readonly [K in keyof T & string]: Handle<Schema<T, R>, K> }
+}
+```
+
+`h` is the table handles, one per registry key, and is the one fixed O(N) cost per program. It is
+what `db.h.users` reaches, and it is why a query started from a handle knows which relations exist.
+
+### `Handle`
+
+{/* docs: signature */}
+```ts
+const SCHEMA: unique symbol
+const NAME: unique symbol
+
+interface Handle<Sc extends AnySchema, N extends string> {
+  readonly [SCHEMA]: Sc
+  readonly [NAME]: N
+  readonly $: TableRuntime
+}
+```
+
+A handle is two indexed accesses away from anything about its table, and nothing about the table is
+structurally inlined into it. That is what makes a fully cyclic relation graph typecheck with no
+thunks and no explosion in the emitted `.d.ts`.
+
+### `Tables`
+
+{/* docs: signature */}
+```ts
+type Tables = Record<string, AnyTable>
+```
+
+## Relations
+
+### `defineRelations`
+
+{/* docs: signature */}
+```ts
+function defineRelations<
+  T extends Tables,
+  R extends { [K in keyof T]?: Record<string, RelMeta<keyof T & string>> },
+>(tables: T, build: (r: RelBuilders<T>) => R): R
+```
+
+Relations produce **zero DDL**; they are a query-layer artifact. The builder gives three namespaces
+rather than an `optional` flag, so a declared relation costs no conditional: `r.one.users()` is
+non-nullable, `r.maybeOne.users()` is `| null`, `r.many.posts()` is an array.
+
+With `from`/`to` omitted, the correlation is inferred from the single foreign key joining the two
+tables in the stated direction — a `one` follows the child's own key to its parent, a `many` follows
+the inverse. Zero candidates or several is a `SchemaError` naming them, never a guess. A relation
+whose name collides with a column of the same table is refused too, because relation accessors live
+on the same scope object as the columns and one would hide the other.
+
+### `RelBuilders`
+
+{/* docs: signature */}
+```ts
+interface RelBuilders<T extends Tables> {
+  readonly one: {
+    readonly [K in keyof T & string]: (cfg?: RelConfig<T[K]>) => { kind: 'one'; opt: false; to: K }
+  }
+  readonly maybeOne: {
+    readonly [K in keyof T & string]: (cfg?: RelConfig<T[K]>) => { kind: 'one'; opt: true; to: K }
+  }
+  readonly many: {
+    readonly [K in keyof T & string]: (cfg?: RelConfig<T[K]>) => { kind: 'many'; opt: false; to: K }
+  }
+}
+```
+
+### `RelConfig`
+
+{/* docs: signature */}
+```ts
+const OUT: unique symbol
+type RelBool = { readonly [OUT]: boolean }
+type RelOrderArg = { readonly dir: 'asc' | 'desc' } | { readonly [OUT]: unknown }
+
+interface RelConfig<T extends AnyTable = AnyTable> {
+  readonly from?: unknown
+  readonly to?: unknown
+  readonly through?: unknown
+  readonly alias?: string
+  readonly where?: (t: Refs<T>) => RelBool
+  readonly orderBy?: (t: Refs<T>) => RelOrderArg | readonly RelOrderArg[]
+}
+```
+
+Runtime-only configuration; it never enters a type parameter. `from` and `to` are declared together
+or not at all, and are paired positionally, so a composite key is an array on each side. `through` is
+the many-to-many junction — `{ table, from, to }`, or just the table, in which case both hops are
+inferred the same way a single hop is. `where` is an always-applied per-parent predicate
+(`where: (t) => isNull(t.deletedAt)`), `orderBy` the default ordering for `.many()`, and `alias` only
+changes the child alias inside the emitted lateral, which is worth setting to make `EXPLAIN` output
+readable. The four keys that do not depend on the target table live on a separate, non-generic base
+interface, so instantiating `RelConfig` for a concrete target instantiates two members rather than
+six.
+
+### `resolveRelations`
+
+{/* docs: signature */}
+```ts
+function resolveRelations(
+  tables: Tables,
+  rels: RelsRecord<Tables> | undefined,
+): ResolvedRelations
+```
+
+The validation `defineSchema` runs, exposed for tooling that has a `tables`/`rels` pair and no
+registry. It is memoised on **both** halves, `tables` outermost: one relation record is legitimately
+shared by two registries — the pattern a multi-tenant or test harness reaches for — and a single-level
+memo would hand the second call the first registry's resolution and skip validation entirely.
+
+### `ResolvedRelation`
+
+{/* docs: signature */}
+```ts
+interface ResolvedRelation {
+  readonly name: string
+  readonly kind: 'one' | 'many'
+  readonly required: boolean
+  readonly parent: string
+  readonly target: string
+  readonly from: readonly string[]
+  readonly to: readonly string[]
+  readonly through: ResolvedThrough | undefined
+  readonly where: ((t: never) => unknown) | undefined
+  readonly orderBy: ((t: never) => unknown) | undefined
+  readonly alias: string | undefined
+}
+```
+
+A relation resolved down to column **TypeScript keys** and table keys — deliberately not down to
+codecs. A codec's OID is per-database, so binding one at `defineSchema` time would freeze whatever
+the default registry held; structure is resolved once here, codecs are resolved per registry later,
+where they can be re-resolved when the generation moves.
+
+## Naming and inference
+
+The two shapes below are what a schema file exports and what an application reads back. This is the
+part of the entry point you import for its *types* rather than its values.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="row-types.ts"
+import type { Insert, Row } from 'pg-prime/schema'
+
+const newUser: Insert<typeof users> = { email: 'alice@example.com', name: 'Alice' }
+await db.insertInto(db.h.users).values(newUser).execute()
+
+const rows: Row<typeof users>[] = await db
+  .from(db.h.users, 'u')
+  .select((t) => ({ id: t.u.id, email: t.u.email, name: t.u.name, createdAt: t.u.createdAt }))
+  .execute()
+
+console.log(typeof rows[0]!.id, rows[0]!.email)
+// bigint alice@example.com
+```
+
+`Insert<typeof users>` has no `id` at all — the column is `GENERATED ALWAYS`, so it is not writable —
+and `createdAt` is optional because it has a `DEFAULT`. `Row<typeof users>` has all four, with `id`
+as a `bigint` and `createdAt` as a `Date`.
+
+### `Row`
+
+{/* docs: signature */}
+```ts
+// `AnyTable` shortened to the one slot this reads; `SEL` is the exported slot symbol.
+const SEL: unique symbol
+interface AnyTable {
+  readonly [SEL]: any
+}
+
+type Row<T extends AnyTable> = T[typeof SEL]
+```
+
+The row as read: every column, with `| null` already folded into the ones that opted in. It is an
+indexed access into a slot the table computed once, not a mapped type evaluated per use, which is
+why a hundred queries against one table cost one row-shape computation.
+
+The <a id="Selectable"/>`Selectable<T>` spelling is the same type under the `$inferSelect` name,
+and <a id="SelectRow"/>`SelectRow<C>` is the mapped type that computes it from a
+[`Cols`](#mapped-types-and-supertypes) record.
+
+### `Insert`
+
+{/* docs: signature */}
+```ts
+const INS: unique symbol
+interface AnyTable {
+  readonly [INS]: any
+}
+
+type Insert<T extends AnyTable> = T[typeof INS]
+```
+
+The insert shape: `GENERATED ALWAYS` columns removed entirely, and columns that are nullable,
+defaulted or identity-by-default made optional. <a id="Insertable"/><a id="InsertRow"/>
+`Insertable<T>` is the `$inferInsert` spelling and `InsertRow<C>` the mapped type behind both.
+
+### `Update`
+
+{/* docs: signature */}
+```ts
+const UPD: unique symbol
+interface AnyTable {
+  readonly [UPD]: any
+}
+
+type Update<T extends AnyTable> = T[typeof UPD]
+```
+
+Everything writable, all optional. <a id="Updateable"/><a id="UpdateRow"/> `Updateable<T>` is the
+`$inferUpdate` spelling and `UpdateRow<C>` the mapped type.
+
+### `Loaded`
+
+`Loaded<H, K, F>` takes three parameters: the handle, the relation keys that must be present, and
+the column keys that were selected — `K` defaults to `never` and `F` to every column. The second and
+third are constrained by the handle's own schema, and its body is an unexported helper, so this is
+one of the two declarations on this page with no checked signature block.
+
+`Loaded` is a *structural contract, not a brand*: because query results are plain object types, a
+result that projected all of `users` plus its `posts` is assignable to
+`Loaded<typeof db.h.users, 'posts'>` with no cast, no runtime marker and no wrapper object. A
+function can therefore ask for "a user with its posts loaded" in its signature and be satisfied by a
+query that was written without knowing about it.
+
+## The type layer
+
+Nothing below is written in a schema file. These are the slots the DSL fills, the supertypes the
+constraints use, and the mapped types that read a table back — grouped because a reader meets them
+in a diagnostic, not in their own code.
+
+### The phantom slots
+
+Fourteen `unique symbol`s, all of them keys of type-level slots that do not exist at runtime. They
+**must** be exported: a downstream build with `declaration: true` fails with TS2527 ("references an
+inaccessible unique symbol") if any one of them is not. They are `Symbol.for(...)`, not `Symbol()`,
+so two copies of the package in one dependency tree still agree.
+
+| Symbol | Sits on | Carries |
+|---|---|---|
+| <a id="META"/>`META` | `Col`, `Ref`, `TypedFragment` | The [`ColMeta`](#colmeta) payload — the five facts the type layer knows about a column. |
+| <a id="NAME"/>`NAME` | `Table`, `Ref`, `Handle` | The name or key, as a string literal type. |
+| <a id="COLS"/>`COLS` | `Table` | The table's [`Cols`](#mapped-types-and-supertypes) record. |
+| <a id="REFS"/>`REFS` | `Table` | The pre-computed column references. Also reachable as `.cols`, which is the spelling to prefer in a schema file. |
+| <a id="SEL"/>`SEL` | `Table` | The pre-flattened select row. |
+| <a id="INS"/>`INS` | `Table` | The pre-flattened insert row. |
+| <a id="UPD"/>`UPD` | `Table` | The pre-flattened update row. |
+| <a id="RELS"/>`RELS` | `Table`, `Schema` | The relation record. Always empty on a table: relations live on the schema. |
+| <a id="TABLES"/>`TABLES` | `Schema` | The table registry. |
+| <a id="SCHEMA"/>`SCHEMA` | `Handle` | The schema a handle belongs to — the back-reference that makes relations reachable from a query. |
+| <a id="OUT"/>`OUT` | anything projectable | The output type of a projectable value. |
+| <a id="SRC"/>`SRC` | `Ref`, `TypedFragment` | The source alias a reference belongs to. |
+| <a id="ERR"/>`ERR` | [`OrmTypeError`](#the-type-layer) | The sentence a refused call reports. |
+| <a id="DATE_BRAND"/>`DATE_BRAND` | nothing | Reserved. It was the brand key of the schema layer's own `DateString`; that type is now an alias of the codec layer's brand, so nothing reads this. Kept exported because removing a `Symbol.for` key is a breaking change for anyone who wrote it into a structural type, and it costs one interned symbol. |
+
+Why phantom slots and not properties: a slot keyed by a symbol cannot collide with a column named
+`name` or `cols`, and a `Table` interface's slot types are computed lazily by TypeScript and then
+cached on the instantiation — so `SelectRow<C>` for `users` is computed at most once per program, no
+matter how many queries touch `users`.
+
+### Mapped types and supertypes
+
+The `Any*` types are minimal supertypes whose members are `any`, **not** `Col<any>` or
+`Table<any, any, any>`. That is the whole point: `X extends AnyTable` is then an O(1) check that
+never forces the row shapes to be computed. Measured at 2,561 fewer type instantiations on a
+100-table schema.
+
+| Type | Shape | What it is for |
+|---|---|---|
+| <a id="AnyCol"/>`AnyCol` | `interface AnyCol` | Constraint position for "some column". |
+| <a id="AnyRef"/>`AnyRef` | `interface AnyRef` | Constraint position for "some column reference" — the parameter type of `primaryKey`, `unique().on`, `index().on`. |
+| <a id="AnyTable"/>`AnyTable` | `interface AnyTable` | Constraint position for "some table". |
+| <a id="AnySchema"/>`AnySchema` | `interface AnySchema` | Constraint position for "some registry". |
+| <a id="AnyHandle"/>`AnyHandle` | `interface AnyHandle` | Constraint position for "some table handle". |
+| <a id="AnyPgEnum"/>`AnyPgEnum` | `PgEnum<string, readonly string[]>` | Constraint position for "some enum". |
+| <a id="Cols"/>`Cols` | `Record<string, ColMeta>` | A table's flattened column payload. |
+| <a id="Rels"/>`Rels` | `Record<string, RelMeta>` | One table's relation payload. |
+| <a id="RelMeta"/>`RelMeta` | `{ kind; opt; to }` | One relation, at the type level. `to` is a **key** into the registry, never an inlined table type — which is what makes a mutually recursive graph free. |
+| <a id="RelsRecord"/>`RelsRecord` | `{ [K in keyof T]?: Rels }` | Per-table relation records; a table with no relations omits the key. |
+| <a id="RelOut"/>`RelOut` | `RelOut<M, O>` | `many` becomes `O[]`, an optional `one` becomes `O \| null`, a required `one` stays `O`. |
+| <a id="Table"/>`Table` | `Table<N, C, R>` | The table interface itself: `NAME`, `COLS`, `REFS`, `SEL`, `INS`, `UPD`, `RELS`, `.cols` and `.$`. `R` is always `{}` — the slot is kept so an extension pack that does attach relations to a table has somewhere to put them. |
+| <a id="Ref"/>`Ref` | `Ref<A, K, M>` | A reference to one column of one source alias. `K` is kept in the parameters so two columns' refs are not mutually assignable. |
+| <a id="Projectable"/>`Projectable` | `{ [OUT]: unknown }` | Everything that can appear in a projection exposes this one slot. |
+| <a id="ColsOf"/>`ColsOf` | `ColsOf<B>` | `{ [K in keyof B]: B[K][META] }` — turns a record of built columns into a `Cols`. An indexed access, not a conditional, so it costs nothing per column. |
+| <a id="RefsOfCols"/>`RefsOfCols` | `RefsOfCols<N, C>` | The `REFS` slot: one `Ref` per column, computed once per table. |
+| <a id="Refs"/>`Refs` | `Refs<T>` | `T[REFS]` — the parameter type of every column callback. |
+| <a id="TableOf"/>`TableOf` | `TableOf<Sc, N>` | The table at key `N` of registry `Sc`. Two indexed accesses; never a conditional. |
+| <a id="ColsAt"/>`ColsAt` | `ColsAt<Sc, N>` | That table's `Cols`. |
+| <a id="SelAt"/>`SelAt` | `SelAt<Sc, N>` | That table's select row. |
+| <a id="RelsAt"/>`RelsAt` | `RelsAt<Sc, N>` | That table's relations. |
+| <a id="Simplify"/>`Simplify` | `{ [K in keyof T]: T[K] } & {}` | Collapses an intersection into one object type so a hover shows the row rather than the algebra. Used at declaration time only, never inside a query-time signature. |
+| <a id="Defer"/>`Defer` | `[T] extends [unknown] ? T : never` | Kysely's `DrainOuterGeneric`: keeps an alias unresolved in the emitted declarations and avoids TS2589 at depth. |
+| <a id="OrmTypeError"/>`OrmTypeError` | `{ [ERR]: M }` | A refusal that carries a sentence. A modifier that cannot legally be called resolves to this instead of failing with a constraint mismatch, so the diagnostic is one line and contains the explanation. |
+| <a id="DateString"/>`DateString` | branded `string` | What a `date` column reads as. It is an **alias** of the codec layer's brand, not a second one: two brands made `val('2026-01-01')` and `` sql`…`.as(dateCodec) `` produce values the compiler refused to put in a `date()` column. |
+
+### Runtime metadata
+
+Everything reachable through a `$` property. It is non-generic — it costs nothing at the type level —
+and it is what the migration kit and the query compiler read. None of it is reachable from `ColMeta`,
+which is the rule that keeps the type budget flat as the DSL grows.
+
+| Type | Reached by | Contents |
+|---|---|---|
+| <a id="TableRuntime"/>`TableRuntime` | `table.$` | `name`, `schema`, `columns`, `extras`, and `column(key)`. |
+| <a id="ColumnRuntime"/>`ColumnRuntime` | `col.$`, `ref.$.column` | `ddl` and `ts` — the two halves of the `$` law. |
+| <a id="ColumnDdl"/>`ColumnDdl` | `col.$.ddl` | Everything a column contributes to DDL: `pgType`, `dbName`, `notNull`, `default`, `identity`, `primaryKey`, `unique`, `uniqueSpec`, the three `enum*` fields, `arrayDim`, `references`, `checks`, `comment`, `renamedFrom`. No `$`-prefixed modifier may ever write here. |
+| <a id="ColumnTsMeta"/>`ColumnTsMeta` | `col.$.ts` | `defaultFn`, `onUpdateFn`, `narrowed`. Never reaches DDL or the migration IR. |
+| <a id="RefRuntime"/>`RefRuntime` | `ref.$` | `table`, `schema`, `key`, `dbName`, `column`. The schema is carried here as well as on the table because `.references()` hands the emitter a column reference and nothing else, and guessing a cross-schema target by table name is ambiguous the moment two schemas hold a table of the same name. |
+| <a id="DefaultSpec"/>`DefaultSpec` | `ColumnDdl.default` | `{ kind: 'value', value }` from `.default()`, or `{ kind: 'expr', expr }` from `.defaultSql()`. |
+| <a id="RefSpec"/>`RefSpec` | `ColumnDdl.references` | The lazily resolved foreign key: a `target` thunk the kit calls once at emit time, plus `name`, `onDelete`, `onUpdate`, `deferrable`, `initiallyDeferred`. |
+| <a id="RefLike"/>`RefLike` | `RefSpec.target()` | The structural minimum a reference target must be: `{ $: { table, schema, dbName } }`. Declared structurally rather than as `AnyRef` so the DDL module need not import the reference module that imports it. |
+| <a id="CheckSpec"/>`CheckSpec` | `ColumnDdl.checks` | `name` and `expression`, the latter as opaque DDL text — the shadow database normalises it. |
+| <a id="UniqueSpec"/>`UniqueSpec` | `ColumnDdl.uniqueSpec` | `name` and `nullsNotDistinct`, present exactly when the column is unique. |
+| <a id="IndexItem"/>`IndexItem` | the `index` node's `items` | One index column with its options resolved to database names: `column`, `desc`, `nulls`, `opclass`. |
+| <a id="IndexColumn"/>`IndexColumn` | `index().on(...)` | The per-column *input*: `{ column, desc?, nulls?, opclass? }`. |
+| <a id="IndexColumnLike"/>`IndexColumnLike` | `index().on(...)` | `AnyRef \| IndexColumn` — a bare reference or an item object. |
+| <a id="IndexNulls"/>`IndexNulls` | `IndexColumn.nulls` | `'first' \| 'last'`. |
+| <a id="RelNode"/>`RelNode` | `defineRelations`' output | The runtime relation the query compiler reads: `kind`, `opt`, `to`, `config`. |
+| <a id="ResolvedRelations"/>`ResolvedRelations` | `resolveRelations` | Table key to relation name to [`ResolvedRelation`](#resolvedrelation). Frozen. |
+| <a id="ResolvedThrough"/>`ResolvedThrough` | `ResolvedRelation.through` | The many-to-many hop: the junction `table`, and the `from`/`to` column keys on each side of it. |

@@ -94,6 +94,8 @@ The shape to copy:
 ```ts title="invalidate-cache.ts" no-run
 // no-run: delivery needs two backend sessions. PGlite multiplexes every socket onto one backend,
 // so a NOTIFY published here is never delivered to the listener — this pattern is tier 2.
+import { eq } from 'pg-prime'
+
 const cache = new Map<string, string>()
 
 async function refreshAll(): Promise<void> {
@@ -108,7 +110,7 @@ async function refreshAll(): Promise<void> {
 async function refreshOne(id: string): Promise<void> {
   const [row] = await db
     .from(db.h.posts, 'p')
-    .where((t, { eq }) => eq(t.p.id, BigInt(id)))
+    .where((t) => eq(t.p.id, BigInt(id)))
     .select((t) => ({ title: t.p.title }))
     .execute()
   if (row === undefined) cache.delete(id)

@@ -8,7 +8,8 @@ pnpm docs:dev        # local server on :4321
 pnpm docs:build      # the pooler matrix generator, then `astro build` (Pagefind runs here)
 pnpm docs:typecheck  # every fenced ts/tsx block compiles on TypeScript 5.9.3
 pnpm docs:examples   # every `title=` block runs against PGlite
-pnpm docs:coverage   # every exported name has a reference entry; CLI + hazard tables are current
+pnpm docs:coverage   # the pooler matrix is current; every exported name has a reference entry;
+                     # the CLI blocks are the binary's --help; the hazard table is the kit's
 pnpm docs:check      # all four, in that order — what CI's `docs` job runs
 ```
 

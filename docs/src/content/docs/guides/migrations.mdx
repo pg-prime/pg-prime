@@ -3,4 +3,654 @@ title: Migrations end to end
 description: config, generate, apply, status, check, verify, lint, baseline, push, doctor, unlock.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+The kit is one binary, `pg-prime`, with thirteen commands. Eleven of them live under `migrate`; `db
+seed` and `pull` are their own verbs because neither writes a migration. This page walks the
+commands in the order you meet them, says what each one refuses and why, and gives its exit code.
+
+Every option shown here is in the binary's own `--help`; the full tables are in the
+[CLI reference](/pg-prime/reference/cli/). Every terminal block on this page is output that was
+captured from a real run against PostgreSQL 17.
+
+## The config file
+
+The kit reads `pg-prime.config.ts` from the nearest directory at or above the working directory —
+also `.mts`, `.js` and `.mjs`, searched in that order in each directory before moving up. There is
+no loader dependency: Node ≥ 22.18 strips the types itself, and below that the CLI re-executes
+itself once with `--experimental-strip-types`.
+
+`defineConfig` is the identity function, typed. It exists so the file gets completion and so a typo
+in a key is a compile error in your editor rather than a setting that is silently ignored.
+
+{/* docs: setup=config */}
+```ts title="pg-prime.config.ts" no-run
+import { defineConfig } from '@pg-prime/kit'
+
+export default defineConfig({
+  // Where the schema modules are. `generate`, `check`, `verify` and a `.ts` seed need them;
+  // `apply` never does.
+  schema: './src/schema.ts',
+
+  // Where NNNN_name.sql and NNNN_name.plan.json live. Default './migrations'.
+  migrations: './migrations',
+
+  // Tier-R objects — views, functions, triggers, policies — re-applied by hash. Default './sql'.
+  repeatables: './sql',
+
+  // seeds/*.sql and seeds/*.ts. Default './seeds'.
+  seeds: './seeds',
+
+  // The managed schema set: the scope of the diff, of the fingerprint and of the advisory lock.
+  // Default ['public'].
+  schemas: ['public'],
+
+  // The database every command connects to.
+  url: process.env['DATABASE_URL'] ?? 'postgres://postgres:postgres@localhost:5432/app',
+
+  // How the desired state is normalized. 'auto' walks the shadow ladder.
+  shadow: 'auto',
+
+  // Standby URLs for `-- pg-prime:batch max-replica-lag=…`. Nothing else ever connects to these.
+  replicas: [],
+
+  // design/06 §5.2's runner defaults, overridable per project.
+  lockTimeout: '3s',
+  statementTimeout: '30s',
+  lockWaitMs: 30_000,
+  staleLockAfterMs: 60_000,
+
+  // Force the production tag on regardless of PG_PRIME_ENV.
+  production: false,
+})
+```
+
+Two keys are alternatives rather than additions. `url` takes a `postgres://` string; `connection`
+takes the parsed form (`host`, `port`, `user`, `password`, `database`) for the case where the parts
+come from somewhere that never assembles a URL. `shadow` takes `'auto'`, `'temp-schema'`,
+`'createdb'`, `'offline'`, or an object `{ url: '…' }`.
+
+### Which database a command connects to
+
+Highest wins:
+
+1. `--url` on the command line;
+2. `connection` in the config;
+3. `url` in the config;
+4. `PG_PRIME_DATABASE_URL`;
+5. `DATABASE_URL`.
+
+The project's own file beats the ambient environment on purpose. A `DATABASE_URL` left over in a
+shell is the classic way to run a migration against the wrong database, and a config file that
+names its target is a fact somebody reviewed.
+
+`--migrations` and `--schema` (repeatable) override `migrations` and `schemas` the same way.
+`--config <path>` names the file directly and stops the upward search.
+
+## `migrate generate`
+
+`generate` is the only command that reads your TypeScript. It connects to the target, extracts
+IR(current) from the catalog, builds IR(desired) by loading your schema into a shadow database,
+diffs the two, resolves renames, orders the statements, rewrites the ones with a safer equivalent,
+runs the hazard rules, **proves the result on a clone**, and only then writes two files.
+
+```sh
+pg-prime migrate generate --name init
+```
+
+```text frame="terminal"
+migrate generate — docs_guides (shadow tier 2: the admin role has CREATEDB)
+  0000_init.sql  main  7 statements  txmode transactional
+  proof    passed
+  witness  passed
+```
+
+The file is `NNNN_name.sql`, where `NNNN` is one past the highest number on disk (`--seq <n>`
+overrides) and `name` is `--name <slug>` restricted to `[a-z0-9_]+`. Two branches may both write
+`0007_…` and both apply: there is no journal file to desync, so a duplicate number merges rather
+than conflicts.
+
+`shadow tier 2` on the first line is the ladder reporting which normalization it got. Tier 1 is a
+`--shadow <url>` you supplied, tier 2 is `CREATE DATABASE` on the same cluster, tier 3 is a temp
+schema inside the target database for a role with no `CREATEDB` — the managed-PostgreSQL case.
+Tier 4, `--offline`, is **refused with a sentence**: without a database there is no IR(desired) to
+diff against, because the desired state is a function of a database by construction. See
+[the shadow ladder](/pg-prime/concepts/shadow-ladder/).
+
+`proof passed` means the migration was replayed on a fresh clone and the result matched the desired
+state exactly; a plan that does not converge is not written (exit 7). `witness passed` is the
+second opinion: `pg_dump` of both databases, normalized and compared as a multiset. It is
+`--dump-oracle <off|warn|strict>`, default `warn`, so a difference is recorded in the plan and does
+not block; `strict` makes it block. `pg_dump` missing from your `PATH` is `skipped`, never
+`failed` — that is an environment gap, not evidence about the plan. Both are explained in
+[proof and witness](/pg-prime/concepts/proof/).
+
+### What it refuses
+
+`generate` writes nothing on any non-zero exit. Two refusals matter, and they are different exit
+codes because they are different kinds of problem.
+
+**Exit 2 — a decision only a human can make.** An unresolved rename, or a destructive change with
+no recorded acknowledgement:
+
+```text frame="terminal"
+migrate generate — docs_guides (shadow tier 2: the admin role has CREATEDB)
+
+2 decisions need a human (design/06 §3.3). Nothing was written.
+
+  rename?  column:public.users.name -> column:public.users.full_name  [unambiguous]
+           name and full_name have identical content hashes — every attribute except the name agrees
+           fix: add .renamedFrom("name") to full_name in your schema, or pass --hints-file with { "from": "column:public.users.name", "to": "column:public.users.full_name" }
+  data loss  column:public.users.name  (DS103)
+           DS103 on: ALTER TABLE "public"."users" DROP COLUMN IF EXISTS "name"
+           fix: re-run with --allow-data-loss, or record the acknowledgement in a --hints-file
+```
+
+A dropped column and an added column are indistinguishable in a catalog diff, so pg-prime never
+guesses: **annotation is the only authority**. The cheapest fix is the one in the message — put
+`.renamedFrom('name')` on the column, which lives in your schema and gets reviewed with it. The
+other two inputs are `--interactive` (TTY only; it shows the candidates and prints the annotation
+to add, it does not silently rename anything) and `--hints-file <path>`, a JSON array:
+
+```json title="hints.json"
+[{ "from": "column:public.users.name", "to": "column:public.users.full_name" }]
+```
+
+Destructive changes take `--allow-data-loss`, and `--reason <text>` records why:
+
+```sh
+pg-prime migrate generate --name drop_email_domain \
+  --allow-data-loss --reason "derived column, replaced by a view in v3"
+```
+
+The acknowledgement lands in the `.plan.json`, which is why it is worth recording:
+
+```json title="migrations/0005_drop_email_domain.plan.json (excerpt)"
+"acknowledged": {
+  "dataLoss": ["column:public.users.email_domain"],
+  "by": "spike",
+  "reason": "derived column, replaced by a view in v3",
+  "at": "2026-08-29T06:52:02.534Z",
+  "blanket": true
+}
+```
+
+A reviewer sees `+ "dataLoss": ["column:public.users.email_domain"]` as a diff line in the pull
+request. That is the review interface; `--by <name>` (default `$USER`) names who acknowledged it.
+
+**Exit 3 — a lint failure.** Any other error-severity hazard: an `MF` rule that would fail on
+existing data, a `TX` rule about transactionality, an enum-ordering `EN` rule, a non-empty Tier-U
+census under `--strict-unmodeled`. Both refusals write nothing.
+
+### The other flags
+
+`--dry-run` runs the whole pipeline, including the proof, and writes nothing:
+
+```text frame="terminal"
+migrate generate — docs_guides (shadow tier 2: the admin role has CREATEDB)
+  0004_rename_name.sql  main  1 statement  txmode transactional  (not written)
+  proof    passed
+  witness  passed
+```
+
+`--empty` writes a blank hand-written migration and touches no database. `--data` writes a data
+migration template — both are covered in
+[data migrations and seeding](/pg-prime/guides/data-migrations/).
+
+`--no-safe-rewrite` emits the literal diff instead of the lock-safe forms, which turns rewrites
+back into reported hazards. `--strict-unmodeled` promotes a non-empty census of object kinds
+pg-prime does not model into an error. `--no-prove` is dev only: it stamps `proof.status = skipped`
+and writes anyway.
+
+**Exit: 0** written or nothing to do · **1** error · **2** a rename or data-loss decision is missing
+· **3** lint · **7** proof failed.
+
+## The two files it writes
+
+The `.sql` is readable SQL with a directive header. Nothing is hidden in a binary journal, and the
+file runs under `psql` if the tooling ever fails you:
+
+```sql title="migrations/0004_rename_name.sql"
+-- pg-prime:migration 0004_rename_name
+-- pg-prime:plan      0004_rename_name.plan.json
+-- pg-prime:from      sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+-- pg-prime:to        sha256:9cb3d8dd42b4fc99049e9b78a09db66bc7c7d534a514d28e7d127d7d26215c37
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=3s statement=30s
+-- pg-prime:requires-pg 150000
+
+SET search_path = pg_catalog;
+
+-- pg-prime:segment 0 transactional
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent hazards=BC102
+ALTER TABLE "public"."users" RENAME COLUMN "name" TO "full_name";
+```
+
+`-- pg-prime:stmt N` is the statement index, and it is the **resume position** after a partial
+apply. It is a marker rather than a splitter result on purpose: deriving the index by re-splitting
+the file at resume time would make correctness depend on the splitter behaving identically across
+releases. Hand-written files with no markers fall back to the splitter, and the runner says so.
+
+The `.plan.json` beside it is the machine-readable half: the statements with their lock classes and
+hazards, the from/to fingerprints, the managed schema set, the proof result, the witness result,
+and the acknowledgement block. `apply` checks the `.sql` against the plan's recorded `sha256`, so
+editing a generated file after it is written is caught rather than applied.
+
+## `migrate apply`
+
+```sh
+pg-prime migrate apply
+```
+
+```text frame="terminal"
+migrate apply — docs_guides @ 127.0.0.1:54333
+applied 1 migration in 119 ms:
+  0000_init  transactional  7 statements  11 ms
+  fingerprint  sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392
+```
+
+`apply` runs the files on disk, in `(seq, name)` order, recording each one in `pgprime.migrations`.
+It is the one command a production image needs, and it is deliberately small: it **never
+generates**, **never introspects the desired state**, and **never reads your TypeScript**. It needs
+the `migrations/` directory and a connection, so your schema code does not have to ship.
+
+`--to <id>` stops after a migration (`0007` or `0007_add_orders`). `--dry-run` prints the exact
+statement stream it would issue — transaction framing, `set_config` calls and the history row
+included — and takes no lock:
+
+```text frame="terminal"
+migrate apply — docs_guides @ 127.0.0.1:54333
+
+--dry-run: 8 statements would be issued, in this order.
+
+BEGIN;
+SELECT set_config($1, $2, $3);  -- ["lock_timeout","3s",true]
+SELECT set_config($1, $2, $3);  -- ["search_path","pg_catalog",true]
+SELECT set_config($1, $2, $3);  -- ["statement_timeout","30s",true]
+ALTER TABLE "public"."users" RENAME COLUMN "name" TO "full_name";
+SELECT set_config($1, $2, $3);  -- ["statement_timeout","30s",true]
+INSERT INTO pgprime.migrations ( … the history row … );
+COMMIT;
+
+Nothing was executed and no lock was taken.
+```
+
+### The lock, and its four durations
+
+Two mechanisms, deliberately. A session-scoped `pg_advisory_lock(key)` on the dedicated migration
+connection, held for the whole run, where the key is derived from the database name and the managed
+schema set — so two unrelated schemas in one database do not serialize against each other. And a
+heartbeat lease row in `pgprime.lock`, because a session lock stranded behind a connection pooler
+cannot be detected from `pg_locks` alone, while a stale `heartbeat_at` can.
+
+| Flag | Default | What it bounds |
+|---|---|---|
+| `--lock-timeout` | `3s` | PostgreSQL's `lock_timeout` for every statement |
+| `--statement-timeout` | config, or `30s` | PostgreSQL's `statement_timeout`, except for intentionally long builds |
+| `--lock-wait` | `30s` | how long to wait for a concurrent deploy's advisory lock |
+| `--stale-lock-after` | `60s` | the lease age past which a holder is *reported* stale |
+| `--heartbeat` | `5s` | how often the lease is refreshed; keep it well under `--stale-lock-after` |
+
+`apply` also detects a transaction-mode pooler before it starts, by asking for `pg_backend_pid()`
+in two separate transactions: different pids mean session advisory locks are silently broken on
+that connection, and the command hard-errors with the direct-connection port to use rather than
+proceeding. [Locking](/pg-prime/operations/locks/) and
+[poolers](/pg-prime/operations/poolers/) go into the detail.
+
+### The fingerprint gate
+
+Before each file, `apply` checks that the live schema fingerprint equals the plan's
+`from.fingerprint`. The fast path reads `fingerprint_to` off the last applied row, which costs
+nothing. `--verify-fingerprint` takes the slow path and re-extracts the catalog instead — which is
+what makes a hand-applied change visible rather than assumed away. A mismatch is exit 4, and if the
+repository has a checkpoint the message **names the drifted objects**.
+
+`--applied-from <id>` is recorded in `pgprime.migrations.applied_from`; it defaults to
+`<hostname>:<pid>` and CI should set it to the run id, so a row in the history table points at a
+build log. `--dev` downgrades checksum drift from an error to a warning, and `--yes` is accepted
+for forward compatibility — `apply` never prompts.
+
+**Exit: 0** applied or nothing to do · **1** error · **4** drift · **6** lock unavailable.
+
+## `migrate status`
+
+Read-only, and the shape of it is designed for a deploy script rather than for a human:
+
+```sh
+pg-prime migrate status
+```
+
+```text frame="terminal"
+migrate status — docs_guides @ 127.0.0.1:54333
+  history      present (v1)
+  fingerprint  sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb (history)
+  migrations   3 files, 0 pendings
+  lock         free
+  applied   0000_init
+  applied   0001_users_email_domain
+  applied   0002_backfill_email_domain
+```
+
+It reports applied against pending, the current fingerprint, stale leases, partially-applied rows,
+repeatable drift and any running data migration. The fingerprint line says `(history)` because the
+fast path reads it off the last applied row: that is a statement about what the runner did, not
+about what the database now contains. `--verify-fingerprint` re-extracts, and only then can
+`status` report catalog drift — which it does as exit 4.
+
+**Exit: 0** up to date · **4** drift · **5** pending.
+
+## `migrate check` — the CI gate
+
+One command, three questions, no history writes: does the migrations directory account for the
+TypeScript schema, do the checksums match, is anything pending?
+
+```sh
+pg-prime migrate check
+```
+
+```text frame="terminal"
+migrate check — docs_guides
+  schema     matches
+  checksums  ok
+  pending    none
+```
+
+When the schema has moved and nobody ran `generate`, that is exit 4 and the message shows what
+would have been generated:
+
+```text frame="terminal"
+migrate check — docs_guides
+  schema     1 statement would be generated
+  checksums  ok
+  pending    none
+
+would generate:
+  - ALTER TABLE "public"."posts" ADD COLUMN IF NOT EXISTS "slug" text
+```
+
+The first question is asked of the **pending files**, not of the database. Immediately after
+`generate` and before `apply` the diff against the database is non-empty by construction, and
+calling that "you forgot to run generate" would fail `check` in exactly the commit that added a
+migration. So a diff is only drift when nothing pending accounts for it.
+
+`check` never calls `ensureHistory`, never takes the lock and never records a row. It does
+provision a shadow, and on tier 3 that is a temp schema created and dropped inside the target —
+unavoidable, since normalizing the desired state *is* the question. `--shadow <url>` keeps even
+that out of the target; `--no-schema` skips the first question entirely and checks only checksums
+and pending files.
+
+**Exit: 0** ok · **1** error · **2** missing hints · **3** lint · **4** the schema changed and no
+migration was generated · **5** pending. [Migrations in CI/CD](/pg-prime/operations/ci-cd/) has the
+pipeline.
+
+## `migrate verify`
+
+`check` asks whether the repository is consistent. `verify` asks a different question: **do the
+committed files actually build the schema they claim to?** It provisions an ephemeral database,
+replays every migration into it from empty, applies the repeatables, extracts the result and
+asserts the diff against IR(desired) is empty.
+
+```sh
+pg-prime migrate verify
+```
+
+```text frame="terminal"
+migrate verify — replayed 3 migrations into pgprime_shadow_f6c7c71d
+  replayed  sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+  desired   sha256:9a25616d2e80da6ec19309a90dc0f5e7a364f8af48eb5848d6da68efd1d5eefb
+  verdict   verified
+```
+
+This catches a class of failure that drift detection cannot see: a file that was edited after it
+was generated, or a hand-written migration that does something other than what the schema says.
+
+It needs a real ephemeral database and fails rather than skipping when it cannot get one:
+`CREATE DATABASE` by default, `--shadow <url>` otherwise. A temp schema is explicitly refused,
+because the replayed migrations name their own schemas and would collide with the live ones.
+`--keep` leaves the database behind for inspection. `--to <id>` replays only part of the history
+for bisecting, and exits **0** rather than 4 on the resulting non-empty diff — a partial replay is
+*expected* to differ, and exiting 4 would make the flag useless; the envelope's status is
+`replayed` rather than `verified`, so the two are still distinguishable.
+
+`--against <schema|target>` picks what the replay is compared to. It defaults to `schema`, and to
+`target` when the config names no schema — which is how a repository that has only `baseline`d an
+existing database can still assert that the repository reproduces it.
+
+`--from-checkpoint` replays from the newest checkpoint instead of from empty. It is **off by
+default**, for a reason worth knowing before you reach for it; see
+[checkpoints](/pg-prime/guides/checkpoints/).
+
+**Exit: 0** verified · **1** error or no ephemeral database available · **4** non-empty diff.
+
+## `migrate lint`
+
+35 rules in six families, run over generated or hand-written SQL. It defaults to the unapplied
+migrations and needs no database connection when you name files.
+
+| Family | Default severity | What it is about |
+|---|---|---|
+| `DS101`–`DS106` | error | destructive: dropping a schema, table, column, the only uniqueness guarantee |
+| `MF101`–`MF106` | error | may fail on existing data: adding `UNIQUE` or `NOT NULL` to a populated table, narrowing a type |
+| `BC101`–`BC104` | warn | backward-incompatible with running app code: renames, visible type changes |
+| `LK101`–`LK112` | warn | lock hazards: an index without `CONCURRENTLY`, a validated FK, a table rewrite |
+| `TX101`, `TX102`, `TX201` | error | transactionality: `CONCURRENTLY` inside a transaction, a non-idempotent statement in a `txmode none` file |
+| `EN101`, `EN102` | error | enums: a new label used before its `ADD VALUE` committed, a removal or reorder |
+| `ST101`–`ST106` | off | style, opt in with `--style` |
+
+`MF` rules relax to a pass when the table is *proven* empty by a `SELECT EXISTS (SELECT 1 FROM t
+LIMIT 1)` probe against the target. With no connection the set of empty tables is empty and every
+`MF` rule stays at `error`, which is the safe direction. Most `LK` hazards never reach you at all,
+because the generator rewrites them into the lock-safe form instead of reporting them — that is
+what the `NOT VALID` + `VALIDATE` pair in a generated foreign key is. The whole table is in the
+[hazard-code reference](/pg-prime/reference/hazard-codes/).
+
+```sh
+pg-prime migrate lint
+```
+
+```text frame="terminal"
+migrate lint — 1 migration, 1 finding
+0001_rental_returned_idx:
+  error TX201 [stmt 0] : statement 0 is not idempotent, and a txmode-none file must be safe to re-execute after a crash (design/06 §5.4)
+```
+
+### Suppressing one, with a reason
+
+```sql title="migrations/0001_rental_returned_idx.sql"
+-- pg-prime:migration 0001_rental_returned_idx
+-- pg-prime:txmode    none
+
+-- pg-prime:stmt 0 lock=shareUpdateExclusive non-idempotent
+-- pg-prime:nolint TX201 "the index is dropped by hand before this file is re-run"
+CREATE INDEX CONCURRENTLY idx_rental_returned_at ON rental (returned_at);
+```
+
+```text frame="terminal"
+migrate lint — 1 migration, 1 finding
+0001_rental_returned_idx:
+  suppressed error TX201 [stmt 0] : statement 0 is not idempotent, and a txmode-none file must be safe to re-execute after a crash (design/06 §5.4)
+```
+
+The finding is still reported, marked `suppressed`, and the exit code drops to 0. A `nolint` under
+a `-- pg-prime:stmt N` marker scopes to that statement; one in the header block is file-wide.
+
+<Aside type="caution">
+The reason string is **mandatory**. A `nolint` with no quoted, non-empty reason is itself a lint
+error and forces exit 3 on its own — an unreviewable suppression that silently succeeded would be
+worse than no escape hatch at all.
+</Aside>
+
+```text frame="terminal"
+migrate lint — 1 migration, 1 finding
+0001_rental_returned_idx:
+  error nolint [line 5] -- pg-prime:nolint TX201: nolint TX201 has no reason — design/06 §3.4 makes it mandatory so the suppression is reviewable
+  error TX201 [stmt 0] : statement 0 is not idempotent, and a txmode-none file must be safe to re-execute after a crash (design/06 §5.4)
+```
+
+Directives are found through the SQL lexer, not by scanning lines, so a `-- pg-prime:nolint` inside
+a string literal or a `$$ … $$` function body is data rather than a suppression.
+
+`--fail-on <error|warn|off>` moves the severity that makes the command exit 3; `--rules <codes>`
+narrows to a list; `--all` lints every migration on disk rather than only the unapplied ones;
+`--format <text|json>` picks the shape of the findings.
+
+**Exit: 0** clean · **1** usage · **3** a finding at or above `--fail-on`.
+
+## `migrate baseline`
+
+For a database that already exists and has never been under pg-prime. It introspects, writes
+`0000_baseline.sql` + `.plan.json` holding the whole current schema, and records the row as
+`baselined` **without executing it** — the objects are already there.
+
+```text frame="terminal"
+migrate baseline
+  wrote        …/migrations/0000_baseline.sql
+  plan         …/migrations/0000_baseline.plan.json
+  statements   12
+  fingerprint  sha256:57e7326184bb1fc8ded4659a1d43a92f8a71a74370842c82eb3a67e57a28cae5
+  history      0000_baseline recorded as baselined; nothing was executed
+```
+
+Because the file is a real migration built by the ordinary create path, `verify` can replay a
+baselined repository from empty like any other. `--at <id>` does the other thing: it adopts a
+directory that another tool already applied, marking every file up to and including `<id>` as
+baselined and executing none of them.
+
+It refuses when `pgprime.migrations` is not empty, because baselining rewrites the start of
+history:
+
+```text frame="terminal"
+migrate baseline
+
+REFUSED: 1 row already exist in pgprime.migrations (0000_baseline). baseline rewrites the start of history; pass --force if that is what you mean.
+```
+
+**Exit: 0** · **1**. [Adopting an existing database](/pg-prime/guides/adopting/) puts it in
+context, with `pull`.
+
+## `migrate push --dev`
+
+Computes the diff and applies it directly, writing no file and no history row. It is the tight
+inner loop: change the schema, push, query, repeat, and generate one migration at the end from the
+sum of it.
+
+```sh
+pg-prime migrate push --dev
+```
+
+```text frame="terminal"
+!!! push --dev → 127.0.0.1:54333/docs_dev !!!
+applied 7 statements DIRECTLY. No migration file was written
+and no history row was recorded — this database is now ahead of your repository.
+  schemas  public
+
+statements:
+  - CREATE TABLE "public"."posts" ( … )
+  - CREATE TABLE "public"."users" ( … )
+  - ALTER TABLE "public"."posts" ADD CONSTRAINT "posts_pkey" PRIMARY KEY (id)
+  …
+```
+
+The banner is ANSI red on a TTY and `!!! … !!!` otherwise, because a CI log full of escape codes
+helps nobody. Three reasons not to use this anywhere but a scratch database:
+
+1. **Nothing is written down.** No file, no history row, no plan, no acknowledgement. The database
+   is ahead of the repository and only the person who ran it knows by how much.
+2. **Nothing is proven.** There is no clone, no replay, no `pg_dump` witness, and no lock-safe
+   rewriting to review — the statements go straight at the database in the order the differ
+   produced them.
+3. **It is not what runs in production.** A change that only ever existed as a push has never been
+   through `generate`, so nothing has ever checked that it can be expressed as a reviewable file.
+
+pg-prime refuses rather than trusting you about this. All four refusals are evaluated before a
+single statement is issued: no literal `--dev`; `PG_PRIME_ENV=production` or `production: true` in
+the config; a connection matching `--prod-pattern` (default `prod|production|live`, matched
+case-insensitively against `host:port/database`); and any row in `pgprime.migrations` that is not
+`baselined`:
+
+```text frame="terminal"
+migrate push
+
+REFUSED: docs_guides is under versioned management: pgprime.migrations holds 5 rows that is not baselined (0000_init, 0001_users_email_domain, 0002_backfill_email_domain, …). Use `migrate generate` and `migrate apply`.
+```
+
+`--allow-data-loss` is required for every destructive change, every single time; nothing about the
+acknowledgement is written down, so nothing can remember it. `--dry-run` prints the statements and
+applies none.
+
+**Exit: 0** pushed or nothing to do · **1** refused or failed · **2** a decision is missing.
+
+## `migrate doctor`
+
+A read-only health report, for when something is wrong and you want the state of the world in one
+screen: `INVALID` indexes, `_ccnew` leftovers from an interrupted `REINDEX CONCURRENTLY`, `NOT
+VALID` constraints nobody validated, catalog-versus-history drift, stale leases, orphaned
+repeatables, and the census of object kinds pg-prime does not model.
+
+```sh
+pg-prime migrate doctor
+```
+
+```text frame="terminal"
+migrate doctor — docs_guides
+  history      present, 1 row
+  fingerprint  sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392
+  lock         free
+  tier O       1 acl, 1 role
+  tier U       nothing unmodeled
+
+no findings.
+```
+
+`tier O` is what pg-prime *observes* but does not manage, and `tier U` is what it does not model at
+all; [tiers](/pg-prime/concepts/tiers/) explains the difference and why the census exists.
+
+**Exit: 0** healthy · **4** findings.
+
+## `migrate unlock`
+
+Inspect or break a stale lease.
+
+```sh
+pg-prime migrate unlock
+```
+
+```text frame="terminal"
+migrate unlock
+
+no lease row: the migration lock is free.
+```
+
+With no `--force` it only reports. `--force` deletes the lease row, and the command refuses to
+report a lease as breakable while its heartbeat is fresh — a live deploy holding the lock is exit
+6, not something to override. `--stale-lock-after <duration>` (default `60s`) is the age past which
+a lease counts as stale.
+
+**Exit: 0** free, stale or released · **6** a live deploy holds it.
+
+## Exit codes
+
+Uniform across every command, which is what makes them usable in a deploy script:
+
+| Code | Meaning |
+|---|---|
+| 0 | Success, or nothing to do |
+| 1 | Error — bad config, connection failure, SQL error, internal |
+| 2 | An unresolved rename or an unacknowledged data loss needs a human decision |
+| 3 | Lint failure at `error` severity |
+| 4 | Drift — non-empty diff, fingerprint mismatch, or checksum drift |
+| 5 | Pending migrations exist |
+| 6 | Lock unavailable — a concurrent deploy holds it |
+| 7 | Proof failed — the plan does not converge on a clone |
+
+`--output json` is available on every command, is always non-interactive, and always emits
+`{ status, exitCode, … }`.
+
+## Where to go next
+
+- [CLI reference](/pg-prime/reference/cli/) — the full option table for all thirteen commands.
+- [Migrations in CI/CD](/pg-prime/operations/ci-cd/) — `check` as the gate, and where `apply` belongs.
+- [Data migrations and seeding](/pg-prime/guides/data-migrations/) — backfills, `--data`, `db seed`.
+- [Checkpoints](/pg-prime/guides/checkpoints/) — collapsing a long history for fresh databases.
+- [Adopting an existing database](/pg-prime/guides/adopting/) — `pull` and `baseline`.
+- [Zero-downtime patterns](/pg-prime/operations/zero-downtime/) — expand/contract, and the hazards behind it.

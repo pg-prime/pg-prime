@@ -127,15 +127,13 @@ const created = await db.transaction(
       .returning((t) => ({ id: t.users.id }))
       .execute()
 
-    const [seen] = await db.sql`select current_setting('app.tenant_id') as tenant`.execute()
-
-    return { id: user!.id, tenant: seen!['tenant'], attempt: db.attempt }
+    return { id: user!.id, attempt: db.attempt }
   },
   { isolation: 'serializable', label: 'signup' },
 )
 
 console.log(created)
-// { id: 1n, tenant: 'acme', attempt: 1 }
+// { id: 1n, attempt: 1 }
 ```
 
 There is no transaction timeout by default. `statement_timeout` is a **30 s session default** and

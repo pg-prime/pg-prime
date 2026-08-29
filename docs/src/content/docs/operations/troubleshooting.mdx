@@ -3,4 +3,301 @@ title: Troubleshooting
 description: Exit codes, hazard codes, doctor, and the errors that mean something specific.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+This page is for the moment something has already gone wrong: a command exited non-zero, or an
+error class you have not seen before appeared in a log. It is organised by symptom.
+
+## A command exited non-zero
+
+Exit codes are uniform across every command.
+
+| Exit | Status | What actually happened | First thing to do |
+|---|---|---|---|
+| **1** | `error` | bad config, a connection failure, a SQL error, or an internal failure. Also the code for a refusal — `apply` over a transaction pooler, `push` against a production tag, `db seed` against a production tag | read `error.message`; it names the specific cause |
+| **2** | `missing_hints` | `generate` found a drop/create pair that looks like a rename, or a destructive change nobody signed for | record the decision in the repository: `.renamedFrom('old')`, `--hints-file`, or `--allow-data-loss --reason` |
+| **3** | `lint` | a hazard at `error` severity, or a `nolint` directive with no reason | fix it, or suppress it with `-- pg-prime:nolint CODE "reason"` — the reason is mandatory |
+| **4** | `drift` | the catalog does not match what the history records, an applied file's checksum changed, or the schema moved and no migration was generated | `pg-prime migrate doctor` will tell you which of the three |
+| **5** | `pending` | there are migrations on disk that the database has not applied | run `apply`. On a pull-request gate this is normally success |
+| **6** | `locked` | another deploy holds the migration lock and was still running when the wait expired | retry with backoff. If the holder is dead, `migrate unlock` |
+| **7** | `proof` | `generate` replayed the migration on a clone and the result did not match the desired state | the message names the deltas. This is the tool refusing to write a migration that does not do what it claims |
+
+Exit **0** with `status: "up_to_date"` and `lock.acquired: false` is worth recognising: it means
+another deploy already applied everything while you were waiting. That is success, and it is why a
+losing deploy does not exit non-zero.
+
+## `migrate doctor`
+
+`doctor` is read-only in the strong sense. It never creates the history schema, so pointing it at a
+database pg-prime has never touched reports "no history" rather than making one. Everything it says
+is a catalog query or a read of the `pgprime` tables — nothing is inferred from a report the tool
+wrote about itself.
+
+```sh
+pg-prime migrate doctor
+```
+
+It exits **0** with no findings and **4** with any. Eight kinds of finding, and what each one means:
+
+### `INVALID index public.x — a CREATE INDEX CONCURRENTLY did not finish`
+
+A concurrent build was killed. The planner will not use the index, but every write to the table
+maintains it, so it is pure cost.
+
+If it belongs to a pending pg-prime migration, run `migrate apply` — the file resumes from statement
+0 and its `DROP INDEX CONCURRENTLY IF EXISTS` prefix removes it. If it does not, drop it yourself:
+
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS public.x;
+```
+
+### `public.x_ccnew is a REINDEX CONCURRENTLY leftover (_ccnew); it is not used by any query`
+
+The same story with a different verb: an interrupted `REINDEX CONCURRENTLY`. It is not used by
+anything and is safe to drop.
+
+### `public.orders.orders_fk is NOT VALID — existing rows were never checked`
+
+The constraint is enforced for new and updated rows and has never been checked against the old ones.
+This is a *normal intermediate state* for pg-prime's own lock-safe rewrites: `ADD … NOT VALID` and
+`VALIDATE CONSTRAINT` are two statements, and between them the constraint is exactly this.
+
+If the `VALIDATE` half is in a pending migration, apply it. Otherwise run it yourself — the scan
+takes `SHARE UPDATE EXCLUSIVE`, so traffic passes:
+
+```sql
+ALTER TABLE public.orders VALIDATE CONSTRAINT orders_fk;
+```
+
+If it fails, you have found the rows that violate it, and you have found them without holding a
+lock.
+
+### `the catalog does not match the fingerprint pgprime.migrations records`
+
+Something changed the schema outside the migration history. The `history` section of the report
+carries both fingerprints; the fingerprints themselves are not in the finding, because they are 71
+characters each and say nothing to a human.
+
+Find out what changed with `migrate check`, which will describe the diff. Then decide: if the
+change should be permanent, generate a migration that reproduces it; if it was a mistake, revert it.
+
+### `0007_add_orders is recorded as applied but 0007_add_orders.sql is not on disk`
+
+A file was deleted or renamed after being applied. The database is fine; the repository has lost the
+record of how it got there. Restore the file from version control — the checksum is recorded, so the
+right file is identifiable.
+
+### `0007_add_orders (3/6) is partially applied`
+
+A `txmode none` file died partway through, or a transactional one failed and left a `failed` row.
+This is a normal, resumable state: `migrate apply` restarts a `txmode none` file at statement 0,
+which is safe because every statement in one is required to be idempotent (`TX201`).
+
+Before re-running, check the other findings — an invalid index or a `NOT VALID` constraint from the
+same file is expected, and the resumed file cleans it up.
+
+### `a stale lease is held by <host> (last beat 184000 ms ago)`
+
+A deploy died. Its session advisory lock died with its backend, but nothing updated its lease row.
+
+```sh
+pg-prime migrate unlock            # inspect: holder, run id, heartbeat age
+pg-prime migrate unlock --force    # delete the lease row
+```
+
+`--force` deletes the lease row only. It cannot release a session lock a live backend still holds —
+and if a backend is alive, the lease is not stale, so `unlock` without `--force` exits **6** and you
+should wait rather than break anything.
+
+### `sql/030_views/active.sql is recorded in pgprime.repeatables but is gone from disk`
+
+You deleted a repeatable, and the objects it created are **still in the database**. Removal of a
+Tier-R object is never auto-detected: pg-prime does not diff functions, views, triggers or RLS
+policies, so it cannot know a deletion from a rename or from a file you moved.
+
+Drop the object with a migration, then the finding clears.
+
+## Errors that mean something specific in production
+
+Every pg-prime error carries a `code`. For a server error that is the raw SQLSTATE; for the rest it
+is a stable string. These are the ones whose appearance in a log tells you something an ordinary
+stack trace does not.
+
+### `IndeterminateCommitError`
+
+**`COMMIT` was written and never acknowledged. The transaction may have committed.**
+
+It is deliberately *not* a subclass of `ConnectionError`, because every
+`catch (e) { if (e instanceof ConnectionError) retry() }` already written would then silently do the
+wrong thing — which, for a payment, is a double charge. It is also the first hard exclusion from
+automatic retry: nothing in pg-prime will ever re-run the callback that produced one.
+
+**The fix is a design, not a handler.** Give the operation an idempotency key backed by a unique
+constraint, so "did it commit?" is a question you can answer with a `SELECT` instead of a guess.
+
+```ts
+import { IndeterminateCommitError } from 'pg-prime'
+
+export function isIndeterminate(err: unknown): boolean {
+  return err instanceof IndeterminateCommitError
+}
+```
+
+### `SerializationFailureError` after the retries are exhausted
+
+`40001`, retried automatically — but **only at repeatable read or serializable**, which is where it
+can occur, and with full jitter. Seeing one escape means the contention is structural rather than
+incidental.
+
+**Fix:** shrink the transaction. Fewer statements between `BEGIN` and `COMMIT`, no network calls
+inside the callback, and read the rows you are about to write in the same order every time. If the
+work genuinely cannot be serialised, read committed plus an explicit `SELECT … FOR UPDATE` in a
+fixed order is the honest alternative.
+
+<Aside type="caution">
+**A retried transaction callback must be idempotent.** pg-prime re-runs your function, not the SQL
+it produced last time. Anything the callback does outside the database — sending an email,
+incrementing a counter, charging a card — happens again.
+</Aside>
+
+### `DeadlockDetectedError`
+
+`40P01`, and **not retried by default**. A deadlock is nearly always a lock-ordering bug, and
+retrying it turns a reproducible bug into an intermittent latency spike that nobody ever fixes.
+
+**Fix:** take locks in a consistent order across all code paths. PostgreSQL's `detail` names both
+processes and both relations, and pg-prime keeps it even under the default redaction policy for
+exactly this reason — it is the message that tells you which two code paths disagree.
+
+### `PoolTimeoutError`
+
+Client-side: `connectionTimeoutMillis` elapsed while queueing for a pooled connection. It carries
+`stats` — `{ total, idle, waiting, max }` — so it is alertable rather than merely annoying.
+
+This is almost never a pool that is too small. It is connections being *held*: a query with no
+`statement_timeout`, a transaction awaiting an HTTP call, or a handle that was never released.
+
+**Fix:** check `statement_timeout` and `idle_in_transaction_session_timeout` are actually in force
+— under a transaction pooler they are not applied by pg-prime at all and need `ALTER ROLE`, see
+[timeouts](/pg-prime/operations/timeouts/). Then look at `pg_stat_activity` ordered by
+`state_change` and find what has been busy the longest.
+
+### `TooManyConnectionsError`
+
+`53300`. The server, not the pool, refused. The arithmetic that has to hold is
+`instances × poolOptions.max ≤ max_connections − superuser_reserved_connections`, and behind a
+pooler there is a second one against its own `default_pool_size`.
+
+**Fix:** `await db.diagnose()` reports `connections.maxConnections`, `superuserReserved`, `inUse`,
+`poolMax` and the resulting `headroom`. Shrink `poolOptions.max`, or put a pooler in front and use
+`presets.serverless()`.
+
+### `CachedPlanChangedError`
+
+`0A000 cached plan must not change result type`. A migration changed a result type under a plan an
+application had already prepared — adding a column to a table a `select *` reads, or altering a
+column's type.
+
+pg-prime self-heals: it invalidates and re-prepares once, transparently, and the default
+`unnamedExtended` exec mode is immune to the problem entirely. If you see the class escape, you are
+on `execMode: 'prepared'` behind PgBouncer with `max_prepared_statements > 0`, and the *pooler's*
+per-server cache is holding the stale plan too.
+
+**Fix:** `RECONNECT` on the PgBouncer admin console. pg-prime also downgrades that pool to
+`unnamedExtended` after a repeat and logs the same instruction.
+
+### `UnsupportedInPoolerModeError`
+
+You asked for session state under a transaction-pooler profile: `db.listen()`, `db.session()`, or a
+session advisory lock. The message names the fix in every case.
+
+**Fix:** add `directConnection` — `db.listen()` is then routed there automatically. For the other
+two the answer is transaction-scoped equivalents: `db.transaction()` *is* one backend for its
+duration, and `tx.advisoryLock()` is `pg_advisory_xact_lock`, which works in every mode.
+
+### `HandleMisuseError`
+
+The outer `db` was used inside a transaction callback. That query runs on a *different* connection
+from the transaction, so it does not see the transaction's uncommitted rows and can deadlock against
+it.
+
+**Fix:** use the callback's parameter. It is named `db` on purpose, so it shadows the outer handle
+and the mistake is hard to make:
+
+```ts
+declare const outer: import('pg-prime').Db<never>
+
+await outer.transaction(async (db) => {
+  // `db` here is the Tx. The outer handle is shadowed and unreachable by that name.
+  await db.sql`select 1`.execute()
+})
+```
+
+This guard is **dev-only** — it is on when `NODE_ENV !== 'production'` and off otherwise, because
+the check costs something on every call and the mistake is one you make while writing code, not one
+that appears in production for the first time.
+
+## When `generate` refuses
+
+`generate` writes a migration or it writes nothing. There is no partial output, and each refusal has
+its own exit code.
+
+### Exit 2 — a rename or a data-loss decision is missing
+
+Two kinds of unresolved decision, and both need a human answer recorded in the repository:
+
+- **`rename_or_recreate`** — a dropped column and an added one that look like a rename. The
+  structural candidates are advisory and never apply themselves; the `fix` field names the exact
+  annotation to add.
+- **`confirm_data_loss`** — a `DS`-class hazard nobody signed for. Re-run with
+  `--allow-data-loss --reason "…"`, or record the acknowledgement in a `--hints-file`.
+
+Neither prompts in CI and neither hangs. See
+[zero-downtime patterns](/pg-prime/operations/zero-downtime/#why-rename-detection-is-a-hint-not-a-guess)
+for why this is a hint system rather than a guess.
+
+### Exit 7 — the proof failed
+
+`generate` builds the migration, applies it to a throwaway clone, extracts the resulting catalog and
+compares it with the desired state. Exit 7 means they differed, and the error names the deltas.
+
+This is the tool catching itself, and it is the cheapest possible place for a diff engine to be
+wrong. Treat it as a bug report: the schema change you made produced DDL that does not converge, and
+the deltas say which object.
+
+A second, independent witness runs alongside it: both databases are dumped with `pg_dump`,
+normalised and compared. It shares no code with pg-prime, so it catches the class of bug where a
+catalog attribute nobody modelled is silently lost.
+
+- With no `pg_dump` on the `PATH` the witness is **skipped**, with the reason attached — typically
+  `cannot spawn pg_dump: spawn pg_dump ENOENT`. Under the default `--dump-oracle warn` that is a
+  note, not a failure.
+- `--dump-oracle strict` blocks on a skip as well as on a difference:
+  `pg_dump oracle could not run under strict mode: <reason>`.
+- A dump that *ran* and went wrong — a refused connection, a timeout, a pattern that matched no
+  schema — is `failed`, not `skipped`, because it says something about this run.
+
+### Exit 3 — lint
+
+A hazard at `error` severity in the plan that was about to be written. The finding names the code
+and the statement.
+
+### Exit 1 — refused with a sentence
+
+Some things are refused rather than attempted, and the message is the documentation:
+
+- **`--offline` (shadow tier 4)** is refused. A checkpoint gives you the IR of a *past* state, and
+  the desired state is a function of a database by construction — there is no way to normalise a
+  schema without a PostgreSQL to normalise it with.
+- **`--no-prove` on a two-file plan** is refused. The second file's starting fingerprint is the
+  state *between* the two files, which is measured on the clone during the proof and cannot be
+  predicted from the IR.
+
+## Related
+
+- [Hazard codes](/pg-prime/reference/hazard-codes/) — every `DS`, `MF`, `BC`, `LK`, `TX`, `EN` and
+  `ST` code, with its severity and what to do about it.
+- [Locks](/pg-prime/operations/locks/) — invalid indexes, `_ccnew` leftovers and resuming a
+  concurrent build, in more detail.
+- [Migrations in CI/CD](/pg-prime/operations/ci-cd/) — what a pipeline should do with each exit code.
+- [Errors](/pg-prime/guides/errors/) — the full error hierarchy and the redaction policy.

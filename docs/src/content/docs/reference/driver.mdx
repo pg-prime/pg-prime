@@ -1,6 +1,882 @@
 ---
 title: pg-prime/driver
 description: Every export of the driver entry point.
+apiEntry:
+  - pg-prime#./driver
+  - pg-prime#.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+This entry point is the **adapter seam**: the interface between everything pg-prime does and
+whatever actually owns a socket to PostgreSQL. Most applications never import it — `pgPrime({
+connection })` and `pgPrime({ pool })` build a driver for you. You want it if you are bringing your
+own connection layer: an HTTP transport, a worker-thread proxy, a test double, or a runtime where
+`net.Socket` does not exist.
+
+Two things are in here, and they are different in kind:
+
+- **`pgDriver`**, the bundled adapter over a `pg`-shaped pool, plus the `PgLike*` structural types it
+  reads;
+- **`PgDriver`** and `PgConnection`, the seam themselves — the four-method driver and the
+  two-required-method connection that pg-prime's runtime is written against, with no reference to
+  `pg` anywhere in it.
+
+Nothing under `src/driver/` imports `pg`. That is what buys pg-prime zero dependencies *and* zero
+required peer dependencies, and it is why `@neondatabase/serverless` — which inlined its own,
+nominally incompatible declarations and switched `Buffer` to `Uint8Array` — is a drop-in with no
+adapter code at all.
+
+## The vocabulary of the seam
+
+Three types are the entire value vocabulary. An adapter never interprets a value; decoding is the
+[codec registry](/pg-prime/reference/codecs/)'s job.
+
+### `PgParam`
+
+{/* docs: signature */}
+```ts
+type PgParam = string | Uint8Array | null
+```
+
+What a codec hands an adapter: `string` is text format, `Uint8Array` is binary, `null` is SQL NULL.
+Parameters are **already encoded** when they arrive, and an adapter must apply no further
+conversion — passing only these three makes pg's own `prepareValue` an identity function.
+
+### `PgRawValue`
+
+{/* docs: signature */}
+```ts
+type PgRawValue = string | Uint8Array | null
+```
+
+What an adapter hands back. The same three, in the other direction.
+
+### `PgExecMode`
+
+{/* docs: signature */}
+```ts
+type PgExecMode = 'unnamed' | 'named' | 'simple'
+```
+
+- `'unnamed'` (the default) — extended protocol, unnamed statement. One round trip, no server-side
+  session state, safe on every pooler.
+- `'named'` — extended protocol with a `statementName`, so the server caches the plan.
+- `'simple'` — the simple query protocol. `params` **must** be empty, because there is no `Bind`
+  message to put one in. This is the mode for DDL scripts, `SET`, and multi-statement migration
+  bodies.
+
+`'unnamed'` is the only mode an adapter is required to support.
+
+## The bundled adapter
+
+### `pgDriver`
+
+{/* docs: signature */}
+```ts
+function pgDriver(config: PgDriverConfig): PgDriver
+```
+
+The adapter for anything that duck-types as a `pg` pool. It is built over a **user-supplied**
+pool-like object and never parses a connection string: TLS, SCRAM, `.pgpass`, unix sockets,
+`keepAlive` and every other connection concern is configured on your own pool and passes through
+untouched. pg-prime therefore never owns a credential.
+
+{/* docs: use=blog-schema */}
+```ts title="raw-driver.ts"
+import { Pool } from 'pg'
+import { pgDriver } from 'pg-prime/driver'
+import type { PgLikePool } from 'pg-prime/driver'
+
+const pool = new Pool({ connectionString: process.env['DATABASE_URL'] })
+const driver = pgDriver({ pool: pool as unknown as PgLikePool })
+
+await driver.init()
+console.log(driver.capabilities.adapter, driver.capabilities.maxParams)
+// pg 65535
+
+const conn = await driver.acquire()
+try {
+  const res = await conn.execute({
+    text: 'select $1::int4 + 1 as n, $2::text as label',
+    params: ['41', 'hello'],
+    paramTypes: [23, 25],
+  })
+  console.log(res.command, res.rowCount) // SELECT 1
+  console.log(res.fields.map((f) => `${f.name}:${f.dataTypeID}`)) // [ 'n:23', 'label:25' ]
+  console.log(res.rows) // [ [ '42', 'hello' ] ]
+} finally {
+  await driver.release(conn)
+}
+
+await driver.destroy()
+```
+
+Two things that example shows and that are easy to miss: the rows come back as **arrays of raw
+strings**, positionally aligned with `fields`, and `42` is the text `'42'` — decoding happens above
+the seam. That is deliberate: `pg`, PGlite and postgres.js each get `DATE` wrong in a different way,
+so all three of their parsers are neutralised and the codec registry is the only thing that reads a
+value.
+
+<Aside type="caution" title="`pg.Pool` needs a structural cast, for now">
+The example writes `pool as unknown as PgLikePool`. `pg.Pool` *does* have the right shape — that is
+the whole point of the seam — but with `@types/pg@8.21.0` the assignment does not typecheck:
+`PoolClient` inherits `removeListener` from Node's `EventEmitter`, whose listener parameter is
+`(...args: any[]) => void`, and `PgLikeClient` declares `(arg: never) => void`. `any` is not
+assignable to `never`, so the check fails on that one member. The repo's own live test harness does
+the same cast, and the runtime behaviour is unaffected.
+</Aside>
+
+### `PgDriverConfig`
+
+{/* docs: signature */}
+```ts
+interface PgDriverConfig {
+  pool: PgLikePool
+  directPool?: PgLikePool
+  createCancelClient?: () => { cancel(client: PgLikeClient, query?: unknown): void; end?(): Promise<void> | void }
+  createDedicatedClient?: () => PgLikeDedicatedClient
+}
+```
+
+- **`pool`** is the only required key.
+- **`directPool`** is a second pool that bypasses a transaction pooler. It is what `route: 'direct'`
+  reaches for; without it the hint is ignored.
+- **`createCancelClient`** returns an **unconnected** client that knows how to open its own socket
+  and send a protocol `CancelRequest` for another client's backend. `pg.Client` satisfies it
+  structurally, which is the point: you hand over `() => new Client(sameConfig)` and never a
+  credential. Supply it and `capabilities.cancel` becomes `'protocol'`; omit it and cancellation
+  falls back to `pg_cancel_backend(pid)` over a *second pooled connection*, which cannot work when
+  the pool is exhausted — exactly when a cancel matters most. The fallback gives up after 2 000 ms
+  rather than waiting forever, because an unbounded wait outlived the statement it was cancelling
+  and the cancel then landed on whatever that recycled backend was running for somebody else.
+- **`createDedicatedClient`** opens a connection the pool does not own, for `PgDriver.connect()`.
+  `pgPrime({ connection })` supplies it automatically. With a bring-your-own `pool:` and no factory,
+  `db.listen()` still works — it checks a connection out of the pool and does not give it back for
+  the subscription's lifetime, costing exactly one pool slot, and warns once naming
+  `createDedicatedClient` as the fix.
+
+## The pool seam
+
+These four structural interfaces are the reason `pg.Pool`, `@neondatabase/serverless`'s `Pool` and a
+Hyperdrive-fed `pg.Pool` all satisfy the adapter with no wrapper. pg-prime deliberately does **not**
+`import type { Pool } from 'pg'`: that would force `@types/pg` on every consumer, and nominal
+identity with it is already gone anyway, because Neon ships its own declarations.
+
+### `PgLikePool`
+
+{/* docs: signature */}
+```ts
+interface PgLikePoolClient extends PgLikeClient {
+  release(err?: Error | boolean): void
+}
+
+interface PgLikePool {
+  connect(): Promise<PgLikePoolClient>
+  end(): Promise<void>
+  readonly options?: Record<string, unknown>
+  readonly totalCount?: number
+  readonly idleCount?: number
+  readonly waitingCount?: number
+}
+```
+
+`options` is read for exactly one key — `max`, which becomes `capabilities.maxConnections`. Nothing
+else is taken from it; opening a socket from the host and port found there would mean owning a
+credential, which the design forbids.
+
+### `PgLikeClient`
+
+{/* docs: signature */}
+```ts
+interface PgLikeSubmittable {
+  submit(connection: PgLikeConnection): Error | null | undefined | void
+}
+interface PgLikeConnection {
+  sync(): void
+}
+
+interface PgLikeClient {
+  query(config: PgLikeQueryConfig): Promise<PgLikeResult | PgLikeResult[]>
+  query<T extends PgLikeSubmittable>(submittable: T): T
+  on(event: 'notice' | 'notification' | 'error' | 'end', listener: (arg: never) => void): unknown
+  removeListener(event: string, listener: (arg: never) => void): unknown
+  getTransactionStatus?(): 'I' | 'T' | 'E'
+  readonly processID?: number
+  readonly activeQuery?: unknown
+  readonly connection?: PgLikeConnection
+  readonly readyForQuery?: boolean
+}
+```
+
+`PgLikeSubmittable` and `PgLikeConnection` are pg's own protocol shapes, abridged here: they are
+implementation detail of the adapter and are not part of this entry point's surface. The Submittable
+overload is pg's real extension seam, and it is how `describe`, `closeStatement` and both COPY
+directions are implemented without a `pg-copy-streams` dependency — that package *is* a Submittable
+that drives `connection.sendCopyFromChunk` and `endCopyFrom`, and those methods have been stable
+since pg 6.
+
+`removeListener` is **required**, and the reason is a process-exit bug rather than tidiness.
+`pg-pool` removes its own idle `error` listener at checkout, and `pg` emits `error` unconditionally
+on a dead socket; with nothing listening in between, a server restart or a `pg_terminate_backend`
+during a checkout is an unhandled `'error'` event, which takes the host process down. The adapter
+therefore owns a listener for the whole checkout — and must be able to take it off again.
+
+`readyForQuery` is optional and is read for exactly one purpose: holding a server-error rejection
+until the transaction status pg reports on the following `ReadyForQuery` is in place. A drop-in
+without it loses the post-statement `transactionStatus` guarantee below, and nothing else.
+
+### `PgLikeDedicatedClient`
+
+{/* docs: signature */}
+```ts
+interface PgLikeDedicatedClient extends PgLikeClient {
+  connect(): Promise<void>
+  end(): Promise<void>
+}
+```
+
+An **unconnected** client that pg-prime may connect itself and own for its whole life — what
+`PgDriver.connect()` hands out for `LISTEN`. `pg.Client` satisfies it.
+
+### `PgLikeQueryConfig`
+
+{/* docs: signature */}
+```ts
+interface PgLikeQueryConfig {
+  text: string
+  values?: readonly unknown[]
+  name?: string
+  rowMode?: 'array'
+  queryMode?: 'extended'
+  binary?: boolean
+  rows?: number
+  query_timeout?: number
+  types?: ReadonlyArray<number> & {
+    getTypeParser(oid: number, format?: 'text' | 'binary'): (raw: string) => unknown
+  }
+}
+```
+
+The one config object the adapter builds. Three fields are load-bearing:
+
+- **`queryMode: 'extended'`** is always set except in `'simple'` mode. Without it pg silently falls
+  back to the simple protocol when a query has zero parameters, which happily runs
+  `select 1; drop table users` as two statements; forcing extended turns that into a server-side
+  `42601`.
+- **`rowMode: 'array'`** is what makes `PgResult.rows` arrays rather than objects, so duplicate
+  column names from a join survive.
+- **`types`** is read *twice* by pg with two different meanings — as an array it supplies the `Parse`
+  parameter OIDs, and as an object it supplies the result-parser table. The adapter passes one value
+  that satisfies both: an array of parameter OIDs carrying a `getTypeParser` that returns the
+  identity for every OID and every format. That single trick neutralises all of pg's result parsing
+  *and* sends real parameter type OIDs, so a bare `$1` never raises
+  `42P18 could not determine data type of parameter $1` and no `::type` cast has to be spliced into
+  the generated SQL.
+
+`rows` is pg's per-portal row cap, and pg **pages** with it rather than truncating — see `maxRows`
+under `PgQuery` for what that means for a `returning` clause.
+
+### `PgLikeResult`
+
+{/* docs: signature */}
+```ts
+interface PgLikeResult {
+  rows: unknown[]
+  fields: readonly { name: string; tableID: number; columnID: number; dataTypeID: number; dataTypeSize: number; dataTypeModifier: number; format: 'text' | 'binary' }[]
+  rowCount: number | null
+  command: string | null
+}
+```
+
+`command` is `null` for an `EmptyQueryResponse` — pg never sets it — so the seam cannot claim
+`string` here. `PgResult.command` promises a `string`, and the adapter substitutes `''`.
+
+## The driver
+
+### `PgDriver`
+
+{/* docs: signature */}
+```ts
+interface PgDriver {
+  init(): Promise<void>
+  acquire(options?: PgAcquireOptions): Promise<PgConnection>
+  release(connection: PgConnection, options?: { dispose?: boolean }): Promise<void>
+  connect?(options?: PgAcquireOptions): Promise<PgConnection>
+  destroy(): Promise<void>
+  readonly capabilities: PgCapabilities
+}
+```
+
+A driver owns a pool of physical connections — one per configured database URL.
+
+- **`init()`** is idempotent: resolve the config, validate capabilities, warm the pool. It never
+  opens a connection eagerly.
+- **`acquire(options)`** checks out a physical connection, owned by the caller until `release`. The
+  `signal` aborts the *acquisition* — the wait in the pool's queue — not any query that later runs
+  on it.
+- **`release(connection, { dispose })`** returns it. `dispose: true` destroys it instead of reusing
+  it, which the runtime sets after a protocol failure, an unfinished COPY, or a transaction it could
+  not roll back. The bundled adapter also disposes on its own when `transactionStatus` is `'T'` or
+  `'E'`: an open or failed transaction handed back to the pool becomes the next borrower's
+  transaction, and an eventual `ROLLBACK` then throws away work they never saw.
+- **`connect(options)`** is **optional**. It opens a connection the pool does *not* own, for the one
+  feature that has to pin a backend for its whole lifetime: `LISTEN`. Taking that connection from
+  the pool silently shrinks `max` and eventually starves the application — with the serverless
+  preset's `max: 1` the first subscription deadlocks the process — so the runtime asks for one
+  outside it. An adapter that cannot do this omits the method, and `db.listen()` then says so and
+  names what to configure instead.
+- **`destroy()`** drains and closes everything. Idempotent, and safe to call with queries in flight;
+  they reject.
+
+### `PgAcquireOptions`
+
+{/* docs: signature */}
+```ts
+interface PgAcquireOptions {
+  readonly signal?: AbortSignal
+  readonly route?: 'default' | 'direct'
+}
+```
+
+`route: 'direct'` is a **hint, not a guarantee**. It asks for a connection that bypasses any
+transaction pooler, which is required for `LISTEN`, session advisory locks, `WITH HOLD` cursors,
+replication and migrations. An adapter with no second URL ignores it, and that is a legal
+implementation — routing is decided by feature, not by call site, and the caller never picks a
+connection by hand.
+
+### `PgCapabilities`
+
+{/* docs: signature */}
+```ts
+interface PgCapabilities {
+  readonly adapter: string
+  readonly execModes: readonly PgExecMode[]
+  readonly binaryResults: boolean
+  readonly paramTypeOids: boolean
+  readonly describe: boolean
+  readonly richFieldMetadata: boolean
+  readonly cursors: boolean
+  readonly copyIn: boolean
+  readonly copyOut: boolean
+  readonly listenNotify: boolean
+  readonly cancel: 'protocol' | 'pg_cancel_backend' | false
+  readonly multipleStatementsPerSession: boolean
+  readonly maxConnections: number | undefined
+  readonly maxParams: number
+  readonly serverVersionNum: number | undefined
+}
+```
+
+A static description of what this adapter can do, read after `init()`. It is honest rather than
+aspirational, and the runtime degrades against it rather than failing at the wire:
+
+| Field | False or absent means |
+|---|---|
+| `binaryResults` | the ORM must never send `resultFormat: 'binary'`. **False for every v1 adapter**: pg-protocol UTF-8-decodes every `DataRow` field, which corrupts any byte ≥ `0x80`. |
+| `paramTypeOids` | the ORM emits `::type` casts instead of relying on `PgQuery.paramTypes`. |
+| `describe` | typed raw SQL and `migrate verify` degrade to executing against a shadow schema. |
+| `richFieldMetadata` | `dataTypeModifier`, `tableID` and `columnID` are `0`/`-1`. PGlite is false here. |
+| `multipleStatementsPerSession` | interactive transactions are impossible — an HTTP one-shot adapter. |
+| `cancel: false` | there is no way to stop a running statement. |
+| `maxConnections: undefined` | the adapter does not know; PGlite reports `1`. |
+
+The bundled adapter reports `adapter: 'pg'`, all three exec modes, `maxParams: 65535` (PostgreSQL's
+own wire limit; a pooler or an edge backend may be lower), `copyIn` and `copyOut` and `listenNotify`
+and `cursors` and `describe` all true, and `cancel` as `'protocol'` when you supplied
+`createCancelClient`, `'pg_cancel_backend'` otherwise. `serverVersionNum` and `maxConnections` are
+`undefined` until `init()` has run.
+
+## The connection
+
+### `PgConnection`
+
+{/* docs: signature */}
+```ts
+interface PgConnection {
+  execute(query: PgQuery): Promise<PgResult>
+  stream(query: PgQuery, chunkSize: number): AsyncIterable<PgResultChunk>
+
+  describe?(sql: string, options?: { readonly signal?: AbortSignal }): Promise<PgDescribeResult>
+  closeStatement?(name: string): Promise<void>
+  copyIn?(sql: string, source: AsyncIterable<Uint8Array>, options?: PgCopyOptions): Promise<PgCopyResult>
+  copyOut?(sql: string, options?: PgCopyOptions): AsyncIterable<Uint8Array>
+  cancel?(): Promise<void>
+  on?(event: 'notice', listener: (n: PgNoticeData) => void): () => void
+  on?(event: 'notification', listener: (n: PgNotification) => void): () => void
+  on?(event: 'error', listener: (e: PgDriverErrorData) => void): () => void
+
+  readonly backendPid: number | undefined
+  readonly serverParameters: Readonly<Record<string, string>>
+  readonly transactionStatus: 'I' | 'T' | 'E' | undefined
+  readonly usable: boolean
+}
+```
+
+**Two required methods.** `execute` is the single hot path. `stream` is a server-side cursor that
+yields fixed-size chunks, and closing the iterator — by `break`, `return` or `throw` — **must** close
+the portal.
+
+**Six optional ones**, and their presence must match what `capabilities` claims:
+
+- `describe(sql)` is `Parse` + `Describe('S')` + `Sync` with **no** `Execute`. It powers typed raw
+  SQL, code generation and migration checks.
+- `closeStatement(name)` is a protocol-level `Close('S', name)`. Never the SQL `DEALLOCATE`, which
+  breaks PgBouncer.
+- `copyIn` / `copyOut` are below.
+- `cancel()` is best-effort cancellation of whatever is currently executing. It resolves once the
+  cancel request has been *sent*; the in-flight query rejects separately with SQLSTATE `57014`.
+  Calling it when nothing is running is a no-op.
+- `on(event, listener)` subscribes to asynchronous backend messages and returns an unsubscribe
+  function.
+
+**Four pieces of introspectable state:**
+
+- `backendPid` is the server's backend PID, needed for `pg_cancel_backend` and for diagnostics. It is
+  `undefined` when the adapter does not know — pg's `processID` is `null` until `BackendKeyData`
+  arrives, and a `null` there would go out as `pg_cancel_backend('null')`.
+- `serverParameters` is the session's `ParameterStatus`. The bundled adapter cannot read pg's
+  startup messages — by the time you hand over a constructed pool they are long gone — so it runs
+  one `pg_settings` query per *physical* connection, caches it, and subscribes to `parameterStatus`
+  for anything that changes afterwards. The cost is one round trip per connection lifetime, not per
+  acquire.
+- `transactionStatus` is `'I'` idle, `'T'` in a transaction, `'E'` in a failed one, or `undefined`
+  when the adapter cannot tell. It is **post-statement** after an awaited `execute()`, *including a
+  rejected one*: pg reports the status on `ReadyForQuery`, which follows the `ErrorResponse` that
+  rejects the promise, so the adapter holds the rejection until then. `await execute().catch(…)`
+  followed by a read of this getter sees `'E'`, never the `'T'` the session was in when the statement
+  was sent.
+- `usable` goes false after a protocol error or a socket death, and the runtime must then release
+  with `{ dispose: true }`.
+
+<Aside title="Session GUCs are asserted, never SET">
+`init()` reads `DateStyle`, `IntervalStyle`, `client_encoding`, `standard_conforming_strings` and
+`integer_datetimes` and **refuses** a session whose values the codecs cannot work with. It never
+issues `SET`, because that is hostile under transaction pooling; configure them on your own pool, or
+with `ALTER ROLE … SET`. There is no requirement on `TimeZone` — every temporal codec is
+offset-driven.
+</Aside>
+
+## Queries and results
+
+### `PgQuery`
+
+{/* docs: signature */}
+```ts
+interface PgQuery {
+  readonly text: string
+  readonly params: readonly PgParam[]
+  readonly paramTypes?: readonly number[]
+  readonly mode?: PgExecMode
+  readonly statementName?: string
+  readonly resultFormat?: 'text' | 'binary'
+  readonly maxRows?: number
+  readonly signal?: AbortSignal
+  readonly timeoutMs?: number
+}
+```
+
+`text` carries `$1`-style placeholders and never an interpolated value. `paramTypes` must have the
+same length as `params`, or be empty; pg pads and truncates silently otherwise, and the backend then
+infers the missing OIDs, which is the `42P18` the OIDs exist to avoid — only now with a wrong-arity
+`Parse` nobody can see. `statementName` is required exactly when `mode` is `'named'`, and must be a
+plain identifier of at most 63 bytes with no NUL: the name reaches the wire as a protocol C-string,
+so an embedded NUL would silently truncate it and the statement parsed would not be the statement
+closed.
+
+`resultFormat: 'text'` is the only value an adapter must support and the only one v1 emits.
+
+Three of these need more than a sentence:
+
+- **`signal`** aborts the query. An adapter that can do so **must** issue a real `CancelRequest`
+  rather than merely dropping the promise.
+- **`timeoutMs`** is an adapter-enforced *client-side* deadline, and is not the same thing as the
+  server's `statement_timeout`: it gives up on reading, it does not stop the statement. The bundled
+  adapter therefore retires the connection when it fires, because the statement is still running on
+  it. Use `signal` when you want the **server** to stop working. `0` is not "no deadline" — pg reads
+  `query_timeout` as falsy and falls back to whatever the pool was constructed with. Omit the field.
+- **`maxRows`** caps the rows fetched through the portal in one `Execute`; `undefined` means all
+  rows. Measured on PostgreSQL 17.11: closing the portal at the cap does **not** stop a row-returning
+  DML statement. `insert … select generate_series(1,5) … returning id` with `maxRows: 1` inserts
+  **all five rows**, returns one, and reports `rowCount: 1`. The hazard is therefore not data loss,
+  it is a wrong count — the number you would log, trust as "rows affected", or feed to an idempotency
+  check. `maxRows: 0` still runs the statement and returns no rows.
+
+### `PgResult`
+
+{/* docs: signature */}
+```ts
+interface PgResult {
+  readonly rows: readonly (readonly PgRawValue[])[]
+  readonly fields: readonly PgField[]
+  readonly rowCount: number | null
+  readonly command: string
+  readonly notices: readonly PgNoticeData[]
+}
+```
+
+`rows` is **always** array-of-arrays, positionally aligned with `fields`, and the values are raw.
+`fields` is required whenever the statement produced a `RowDescription`, because it is what makes
+OID-driven decoding possible. `rowCount` is `null` when the command tag carries no count, and
+`command` is the tag itself (`SELECT`, `INSERT`, `COPY`, …). `notices` are the `NoticeResponse`s
+collected during *this* statement — attributed per statement, not per checkout, which is how a
+migration surfaces its `RAISE NOTICE` output.
+
+### `PgResultChunk`
+
+{/* docs: signature */}
+```ts
+interface PgResultChunk {
+  readonly rows: readonly (readonly PgRawValue[])[]
+  readonly fields: readonly PgField[]
+  readonly done: boolean
+}
+```
+
+One `stream()` chunk. `fields` is repeated on **every** chunk, so a consumer that only ever sees one
+can still decode it; `done` marks the last.
+
+### `PgField`
+
+{/* docs: signature */}
+```ts
+interface PgField {
+  readonly name: string
+  readonly dataTypeID: number
+  readonly dataTypeModifier: number
+  readonly tableID: number
+  readonly columnID: number
+  readonly dataTypeSize: number
+  readonly format: 'text' | 'binary'
+}
+```
+
+One column of a `RowDescription`. `dataTypeID` is the OID the codec registry looks up.
+`dataTypeModifier` is the typmod: `varchar(30)` is `34` (n + 4) and `numeric(10,2)` is `655366`
+(`((p << 16) | s) + 4`); `-1` means none. `tableID` is the source table's OID or `0` for a computed
+column, and together with `columnID` it disambiguates duplicate column names across a join.
+`dataTypeSize` is positive for a fixed-width type and `-1` for a variable-width one.
+
+### `PgDescribeResult`
+
+{/* docs: signature */}
+```ts
+interface PgDescribeResult {
+  readonly paramTypes: readonly number[]
+  readonly fields: readonly PgField[]
+}
+```
+
+What `describe()` returns: the server's inferred parameter OIDs in `$1..$n` order, and the row shape.
+`fields` is empty when the statement returns no rows, which is the protocol's `NoData`.
+
+## COPY
+
+### `PgCopyOptions`
+
+{/* docs: signature */}
+```ts
+interface PgCopyOptions {
+  readonly signal?: AbortSignal
+  readonly highWaterMark?: number
+}
+```
+
+### `PgCopyResult`
+
+{/* docs: signature */}
+```ts
+interface PgCopyResult {
+  readonly rowCount: number
+  readonly notices: readonly PgNoticeData[]
+}
+```
+
+`copyIn` resolves with the row count parsed from the `CommandComplete` tag; `copyOut` yields raw
+`CopyData` payloads and the caller owns the framing, whether that is text, CSV or binary.
+`highWaterMark` is how many bytes are buffered before backpressure is applied to the source, and
+defaults to 64 KiB.
+
+Two details in the bundled implementation are worth knowing if you are writing your own. The `COPY`
+statement goes out over the **simple** query protocol, because COPY carries no bind parameters and
+there is nowhere to put one. And backpressure on the way in is the socket's: `sendCopyFromChunk`
+writes straight through, so a 100 000-row source with no drain handling buffers the whole load in
+the process. On the way *out* there is no real backpressure to have — pg does not expose a way to
+pause its socket, and the frames are already in memory by the time the adapter sees them.
+
+Aborting a COPY IN sends the protocol's own `CopyFail` rather than throwing, because throwing would
+leave the connection stuck in copy-in mode forever.
+
+## Notifications and notices
+
+### `PgNotification`
+
+{/* docs: signature */}
+```ts
+interface PgNotification {
+  readonly channel: string
+  readonly payload: string
+  readonly processId: number
+}
+```
+
+A `NOTIFY` that arrived on this connection. Compare `processId` with `connection.backendPid` to
+ignore your own notifications.
+
+### `PgNoticeData`
+
+{/* docs: signature */}
+```ts
+type PgNoticeData = PgServerErrorData
+```
+
+A `NoticeResponse` has exactly the fields an `ErrorResponse` has, so it is the same shape. Notices
+reach you two ways: attached to the `PgResult` of the statement that produced them, and through
+`connection.on('notice', …)` for anything asynchronous.
+
+## Errors
+
+Errors cross the seam as **plain data, never as classes**. An adapter must not need to import
+pg-prime's error hierarchy, and the runtime re-wraps this data into its own classes above the seam.
+
+### `PgErrorKind`
+
+{/* docs: signature */}
+```ts
+type PgErrorKind = 'server' | 'connection' | 'protocol' | 'timeout' | 'cancelled' | 'adapter'
+```
+
+- `'server'` — an `ErrorResponse` from the backend; `sqlstate` is present.
+- `'connection'` — socket or TLS or authentication failure, pool exhaustion, a connection closed
+  mid-query.
+- `'protocol'` — desynchronisation or an unexpected message. The connection is **not** reusable.
+- `'timeout'` — a client-side deadline elapsed.
+- `'cancelled'` — an `AbortSignal` fired, or `57014` came back from a real cancel.
+- `'adapter'` — the adapter itself misbehaved, or an unsupported capability was asked for.
+
+The split between `'timeout'` and `'cancelled'` is subtler than it looks. PostgreSQL raises `57014`
+for a `CancelRequest` **and** for an expired `statement_timeout` or `lock_timeout`. Only the first is
+a user cancel that must never be retried, so the tag is driven by whether pg-prime's own signal
+fired, or by the backend's own "due to user request" wording; the timeout ones are tagged
+`'timeout'` so the runtime can back off and retry.
+
+### `PgDriverErrorData`
+
+{/* docs: signature */}
+```ts
+interface PgDriverErrorData {
+  readonly kind: PgErrorKind
+  readonly message: string
+  readonly connectionUnusable: boolean
+  readonly server?: PgServerErrorData
+  readonly sql?: string
+  readonly adapter: string
+  readonly cause?: unknown
+  readonly cancelError?: string
+}
+```
+
+`connectionUnusable: true` means the runtime **must** release with `{ dispose: true }`. It is always
+true for `'protocol'`, and it is computed from the SQLSTATE for a server error: `08xxx`
+(`connection_exception`), `57P01`/`57P02`/`57P03` (admin shutdown) and `XX000` (internal error) all
+poison the physical connection.
+
+`sql` is the statement that was sent, so the server error's `position` points into something. Bound
+parameters are never included.
+
+`cancelError` is present when a statement was aborted and **the cancel request itself failed** — no
+spare connection inside the deadline, `pg_cancel_backend` refused, and so on. Without it a failed
+cancel is indistinguishable from a successful one that the backend ignored.
+
+### `PgServerErrorData`
+
+{/* docs: signature */}
+```ts
+interface PgServerErrorData {
+  readonly severity: string
+  readonly sqlstate: string
+  readonly message: string
+  readonly detail?: string
+  readonly hint?: string
+  readonly position?: number
+  readonly internalPosition?: number
+  readonly internalQuery?: string
+  readonly where?: string
+  readonly schema?: string
+  readonly table?: string
+  readonly column?: string
+  readonly dataType?: string
+  readonly constraint?: string
+  readonly file?: string
+  readonly line?: number
+  readonly routine?: string
+}
+```
+
+Every field of the protocol's `ErrorResponse`, normalised: `sqlstate` is the five-character `C`
+field and is the routing key everything above the seam uses, and `position` is a **1-based character
+offset** into the SQL that was sent. Absent fields are absent, not `null` — pg omits the keys
+entirely, and so does this.
+
+### `PgDriverError`
+
+{/* docs: signature */}
+```ts
+class PgDriverError extends Error {
+  readonly pgPrime: PgDriverErrorData
+  constructor(data: PgDriverErrorData)
+}
+```
+
+A real `Error`, so stacks work, carrying the seam data on `.pgPrime`. This is what the bundled
+adapter throws; a custom adapter is free to throw it too, and is equally free to throw anything else
+as long as the runtime can normalise it.
+
+### `isServerErrorShape`
+
+{/* docs: signature */}
+```ts
+function isServerErrorShape(e: unknown): e is Record<string, unknown>
+```
+
+Duck-typed detection of a PostgreSQL error object: a `string` `code` and a `string` `severity`.
+Never `instanceof`, and that is not fastidiousness — pg's error has `name === 'error'`, PGlite's
+class is minified to `N`, and Neon has both its own `DatabaseError` and a separate `NeonDbError`.
+
+### `toServerErrorData`
+
+{/* docs: signature */}
+```ts
+function toServerErrorData(raw: Record<string, unknown>): PgServerErrorData
+```
+
+Normalise any pg-shaped error or notice object into `PgServerErrorData`. It exists because the raw
+objects are not quite the shape they look: `position`, `internalPosition` and `line` arrive from pg
+as **strings** (`position: "15"`), and absent fields are missing keys rather than `null`. Absent
+stays absent.
+
+### `normaliseError`
+
+{/* docs: signature */}
+```ts
+interface NormaliseOptions {
+  readonly adapter: string
+  readonly sql?: string | undefined
+  readonly aborted?: boolean
+  readonly timedOut?: boolean
+  readonly connectionUnusable?: boolean
+  readonly cancelError?: string
+}
+
+function normaliseError(e: unknown, opts: NormaliseOptions): PgDriverErrorData
+```
+
+The one entry point: anything a pg-like driver throws becomes seam data. `NormaliseOptions` is what
+only the adapter knows — whether *its* signal fired, whether *its* deadline elapsed, and whether the
+physical connection survived.
+
+Non-server errors are classified by an **exact-match table** over pg's own client-side messages, not
+by a regular expression, and the reason is worth repeating: `/timeout/i` matched the pool's
+`timeout exceeded when trying to connect`, and `/unexpected/` matched
+`Connection terminated unexpectedly`, so a dead socket was reported as a survivable client deadline
+and a pool exhaustion as a protocol desynchronisation. `Query read timeout` is the one message that
+really means "our client-side deadline elapsed", and the socket is fine when it appears — but the
+statement keeps running on it, which is why the adapter passes `connectionUnusable` explicitly
+rather than letting this function guess.
+
+## Writing an adapter
+
+The minimum is two methods on a connection, four on a driver, and an honest `capabilities`. Nothing
+else is required; everything optional degrades with a message rather than failing at the wire.
+
+| Required | Optional |
+|---|---|
+| `PgDriver.init`, `acquire`, `release`, `destroy`, `capabilities` | `PgDriver.connect` — without it, `db.listen()` refuses and says what to configure |
+| `PgConnection.execute` | `describe` — typed raw SQL and `migrate verify` fall back to a shadow schema |
+| `PgConnection.stream` | `closeStatement` — needed only for `mode: 'named'` |
+| `backendPid`, `serverParameters`, `transactionStatus`, `usable` | `copyIn` / `copyOut` — `db.copyFrom` and `db.copyTo` refuse without them |
+| exec mode `'unnamed'` | `cancel` — set `capabilities.cancel: false` and abort signals stop the client only |
+| `resultFormat: 'text'` | `on` — no `LISTEN`, and no asynchronous notices |
+| | `route: 'direct'` — ignore it if you have no second URL |
+
+Here is the whole of a read-only adapter over an HTTP transport. It compiles, and there is nothing
+elided from it:
+
+```ts
+import type {
+  PgCapabilities,
+  PgConnection,
+  PgDriver,
+  PgQuery,
+  PgResult,
+  PgResultChunk,
+} from 'pg-prime/driver'
+
+declare function post(
+  sql: string,
+  params: readonly (string | Uint8Array | null)[],
+): Promise<{
+  rows: readonly (readonly (string | null)[])[]
+  fields: readonly { name: string; dataTypeID: number }[]
+  rowCount: number | null
+  command: string
+}>
+
+const capabilities: PgCapabilities = {
+  adapter: 'http',
+  execModes: ['unnamed'],
+  binaryResults: false,
+  paramTypeOids: false,
+  describe: false,
+  richFieldMetadata: false,
+  cursors: false,
+  copyIn: false,
+  copyOut: false,
+  listenNotify: false,
+  cancel: false,
+  multipleStatementsPerSession: false,
+  maxConnections: undefined,
+  maxParams: 65535,
+  serverVersionNum: undefined,
+}
+
+const connection: PgConnection = {
+  async execute(query: PgQuery): Promise<PgResult> {
+    const r = await post(query.text, query.params)
+    return {
+      rows: r.rows,
+      fields: r.fields.map((f) => ({
+        name: f.name,
+        dataTypeID: f.dataTypeID,
+        dataTypeModifier: -1,
+        tableID: 0,
+        columnID: 0,
+        dataTypeSize: -1,
+        format: 'text' as const,
+      })),
+      rowCount: r.rowCount,
+      command: r.command,
+      notices: [],
+    }
+  },
+  stream(): AsyncIterable<PgResultChunk> {
+    throw new Error('this adapter has no cursors; capabilities.cursors is false')
+  },
+  backendPid: undefined,
+  serverParameters: {},
+  transactionStatus: undefined,
+  usable: true,
+}
+
+export const httpDriver: PgDriver = {
+  init: async () => {},
+  acquire: async () => connection,
+  release: async () => {},
+  destroy: async () => {},
+  capabilities,
+}
+```
+
+Hand it to `pgPrime({ driver: httpDriver, schema })` and every query, every codec and every error
+message works — with `multipleStatementsPerSession: false`, transactions are refused up front and
+with a sentence, rather than half-working.

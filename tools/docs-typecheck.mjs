@@ -39,14 +39,22 @@ const TS_VERSION = JSON.parse(
   readFileSync(require.resolve('typescript59/package.json'), 'utf8'),
 ).version
 
-/** Every exported TYPE name per entry point, from the committed api-snapshot goldens. */
+/**
+ * Every exported name per entry point, from the committed api-snapshot goldens.
+ *
+ * Values as well as types: a reference signature often says `uuid: typeof uuid`, and `import type`
+ * can import a *value* name for exactly that use. What a signature block cannot do is call one.
+ */
 function typeNamesByEntry() {
   const out = new Map()
   for (const file of ['pg-prime.json', 'pg-prime-kit.json']) {
     const golden = JSON.parse(readFileSync(join(ROOT, 'tools', 'api-snapshot', file), 'utf8'))
     for (const [subpath, entry] of Object.entries(golden.entries)) {
       const spec = subpath === '.' ? golden.package : `${golden.package}/${subpath.slice(2)}`
-      out.set(`${golden.package}#${subpath}`, { spec, types: entry.types })
+      out.set(`${golden.package}#${subpath}`, {
+        spec,
+        types: [...new Set([...entry.types, ...entry.values])].sort(),
+      })
     }
   }
   return out

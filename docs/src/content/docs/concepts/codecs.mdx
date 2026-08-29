@@ -3,4 +3,393 @@ title: Codecs and decode defaults
 description: What each PostgreSQL type decodes to, and why int8 is a bigint and numeric is a string.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+A codec is the pair of functions that turns a JavaScript value into a wire parameter and a wire
+value back into a JavaScript value. pg-prime owns both ends: it installs identity parsers on
+whatever driver you gave it and decodes every column itself, against a registry it controls.
+
+That is not duplication for its own sake. Three drivers, one `DATE`, three different wrong answers,
+all measured on a machine in UTC−5:
+
+| Driver | `select '2026-08-14'::date` decodes to |
+|---|---|
+| `pg` 8.23 (via `pg-types`) | `Date` = `2026-08-13T19:00:00.000Z` — **the calendar day changed** |
+| PGlite 0.5.5 | `Date` = `2026-08-14T00:00:00.000Z` |
+| `postgres` 3.4.9 | `new Date(x)` — engine-dependent |
+
+and `int8` is a `string` on `pg`, a `bigint` on PGlite and a `string` on postgres.js. A promise that
+"`numeric` and `timestamptz` decode identically everywhere and a `DATE` never shifts a day" is only
+keepable by taking decoding away from the adapter.
+
+<Aside type="caution">
+pg-prime **never** calls `pg`'s global `setTypeParser`. That function is process-wide: calling it
+would change decoding for every other library in your process, including one that already depends on
+`pg`'s answers. The parsers are neutralised per query or per pool instead, which is why bringing
+your own `pg.Pool` is safe and needs no cooperation from you.
+</Aside>
+
+## The schema this page uses
+
+{/* docs: setup=schema */}
+```ts title="schema.ts" no-run
+import { defineSchema, pgEnum, pgTable } from 'pg-prime/schema'
+
+export const readingKind = pgEnum('reading_kind', ['temperature', 'humidity'])
+
+const readings = pgTable('readings', (t) => ({
+  id: t.bigint().primaryKey(),
+  kind: t.enum(readingKind),
+  amount: t.numeric(),
+  day: t.date(),
+  at: t.timestamptz(),
+  payload: t.jsonb(),
+  tags: t.text().array(),
+}))
+
+export const schema = defineSchema({ readings })
+```
+
+{/* docs: setup=db use=schema */}
+```ts title="db.ts" no-run
+import { pgPrime } from 'pg-prime'
+import { schema } from './schema.js'
+
+export const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema })
+```
+
+{/* docs: setup=ddl use=db */}
+```ts title="ddl.ts" no-run
+import { db } from './db.js'
+
+await db.sql`create type reading_kind as enum ('temperature', 'humidity')`.execute()
+await db.sql`
+  create table readings (
+    id      bigint primary key,
+    kind    reading_kind not null,
+    amount  numeric not null,
+    day     date not null,
+    at      timestamptz not null,
+    payload jsonb not null,
+    tags    text[] not null
+  )
+`.execute()
+```
+
+## The decode defaults
+
+| PostgreSQL | TypeScript | Why |
+|---|---|---|
+| `bool` | `boolean` | |
+| `int2`, `int4`, `oid` | `number` | always inside the safe-integer range |
+| **`int8`** | **`bigint`** | `number` cannot hold it: 2^53+1 is a real, storable `int8` |
+| `float4`, `float8` | `number` | the wire text is the exact shortest round-trip form; `NaN` and `±Infinity` are special-cased |
+| **`numeric`** | **`string`** | arbitrary precision *and* meaningful scale; a float loses both |
+| `text`, `varchar`, `bpchar`, `name`, `char` | `string` | identity — zero cost. `bpchar` is space-padded by PostgreSQL and is not trimmed |
+| `uuid` | `string` | PostgreSQL normalises the case on output |
+| **`date`** | **`DateString`** (branded `'YYYY-MM-DD'`) | a date has no time and no zone; a `Date` would invent both |
+| `time`, `timetz` | `string` | microsecond precision a `Date` cannot hold; a `timetz` offset is meaningless without a date |
+| `timestamp` | `PgTimestampString` (verbatim) | zoneless — any `Date` would invent a zone. Microseconds preserved |
+| **`timestamptz`** | **`Date`** | an instant, which is exactly what a `Date` is |
+| `interval` | `PgInterval` — `{ years, months, days, hours, minutes, seconds }` | components carry their own sign, as PostgreSQL prints them |
+| `json`, `jsonb` | `unknown` | it is your data; narrow it with `$type<T>()` |
+| `bytea` | `Uint8Array` | not `Buffer` — Neon dropped it, and a `Buffer` would leak a Node-only type into the API |
+| `inet`, `cidr`, `macaddr`, `macaddr8`, `bit`, `varbit`, `pg_lsn`, `xml`, `money` | `string` | they round-trip exactly; parsing adds nothing |
+| `tsvector`, `tsquery`, `jsonpath` | `string` | opaque text, and the operator gates need the class |
+| `int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange`, `daterange` | `string` | the canonical text form is total; `{ lower, upper }` cannot represent `'empty'` or `'(,)'` |
+| any `T[]` | `(T \| null)[]` | the element codec, applied per element |
+| a user enum | the union of its labels | decode is identity plus a membership assert |
+
+The four that people ask about, with the measurement behind each:
+
+**`int8` → `bigint`.** `int8` is the type of every `bigserial` primary key and of `count(*)`.
+`9007199254740993` is a real, storable `int8` and `number` rounds it to `…992`. `string` is safe but
+turns every id comparison into a string compare and makes arithmetic a user problem. `bigint` is
+exact over the whole `int8` range, is a native primitive on every supported Node, and is already
+PGlite's default — so choosing it *reduces* cross-adapter divergence.
+
+**`numeric` → `string`.** There is no lossless JavaScript primitive for arbitrary-precision decimal,
+and pg-prime has zero runtime dependencies, so it cannot ship a `Decimal`. `number` is wrong twice
+over: it loses precision beyond 17 significant digits, and it loses *scale*, which is semantically
+meaningful — `numeric(10,2)` renders `1.10`, not `1.1`. Text also carries `'NaN'`, `'Infinity'` and
+`'-Infinity'`, which no JavaScript number type can.
+
+**`date` → a branded `'YYYY-MM-DD'` string, never a `Date`.** This is the headline correctness
+guarantee. The brand is what stops a plain string being handed to a date column by accident, so
+writing one takes a visible `as DateString`. Values outside the ISO shape are preserved verbatim
+rather than rejected: `'infinity'`, `'-infinity'`, `'0001-01-01 BC'`, `'294276-12-31'` all
+round-trip.
+
+**`timestamptz` → `Date`.** The one temporal type where `Date` is semantically right: the value is
+an instant, and the offset in the wire text is a rendering detail that depends on the session's
+`TimeZone`. Two consequences are documented rather than hidden. PostgreSQL stores microseconds and a
+`Date` holds milliseconds, so the default codec truncates — `timestamptzStringCodec` is the exact,
+verbatim alternative. And `infinity` / `-infinity` are legal `timestamptz` values with no `Date`
+representation, so the default codec **throws** and points at that same alternative; mapping them to
+`new Date(±8.64e15)` would be a silent lie.
+
+## It round-trips
+
+{/* docs: use=db,ddl */}
+```ts title="round-trip.ts"
+import { strict as assert } from 'node:assert'
+import type { DateString } from 'pg-prime/schema'
+import { db } from './db.js'
+import './ddl.js'
+
+await db
+  .insertInto(db.h.readings)
+  .values({
+    id: 9007199254740993n, // 2^53 + 1
+    kind: 'temperature',
+    amount: '1.10', // the scale is part of the value
+    day: '2026-08-14' as DateString,
+    at: new Date('2026-08-14T06:30:00.000Z'),
+    payload: { unit: 'C' },
+    tags: ['outdoor', 'roof'],
+  })
+  .execute()
+
+const [row] = await db
+  .from(db.h.readings, 'r')
+  .select((t) => ({
+    id: t.r.id,
+    kind: t.r.kind,
+    amount: t.r.amount,
+    day: t.r.day,
+    at: t.r.at,
+    payload: t.r.payload,
+    tags: t.r.tags,
+  }))
+  .execute()
+
+console.log(row)
+// {
+//   id: 9007199254740993n,
+//   kind: 'temperature',
+//   amount: '1.10',
+//   day: '2026-08-14',
+//   at: 2026-08-14T06:30:00.000Z,
+//   payload: { unit: 'C' },
+//   tags: [ 'outdoor', 'roof' ]
+// }
+
+assert.equal(row!.id, 9007199254740993n)
+assert.equal(row!.amount, '1.10') // not '1.1'
+assert.equal(row!.day, '2026-08-14') // not a Date, and not the 13th
+assert.equal(row!.at.toISOString(), '2026-08-14T06:30:00.000Z')
+
+console.log(Number(row!.id)) // 9007199254740992 — what a `number` default would have handed you
+```
+
+The static types are `bigint`, `'temperature' | 'humidity'`, `string`, `DateString`, `Date`,
+`unknown` and `string[]`, in that order, with no annotation written anywhere. The `id` assertion is
+the whole argument for the `bigint` default in one line: the value survives the database, and
+`Number()` on it does not.
+
+## The alternates
+
+Four named alternatives ship in the box, listed in `ALTERNATE_CODECS`. They are registered **by
+name** only, because each collides on OID with the default it replaces:
+
+| Codec | Name | Decodes to | Note |
+|---|---|---|---|
+| `int8NumberCodec` | `int8:number` | `number` | **throws** above `Number.MAX_SAFE_INTEGER` rather than rounding |
+| `int8StringCodec` | `int8:string` | `string` | the verbatim digits |
+| `numericNumberCodec` | `numeric:number` | `number` | documented as lossy |
+| `timestamptzStringCodec` | `timestamptz:string` | `string` | exact wire text — microseconds, and `infinity` |
+
+The narrow way to use one is on the expression that needs it:
+
+{/* docs: use=db,ddl */}
+```ts title="alternates.ts"
+import { int8NumberCodec, numericNumberCodec, sql } from 'pg-prime'
+import { db } from './db.js'
+import './ddl.js'
+
+const [totals] = await db
+  .from(db.h.readings, 'r')
+  .select(() => ({
+    n: sql`count(*)`.as(int8NumberCodec),
+    total: sql`coalesce(sum(amount), 0)`.as(numericNumberCodec),
+  }))
+  .execute()
+
+console.log(totals) // { n: 0, total: 0 }
+```
+
+`n` is a `number` and `total` is a `number`, because that is what those two codecs say. A count is
+the case the default exists to make ergonomic rather than exact — `count(*)` past 2^53 is not a real
+scenario — which is why the builder's own `.count()` binds `int8:number` for you.
+
+The wide way is a registry, handed to `pgPrime` at construction:
+
+{/* docs: use=schema */}
+```ts
+import { createRegistry, int8NumberCodec, pgPrime, timestamptzStringCodec } from 'pg-prime'
+import { schema } from './schema.js'
+
+const registry = createRegistry()
+registry.register(int8NumberCodec, { override: true })
+registry.register(timestamptzStringCodec, { override: true })
+
+const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema, registry })
+```
+
+`{ override: true }` is mandatory when a codec claims an OID another codec already holds; without it
+`register` throws and names the incumbent. Be precise about what this changes, because there are two
+lookups and they answer different questions:
+
+- **by OID** — every column whose codec is discovered from the server's `RowDescription`: `db.sql`,
+  `fromRaw`, and anything decoded dynamically. A registry override changes these.
+- **by name** — every column your schema declares, because `t.bigint()` records the PostgreSQL type
+  name `int8` and the codec is looked up under that string. A registry override does **not** change
+  these, since `int8NumberCodec` is registered under `int8:number`.
+
+That split is deliberate: a schema column has a declared TypeScript type, and silently decoding it
+through a codec that produces a different one would make the declaration a lie. If you do want a
+whole column decoded differently, register the codec under the PostgreSQL type's own name and
+declare the column with `t.raw` so the two agree:
+
+{/* docs: no-run */}
+```ts title="decimal-columns.ts"
+import { createRegistry, pgPrime } from 'pg-prime'
+import { defineSchema, pgTable } from 'pg-prime/schema'
+import type { Codec } from 'pg-prime/codecs'
+
+/** Whatever decimal library you use — `decimal.js`, `big.js`, your own. */
+declare class Decimal {
+  constructor(value: string)
+  toString(): string
+}
+
+const decimalCodec: Codec<Decimal | string, Decimal> = {
+  name: 'numeric', // the PostgreSQL type name: this is what `t.raw('numeric')` looks up
+  oid: 1700,
+  paramOid: 1700,
+  sqlName: 'numeric',
+  typeClass: 'string',
+  jsonEncode: 'text',
+  encode: (v) => String(v),
+  decodeText: (raw) => new Decimal(raw),
+  decodeJson: (raw) => new Decimal(String(raw)),
+}
+
+const registry = createRegistry()
+registry.register(decimalCodec, { override: true })
+
+const invoices = pgTable('invoices', (t) => ({
+  id: t.bigint().primaryKey(),
+  total: t.raw('numeric').$type<Decimal>(),
+}))
+
+export const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  schema: defineSchema({ invoices }),
+  registry,
+})
+```
+
+`t.raw('numeric')` emits `numeric` in the DDL and looks the codec up under `numeric`; `$type<Decimal>()`
+is what makes `total` a `Decimal` in every query result. One registry per **physical** database:
+user-type OIDs are not stable across dev, prod and shadow, so `defaultRegistry().clone()` (or a fresh
+`createRegistry()`) per database is the rule, and `resolveDynamic` fills in the enum, domain,
+composite and range OIDs from that database's own catalogue on first connect.
+
+## Narrowing a `jsonb` column
+
+`jsonb` decodes to `unknown`, which is the honest type: PostgreSQL will hand back whatever is stored
+and nothing validated it on the way in. `$type<T>()` is the documented cast:
+
+{/* docs: no-run */}
+```ts title="typed-jsonb.ts"
+import { pgTable } from 'pg-prime/schema'
+
+interface Prefs {
+  readonly theme: 'light' | 'dark'
+  readonly locale: string
+}
+
+export const users = pgTable('users', (t) => ({
+  id: t.bigint().primaryKey(),
+  prefs: t.jsonb().$type<Prefs>(),
+}))
+```
+
+`$type` is narrow-only: `T` must be a subtype of the column's own non-null type, and the column's
+`| null` is re-attached afterwards. So `t.text().nullable().$type<'a' | 'b'>()` is
+`'a' | 'b' | null`, and it is not possible to use `$type` to quietly drop a `| null` the DDL still
+carries.
+
+## Typing a fragment
+
+A bare `` sql`…` `` has no type and deliberately cannot be put in a projection. `.as(codec)` is the
+only way to give one a type, and it does two things at once: it fixes the decoded TypeScript type,
+and it gives the fragment a place in the operator type system, so `` sql`lower(x)`.as(textCodec) ``
+is a `text`-class operand everywhere a column of that class would be.
+
+{/* docs: use=db,ddl */}
+```ts
+import { numericCodec, sql, textCodec } from 'pg-prime'
+import { db } from './db.js'
+import './ddl.js'
+
+await db
+  .from(db.h.readings, 'r')
+  .select((t) => ({
+    label: sql`upper(${t.r.kind}::text)`.as(textCodec), // string
+    scaled: sql`${t.r.amount} * 100`.as(numericCodec), // string
+  }))
+  .execute()
+```
+
+`.asUnsafe<T>()` is the escape hatch: it asserts the TypeScript type and leaves the codec to be
+resolved from the server's own OID, so the *value* is still decoded by pg-prime and is still right —
+only the claim about its type is yours.
+
+## When the claim is wrong
+
+A declared codec is a claim about what PostgreSQL will send. In dev mode — `NODE_ENV !== 'production'`,
+or `pgPrime({ assertShape: true })` — every column's declared OID is compared with the
+`dataTypeID` the server reported, **before** a single row is decoded, and a disagreement throws
+`CodecMismatchError`. Checking first matters: `int4`'s decoder turns `'10.50'` into `10` quite
+happily, and handing back a wrong number is the bug the check exists to prevent.
+
+{/* docs: use=db,ddl */}
+```ts title="codec-mismatch.ts"
+import { CodecMismatchError, int4Codec, sql } from 'pg-prime'
+import { db } from './db.js'
+import './ddl.js'
+
+try {
+  await db
+    .from(db.h.readings, 'r')
+    .select(() => ({ total: sql`sum(1.5::numeric)`.as(int4Codec) }))
+    .execute()
+} catch (err) {
+  if (!(err instanceof CodecMismatchError)) throw err
+  console.log(err.message)
+  console.log(err.mismatch.declared, err.mismatch.actual) // int4 numeric
+}
+```
+
+The message names the column, both codecs, both OIDs and the call site of the `.as()` that made the
+claim:
+
+```text
+column "total" was declared as codec `int4` (oid 23)
+but Postgres returned `numeric` (oid 1700).
+  at …/reports.ts:42
+Fix: use codecs.numeric, or cast in SQL.
+```
+
+A **schema** column gets a different last two lines, because it is a different mistake: the caller's
+source is innocent and the database has drifted away from the `pgTable(...)` declaration, so the
+message says so and suggests running the pending migration rather than sending you to edit a query.
+
+## Where to go next
+
+- [`pg-prime/codecs` reference](/pg-prime/reference/codecs/) — every shipped codec, and the `Codec`
+  interface in full.
+- [The schema DSL](/pg-prime/guides/schema/) — which builder produces which PostgreSQL type.
+- [The `sql` tag](/pg-prime/guides/sql-tag/) — fragments, `.as`, and the one injection escape hatch.

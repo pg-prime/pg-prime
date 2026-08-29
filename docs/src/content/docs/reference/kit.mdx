@@ -1,6 +1,1243 @@
 ---
 title: "@pg-prime/kit"
 description: Every export of the migration kit.
+apiEntry: "@pg-prime/kit#."
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+`@pg-prime/kit` ships one binary and one entry point. **Most people who use the kit never import
+from it**: the thirteen commands documented in [the CLI reference](/pg-prime/reference/cli/) are the
+interface, and [migrations end to end](/pg-prime/guides/migrations/) is the guide that explains what
+each one is for.
+
+Everything below is the **programmatic API** — the engine the binary is built out of, exported so
+that something else can drive it. The three callers that exist are a test harness that generates and
+applies a migration in-process, a platform's own deploy tool that wants `applyPending`'s event
+stream rather than its stdout, and a script that reads a `.plan.json` off disk and lints it. If you
+are not writing one of those, the CLI page is the page you want.
+
+```sh
+pnpm add -D @pg-prime/kit
+```
+
+```ts
+import { applyPending, buildPlan, diffIR, extractCatalog, generate } from '@pg-prime/kit'
+```
+
+<Aside>
+There is exactly one entry point, `@pg-prime/kit`. There are no subpaths: the 321 names below all
+come from the same import, and the package's `exports` map has nothing else in it. `pg-prime` is a
+**peer** dependency, imported for types only — the kit never loads the runtime package at run time.
+</Aside>
+
+## The pipeline
+
+The names group by the stage of the pipeline they belong to, and the pipeline is short:
+
+```text
+pg_catalog ──extract──► SchemaIR ──diff──► Delta[] ──build──► Statement[] ──order──► Plan
+     ▲                     ▲                                                          │
+     │                     │                                                       prove
+ the target        the desired state,                                                 │
+                normalised through a shadow                                           ▼
+                                                            NNNN_name.sql + NNNN_name.plan.json
+```
+
+Read left to right for `migrate generate`; the runner (`applyPending`) picks the artifacts up on
+disk and never repeats any of it. The three commands that write nothing — `status`, `check`,
+`doctor` — are the same functions with the write step removed.
+
+| If you want to | Start at |
+|---|---|
+| read a config file the way the CLI does | [`loadConfig`](#loadConfig), [`resolveConfig`](#resolveConfig) |
+| turn a live database into an IR | [`extractCatalog`](#extractCatalog) |
+| turn a TypeScript schema into an IR | [`loadDesired`](#loadDesired), [`provisionShadow`](#provisionShadow) |
+| produce a migration end to end | [`generate`](#generate) |
+| apply what is on disk | [`applyPending`](#applyPending) |
+| report without writing | [`migrationStatus`](#migrationStatus), [`lintPlan`](#lintPlan) |
+| break a lease left by a dead deploy | [`inspectLease`](#inspectLease), [`forceUnlock`](#forceUnlock) |
+
+`migrate checkpoint`, `db seed` and `pull` are **CLI-only** in this release: they exist as commands,
+their behaviour is documented on the CLI page, and none of their functions are exported here. Nothing
+below can write a checkpoint or run a seed.
+
+## Configuration
+
+The config leg is three steps kept apart on purpose: find the file, import and validate it, then
+fold in the command line and the environment. A caller that only wants the last step can build a
+`PgPrimeConfig` object itself and never touch a file.
+
+### `loadConfig`
+
+{/* docs: signature */}
+```ts
+function loadConfig(path?: string, cwd?: string): Promise<LoadedConfig>
+```
+
+Imports the config module and hands back its default export beside the path it came from. With no
+`path` it searches `CONFIG_FILENAMES` at and above `cwd`; with no config file anywhere it returns
+`{ file: null, config: {} }`, because an absent config is a valid state and only an unreadable one is
+an error. Every key is validated on the way out, so `migrations: 3` throws a `ConfigError` that names
+the key rather than failing somewhere later with a path join.
+
+### `findConfigFile`
+
+{/* docs: signature */}
+```ts
+function findConfigFile(from: string): Promise<string | null>
+```
+
+The search on its own: the four `CONFIG_FILENAMES` in `from`, then in each ancestor directory, first
+hit wins, `null` at the filesystem root.
+
+### `resolveConfig`
+
+{/* docs: signature */}
+```ts
+function resolveConfig(input: ResolveInput): ResolvedConfig
+```
+
+Folds the command line and the environment into a loaded config and resolves every path against the
+config file's own directory. Precedence for the connection, highest first: `--url`,
+`config.connection`, `config.url`, `PG_PRIME_DATABASE_URL`, `DATABASE_URL` — the project's file beats
+the ambient environment, because a `DATABASE_URL` left over in a shell is the classic way to migrate
+the wrong database. Pass `requireConnection: false` for a placeholder connection instead of a throw;
+that is what makes `migrate lint <file>` a pure function of files.
+
+### `defineConfig`
+
+{/* docs: signature */}
+```ts
+function defineConfig(config: PgPrimeConfig): PgPrimeConfig
+```
+
+Identity at run time. It exists so `pg-prime.config.ts` gets completion and so a typo in a key is a
+compile error in your editor rather than a setting that is silently ignored. Every key it accepts is
+documented on [the config file reference](/pg-prime/reference/config/).
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="PgPrimeConfig"/> `PgPrimeConfig` | `{ url?, connection?, migrations?, repeatables?, schemas?, shadow?, schema?, replicas?, seeds?, … }` | Every key of `pg-prime.config.ts`. All optional. |
+| <a id="LoadedConfig"/> `LoadedConfig` | `{ file: string \| null; config: PgPrimeConfig }` | What `loadConfig` returns: the validated object and the file it came from. |
+| <a id="ResolveInput"/> `ResolveInput` | `{ config, configFile, cwd, env, url?, migrations?, schemas?, requireConnection? }` | `resolveConfig`'s argument — the config plus the CLI's global options. |
+| <a id="ResolvedConfig"/> `ResolvedConfig` | `{ connection, hasConnection, migrationsDir, repeatablesDir, seedsDir, schemaPaths, schemas, replicas, env, production, warnings }` | Absolute paths and one `ConnInfo`. `hasConnection: false` means the connection is a placeholder and nothing may connect with it. |
+| <a id="parseDatabaseUrl"/> `parseDatabaseUrl` | `(url: string) => ParsedUrl` | `postgres://user:pass@host:port/db` to a `ConnInfo`. Query parameters are **dropped and named** in `warnings`, because a silently ignored `sslmode=require` only shows up in production. |
+| <a id="ParsedUrl"/> `ParsedUrl` | `{ conn: ConnInfo; warnings: readonly string[] }` | The parse, plus what it had to throw away. |
+| <a id="loadSchema"/> `loadSchema` | `(paths: string \| readonly string[], base: string) => Promise<LoadedSchema>` | Imports the module(s) `config.schema` names and merges them into one registry. Accepts a `defineSchema` default export, any export with a `tables` property, or a module of bare `pgTable` exports. |
+| <a id="LoadedSchema"/> `LoadedSchema` | `{ schema: { tables, enums, domains, sequences, extensions, schemas }; files }` | One registry, keyed by `schema.name` so a table exported twice under two names is still one table. |
+| <a id="STRIP_TYPES_MARKER"/> `STRIP_TYPES_MARKER` | `"PG_PRIME_STRIP_TYPES_RETRY"` | Set by the CLI before it re-execs itself with `--experimental-strip-types`, so the retry can happen at most once. |
+
+## Loading the desired state
+
+The desired state is never diffed as text. It is emitted into a real PostgreSQL and read back out,
+so that "what you wrote" and "what the catalog holds" are the same form by construction. That is the
+whole reason the shadow ladder exists.
+
+### `emitSchema`
+
+{/* docs: signature */}
+```ts
+function emitSchema(schema: SchemaLike, options?: EmitOptions): EmitResult
+```
+
+Turns a `defineSchema(...)` registry into complete DDL statements in execution order, without
+trailing semicolons. `schemaMap` renames every schema on the way out, which is how the temp-schema
+tier puts a user's `public` somewhere it cannot collide; the emitter never touches `search_path`,
+because emitted DDL is always schema-qualified and a GUC cannot disambiguate a cross-schema foreign
+key.
+
+### `loadDesired`
+
+{/* docs: signature */}
+```ts
+function loadDesired(schema: SchemaLike, shadow: Shadow, options?: LoadDesiredOptions): Promise<ExtractResult>
+```
+
+Emit into the shadow, run the `afterLoad` hook, extract, and hand the IR back **in the caller's own
+schema names**. The `afterLoad` hook is where Tier R goes: repeatables are loaded into the shadow
+beside the desired schema, so a view that references a to-be-dropped column fails the proof at author
+time rather than at deploy time. An `error`-severity emit diagnostic stops the load before a single
+statement runs.
+
+### `provisionShadow`
+
+{/* docs: signature */}
+```ts
+function provisionShadow(admin: ConnInfo, target: ConnInfo, options: ProvisionShadowOptions): Promise<Shadow>
+```
+
+Picks a tier and hands back the connection, the schema map and a `dispose`. Tier 1 is a shadow URL
+you supply, tier 2 is `CREATE DATABASE` with the target's locale copied, tier 3 is
+`CREATE SCHEMA pgprime_shadow_<token>_<name>` **inside the target database** — which is why the
+ladder never requires `CREATEDB`. Tier 4 (`offline`) throws `OfflineShadowError` with a sentence
+explaining why it cannot exist; see [the shadow ladder](/pg-prime/concepts/shadow-ladder/).
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="desiredSql"/> `desiredSql` | `(schema: SchemaLike, shadow: Shadow, options?: LoadDesiredOptions) => readonly string[]` | The statements `loadDesired` would run, for `--dry-run` and for golden tests. |
+| <a id="EmitOptions"/> `EmitOptions` | `{ schemaMap?: ReadonlyMap<string, string>; defaultSchema?: string }` | The rename map and where an unqualified table lands (`public`). |
+| <a id="EmitResult"/> `EmitResult` | `{ sql: readonly string[]; diagnostics; schemas }` | Statements in execution order, plus the schemas they touch in the caller's names. |
+| <a id="LoadDesiredOptions"/> `LoadDesiredOptions` | `{ defaultSchema?; statementTimeout?; afterLoad?: (client) => Promise<void> }` | `afterLoad` runs on the shadow's own connection, after the DDL and before the extract. |
+| <a id="SchemaLike"/> `SchemaLike` | `{ tables; enums?; domains?; sequences?; extensions?; schemas? }` | A schema registry. `Schema<T, R>` from `pg-prime` is assignable to it, and so is a bare `{ tables }` literal. |
+| <a id="TableLike"/> `TableLike` | `{ $: TableRuntime }` | One table as the registry holds it. |
+| <a id="TableRuntime"/> `TableRuntime` | `{ name; schema; columns; extras; column(key) }` | The runtime metadata behind a table's `$`. Non-generic, so it costs nothing per instantiation. |
+| <a id="RefRuntime"/> `RefRuntime` | `{ table; schema; key; dbName; column }` | A column reference's runtime metadata. Carries the schema so a cross-schema foreign key target is never guessed by table name. |
+| <a id="ColumnDdl"/> `ColumnDdl` | `{ pgType; dbName; notNull; default; identity; primaryKey; unique; enumName; arrayDim; references; checks; comment; renamedFrom }` | Everything a column contributes to DDL. No `$`-prefixed builder method ever writes into it. |
+| <a id="TableExtra"/> `TableExtra` | a tagged union: `primaryKey \| index \| comment \| unique \| check \| foreignKey \| renamedFrom \| clusterOn \| partitionBy \| partitionOf` | Table-level nodes, one heterogeneous array, extensible by extension packs without an API change. |
+| <a id="makeRemapper"/> `makeRemapper` | `(reverse: ReadonlyMap<string, string>) => Remapper` | Builds the shadow-schema-to-user-schema rewriter. The quoted spelling is replaced first, so the bare rule cannot leave a stray quote behind. |
+| <a id="Remapper"/> `Remapper` | `{ text: (s: string) => string; id: (id: StableId) => StableId }` | Rewrites every string in every payload, recursively. Safe by construction: the only token ever replaced is a shadow schema name, which was minted after the user's schema was written. |
+| <a id="remapIr"/> `remapIr` | `(ir: SchemaIR, reverse: ReadonlyMap<string, string>) => SchemaIR` | A whole IR back into the caller's schema names. |
+| <a id="remapObserved"/> `remapObserved` | `(observed: readonly ObservedObject[], reverse) => ObservedObject[]` | The same rename over Tier-O observations, which carry their identity as text. |
+| <a id="remapDiagnostics"/> `remapDiagnostics` | `(diagnostics: readonly Diagnostic[], reverse) => Diagnostic[]` | So a message never names a schema the user has not got. |
+
+## Catalog extraction
+
+### `extractCatalog`
+
+{/* docs: signature */}
+```ts
+function extractCatalog(client: CatalogClient, options?: ExtractOptions): Promise<ExtractResult>
+```
+
+Reads `pg_catalog` under one repeatable-read snapshot and returns the fact base, the server version,
+the diagnostics and the Tier-O census. `CatalogClient` is one method — `query(text, values?)` — so
+anything that can run SQL is an acceptable client, including a `pg.Client`, a pool checkout, or a
+recording wrapper. Set `observe: false` to skip the Tier-O sweep and its sixteen round trips; the
+shadow proof does, because it re-extracts twice per plan and never looks at observation.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="CatalogClient"/> `CatalogClient` | `{ query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }> }` | The one method the kit needs from a connection. |
+| <a id="ExtractOptions"/> `ExtractOptions` | `{ schemas?; provenance?; statementTimeout?; observe? }` | Scope, stamp, timeout and the Tier-O switch. |
+| <a id="ExtractResult"/> `ExtractResult` | `{ ir: SchemaIR; pgVersionNum: number; diagnostics; observed }` | `observed` travels **beside** the IR, never in it: a fact is diffed and hashed, so a `GRANT` in the fingerprint would read as schema drift. |
+| <a id="Diagnostic"/> `Diagnostic` | `{ code; severity: "info" \| "warning" \| "error"; message; subject?; count? }` | Every report the kit produces, one shape. |
+| <a id="ObservedObject"/> `ObservedObject` | `{ kind; name; detail }` | Roles, ACLs, publications, subscriptions, FDWs, event triggers, collations, aggregates — introspected and reported, **never diffed and never dropped**. |
+| <a id="observedCounts"/> `observedCounts` | `(observed: readonly ObservedObject[]) => { kind: string; count: number }[]` | Per-kind counts for the `status` and `doctor` reports. |
+| <a id="observationDiagnostics"/> `observationDiagnostics` | `(observed: readonly ObservedObject[]) => Diagnostic[]` | One `info` diagnostic per observed kind. |
+| <a id="evaluatedEnumLabels"/> `evaluatedEnumLabels` | `(expr: string, enumLabels: ReadonlyMap<string, readonly string[]>) => StableId[]` | Which enum labels an expression evaluates at DDL time. Deliberately conservative: over-matching costs a redundant commit boundary, under-matching costs a failed migration. |
+| <a id="probeEmptiness"/> `probeEmptiness` | `(client: CatalogClient, tables: readonly StableId[]) => Promise<Set<string>>` | The encoded table ids that are provably empty, by `SELECT EXISTS (SELECT 1 FROM t LIMIT 1)`. Used only to suppress an MF hazard, so "we do not know" is the safe answer and the one an unreachable target gives. |
+
+## The IR
+
+A fact's own name lives in its **id**, never in its hashed payload. Rename-as-hash-join, immunity to
+phantom diffs, and dependency edges that land on real targets all follow from that one rule.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="SchemaIR"/> `SchemaIR` | `class` with `build`, `facts`, `edges`, `get`, `has`, `childrenOf`, `descendantsOf`, `outgoingEdges`, `factsOfKind`, `contentHashOf`, `rollupOf`, `orphans`, `fingerprint`, `toCheckpoint` | The fact base. `fingerprint` is the sorted `(rootId, rollup)` pairs — the number `apply` gates on. |
+| <a id="Fact"/> `Fact` | `{ id: StableId; parent?: StableId; payload: Payload; ordinal?: number; provenance: Provenance }` | `ordinal` is presentation-only and deliberately **not** hashed: PostgreSQL assigns physical order, and hashing it manufactures diffs between a declared schema and a live catalog that agree. |
+| <a id="DependencyEdge"/> `DependencyEdge` | `{ from: StableId; to: StableId; kind: EdgeKind }` | Hierarchy is a view; the edge is the data. |
+| <a id="EdgeKind"/> `EdgeKind` | `"depends" \| "owner" \| "memberOfExtension" \| "managedBy" \| "evaluates"` | `evaluates` is the kit's own addition — the edge `pg_depend` cannot give you, because it records a dependency on the enum *type*, not on an individual label. |
+| <a id="Provenance"/> `Provenance` | `{ origin: Origin; ownership: Ownership; sourceRef?; extension? }` | Metadata, not state. It never enters a hash. |
+| <a id="Origin"/> `Origin` | `"ts" \| "sql" \| "catalog" \| "extension" \| "baseline"` | Where a fact came from. |
+| <a id="Ownership"/> `Ownership` | `"managed" \| "observed" \| "external"` | Whether the kit may write it. |
+| <a id="CATALOG_PROVENANCE"/> `CATALOG_PROVENANCE` | `Provenance` | The stamp `extractCatalog` puts on everything it reads. |
+| <a id="Payload"/> `Payload` | `{ readonly [k: string]: PayloadValue }` | The hashed half of a fact. Identity-free by construction. |
+| <a id="Hash"/> `Hash` | `string` | Always spelled `sha256:<hex>`. |
+| <a id="canonicalize"/> `canonicalize` | `(value: unknown) => string` | Deterministic JSON: keys sorted, `undefined` members dropped. Two fact bases with the same content serialise byte-identically. |
+| <a id="contentHash"/> `contentHash` | `(payload: unknown) => Hash` | `sha256` of the canonical form. |
+| <a id="sha256"/> `sha256` | `(text: string) => Hash` | The one hash function, so a spelling cannot drift. |
+
+### Stable ids
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="StableId"/> `StableId` | a discriminated union over `FactKind`, e.g. `{ kind: "column"; schema; table; name }` | The identity tuple. `comment` carries its target as one already-encoded part, which is what lets one kind cover seven target kinds without seven arities. |
+| <a id="FactKind"/> `FactKind` | `"schema" \| "table" \| "column" \| "default" \| "constraint" \| "index" \| "type" \| "enumLabel" \| "typeAttribute" \| "sequence" \| "comment" \| "extension"` | The twelve modelled kinds (Tier M). |
+| <a id="encodeId"/> `encodeId` | `(id: StableId) => string` | `column:public.users.email`. The one and only encoding. |
+| <a id="parseId"/> `parseId` | `(s: string) => StableId` | Its inverse. |
+| <a id="idName"/> `idName` | `(id: StableId) => string` | The fact's own name — the part deliberately absent from the payload. |
+| <a id="idSchema"/> `idSchema` | `(id: StableId) => string` | `""` for the two database-scoped kinds, because asking an extension for "its schema" is a category error and `""` is never a legal schema name. |
+| <a id="parentOf"/> `parentOf` | `(id: StableId) => StableId \| undefined` | The structural parent, derived. |
+| <a id="commentId"/> `commentId` | `(target: StableId) => StableId & { kind: "comment" }` | The comment fact that annotates a target, so nobody hand-builds the nesting. |
+| <a id="defaultId"/> `defaultId` | `(column: StableId & { kind: "column" }) => StableId & { kind: "default" }` | A column's `DEFAULT` is its own fact, because `SET DEFAULT` is a catalog write and every other column change is a rewrite or a scan. |
+| <a id="sameId"/> `sameId` | `(a: StableId, b: StableId) => boolean` | Structural equality without encoding both sides. |
+
+### Payloads
+
+Every payload is **identity-free**: grep for a field holding the fact's own name and you will not
+find one. The exceptions that prove the rule are named in the source — a partition child records its
+parent, and a type records its children's names, because from the parent's vantage point a child's
+name *is* payload.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="AnyPayload"/> `AnyPayload` | the union of the twelve below | What `Fact.payload` narrows to once you switch on `kind`. |
+| <a id="SchemaPayload"/> `SchemaPayload` | `{ kind: "schema" }` | The discriminant and nothing else: a schema's identity is its name. |
+| <a id="TablePayload"/> `TablePayload` | `{ relkind; persistence; rowSecurity; partitionStrategy; partitionKey; partitionOf; partitionBound; clusterOn }` | `clusterOn` lives on the table rather than the index because a clustered index is very often a constraint's backing index, which is not a fact of its own. |
+| <a id="ColumnPayload"/> `ColumnPayload` | `{ type; notNull; notNullConstraint; notNullValidated; generationExpr; identity; generated; collation }` | `notNullConstraint` has three states, and the middle one — `%GENERATED%` — is what keeps the same fixture from diffing between PostgreSQL 17 and 18. |
+| <a id="DefaultPayload"/> `DefaultPayload` | `{ expression }` | PostgreSQL's own spelling of the expression, never the kit's. |
+| <a id="ConstraintPayload"/> `ConstraintPayload` | `{ contype; definition; validated; deferrable }` | `NOT VALID` is lifted out of the definition into `validated`, so validation state is an axis rather than a substring. |
+| <a id="IndexPayload"/> `IndexPayload` | `{ definition; unique; valid }` | The definition with the index's own name replaced by `%ID%`. |
+| <a id="TypePayload"/> `TypePayload` | `{ typtype; baseType; notNull; default; collation; checks }` | Enum, domain and composite in one kind, because all three have the identity tuple `[schema, name]` and `pg_type` is organised the same way. |
+| <a id="TypeAttributePayload"/> `TypeAttributePayload` | `{ type; collation }` | `column` is to `table` as this is to `type`. |
+| <a id="EnumLabelPayload"/> `EnumLabelPayload` | `{ kind: "enumLabel" }` | A label's identity is its text, which lives in the id; its position is the unhashed `ordinal`, so appending a value never perturbs its neighbours. |
+| <a id="SequencePayload"/> `SequencePayload` | `{ dataType; start; increment; minValue; maxValue; cache; cycle; ownedBy }` | Bounds as strings, because `int8` bounds do not survive a `number`. |
+| <a id="CommentPayload"/> `CommentPayload` | `{ text }` | Its own fact, so a re-worded comment does not look like an `ALTER TABLE`. |
+| <a id="ExtensionPayload"/> `ExtensionPayload` | `{ schema }` | Declare-only: created if absent, **never dropped**. `extversion` is deliberately absent — a version is a property of the cluster, not of the schema in the repository. |
+
+## Diff and delta
+
+### `diffIR`
+
+{/* docs: signature */}
+```ts
+function diffIR(current: SchemaIR, desired: SchemaIR, options?: DiffOptions): DiffResult
+```
+
+Compares two fact bases and returns the deltas, the renames that were accepted, the hints that were
+rejected and why, and the current IR **after** the accepted hints were folded in — which is what the
+plan is then built against. It never queries: `diagnostics` are threaded in from the extractor so
+that `strictUnmodeled` has something to re-classify.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="DiffOptions"/> `DiffOptions` | `{ renameHints?; strictUnmodeled?; diagnostics? }` | `strictUnmodeled` turns a non-empty Tier-U census from an `info` into an `error`, which `writePlan` then refuses. Off by default: a census is a report, and making it fatal would refuse any database with a `citext` cast in it. |
+| <a id="DiffResult"/> `DiffResult` | `{ deltas; renames; rejectedHints; diagnostics; current }` | A rejected hint carries its reason, so a `renamedFrom` that did not fire says so. |
+| <a id="Delta"/> `Delta` | `create \| drop \| alter \| rename \| addEnumValue`, discriminated on `op` | `addEnumValue` carries its ordering anchor, which is the fix for the enum-ordering bug the design calls out. |
+| <a id="isEmptyDiff"/> `isEmptyDiff` | `(result: DiffResult) => boolean` | `migrate verify` semantics: two fact bases agree iff every fact **and every edge** agrees. |
+| <a id="labelsOf"/> `labelsOf` | `(ir: SchemaIR, typeId: StableId) => string[]` | An enum's labels in ordinal order. |
+| <a id="RenameHint"/> `RenameHint` | `{ from: StableId \| string; to: StableId \| string }` | Rename hints are an **input**. Nothing in the kit infers them. |
+| <a id="RenameRecord"/> `RenameRecord` | `{ kind; from; to; source: "annotation" \| "cascade"; confidence: "unambiguous" }` | `cascade` is not inference: it is the auto-named constraint PostgreSQL declined to rename along with the table an annotation already renamed. |
+| <a id="applyRenameHints"/> `applyRenameHints` | `(current: SchemaIR, desired: SchemaIR, hints: readonly RenameHint[]) => …` | A hint applies iff the old id exists on the current side and the new one does not. Anything else is rejected with a reason rather than guessed. |
+| <a id="definitionsAgreeUnderRename"/> `definitionsAgreeUnderRename` | `(currentDef: string, desiredDef: string, renames) => boolean` | An identifier may differ **only** in the renamed direction; a definition that changed for any other reason still produces a real `alter`. |
+| <a id="tokenizeDefinition"/> `tokenizeDefinition` | `(def: string) => Token[]` | Splits a stored definition into identifier tokens and everything else, through the lexer, so a `CHECK` body is never edited as if it were a name. |
+| <a id="renameCandidates"/> `renameCandidates` | `(diff: DiffResult, desired: SchemaIR) => RenameCandidate[]` | The rename questions this diff raises, sorted so a CI envelope is stable. Anything an annotation already resolved is simply not here. |
+| <a id="RenameCandidate"/> `RenameCandidate` | `{ kind; from; to; confidence; alternatives; reason }` | What `--interactive` shows and what exit code 2 is about. |
+| <a id="RenameConfidence"/> `RenameConfidence` | `"unambiguous" \| "ambiguous" \| "nearMiss"` | Never an authority — only a prompt. |
+
+## Statements, ordering and the plan
+
+### `buildPlan`
+
+{/* docs: signature */}
+```ts
+interface BuildPlanInput {
+  readonly seq: number
+  readonly name: string
+  readonly statements: readonly Statement[]
+  readonly segments: readonly Segment[]
+  readonly fromFingerprint: string
+  readonly toFingerprint: string
+  readonly pgVersionNum: number
+  readonly renames: readonly RenameRecord[]
+  readonly diagnostics: readonly Diagnostic[]
+  readonly schemas?: readonly string[]
+  readonly proof?: Proof
+  readonly acknowledge?: AcknowledgeInput
+}
+
+function buildPlan(input: BuildPlanInput): Plan
+```
+
+Stamps an ordered statement stream as a `.plan.json`: the two fingerprints, the managed schema set,
+the transaction mode, the hazards with their acknowledgement state, and a `planId` that deliberately
+**excludes** `generated` and `proof`, so the same logical plan re-proven by a different person on a
+different day has the same id. Every statement gets `lock_timeout = 3s`; `statement_timeout` is
+`30s` except on intentionally long builds (`shareUpdateExclusive`), which carry none.
+
+### `writePlan`
+
+{/* docs: signature */}
+```ts
+function writePlan(
+  dir: string,
+  plan: Plan,
+  options?: { readonly allowUnproven?: boolean; readonly allowDataLoss?: boolean },
+): Promise<{ sqlPath: string; planPath: string }>
+```
+
+Writes `NNNN_name.sql` and `NNNN_name.plan.json`, and refuses in three cases: the plan is not proven
+(`ProofRequiredError`), it carries an unacknowledged destructive hazard
+(`UnacknowledgedHazardError`), or the name would escape `dir` or overwrite a file
+(`UnsafePlanPathError`). The refusal is the mitigation: an ordering bug becomes a `generate` failure
+on a throwaway database instead of a production incident.
+
+### `lintPlan`
+
+{/* docs: signature */}
+```ts
+function lintPlan(plan: Plan, sqlText: string, options?: LintOptions): LintResult
+```
+
+Runs the hazard rules over a plan and the `.sql` beside it, applies the `-- pg-prime:nolint CODE
+"reason"` directives found in the text, and returns findings with `acknowledged` and `suppressedBy`
+already resolved. It needs no database, which is why `migrate lint <file>` runs without one. Every
+code it can report is listed on [hazard codes](/pg-prime/reference/hazard-codes/).
+
+### `hazardSeverity`
+
+{/* docs: signature */}
+```ts
+function hazardSeverity(code: string): "error" | "warn"
+```
+
+The severity table, as a function. An unknown code answers `error` on purpose: an unrecognised
+hazard is a bug in the emitter, not an advisory, and it must not be silent. The `ST101`–`ST106`
+style family is not in this table — `isStyleCode` answers for those, and their default is `off`.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="buildStatements"/> `buildStatements` | `(diff: DiffResult, desired: SchemaIR, options?: BuildOptions) => BuildResult` | Deltas to DDL, including the lock-safe rewrites. |
+| <a id="BuildOptions"/> `BuildOptions` | `{ volatileDefaults?; noSafeRewrite?; emptyTables?; multiFile? }` | `multiFile` lets one run emit a `CONCURRENTLY` companion file; `noSafeRewrite` emits the literal diff instead, which is what `--no-safe-rewrite` asks for. |
+| <a id="BuildResult"/> `BuildResult` | `{ statements: Statement[]; diagnostics: Diagnostic[] }` | Unordered — `orderStatements` is a separate step on purpose. |
+| <a id="columnClause"/> `columnClause` | `(colId, p: ColumnPayload, defaultExpr?: string \| null) => string` | One column's contribution to `CREATE TABLE`. |
+| <a id="mentionsVolatileFunction"/> `mentionsVolatileFunction` | `(expression: string) => boolean` | LK109's textual fallback, used when the catalog's own volatility answer is not available. |
+| <a id="Statement"/> `Statement` | `{ sql; verb; kind; produces; consumes; destroys; releases; transactionality; lockClass; idempotent; dataLoss; rewrite; hazards; phase; stage? }` | The four fact-id sets are the dependency graph; `phase` is only a tie-break. |
+| <a id="LockClass"/> `LockClass` | `"accessExclusive" \| "shareRowExclusive" \| "share" \| "shareUpdateExclusive" \| "rowExclusive" \| "none"` | Reported, never certified. |
+| <a id="Transactionality"/> `Transactionality` | `"transactional" \| "nonTransactional" \| "commitBoundaryAfter"` | The third value exists for `ALTER TYPE … ADD VALUE`, which *is* transactional but whose new value is unusable until commit. |
+| <a id="Stage"/> `Stage` | `"main" \| "concurrent" \| "data"` | Which emitted file a statement belongs to. `undefined` means `main`. |
+| <a id="PHASE"/> `PHASE` | a frozen record of numeric ranks, `createExtension: -1` through `dropSchema: 85` | The coarse stratum used as the ordering tie-break. Correctness comes from the graph, not from this table. |
+| <a id="orderStatements"/> `orderStatements` | `(input: readonly Statement[]) => OrderResult` | Topological order over the fact-id sets, with `phase` breaking ties, plus the transaction segments. |
+| <a id="OrderResult"/> `OrderResult` | `{ statements; segments; diagnostics }` | |
+| <a id="Segment"/> `Segment` | `{ index: number; transactional: boolean; statements: number[] }` | One `BEGIN`/`COMMIT` boundary, or one bare run. |
+| <a id="splitStages"/> `splitStages` | `(input: readonly Statement[]) => StagedResult` | Orders once over the whole plan, then cuts the stream into files. A real edge that would force a `main` statement after a `concurrent` one **declines** the split rather than emitting files that cannot apply in order. |
+| <a id="StagedFile"/> `StagedFile` | `{ stage: Stage; statements; segments }` | One emitted file, re-ordered on its own so its segments describe it. |
+| <a id="StagedResult"/> `StagedResult` | `{ files; diagnostics; declined: string \| null }` | `declined` is non-null with a reason when the concurrent rewrite was refused. |
+| <a id="Plan"/> `Plan` | `{ formatVersion: 1; planId; engine; generated; migration; from; to; pg; schemas; normalized; shadowTier; txmode; segments; statements; renames; hazards; unmodeled; repeatables; acknowledged; proof }` | The `.plan.json`. `schemas` is recorded because it scopes the diff, the fingerprint *and* the lock key. |
+| <a id="PlanStatement"/> `PlanStatement` | `Statement` plus `index` and `timeouts: { lock; statement }` | What the runner executes. |
+| <a id="PlanHazard"/> `PlanHazard` | `{ code; severity; statement; subject; message; acknowledged }` | |
+| <a id="Proof"/> `Proof` | `{ status: "passed" \| "failed" \| "skipped"; reason?; shadow?; provisioning?; driftDeltas?; deltas?; stageFingerprints?; dumpOracle?; … }` | `stageFingerprints` holds the state *between* emitted files, which is the second file's `from` and cannot be predicted from the IR — only observed. |
+| <a id="Acknowledgement"/> `Acknowledgement` | `{ dataLoss: readonly string[]; by; reason; at; blanket }` | Lands in `.plan.json`, so a destructive change shows up as a diff line in the pull request. That *is* the review interface. |
+| <a id="AcknowledgeInput"/> `AcknowledgeInput` | `{ dataLoss?; by?; reason?; allowDataLoss? }` | What `--allow-data-loss --reason` becomes. |
+| <a id="migrationId"/> `migrationId` | `(seq: number, name: string) => string` | `0007_add_orders`. Throws `InvalidMigrationIdError` on a name outside `MIGRATION_NAME`. |
+| <a id="MIGRATION_NAME"/> `MIGRATION_NAME` | `/^[a-z0-9_]+$/` | Deliberately narrower than "safe": a migration name becomes a filename *and* a sort key. |
+| <a id="renderSql"/> `renderSql` | `(r: RenderInput) => string` | The `.sql`, header directives and all. The file must be runnable by `psql` if the tooling ever fails. |
+| <a id="planSql"/> `planSql` | `(plan: Plan) => string` | `renderSql` with the arguments taken off a finished plan. |
+| <a id="planOrderKey"/> `planOrderKey` | `(plan: Plan) => readonly [number, string]` | `(seq, name)`. Duplicate `NNNN` is legal, which is what lets one run emit `0007_x.sql`, `0007_x_concurrently.sql` and `0007_x_data.sql` in that order without a journal. |
+| <a id="ENGINE"/> `ENGINE` | `{ name; version; backend: "in-house"; irVersion: 1 }` | Stamped into every plan. |
+| <a id="formatFindings"/> `formatFindings` | `(result: LintResult, format: LintFormat) => string` | |
+| <a id="LintFormat"/> `LintFormat` | `"text" \| "json"` | SARIF is declared as the place it will land rather than invented twice; `formatFindings` switches exhaustively, so adding it is a compile error until it is handled. |
+| <a id="LintOptions"/> `LintOptions` | `{ rules?; failOn?: "error" \| "warn" \| "off"; style? }` | `style` is implied when `rules` names a style code, so `--rules ST103` needs no second flag. |
+| <a id="LintResult"/> `LintResult` | `{ findings; directives; directiveErrors; exitCode: 0 \| 3 }` | |
+| <a id="LintFinding"/> `LintFinding` | `{ code; severity; statement; subject; message; acknowledged; suppressedBy }` | `statement` is `-1` for a plan-level finding. |
+| <a id="parseNolint"/> `parseNolint` | `(sqlText: string) => { directives: NolintDirective[]; errors: DirectiveError[] }` | A `nolint` without a reason is itself a lint failure. |
+| <a id="NolintDirective"/> `NolintDirective` | `{ code; reason; line; statement: number \| null }` | `null` means file-wide. |
+| <a id="DirectiveError"/> `DirectiveError` | `{ line; text; message }` | A malformed directive line. |
+| <a id="unusedDirectives"/> `unusedDirectives` | `(result: LintResult) => readonly NolintDirective[]` | Suppressions that suppressed nothing — not an error, because that is how a file stays quiet across regenerations, but worth reporting. |
+| <a id="planRules"/> `planRules` | `(plan: Plan, options: { readonly style: boolean }) => RuleHit[]` | The file-level rules over one plan, before suppression and acknowledgement. |
+| <a id="RuleHit"/> `RuleHit` | `{ code; statement; subject; message }` | |
+| <a id="isStyleCode"/> `isStyleCode` | `(code: string) => boolean` | |
+| <a id="STYLE_CODES"/> `STYLE_CODES` | `readonly string[]` | `ST101`–`ST106`, kept out of `plan/plan.ts` so `hazardSeverity`'s "unknown means error" default cannot make advice fatal. |
+
+## Generating a migration
+
+### `generate`
+
+{/* docs: signature */}
+```ts
+function generate(input: GenerateInput): Promise<GenerateResult>
+```
+
+The whole of `migrate generate` as one call: extract the target, provision a shadow, load the
+TypeScript schema and the repeatables into it, diff, build, order, split, prove, and write. It is the
+only function in the kit that needs a shadow database and the only one that writes files. `status`
+tells you which of the six outcomes you got without reading the diagnostics.
+
+{/* docs: use=blog-schema */}
+```ts
+import { generate, type ConnInfo } from '@pg-prime/kit'
+
+const target: ConnInfo = { host: '127.0.0.1', port: 5432, user: 'postgres', password: '', database: 'app' }
+
+const result = await generate({
+  target,
+  admin: { ...target, database: 'postgres' },
+  schema,
+  schemas: ['public'],
+  seq: 1,
+  name: 'add_orders',
+  outDir: './migrations',
+})
+
+if (result.status === 'generated') {
+  for (const file of result.files) console.log(file.stage, file.sqlPath)
+}
+```
+
+### `generateFromDatabases`
+
+{/* docs: signature */}
+```ts
+function generateFromDatabases(input: DatabaseGenerateInput): Promise<DatabaseGenerateResult>
+```
+
+The same pipeline with the desired state supplied as a **database** rather than as a schema module.
+It is what `generate` was before the DSL leg existed, kept because the fixture corpus and the
+runner's chain builder are the evidence that the differ works. Single-file by construction: a caller
+that hands over two databases has no output-directory convention for a companion file.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="GenerateInput"/> `GenerateInput` | `{ target; schema; admin?; schemas?; shadow?; seq; name; hints?; acknowledge?; prove?; dumpOracle?; strictUnmodeled?; noSafeRewrite?; multiFile?; outDir?; by?; repeatablesDir? }` | Omit `outDir` for a dry run: everything happens, nothing lands. |
+| <a id="GenerateResult"/> `GenerateResult` | `{ status; files; diff; currentIR; desiredIR; renameHints; candidates; unresolved; repeatables; shadow; proof; diagnostics; writeRefusal?; durationMs }` | `shadow` records the tier that was actually reached and why. |
+| <a id="GenerateStatus"/> `GenerateStatus` | `"generated" \| "up_to_date" \| "missing_hints" \| "hazards" \| "proof_failed" \| "refused"` | Maps one-to-one onto the command's exit codes. |
+| <a id="GeneratedFile"/> `GeneratedFile` | `{ stage; id; plan: Plan \| null; sql; sqlPath?; planPath? }` | `plan` is `null` for the `data` stub, which has no diff behind it and therefore no fingerprint to gate on. |
+| <a id="Unresolved"/> `Unresolved` | `{ type: "rename_or_recreate" \| "confirm_data_loss"; kind; from?; to?; confidence?; reason?; fix }` | One entry per decision a human still has to make. `fix` is the sentence to act on. |
+| <a id="DatabaseGenerateInput"/> `DatabaseGenerateInput` | `{ admin; target; desired; schemas?; seq; name; renameHints?; outDir?; prove?; dumpOracle?; acknowledge? }` | |
+| <a id="DatabaseGenerateResult"/> `DatabaseGenerateResult` | `{ plan; diff; currentIR; desiredIR; diagnostics; written?; writeRefusal? }` | |
+| <a id="annotationHints"/> `annotationHints` | `(schema: SchemaLike, defaultSchema?: string) => RenameHint[]` | Reads `.renamedFrom('old')` off the DSL's runtime metadata. Says what the annotation *claims*; it does not decide whether it fires. |
+| <a id="acceptHints"/> `acceptHints` | `(hints: readonly RenameHint[], current: SchemaIR, desired: SchemaIR) => RenameHint[]` | The firing rule: old exists, new does not. That is what makes an annotation safe to leave in the source for ever and what makes a chain `a → b → c` work across two migrations. |
+| <a id="readHintsFile"/> `readHintsFile` | `(path: string) => Promise<RenameHint[]>` | `--hints-file`: a JSON array of `{ from, to }`. |
+| <a id="dataMigrationSql"/> `dataMigrationSql` | `(input: DataStubInput) => string` | The `--data` template: a `RAISE EXCEPTION` guard the runner stops on, then a working **keyset** batch that reads the two GUCs and reports `rows_done` and `watermark` back. |
+| <a id="DataStubInput"/> `DataStubInput` | `{ seq; name; origin?; backfill?; key?; keyCast?; size? }` | `key` and `keyCast` default to `id` / `bigint`, and checking them is step 1 of the template's own checklist. |
+| <a id="emptyMigrationSql"/> `emptyMigrationSql` | `(seq: number, name: string) => string` | `--empty`: a hand-written migration's skeleton, with no `.plan.json` — there is no diff behind it, so there is no fingerprint to gate on. |
+| <a id="slug"/> `slug` | `(text: string) => string` | Folds any identifier into `MIGRATION_NAME`'s alphabet, so the runner can see the file. |
+
+## Proof
+
+`generate` proves the plan before it writes it: clone, apply, re-extract, assert the diff against the
+desired state is empty. See [proof](/pg-prime/concepts/proof/) for why that is worth the seconds it
+costs.
+
+### `proveOnShadowClone`
+
+{/* docs: signature */}
+```ts
+function proveOnShadowClone(input: ProveInput): Promise<ProofResult>
+```
+
+`migrate verify` semantics, run at generate time: clone the source database, apply the plan's stages
+in order, re-extract, and assert the diff against `desired` is empty. `cloneName` must start with
+`pgprime_shadow_` — anything else raises `UnsafeCloneNameError`, because that prefix is the only
+thing authorising this code to `DROP DATABASE … WITH (FORCE)`.
+
+### `dumpSchema`
+
+{/* docs: signature */}
+```ts
+function dumpSchema(req: DumpRequest): Promise<string>
+```
+
+A schema-only `pg_dump` of exactly the managed schemas, spawned as a subprocess with the password in
+`PGPASSWORD` so it never lands in the process table. Each schema is passed as a **quoted pattern**:
+unquoted, `--schema App` is case-folded and `*`, `?`, `.` and `[` are wildcards, which is how a
+mixed-case schema once matched nothing and the oracle reported `skipped` while the plan sailed
+through.
+
+### `compareDumps`
+
+{/* docs: signature */}
+```ts
+function compareDumps(cloneDump: string, desiredDump: string): DumpComparison
+```
+
+The independent witness. The shadow proof is self-referential — the kit's extractor, the kit's
+differ, the kit's canonicaliser — so an attribute the extractor does not model is invisible to
+*both* sides of the equality. `pg_dump` is PostgreSQL's own serialiser and shares no code with the
+kit: if the clone and the desired database dump identically, every attribute PostgreSQL considers
+part of the schema survived, including the ones the kit has never heard of. Multiset difference, so
+a duplicated statement on one side is still a difference.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="ProveInput"/> `ProveInput` | `{ admin; source; desired; schemas; statements; segments; stages?; current?; cloneName?; keepClone?; desiredConn?; dumpOracle?; allowSkippedOracle?; pgDump?; dumpTimeoutMs? }` | `source` is cloned, never touched. Without `desiredConn` the oracle reports `skipped`, which under `strict` blocks the plan. |
+| <a id="ProveStage"/> `ProveStage` | `{ statements; segments }` | One emitted file's worth of a plan, so the proof applies the files in the order the runner will. |
+| <a id="ProofResult"/> `ProofResult` | `Proof` plus `cloneName` | |
+| <a id="ShadowProvisioning"/> `ShadowProvisioning` | `"template" \| "materialized"` | Whether the clone came from `CREATE DATABASE … TEMPLATE` or was rebuilt from the IR. |
+| <a id="proveInTempSchemas"/> `proveInTempSchemas` | `(input: TempSchemaProveInput) => Promise<ProofResult>` | The tier-3 proof: the clone is a set of schemas inside the target database, created and dropped there, which is why it needs no `CREATEDB`. |
+| <a id="TempSchemaProveInput"/> `TempSchemaProveInput` | `{ target; current; desired; schemas; renameHints?; buildOptions?; diagnostics?; expectedStages?; desiredConn?; desiredSchemaMap?; dumpOracle?; … }` | `expectedStages` is the consistency check: statement count per emitted file, in order. |
+| <a id="resolvePgDump"/> `resolvePgDump` | `(explicit?: PgDumpLauncher) => Promise<ResolvedPgDump \| { readonly unavailable: string }>` | Explicit launcher, then `PG_PRIME_PG_DUMP`, then `pg_dump` on `PATH`. Returns a reason rather than throwing: a machine without client tools degrades to `skipped`, it does not fail the build. |
+| <a id="PgDumpLauncher"/> `PgDumpLauncher` | `{ argv: readonly string[]; uri?: (database: string) => string }` | `argv` can be a container command — `["docker", "exec", "-i", "pg17", "pg_dump"]` — which is the point of making it a list. |
+| <a id="ResolvedPgDump"/> `ResolvedPgDump` | `{ argv; version; major; uri? }` | |
+| <a id="parseLauncherEnv"/> `parseLauncherEnv` | `(raw: string) => readonly string[] \| null` | `PG_PRIME_PG_DUMP` as a JSON string array or a whitespace-separated string. Returns `null` on anything malformed, because a broken environment variable is an environment gap, never a proof failure. |
+| <a id="schemaPattern"/> `schemaPattern` | `(schema: string) => string` | Double-quotes a schema name so `--schema` treats it as a literal identifier. |
+| <a id="normalizeDump"/> `normalizeDump` | `(raw: string) => string[]` | Raw dump text to a sorted statement multiset with the session preamble dropped. Sorting is deliberate: the oracle asserts equality of **state**, and emission order is a property of the plan. |
+| <a id="DumpComparison"/> `DumpComparison` | `{ equal; missing; extra; reordered; statementCount }` | `reordered` is reported and never blocking: PostgreSQL cannot reorder columns, so a plan is not at fault for failing to. |
+| <a id="DumpOracleMode"/> `DumpOracleMode` | `"off" \| "warn" \| "strict"` | `warn` is the default. |
+| <a id="DumpOracleVerdict"/> `DumpOracleVerdict` | `{ status: "passed" \| "failed" \| "skipped"; mode; reason?; pgDumpVersion?; missing?; extra?; reordered?; … }` | Recorded verbatim in `.plan.json`. `skipped` means the oracle could not **run**; a dump that ran and went wrong is `failed`. |
+| <a id="DumpRequest"/> `DumpRequest` | `{ pgDump; conn; database; schemas; timeoutMs?; signal? }` | |
+| <a id="DUMP_SAMPLE_CAP"/> `DUMP_SAMPLE_CAP` | `20` | Differing statements recorded per direction, so a wide difference cannot balloon the plan file. |
+| <a id="DUMP_TIMEOUT_MS"/> `DUMP_TIMEOUT_MS` | `120000` | A dump that has not finished by then is hung, not slow; the child is killed. |
+
+## The shadow ladder
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="ShadowStrategy"/> `ShadowStrategy` | `"auto" \| "temp-schema" \| "createdb" \| "offline" \| { readonly url: string }` | `auto` tries tier 2 and demotes to tier 3 on SQLSTATE `55006`, because the sessions attached to the template belong to somebody else. |
+| <a id="ProvisionShadowOptions"/> `ProvisionShadowOptions` | `{ shadow?: ShadowStrategy; schemas: readonly string[]; token? }` | `token` is supplied only by tests; production mints a random one so two concurrent runs on one cluster cannot collide. |
+| <a id="Shadow"/> `Shadow` | `{ conn; target; schemaMap; tier: 1 \| 2 \| 3; reason; diagnostics; dispose() }` | `reason` is the sentence `migrate generate` prints beside the tier. |
+| <a id="parseShadowUrl"/> `parseShadowUrl` | `(url: string) => ConnInfo` | Tier 1's only input. |
+
+## History and locks
+
+Every history object lives in one schema, and the runner refuses to write into a database whose
+history schema it did not create.
+
+### `ensureHistory`
+
+{/* docs: signature */}
+```ts
+function ensureHistory(client: CatalogClient): Promise<void>
+```
+
+Creates the seven history objects, idempotently, **in its own transaction**. Its own transaction
+matters twice: the statements must not half-land, and they must not sit inside the caller's migration
+transaction, or a failed migration would roll the history schema away with it. `IF NOT EXISTS` makes
+it idempotent but not race-free, so it retries.
+
+### `historyPresent`
+
+{/* docs: signature */}
+```ts
+function historyPresent(client: CatalogClient): Promise<boolean>
+```
+
+Does `pgprime.migrations` exist? Read-only commands ask this instead of calling `ensureHistory`,
+because `status` and `doctor` must not create a history schema as a side effect of being run.
+
+### `acquireSessionLock`
+
+{/* docs: signature */}
+```ts
+function acquireSessionLock(client: CatalogClient, database: string, schemas: readonly string[]): Promise<boolean>
+```
+
+`pg_try_advisory_lock` on a key **derived** from the database name and the managed schema set, so
+two unrelated schema sets in one database do not serialise against each other. Session-scoped, which
+means it must be taken on a dedicated, direct connection: under a transaction-mode pooler it is
+silently broken, and `detectTransactionPooler` is the probe that says so.
+
+### `releaseSessionLock`
+
+{/* docs: signature */}
+```ts
+function releaseSessionLock(client: CatalogClient, database: string, schemas: readonly string[]): Promise<void>
+```
+
+The matching unlock. It computes the same key, so a caller cannot release a lock it did not take by
+passing a different schema set.
+
+### `inspectLease`
+
+{/* docs: signature */}
+```ts
+function inspectLease(client: CatalogClient, staleAfterMs?: number): Promise<LeaseInspection>
+```
+
+Reads the `pgprime.lock` row and says whether it is stale. Staleness is computed **server-side**
+from `heartbeat_at`, so a skewed client clock cannot invent a stale lease. This is what
+`migrate unlock` prints before it offers to break anything.
+
+### `forceUnlock`
+
+{/* docs: signature */}
+```ts
+function forceUnlock(client: CatalogClient): Promise<boolean>
+```
+
+Deletes the lease row. It **cannot** release the winner's session advisory lock — only that
+connection can, or its death — so breaking the lease of a deploy that is still running gets you a
+second runner that immediately fails to acquire the advisory lock rather than two concurrent
+deploys. Read `inspectLease` first anyway.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="HISTORY_DDL"/> `HISTORY_DDL` | `readonly string[]` | The DDL, one statement per element. |
+| <a id="HISTORY_VERSION"/> `HISTORY_VERSION` | `"1"` | Bumped when the shape of the history tables changes; read back from `pgprime.meta`. |
+| <a id="historyVersion"/> `historyVersion` | `(client: CatalogClient) => Promise<string \| null>` | `null` when the schema has not been created yet. |
+| <a id="MigrationStatus"/> `MigrationStatus` | `"running" \| "applied" \| "failed" \| "baselined" \| "superseded"` | `superseded` is a checkpoint an existing database ignored, or a file a fresh one jumped over: never executed here, and never will be. |
+| <a id="MigrationRow"/> `MigrationRow` | `{ id; seq; name; checksum; planId; fingerprintFrom; fingerprintTo; txmode; statementsTotal; statementsApplied; statementUncertain; segmentApplied; status; startedAt; finishedAt; durationMs; appliedBy; appliedFrom; error; engineVersion }` | One `pgprime.migrations` row. |
+| <a id="RepeatableRow"/> `RepeatableRow` | `{ path; checksum; appliedAt; durationMs }` | One `pgprime.repeatables` row. |
+| <a id="LockRow"/> `LockRow` | `{ runId; holder; acquiredAt; heartbeatAt; heartbeatAgeMs }` | The lease. `heartbeatAgeMs` is measured on the server. |
+| <a id="readMigrationRows"/> `readMigrationRows` | `(client: CatalogClient) => Promise<MigrationRow[]>` | Ordered `(seq, name)` — the order the runner applies files in, not `finished_at`, because a resumed run finishes out of wall-clock order. |
+| <a id="readRepeatableRows"/> `readRepeatableRows` | `(client: CatalogClient) => Promise<RepeatableRow[]>` | |
+| <a id="currentFingerprint"/> `currentFingerprint` | `(rows: readonly MigrationRow[]) => string \| null` | `fingerprint_to` on the last applied row is the current schema fingerprint of record. |
+| <a id="advisoryLockKey"/> `advisoryLockKey` | `(database: string, schemas: readonly string[]) => bigint` | The derivation, exported so a monitoring tool can compute the same key and look it up in `pg_locks`. |
+| <a id="detectTransactionPooler"/> `detectTransactionPooler` | `(client: CatalogClient) => Promise<boolean>` | Two `pg_backend_pid()` reads in two transactions. **It can say no when the answer is yes**: against PgBouncer in `pool_mode=transaction` with one idle client it returns `false`, because the pooler hands the same server connection back. It is decisive only on a pool already serving somebody else. |
+| <a id="LeaseInspection"/> `LeaseInspection` | `{ lease: LockRow \| null; stale: boolean; staleAfterMs: number }` | |
+| <a id="LockReport"/> `LockReport` | `{ acquired; runId; waitedMs; holder; stale }` | What a run reports about the lock it did or did not get. |
+
+## The runner
+
+### `applyPending`
+
+{/* docs: signature */}
+```ts
+function applyPending(conn: ConnInfo, migrationsDir: string, options?: ApplyPendingOptions): Promise<ApplyPendingResult>
+```
+
+The whole of `migrate apply`: open a dedicated connection, probe for a transaction pooler, ensure the
+history schema, take the lease and the advisory lock, reconcile the directory against
+`pgprime.migrations`, apply the pending files in `(seq, name)` order, run the repeatables pass, and
+release. It never generates and never introspects the desired state — what runs is what is on disk.
+The heartbeat is written from a **second** connection, because the migration connection can be
+inside one `CREATE INDEX CONCURRENTLY` for minutes and `pg.Client` serialises.
+
+```ts
+import { applyPending, EXIT, type ConnInfo, type RunnerEvent } from '@pg-prime/kit'
+
+const conn: ConnInfo = { host: '127.0.0.1', port: 5432, user: 'postgres', password: '', database: 'app' }
+
+const result = await applyPending(conn, './migrations', {
+  schemas: ['public'],
+  onEvent: (event: RunnerEvent) => {
+    if (event.kind === 'migration') console.log(`${event.id} ${event.state}`)
+  },
+})
+
+if (result.exitCode !== EXIT.ok) throw new Error(result.error?.message ?? result.status)
+```
+
+### `applyPendingOn`
+
+{/* docs: signature */}
+```ts
+function applyPendingOn(client: CatalogClient, migrationsDir: string, options?: ApplyPendingOptions): Promise<ApplyPendingResult>
+```
+
+The same run on a connection you own. The trade is explicit: you become responsible for the first
+preflight step, which is that this connection must be **dedicated and direct**. A pool checkout will
+appear to work and will silently lose the session advisory lock.
+
+### `migrationStatus`
+
+{/* docs: signature */}
+```ts
+function migrationStatus(conn: ConnInfo, migrationsDir: string, options?: StatusOptions): Promise<StatusReport>
+```
+
+Read-only, and the only function here that is safe to run on a schedule: applied versus pending, the
+fingerprint of record, checksum drift, partially-applied rows, the lease, orphaned repeatables and
+any running backfill's `rows_done`. It creates nothing, not even the history schema. Pass
+`verifyFingerprint: true` to re-extract the catalog instead of trusting the recorded value; that is
+the slow, honest answer.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="ApplyPendingOptions"/> `ApplyPendingOptions` | `{ schemas?; to?; dryRun?; dev?; lockTimeout?; statementTimeout?; lockWaitMs?; staleLockAfterMs?; heartbeatMs?; verifyFingerprint?; repeatables?; repeatablesDir?; replicas?; checkpoints?: "auto" \| "ignore"; appliedFrom?; onEvent?; poolerProbe?; heartbeatConnection?; … }` | Defaults: `lockTimeout: "3s"`, `lockWaitMs: 30000`, `staleLockAfterMs: 60000`, `heartbeatMs: 5000`. |
+| <a id="ApplyPendingResult"/> `ApplyPendingResult` | `{ status; exitCode; applied; pending; warnings; preflight; repeatables; lock; fingerprint; durationMs; dryRun; error; diagnostics }` | `exitCode` is already the process exit code — see `RUNNER_EXIT`. |
+| <a id="RunnerStatus"/> `RunnerStatus` | `"applied" \| "up_to_date" \| "dry_run" \| "drift" \| "locked" \| "failed" \| "refused"` | Every terminal state the runner can report. |
+| <a id="AppliedMigration"/> `AppliedMigration` | `{ id; txmode; statements; durationMs; resumedFrom; retries; batch }` | `batch.rowsDone` is cumulative across a resume, read back out of `pgprime.data_progress` rather than counted in this process. |
+| <a id="RunnerEvent"/> `RunnerEvent` | `lock \| migration \| statement \| BatchEvent \| LagEvent \| warning`, discriminated on `kind` | The progress stream. Everything the CLI prints comes from here, so an embedder can print something else. |
+| <a id="RunnerFailure"/> `RunnerFailure` | `{ code: "transaction_pooler" \| "pool_connection" \| "missing_file" \| "checksum_drift" \| "fingerprint_mismatch" \| "unknown_target" \| "plan_invalid" \| "lock_unavailable" \| "sql_error"; message; migration?; statementIndex?; sqlState?; sql?; attempts?; drift? }` | A code, not a message to match on. |
+| <a id="PreflightReport"/> `PreflightReport` | `{ invalidIndexes; notValidConstraints; ccnewLeftovers; touchedByPending }` | The last of the four is the subset a pending plan actually names, which is the only part that blocks. |
+| <a id="RepeatablesReport"/> `RepeatablesReport` | `{ applied: readonly string[]; unchanged: readonly string[] }` | |
+| <a id="IssuedQuery"/> `IssuedQuery` | `{ text: string; values?: readonly unknown[] }` | `--dry-run` returns every query the run *would* have issued, in order, including `BEGIN`, `COMMIT` and the `set_config` calls. |
+| <a id="NO_REPEATABLES"/> `NO_REPEATABLES` | `RepeatablesPass` | A pass that plans nothing and applies nothing, for a caller with no `sql/` directory. |
+| <a id="applySegments"/> `applySegments` | `(client, statements, segments, options?) => Promise<ApplyReport>` | One file's statements against one connection, with the segment framing. No history, no lock, no reconciliation. |
+| <a id="ApplyOptions"/> `ApplyOptions` | `{ lockTimeout?: string; statementTimeout?: string }` | |
+| <a id="ApplyReport"/> `ApplyReport` | `{ status: "applied" \| "failed"; appliedStatements: number; error?: ApplyError }` | |
+| <a id="ApplyError"/> `ApplyError` | `{ statementIndex; sql; message; sqlState? }` | The SQLSTATE is carried through because the retry policy is a function of it — `55P03` backs off, `40P01` retries the file once, `57014` never does — and matching on message text varies by server version and locale. |
+| <a id="migrationStatusOn"/> `migrationStatusOn` | `(client: CatalogClient, migrationsDir: string, options?: StatusOptions) => Promise<StatusReport>` | The same report on a connection you own. |
+| <a id="StatusOptions"/> `StatusOptions` | `{ schemas?; verifyFingerprint?; staleLockAfterMs?; repeatables?; repeatablesDir? }` | |
+| <a id="StatusReport"/> `StatusReport` | `{ status; exitCode; historyPresent; historyVersion; fingerprint; fingerprintSource; fingerprintDrift; drift; recordedFingerprint; migrations; pending; partial; missingFiles; checksumDrift; lock; repeatables; data; diagnostics; durationMs }` | `drift` names *which* objects drifted, by diffing the live IR against the newest checkpoint — `null` when there is no checkpoint to compare against. |
+| <a id="StatusEntry"/> `StatusEntry` | `{ id; state; txmode; statementsTotal; statementsApplied; statementUncertain; appliedAt; appliedBy; checksumOk }` | `checksumOk: null` means there is nothing recorded to compare the file against. |
+| <a id="EntryState"/> `EntryState` | `"applied" \| "baselined" \| "superseded" \| "running" \| "failed" \| "pending" \| "orphaned"` | |
+| <a id="DataProgressEntry"/> `DataProgressEntry` | `DataProgress` plus `migrationState: EntryState` | A backfill whose migration is still `running` is the one an operator is asking about. |
+
+## Migration files on disk
+
+### `readMigrationsDir`
+
+{/* docs: signature */}
+```ts
+function readMigrationsDir(dir: string): Promise<ReadMigrationsResult>
+```
+
+Reads and orders the directory: every `NNNN_name.sql`, its `.plan.json` when there is one, the
+checksum over the raw bytes, the parsed directives and the split statements. A missing directory is
+an empty one, not an error. A file with no plan is treated as hand-written and says so with a
+diagnostic.
+
+### `parseMigrationSql`
+
+{/* docs: signature */}
+```ts
+function parseMigrationSql(text: string, subject: string): ParsedSql
+```
+
+Header directives, then statements. Statements come from `-- pg-prime:statement` markers when the
+file has them and from the lexer's top-level semicolons when it does not, and `statementSource` says
+which — a hand-written file and a generated one are not parsed the same way and pretending otherwise
+loses statement indices on resume.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="ReadMigrationsResult"/> `ReadMigrationsResult` | `{ files: readonly MigrationFile[]; diagnostics }` | |
+| <a id="MigrationFile"/> `MigrationFile` | `{ id; seq; name; path; planPath; checksum; text; directives; statements; statementSource; plan; txmode; diagnostics }` | |
+| <a id="ParsedSql"/> `ParsedSql` | `{ directives; statements; statementSource; diagnostics }` | |
+| <a id="FileDirectives"/> `FileDirectives` | `{ migration; plan; from; to; txmode; lockTimeout; statementTimeout; requiresPg; checkpoint; data; batch; all }` | `all` keeps every directive as it was written, including the ones this release ignores. |
+| <a id="FileDirective"/> `FileDirective` | `{ name; args; line }` | One raw `-- pg-prime:` line. |
+| <a id="FileStatement"/> `FileStatement` | `{ index; sql; lockClass; idempotent; hazards; segment }` | |
+| <a id="TxMode"/> `TxMode` | `"transactional" \| "none" \| "segmented"` | |
+| <a id="MIGRATION_FILE"/> `MIGRATION_FILE` | `RegExp` | `NNNN_name.sql`, with `name` restricted exactly as `MIGRATION_NAME` is. |
+| <a id="executionPlan"/> `executionPlan` | `(file: MigrationFile) => ExecutionPlan` | What the runner actually executes: the **file's** statement text carrying the **plan's** metadata. When the two disagree the file wins, and that is a warning rather than a silent preference. |
+| <a id="ExecutionPlan"/> `ExecutionPlan` | `{ statements: readonly PlanStatement[]; segments; diagnostics }` | |
+| <a id="findDirectives"/> `findDirectives` | `(text: string) => Hit[]` | Every `-- pg-prime:` directive with byte offsets, found through the lexer — so a `--` inside a `plpgsql` body is never mistaken for a marker. |
+| <a id="BatchDirective"/> `BatchDirective` | `{ size; pauseMs; maxReplicaLagMs; maxIterations }` | `-- pg-prime:batch size=1000 pause=100ms max-replica-lag=10s`. |
+| <a id="BATCH_DEFAULTS"/> `BATCH_DEFAULTS` | `{ size: 1000; pauseMs: 100; maxIterations: 0 }` | `maxIterations: 0` means no ceiling. |
+
+## Data migrations
+
+Lane 2 of the migration model: a file tagged `-- pg-prime:batch`, whose every statement is
+re-executed in its own transaction until it reports zero rows. See
+[data migrations](/pg-prime/guides/data-migrations/).
+
+### `runBatchStatement`
+
+{/* docs: signature */}
+```ts
+function runBatchStatement(
+  client: CatalogClient,
+  sql: string,
+  statement: number,
+  state: Omit<DataProgress, 'updatedAt' | 'migrationId'>,
+  options: BatchOptions,
+): Promise<BatchOutcome>
+```
+
+Runs one statement of a batch file to completion: publish `pgprime.batch_size` and
+`pgprime.watermark` as GUCs, execute, read `rows_done` and `watermark` back off the result, persist
+the progress **inside the same transaction** as the work, sleep, and repeat. `state` is threaded in
+and out so the caller can persist a whole file's progress under one `data_progress` row. Three
+iterations that report rows without moving the watermark raise `BatchStalledError`, because an
+unbounded loop is the one failure a deploy cannot recover from on its own.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="BatchOptions"/> `BatchOptions` | `{ migrationId; directive; replicas?; resumeFrom?; sleep?; onEvent?; onInfo?; lockTimeout?; statementTimeout? }` | |
+| <a id="BatchOutcome"/> `BatchOutcome` | `{ rowsDone; iterations; watermark }` | |
+| <a id="BatchEvent"/> `BatchEvent` | `{ kind: "batch"; migration; statement; iteration; rows; rowsDone; watermark }` | |
+| <a id="LagEvent"/> `LagEvent` | `{ kind: "lag"; migration; statement; state: "waiting" \| "resumed" \| "absent"; lagMs; ceilingMs; reading }` | |
+| <a id="GUC_BATCH_SIZE"/> `GUC_BATCH_SIZE` | `"pgprime.batch_size"` | A custom two-part name, so no extension owns it. |
+| <a id="GUC_WATERMARK"/> `GUC_WATERMARK` | `"pgprime.watermark"` | The resume token, carried opaquely: the runner cannot know whether the key is a `bigint`, a `uuid` or a pair. |
+| <a id="STALL_LIMIT"/> `STALL_LIMIT` | `3` | Iterations that may report rows without moving the watermark before this is a bug. |
+| <a id="readPrimaryLag"/> `readPrimaryLag` | `(client: CatalogClient) => Promise<LagReading>` | `pg_stat_replication`, on the migration's own connection. Needs no second credential, but is invisible to a role outside `pg_monitor`. |
+| <a id="readReplicaLag"/> `readReplicaLag` | `(replicas: readonly ConnInfo[]) => Promise<LagReading>` | `pg_last_wal_replay_lsn()` on each configured replica. A replica that cannot be reached contributes `Infinity`, which keeps the loop paused — proceeding past a replica you cannot see is the failure the ceiling exists to prevent. |
+| <a id="LagReading"/> `LagReading` | `{ lagMs; replicas; source: "primary" \| "replicas"; detail }` | |
+| <a id="DataProgress"/> `DataProgress` | `{ migrationId; rowsDone; statement; iterations; values; done; updatedAt }` | `values` is keyed by statement index and holds the text the statement itself reported, never a value the runner invented. |
+| <a id="EMPTY_WATERMARK"/> `EMPTY_WATERMARK` | `Omit<DataProgress, "migrationId" \| "updatedAt">` | The zero state a first run starts from. |
+| <a id="dataProgressSql"/> `dataProgressSql` | `(p: Omit<DataProgress, "updatedAt">) => string` | The progress upsert as one literal statement, so it can ride inside the batch's own transaction and a crash between the work and the bookkeeping is not possible. |
+| <a id="readDataProgress"/> `readDataProgress` | `(client: CatalogClient, migrationId: string) => Promise<DataProgress \| null>` | |
+| <a id="readAllDataProgress"/> `readAllDataProgress` | `(client: CatalogClient) => Promise<DataProgress[]>` | What `migrate status` shows a running backfill from. |
+
+## Repeatables
+
+Tier R: `sql/` files re-applied whenever their bytes change, recorded in `pgprime.repeatables`.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="scanRepeatables"/> `scanRepeatables` | `(dir: string, options?: ScanOptions) => Promise<RepeatableFile[]>` | Directory-lexicographic, files and directories in one sort, so `010_x.sql` runs before `020_y/` in a way an author can see. |
+| <a id="planRepeatables"/> `planRepeatables` | `(dir: string, applied: ReadonlyMap<string, string>, options?: ScanOptions) => Promise<RepeatablesPlan>` | New or hash-changed against what the history says was applied. |
+| <a id="applyRepeatables"/> `applyRepeatables` | `(client: RepeatableClient, toApply: readonly RepeatableFile[]) => Promise<AppliedRepeatable[]>` | Applies in scan order and hands back the rows for the caller to write. |
+| <a id="createRepeatablesPass"/> `createRepeatablesPass` | `(options?: ScanOptions) => RepeatablesPass` | The two calls bound together, which is what `applyPending` takes. |
+| <a id="RepeatablesPass"/> `RepeatablesPass` | `{ plan(dir, applied); apply(client, toApply) }` | The runner depends on this interface rather than on the functions, so its apply loop is unit-testable against a fake with no filesystem and no server. |
+| <a id="RepeatablesPlan"/> `RepeatablesPlan` | `{ toApply; unchanged; orphaned }` | `orphaned` is recorded as applied and no longer on disk. |
+| <a id="RepeatableFile"/> `RepeatableFile` | `{ path; absPath; sha256; directives; statements }` | `path` is POSIX and prefixed with the directory's own name — it is the `pgprime.repeatables` primary key. |
+| <a id="AppliedRepeatable"/> `AppliedRepeatable` | `{ path; sha256; durationMs }` | Exactly one history row. |
+| <a id="RepeatableClient"/> `RepeatableClient` | `{ query(text: string): Promise<unknown> }` | Deliberately narrower than `CatalogClient`: nothing here binds parameters, so the runner can hand over a wrapper that logs or dry-runs. |
+| <a id="ScanOptions"/> `ScanOptions` | `{ pathPrefix?: string }` | Defaults to the scanned directory's own name, so `/proj/sql` yields `sql/…`. |
+| <a id="loadRepeatables"/> `loadRepeatables` | `(client: RepeatableClient, dir: string, options?: ScanOptions) => Promise<RepeatableFile[]>` | Loads **every** repeatable into the shadow during `generate`, not just the changed ones: the shadow was created empty seconds ago, so "changed" has no meaning against it, and a repeatable skipped as unchanged is a repeatable whose breakage ships. |
+| <a id="parseDirectives"/> `parseDirectives` | `(text: string) => Directive[]` | Reads `-- pg-prime:<name>` out of the **leading** comment block only. A directive is a statement about the whole file, and the only way to keep that true is to stop looking at the first line that is neither blank nor a comment. |
+| <a id="Directive"/> `Directive` | `{ name; value; line }` | |
+| <a id="checkIdempotence"/> `checkIdempotence` | `(statements: readonly string[]) => IdempotenceResult` | TX201, syntactically. It lexes rather than greps, so a leading `-- CREATE OR REPLACE` comment cannot launder a bare `CREATE` and a `DROP TABLE` inside a `$$…$$` body belongs to the body. An unrecognised leading verb passes. |
+| <a id="IdempotenceResult"/> `IdempotenceResult` | `{ ok: boolean; violations: readonly IdempotenceViolation[] }` | |
+| <a id="IdempotenceViolation"/> `IdempotenceViolation` | `{ index; sql; reason }` | |
+
+## Database helpers
+
+Thin wrappers over `pg`, used by the shadow ladder and by nothing you are likely to need. They are
+exported because a test harness that provisions its own throwaway databases would otherwise
+reimplement them, badly.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="ConnInfo"/> `ConnInfo` | `{ host; port; user; password; database }` | Five fields and no TLS or option surface. A URL that carries one is accepted and the dropped parameters are named in `warnings`. |
+| <a id="connectionString"/> `connectionString` | `(c: ConnInfo) => string` | The inverse of `parseDatabaseUrl`. |
+| <a id="withDatabase"/> `withDatabase` | `(c: ConnInfo, database: string) => ConnInfo` | The same connection pointed at another database. |
+| <a id="withClient"/> `withClient` | `<T>(c: ConnInfo, fn: (client) => Promise<T>) => Promise<T>` | Connect, run, always close. |
+| <a id="createDatabase"/> `createDatabase` | `(admin, name: string, template?: string) => Promise<void>` | Never terminates anything. A `TEMPLATE` clone that collides with a live session raises `55006`, and it is the caller's job to fall back to a tier that needs no exclusive access. |
+| <a id="dropDatabase"/> `dropDatabase` | `(admin, name: string) => Promise<void>` | Refuses a name without the shadow prefix. |
+| <a id="runSqlScript"/> `runSqlScript` | `(c: ConnInfo, sql: string) => Promise<void>` | |
+| <a id="terminateConnections"/> `terminateConnections` | `(admin, database: string) => Promise<void>` | Kills every other session on a shadow database this tool owns. Deliberately **not** a way to make a `TEMPLATE` clone succeed: the template belongs to somebody else. |
+| <a id="isShadowDatabase"/> `isShadowDatabase` | `(name: string) => boolean` | |
+| <a id="isObjectInUse"/> `isObjectInUse` | `(err: unknown) => boolean` | Is this SQLSTATE `55006`? |
+| <a id="SHADOW_PREFIX"/> `SHADOW_PREFIX` | `"pgprime_shadow_"` | The prefix that authorises destruction. `pg_terminate_backend` and `DROP DATABASE … WITH (FORCE)` are both gated on it, so a database the tool did not create cannot have its sessions killed whatever the caller passes. |
+| <a id="SQLSTATE_OBJECT_IN_USE"/> `SQLSTATE_OBJECT_IN_USE` | `"55006"` | |
+
+## SQL text
+
+The kit has one lexer, and everything that reads SQL text goes through it. That is why a `--` inside
+a dollar-quoted body is not a directive, why a `;` inside a string literal does not split a
+statement, and why a `CHECK` body is never rewritten as if it were an identifier.
+
+### `quoteIdent`
+
+{/* docs: signature */}
+```ts
+function quoteIdent(name: string): string
+```
+
+Always quotes, and validates first: an empty name, a NUL byte, a lone surrogate or more than 63 UTF-8
+bytes raises `InvalidIdentifierError` with the `problem` naming which. Always quoting is the point —
+a conditional quoter has a branch where the condition is wrong.
+
+### `quoteLiteral`
+
+{/* docs: signature */}
+```ts
+function quoteLiteral(value: string): string
+```
+
+A single-quoted string literal with the quotes doubled. It is for DDL the kit emits, not for user
+data at run time; the query builder in `pg-prime` binds parameters and never interpolates.
+
+### `quoteQualified`
+
+{/* docs: signature */}
+```ts
+function quoteQualified(schema: string, name: string): string
+```
+
+`"schema"."name"`, both halves validated. Every identifier the emitter writes is schema-qualified,
+which is what lets the generated `.sql` set `search_path = pg_catalog` and still mean the same thing
+under `psql` as it does under the runner.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="isValidIdent"/> `isValidIdent` | `(name: unknown) => name is string` | The non-throwing probe, for tooling that wants to report rather than throw. |
+| <a id="IdentifierProblem"/> `IdentifierProblem` | `"not-a-string" \| "empty" \| "nul-byte" \| "lone-surrogate" \| "too-long"` | |
+| <a id="MAX_IDENT_BYTES"/> `MAX_IDENT_BYTES` | `63` | `NAMEDATALEN - 1`: the maximum number of UTF-8 bytes PostgreSQL stores in a `name`. |
+| <a id="hasNul"/> `hasNul` | `(s: string) => boolean` | Written as a code-unit scan, so no source file has to hold a NUL. |
+| <a id="hasLoneSurrogate"/> `hasLoneSurrogate` | `(s: string) => boolean` | An unpaired UTF-16 surrogate, which is not encodable as UTF-8. |
+| <a id="utf8ByteLength"/> `utf8ByteLength` | `(s: string) => number` | Computed rather than delegated, so a lone surrogate cannot mask it. |
+| <a id="makeObjectName"/> `makeObjectName` | `(name1: string, name2: string \| null, label: string) => string` | A port of PostgreSQL's own `makeObjectName`. The truncation is why it is a port and not a template string: when the pieces do not fit, the server shortens the **longer** of the two one byte at a time. |
+| <a id="chooseConstraintName"/> `chooseConstraintName` | `(name1, name2, label, taken: (candidate: string) => boolean) => string` | `makeObjectName` in a loop with the uniquifying suffix on the **label**, inside the truncation window — PostgreSQL writes `t_a_key1`, never `t_a_key_1`. `taken` is the caller's view of the namespace, because the two server functions this wraps consult different catalogs. |
+| <a id="defaultNotNullName"/> `defaultNotNullName` | `(table: string, column: string) => string` | The name PostgreSQL 18 gives an unnamed `NOT NULL` constraint. Deliberately the *unsuffixed* form: a suffixed name does not compare equal, so the extractor classifies it as a user name and carries it verbatim, which is the only direction that converges. |
+| <a id="lexSql"/> `lexSql` | `(sql: string) => Segment[]` | The lexer: code, string literals, dollar-quoted bodies, comments. |
+| <a id="SqlSegment"/> `SqlSegment` | `{ kind: SegmentKind; text: string }` | One lexed segment. Exported under this name because `Segment` is already the plan's transaction segment. |
+| <a id="splitStatements"/> `splitStatements` | `(sql: string) => string[]` | Splits at semicolons the lexer classified as code. Empty statements are dropped. |
+| <a id="canonicalizeSql"/> `canonicalizeSql` | `(segments: readonly SqlSegment[]) => string` | Collapses code whitespace, drops comments, keeps literals byte for byte. This is what checksum comparison and statement-text drift detection run on. |
+| <a id="codeMask"/> `codeMask` | `(sql: string) => boolean[]` | Per-character "this byte is code". Lets a caller count parentheses without a second lexer and without mistaking a `(` inside `DEFAULT '('` for structure. |
+| <a id="dollarTagAt"/> `dollarTagAt` | `(sql: string, i: number) => string \| null` | `$$` and `$tag$`, but **not** `$1`. |
+
+## Exit codes and constants
+
+### `EXIT`
+
+{/* docs: signature */}
+```ts
+const EXIT: {
+  /** Success, or nothing to do. */
+  readonly ok: 0
+  /** Bad config, connection failure, SQL error, internal. */
+  readonly error: 1
+  /** An unresolved rename or unacknowledged data loss needs a human decision. */
+  readonly missingHints: 2
+  /** Lint failure at `error` severity. */
+  readonly lint: 3
+  /** Non-empty diff, fingerprint mismatch, or checksum drift. */
+  readonly drift: 4
+  /** Pending migrations exist (the CI gate). */
+  readonly pending: 5
+  /** Lock unavailable — a concurrent deploy holds it. */
+  readonly locked: 6
+  /** The plan does not converge on a clone. */
+  readonly proof: 7
+}
+```
+
+One table, imported by the runner and by every command, so a code cannot be spelled as a number in
+two places and drift. The codes are uniform across all thirteen commands, which is what makes a
+deploy script simple; the [CLI reference](/pg-prime/reference/cli/) says what a script should do with
+each.
+
+### `HISTORY_SCHEMA`
+
+{/* docs: signature */}
+```ts
+const HISTORY_SCHEMA = 'pgprime'
+```
+
+Every history object lives here: `migrations`, `repeatables`, `lock`, `data_progress`, `checkpoints`
+and `meta`. It is also the default managed-schema **exclusion**, which is why the kit's own
+bookkeeping never appears in a diff of `public`.
+
+### `CONFIG_FILENAMES`
+
+{/* docs: signature */}
+```ts
+const CONFIG_FILENAMES: readonly string[]
+```
+
+`pg-prime.config.ts`, `.mts`, `.js`, `.mjs`, searched in that order in the starting directory and
+then in each ancestor. The `.ts` spellings come first because they are the documented ones; the `.mjs`
+spelling exists so a project on Node below 22.18 has an answer that needs no flag.
+
+### `ENV_VAR`
+
+{/* docs: signature */}
+```ts
+const ENV_VAR = 'PG_PRIME_ENV'
+```
+
+The name of the environment variable that carries the environment tag. `PG_PRIME_ENV=production`
+turns the production tag on, which is what `migrate push --dev` and `db seed` refuse against. Every
+variable the kit reads is listed on [the config reference](/pg-prime/reference/config/).
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="ExitCode"/> `ExitCode` | `0 \| 1 \| 2 \| 3 \| 4 \| 5 \| 6 \| 7` | `(typeof EXIT)[keyof typeof EXIT]`. |
+| <a id="RUNNER_EXIT"/> `RUNNER_EXIT` | `Readonly<Record<RunnerStatus, ExitCode>>` | The runner's terminal states mapped onto exit codes, so an embedder does not have to invent the mapping. |
+
+## Errors
+
+Every error the kit throws carries a stable `code` string. Match on that, never on the message: the
+messages are written for a human reading a terminal and they change.
+
+### `ConfigError`
+
+{/* docs: signature */}
+```ts
+class ConfigError extends Error {
+  readonly code: 'PG_PRIME_CONFIG'
+  /** true ⟹ re-running this process with `--experimental-strip-types` could fix it */
+  readonly retryWithStripTypes: boolean
+}
+```
+
+A config file that does not exist, does not export an object, or holds a key of the wrong type; also
+a schema module that exports no tables. `retryWithStripTypes` is how the CLI decides to re-exec
+itself once on a Node that cannot import a `.ts` file.
+
+### `GenerateRefusedError`
+
+{/* docs: signature */}
+```ts
+class GenerateRefusedError extends Error {
+  readonly code: 'PG_PRIME_GENERATE_REFUSED'
+}
+```
+
+`generate` declined for a reason the caller has to print rather than swallow — an unusable
+`--shadow` value, or `--shadow docker`, which needs a testcontainers dependency the kit does not
+have.
+
+### `WriteRefusedError`
+
+{/* docs: signature */}
+```ts
+abstract class WriteRefusedError extends Error {
+  abstract readonly code: string
+}
+```
+
+The abstract base of every reason `writePlan` refuses, so a caller can tell a refusal from an I/O
+error with one `instanceof`.
+
+### `ProofRequiredError`
+
+{/* docs: signature */}
+```ts
+abstract class WriteRefusedError extends Error {
+  abstract readonly code: string
+}
+class ProofRequiredError extends WriteRefusedError {
+  readonly plan: Plan
+  readonly code: 'PG_PRIME_PROOF_REQUIRED'
+  constructor(plan: Plan)
+}
+```
+
+The plan was not proven on a shadow clone and `allowUnproven` was not set. This is the whole
+mitigation for an ordering bug: it becomes a `generate` failure on a throwaway database instead of a
+production incident.
+
+### `UnacknowledgedHazardError`
+
+{/* docs: signature */}
+```ts
+abstract class WriteRefusedError extends Error {
+  abstract readonly code: string
+}
+class UnacknowledgedHazardError extends WriteRefusedError {
+  readonly plan: Plan
+  readonly hazards: readonly PlanHazard[]
+  readonly code: 'PG_PRIME_UNACKNOWLEDGED_HAZARD'
+  constructor(plan: Plan, hazards: readonly PlanHazard[])
+}
+```
+
+The plan carries an `error`-severity hazard nobody signed off on. `hazards` is the list, so a caller
+can print exactly what needs acknowledging rather than "something destructive".
+
+### `UnsafePlanPathError`
+
+{/* docs: signature */}
+```ts
+abstract class WriteRefusedError extends Error {
+  abstract readonly code: string
+}
+class UnsafePlanPathError extends WriteRefusedError {
+  readonly code: 'PG_PRIME_UNSAFE_PLAN_PATH'
+  constructor(message: string)
+}
+```
+
+A migration name that would escape the output directory, or a file that already exists. A migration
+name becomes a filename, and `writePlan` used to join it in unchecked.
+
+### `InvalidMigrationIdError`
+
+{/* docs: signature */}
+```ts
+class InvalidMigrationIdError extends Error {
+  readonly code: 'PG_PRIME_INVALID_MIGRATION_ID'
+}
+```
+
+A migration name outside `MIGRATION_NAME`. The alphabet is narrower than "safe" on purpose: ids are
+also matched by the runner's reconciler and sorted lexicographically, so case and punctuation are
+liabilities.
+
+### `EmitError`
+
+{/* docs: signature */}
+```ts
+class EmitError extends Error {
+  readonly code: 'PG_PRIME_EMIT'
+}
+```
+
+The schema registry cannot be turned into DDL — an unresolvable foreign-key target, a construct the
+emitter does not model.
+
+### `DesiredLoadError`
+
+{/* docs: signature */}
+```ts
+class DesiredLoadError extends Error {
+  readonly sql: string | undefined
+  readonly diagnostics: readonly Diagnostic[]
+  readonly code: 'PG_PRIME_DESIRED_LOAD'
+}
+```
+
+The emitted DDL did not load into the shadow. `sql` is the statement that failed, which is almost
+always the answer: the schema says something PostgreSQL will not accept, and you are seeing it at
+author time rather than at deploy time.
+
+### `OfflineShadowError`
+
+{/* docs: signature */}
+```ts
+class OfflineShadowError extends Error {
+  readonly code: 'PG_PRIME_SHADOW_OFFLINE'
+}
+```
+
+Shadow tier 4 (`--offline`). It is refused with a sentence rather than half-built: without a
+PostgreSQL to load the desired state into, a plan generated offline compares human DDL against
+catalog DDL and diffs forever.
+
+### `ShadowNameTooLongError`
+
+{/* docs: signature */}
+```ts
+class ShadowNameTooLongError extends Error {
+  readonly schema: string
+  readonly candidate: string
+  readonly code: 'PG_PRIME_SHADOW_NAME_TOO_LONG'
+}
+```
+
+The temp-schema tier cannot host a schema whose shadow name would exceed 63 UTF-8 bytes, because
+PostgreSQL would truncate it and the schema map would stop being reversible. Use `--shadow <url>` or
+a role with `CREATEDB`.
+
+### `UnsafeCloneNameError`
+
+{/* docs: signature */}
+```ts
+class UnsafeCloneNameError extends Error {
+  readonly cloneName: string
+  readonly code: 'PG_PRIME_UNSAFE_CLONE_NAME'
+}
+```
+
+A clone name that does not start with `pgprime_shadow_`. That prefix is the only thing authorising
+the proof to drop a database with `FORCE`.
+
+### `UnsafeDatabaseNameError`
+
+{/* docs: signature */}
+```ts
+class UnsafeDatabaseNameError extends Error {
+  readonly database: string
+  readonly operation: string
+  readonly code: 'PG_PRIME_UNSAFE_DATABASE_NAME'
+}
+```
+
+The same gate one level down, on `dropDatabase` and `terminateConnections`. `operation` names which
+one refused.
+
+### `SpawnFailure`
+
+{/* docs: signature */}
+```ts
+class SpawnFailure extends Error {
+  readonly code: 'PG_PRIME_PG_DUMP_SPAWN_FAILED'
+}
+```
+
+The `pg_dump` launcher could not be started. That is an environment gap, so the oracle records
+`skipped` rather than failing the build — a machine with no PostgreSQL client tools still generates
+migrations, it just generates them without the second witness.
+
+### `PoolRefusedError`
+
+{/* docs: signature */}
+```ts
+class PoolRefusedError extends Error {
+  readonly code: 'PG_PRIME_POOL_REFUSED'
+}
+```
+
+The runner was handed a pool where it needs a dedicated connection. A session advisory lock taken
+through a transaction-mode pooler is silently not held, which is the one failure mode that looks like
+success right up until two deploys run at once.
+
+### `RepeatableApplyError`
+
+{/* docs: signature */}
+```ts
+class RepeatableApplyError extends Error {
+  readonly path: string
+  readonly statementIndex: number
+  readonly sql: string
+  readonly code: 'PG_PRIME_REPEATABLE_FAILED'
+}
+```
+
+A `sql/` file failed. The path, the statement index and the statement itself are on the error,
+because "the repeatables pass failed" is not an actionable sentence.
+
+### `BatchStalledError`
+
+{/* docs: signature */}
+```ts
+class BatchStalledError extends Error {
+  readonly code: 'PG_PRIME_BATCH_STALLED'
+}
+```
+
+A batched statement reported rows `STALL_LIMIT` times without moving the watermark. Almost always a
+backfill whose `WHERE` clause does not exclude the rows it just updated.
+
+### `InvalidIdentifierError`
+
+{/* docs: signature */}
+```ts
+class InvalidIdentifierError extends Error {
+  readonly problem: IdentifierProblem
+  readonly value: unknown
+  readonly code: 'PG_PRIME_INVALID_IDENTIFIER'
+}
+```
+
+`quoteIdent` and friends refuse rather than emit. `problem` says which of the five rules was broken,
+and `value` is what was passed — which is how a name built by string concatenation somewhere upstream
+gets found.

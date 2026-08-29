@@ -3,4 +3,213 @@ title: COPY and bulk loading
 description: copyFrom, copyTo, and the measured comparison with insertMany.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+There are two ways to put a lot of rows into PostgreSQL, and pg-prime ships both.
+
+**`insertMany`** — `.valuesMany(rows)` on an insert builder — is a multi-row
+`INSERT … VALUES (…),(…),…`. It is typed, it supports `RETURNING` and `ON CONFLICT`, it chunks
+itself, and it needs nothing you do not already have.
+
+**`COPY`** is PostgreSQL's bulk-load protocol: one statement, a stream of encoded rows, no
+per-row parsing. `db.copyFrom` and `db.copyTo` are the typed and untyped halves of it.
+
+Which to use is answered by a measurement further down, and the answer is probably not the one you
+expect.
+
+<Aside type="note">
+Every `COPY` block on this page is marked `no-run`. PGlite — which is what executes this site's
+examples in CI — cannot host COPY: its socket bridge exits the WASM backend on a COPY message,
+taking the instance with it. The COPY suites are tier 2 and run against a real PostgreSQL. The
+`insertMany` example below is executed.
+</Aside>
+
+## `copyFrom` — typed rows in
+
+{/* docs: use=blog,blog-ddl no-run */}
+```ts title="copy-from.ts" no-run
+// no-run: PGlite's socket bridge cannot carry COPY. This runs against a real PostgreSQL.
+const rows = Array.from({ length: 100_000 }, (_, i) => ({
+  authorId: 1n,
+  title: `post ${i}`,
+  body: 'x'.repeat(64),
+  published: i % 2 === 0,
+  createdAt: new Date(),
+}))
+
+const result = await db.copyFrom(posts, rows)
+console.log(result.rowCount) // 100000
+```
+
+`rows` may be an array, any iterable, or an **async** iterable — so a file, an HTTP response or a
+generator streams straight through without ever being an array in memory.
+
+Values are encoded through **the same codecs the insert path uses**, into COPY *text* format. That
+matters more than it sounds: a `numeric` goes out as the precision-exact string and a `timestamptz`
+as the ISO instant, where a naive `String(value)` would round the first and localise the second.
+Five characters are escaped (`\`, tab, newline, carriage return) and `null` is `\N`; that is the
+whole format. Rows are batched into ~64 KiB frames rather than one protocol message per row,
+because 100 000 `CopyData` messages is most of the reason a naive COPY implementation is no faster
+than an insert.
+
+`CopyOptions`:
+
+| Option | Default | What it does |
+|---|---|---|
+| `format` | `'text'` | `'csv'` is the other. Binary COPY is not offered — pg-prime's codecs are text. |
+| `columns` | every declared column, in declaration order | The columns to write, in order. The same order `insert into t (…)` uses, so the two paths cannot disagree. |
+| `highWaterMark` | 65 536 | Bytes buffered before backpressure is applied to your source. |
+| `signal` | — | Aborts the load; see [cancellation](/pg-prime/guides/cancellation/). |
+
+A column whose codec encodes to **binary** is refused by name, with the two alternatives, rather
+than producing a corrupt load.
+
+### `copyFrom.raw` — your statement, your bytes
+
+When you already have the bytes — a CSV on disk, a `pg_dump` fragment, a format pg-prime's codecs
+do not produce — write the `COPY` statement yourself and hand over a byte stream. Nothing is
+encoded for you.
+
+{/* docs: use=blog no-run */}
+```ts title="copy-from-raw.ts" no-run
+// no-run: PGlite's socket bridge cannot carry COPY.
+import { createReadStream } from 'node:fs'
+
+const bytes = createReadStream('posts.csv') as AsyncIterable<Uint8Array>
+
+const result = await db.copyFrom.raw(
+  `copy "posts" ("author_id","title","body") from stdin with (format csv, header true)`,
+  bytes,
+)
+console.log(result.rowCount)
+```
+
+A source that throws mid-load sends `CopyFail`, so the connection is not left stuck in copy-in mode
+and nothing is written.
+
+### `copyTo` — rows out
+
+`db.copyTo(sql)` gives an `AsyncIterable<Uint8Array>`; `db.copyTo.lines(sql)` gives the same stream
+split into lines of text, which is the shape people actually want for CSV.
+
+{/* docs: use=blog no-run */}
+```ts title="copy-to.ts" no-run
+// no-run: PGlite's socket bridge cannot carry COPY.
+const stmt = db.sql`copy (select id, title from posts where published) to stdout with (format csv)`
+
+for await (const line of db.copyTo.lines(stmt)) {
+  console.log(line)
+}
+```
+
+## No optional peer dependency
+
+The design called for `pg-copy-streams`. It is not needed, and the reason is worth knowing: what
+that package *is* is a Submittable over `pg`'s own connection-level COPY messages — issue the
+statement, answer `CopyInResponse` by writing frames through `sendCopyFromChunk`, finish with
+`endCopyFrom`, collect `CopyData` on the way out. pg-prime's driver implements the same thing
+directly, in one file. One fewer dependency, one fewer version to track, and the same bytes on the
+wire.
+
+Two details that are easy to get wrong and are why it is not shorter: the `COPY` statement goes out
+through the **simple** query protocol (COPY carries no bind parameters, so the extended protocol
+buys nothing), and backpressure is the socket's — `sendCopyFromChunk` writes straight through, so a
+source with no drain handling would buffer the whole load in your process.
+
+`driver.capabilities.copyIn` / `.copyOut` say whether the adapter you are on can do this at all. An
+adapter that cannot gets a `ConfigError` naming `insertMany` as the alternative, not a protocol
+error.
+
+## Under a pooler
+
+`COPY` is one statement. It is transaction-scoped like any other, so it works under transaction
+pooling with no special handling — unlike `LISTEN`, session GUCs or session advisory locks. It is
+also exempt from the session `statement_timeout` for its duration, like a stream.
+
+## The measurement: there is no crossover
+
+The design predicted a crossover "around 5–10 k rows" below which `insertMany` would win on speed.
+It was measured — PG 17.11, local TCP socket, five sizes, four columns, printed on every tier-2
+run — and there is none. `copyFrom` is faster at **every** size from ten rows up:
+
+| Rows | `insertMany` | `copyFrom` | Ratio |
+|---:|---:|---:|---:|
+| 10 | 6 ms | 4 ms | 1.45× |
+| 100 | 3 ms | 2 ms | 1.72× |
+| 1 000 | 15 ms | 7 ms | 2.31× |
+| 10 000 | 37–142 ms | 16–18 ms | 2.05–8.85× |
+| 100 000 | 351–494 ms | 126–130 ms | 2.79–3.80× |
+
+Roughly: 1.5–1.8× at 10–100 rows, about 2× from 1 000 to 10 000, and 2.3–3.8× at 100 000.
+
+So the reason to reach for `insertMany` below a few thousand rows is **ergonomics, not speed**. At
+those sizes the absolute difference is two milliseconds, and what you give up to save it is
+everything in the next section.
+
+## What COPY cannot do
+
+- **No `RETURNING`.** COPY reports a row count and nothing else. If you need the generated ids you
+  need an `INSERT`, or a second query keyed on something you already knew.
+- **No `ON CONFLICT`.** There is no upsert, no `DO NOTHING`, no partial index arbitration. The
+  usual workaround is COPY into an unlogged staging table and then one
+  `INSERT … SELECT … ON CONFLICT` from it, which is a fine pattern and is two statements.
+- **All-or-nothing per statement.** One bad row aborts the whole COPY. There is no "skip the
+  offenders" mode and no per-row error report — you get the SQLSTATE and the line number.
+- **It is not in your log as a statement you can read.** An `INSERT` shows up in
+  `pg_stat_statements` with its text; a COPY shows up as a COPY.
+- **Text format only, here.** A column whose codec is binary is refused rather than mangled.
+
+Set against a two-millisecond saving at a thousand rows, that list is why `insertMany` is the
+default answer.
+
+## `insertMany`, and how it chunks itself
+
+`valuesMany` is bounded by one hard limit — the wire protocol caps bind parameters at **65 535**,
+an `int16` — and by one soft one, which is that a very wide `VALUES` list is slow to parse. So:
+
+- **Chunking at 5 000 rows.** Above that the batch is split into several statements, run on **one
+  connection inside one transaction**, because a half-applied bulk insert is the failure mode that
+  makes chunking untrustworthy and it is invisible: the caller sees a rejected promise and 40 000
+  of 50 000 rows committed.
+- **`unnest` above 30 000 cells** (`rows × columns`). The `unnest` strategy passes **one array
+  parameter per column** whatever the row count, so it sidesteps the parameter ceiling entirely.
+  Below that, plain `VALUES` is cheaper to plan.
+- Exceeding the ceiling anyway throws `TooManyParametersError` naming the count and the fix, rather
+  than the confusing server-side error.
+
+Both are overridable per call:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="insert-many.ts"
+const rows = Array.from({ length: 12_000 }, (_, i) => ({
+  authorId: 1n,
+  title: `post ${i}`,
+  body: 'x'.repeat(16),
+  published: i % 2 === 0,
+}))
+
+await db
+  .insertInto(db.h.users)
+  .values({ email: 'bulk@example.com', name: 'Bulk' })
+  .execute()
+
+const statements = db.insertInto(db.h.posts).valuesMany(rows).compileAll()
+console.log(statements.length, statements[0]!.binds.length)
+// 3 4  — 12 000 rows in chunks of 5 000, and `unnest` means four parameters per statement
+
+await db.insertInto(db.h.posts).valuesMany(rows).execute()
+
+const [count] = await db.sql`select count(*)::int as n from posts`.execute()
+console.log(count?.['n'])
+// 12000
+```
+
+`compileAll()` is the honest way to see what a batch will actually send; `toSQL()` refuses on a
+chunked batch, because one AST cannot represent three statements.
+
+## Where to go next
+
+- [Queries](/pg-prime/guides/queries/) — `insertInto`, `returning`, `onConflict`.
+- [Cancellation and timeouts](/pg-prime/guides/cancellation/) — `signal` on a COPY, and why a long
+  load is exempt from the session `statement_timeout`.
+- [Poolers](/pg-prime/operations/poolers/) — what else survives transaction pooling.
