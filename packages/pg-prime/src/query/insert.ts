@@ -52,7 +52,7 @@ import {
   setItem,
   table as tableFrom,
 } from '../compile/nodes.js'
-import { isAstNode } from '../compile/nodes.js'
+import { inInternalNodes, isAstNode } from '../compile/nodes.js'
 import { isFragment, toNode } from '../sql/fragment.js'
 import { BuilderError } from '../sql/errors.js'
 import type { BulkOpts, BuilderCtx, InsertState } from './builder-state.js'
@@ -382,18 +382,50 @@ export class InsertBuilder {
     return out
   }
 
+  /**
+   * The `VALUES` source — `rows × columns` expression nodes, and the hottest loop in the library
+   * by allocation (design/12 §4 P item 2).
+   *
+   * Three things about the shape, each measured on a 1 000-row × 3-column insert:
+   *
+   *  1. **`inInternalNodes`.** `mkNode` was **27.7 %** of the CPU profile of one `.compile()`, and
+   *     all of it is `WeakSet.add` — a runtime call with no fast path — for 3 000 parameter nodes
+   *     that the D7 registry will never be asked about. The registry answers one question, "did
+   *     this library build this value or did it arrive as data", at one boundary: where a caller
+   *     hands a value back to us. A `param` minted here from the caller's own datum is put
+   *     straight into the AST and emitted; if one ever did come back — through `.toAst()` and into
+   *     a `sql` template — the registry would classify it as data and PARAMETERISE it, which is
+   *     the safe direction. That is `compile/nodes.ts`'s own argument for `./hoist.ts`, applied to
+   *     the one other place that mints nodes by the thousand.
+   *  2. **Indexed loops, not `.map`.** `rows.map((row, r) => columns.map((c, i) => …))` allocates
+   *     one closure per row and re-reads `keys[i]` and `columns[i]` per cell.
+   *  3. **`keys` and `codecs` hoisted into parallel arrays**, so the inner loop is two indexed
+   *     reads rather than a property chase through `ColumnMeta`.
+   */
   #valuesSource(rows: readonly Record<string, unknown>[]): InsertSource {
     const keys = this.#keys()
-    return {
-      k: 'values',
-      rows: rows.map((row, r) =>
-        this.s.columns.map((c, i) => {
+    const columns = this.s.columns
+    const width = columns.length
+    const codecs: AnyCodec[] = new Array<AnyCodec>(width)
+    const where: string[] = new Array<string>(width)
+    for (let i = 0; i < width; i++) {
+      codecs[i] = (columns[i] as ColumnMeta).codec
+      where[i] = `values() column "${keys[i] as string}"`
+    }
+    const out: Node[][] = new Array<Node[]>(rows.length)
+    inInternalNodes(() => {
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r] as Record<string, unknown>
+        const cells: Node[] = new Array<Node>(width)
+        for (let i = 0; i < width; i++) {
           const key = keys[i] as string
           if (!Object.hasOwn(row, key)) throw missingKey(key, r)
-          return valueExpr(row[key], c.codec, `values() column "${key}"`)
-        }),
-      ),
-    }
+          cells[i] = valueExpr(row[key], codecs[i] as AnyCodec, where[i] as string)
+        }
+        out[r] = cells
+      }
+    })
+    return { k: 'values', rows: out }
   }
 
   #unnestSource(rows: readonly Record<string, unknown>[]): InsertSource {
@@ -433,12 +465,25 @@ export class InsertBuilder {
     const first = rows[0] as Record<string, unknown>
     const keys = Object.keys(first)
     for (const k of keys) assertSafeKey(k, 'insert value')
+    // An indexed walk rather than `rowKeys.some(k => …)`: one closure per row is 1 000 of them
+    // on a bulk insert, for a check that passes on every row of every correct call.
+    // `hasOwn`, not `in`: `'toString' in first` is true for every object, so the `in` form
+    // accepted a row that set `toString` and no such column exists. The walk is indexed rather
+    // than `rowKeys.some(k => …)` because that allocated a closure per row — a thousand of them
+    // on a bulk insert, for a check that passes on every row of every correct call.
     for (let r = 1; r < rows.length; r++) {
       const row = rows[r] as Record<string, unknown>
       const rowKeys = Object.keys(row)
-      // `hasOwn`, not `in`: `'toString' in first` is true for every object, so the `in` form
-      // accepted a row that set `toString` and no such column exists.
-      if (rowKeys.length !== keys.length || rowKeys.some((k) => !Object.hasOwn(first, k))) {
+      let same = rowKeys.length === keys.length
+      if (same) {
+        for (let k = 0; k < rowKeys.length; k++) {
+          if (!Object.hasOwn(first, rowKeys[k] as string)) {
+            same = false
+            break
+          }
+        }
+      }
+      if (!same) {
         throw new BuilderError(
           `pg-prime: every row of a bulk insert must set the same columns. Row ${r} sets ` +
             `[${rowKeys.join(', ')}]; row 0 sets [${keys.join(', ')}].`,

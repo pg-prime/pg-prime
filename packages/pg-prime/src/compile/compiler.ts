@@ -86,6 +86,31 @@ function quoteAlias(key: string): string {
 const NEWLINES: string[] = ['\n']
 const MAX_CACHED_INDENT = 64
 
+/**
+ * `$1`, `$2`, … — the same table trick as {@link newlineAt}, for the same reason and at a very
+ * different scale.
+ *
+ * A 12-column select emits twelve of these and would not justify a table. A 1 000-row × 3-column
+ * bulk insert emits **three thousand**, and every one of them was a fresh `` `$${n}` `` — number
+ * to string, then concatenation — on every compile of every such statement. The table is shared
+ * across statements, so the second batch insert in a process allocates none of them at all.
+ *
+ * Capped at design/02's wire ceiling for parameters, past which the statement is refused anyway
+ * (`TooManyParametersError`); the branch above the cap exists so this function is total.
+ */
+const DOLLARS: string[] = ['']
+const MAX_CACHED_PARAM = 65535
+
+function dollarAt(n: number): string {
+  if (n > MAX_CACHED_PARAM) return `$${n}`
+  let s = DOLLARS[n]
+  if (s === undefined) {
+    s = `$${n}`
+    DOLLARS[n] = s
+  }
+  return s
+}
+
 function newlineAt(indent: number): string {
   if (indent > MAX_CACHED_INDENT) return `\n${' '.repeat(indent)}`
   let s = NEWLINES[indent]
@@ -147,14 +172,12 @@ class Emitter {
    */
   bindValue(value: unknown, codec: AnyCodec): void {
     const encoded = value === null ? null : codec.encode(value as never)
-    this.binds.push({ k: 'value', encoded, oid: codec.paramOid })
-    this.chunks.push(`$${this.binds.length}`)
+    this.chunks.push(dollarAt(this.binds.push({ k: 'value', encoded, oid: codec.paramOid })))
   }
 
   bindSlot(name: string, codec: AnyCodec): void {
-    this.binds.push({ k: 'slot', name, codec })
     this.placeholders.push(name)
-    this.chunks.push(`$${this.binds.length}`)
+    this.chunks.push(dollarAt(this.binds.push({ k: 'slot', name, codec })))
   }
 
   sql(): string {
