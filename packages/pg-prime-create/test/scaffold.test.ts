@@ -3,7 +3,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PassThrough, Writable } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
 import { parseArgs } from '../src/args.js'
 import { resolveOptions, DEFAULT_DIR, type PromptIo } from '../src/prompts.js'
@@ -23,29 +22,26 @@ afterEach(() => {
 /**
  * A `PromptIo` over strings: `answers` are what a terminal would type, one per question.
  *
- * The answers are written in REPLY to each prompt rather than queued up front, because that is
- * what a terminal does — a readable that already holds every line ends after the first question
- * and `readline` then rejects the second with "readline was closed".
+ * `ask` is one function rather than a stream pair (see `src/prompts.ts`), which is also why this
+ * fake is six lines: a readable that already holds every answer ends after the first question and
+ * `readline` then rejects the second with "readline was closed".
  */
-function fakeIo(answers: readonly string[], isTTY: boolean): PromptIo & { written: () => string } {
-  const input = new PassThrough()
-  Object.defineProperty(input, 'isTTY', { value: isTTY })
+function fakeIo(
+  answers: readonly string[],
+  terminal: boolean,
+): PromptIo & { asked: () => string[] } {
   const pending = [...answers]
-  const chunks: string[] = []
-  const output = new Writable({
-    write(chunk: Buffer | string, _encoding, callback: () => void) {
-      chunks.push(String(chunk))
-      const next = pending.shift()
-      if (next !== undefined) setImmediate(() => void input.write(`${next}\n`))
-      callback()
-    },
-  })
+  const questions: string[] = []
   return {
-    input,
-    output,
+    ask: terminal
+      ? (question: string): Promise<string> => {
+          questions.push(question)
+          return Promise.resolve(pending.shift() ?? '')
+        }
+      : undefined,
     cwd: '/workspace',
     env: {},
-    written: () => chunks.join(''),
+    asked: () => questions,
   }
 }
 
@@ -174,7 +170,7 @@ describe('resolveOptions', () => {
   it('asks nothing when stdin is not a TTY — a non-TTY implies --yes', async () => {
     const io = fakeIo([], false)
     const plan = await resolveOptions(parseArgs([]).options, io)
-    expect(io.written()).toBe('')
+    expect(io.asked()).toEqual([])
     expect(plan).toEqual({
       dir: join('/workspace', DEFAULT_DIR),
       name: DEFAULT_DIR,
@@ -188,7 +184,7 @@ describe('resolveOptions', () => {
   it('asks nothing with --yes on a TTY either', async () => {
     const io = fakeIo([], true)
     const plan = await resolveOptions(parseArgs(['--yes', 'my-app']).options, io)
-    expect(io.written()).toBe('')
+    expect(io.asked()).toEqual([])
     expect(plan.dir).toBe(join('/workspace', 'my-app'))
     expect(plan.name).toBe('my-app')
   })
@@ -196,7 +192,12 @@ describe('resolveOptions', () => {
   it('asks for what argv did not say, and takes n for an answer', async () => {
     const io = fakeIo(['other-app', 'n', 'n', ''], true)
     const plan = await resolveOptions(parseArgs([]).options, io)
-    expect(io.written()).toContain(`Directory (${DEFAULT_DIR}): `)
+    expect(io.asked()).toEqual([
+      `Directory (${DEFAULT_DIR}): `,
+      'Add a vitest + PGlite test fixture? (Y/n) ',
+      'Install dependencies with npm? (Y/n) ',
+      'Initialise a git repository? (Y/n) ',
+    ])
     expect(plan.dir).toBe(join('/workspace', 'other-app'))
     expect(plan.testing).toBe(false)
     expect(plan.install).toBe(false)
@@ -210,7 +211,7 @@ describe('resolveOptions', () => {
       parseArgs(['app', '--no-testing', '--no-install', '--git']).options,
       io,
     )
-    expect(io.written()).toBe('')
+    expect(io.asked()).toEqual([])
     expect(plan.testing).toBe(false)
     expect(plan.install).toBe(false)
     expect(plan.git).toBe(true)

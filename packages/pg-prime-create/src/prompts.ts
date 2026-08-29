@@ -1,29 +1,31 @@
 /**
  * Turning `argv` plus a terminal into a plan (design/13 decision 8).
  *
- * `node:readline/promises` and nothing else: four questions do not need a prompt library, and this
- * package's one hard promise is that `npm create @pg-prime` downloads no dependency tree to write
- * eleven files. There is no colour for the same reason — no `chalk`, and no hand-rolled ANSI that
- * would have to grow a `NO_COLOR` check.
+ * Four questions do not need a prompt library, and this package's one hard promise is that
+ * `npm create @pg-prime` downloads no dependency tree to write eleven files. There is no colour
+ * for the same reason — no `chalk`, and no hand-rolled ANSI that would have to grow a `NO_COLOR`
+ * check.
+ *
+ * The terminal arrives as ONE function rather than as a pair of streams. That is a packaging
+ * constraint made into a better shape: `tools/check-dts.mjs` compiles the emitted declarations
+ * with `types: []`, where `node:stream` is not a resolvable module and `NodeJS.WritableStream` is
+ * not a namespace — so a public interface that names either one is a package that only type-checks
+ * where `@types/node` happens to be installed. With `ask`, nothing in this package's `.d.ts` names
+ * anything outside it, which is what `zeroDeps` in `check-dts.mjs` asserts. `src/cli.ts` is the one
+ * file that touches `node:readline/promises`, and it exports nothing.
  */
 
-import { createInterface } from 'node:readline/promises'
 import { isAbsolute, resolve } from 'node:path'
-import type { Readable, Writable } from 'node:stream'
 import type { CliOptions, PackageManager } from './types.js'
 import { detectPackageManager } from './args.js'
 import { packageNameFor } from './scaffold.js'
 
-/**
- * Where the prompts read and write, and what the defaults are read from. Injected, so it tests.
- *
- * `node:stream` rather than the `NodeJS.*` globals: `tools/check-dts.mjs` compiles the emitted
- * declarations with `types: []`, where `NodeJS.WritableStream` is a missing namespace. An imported
- * type resolves there; an ambient one does not.
- */
+/** Ask one question, resolve with the line typed. */
+export type Ask = (question: string) => Promise<string>
+
+/** What the prompts need. `ask: undefined` means there is no terminal — see `resolveOptions`. */
 export interface PromptIo {
-  readonly input: Readable & { readonly isTTY?: boolean | undefined }
-  readonly output: Writable
+  readonly ask: Ask | undefined
   readonly cwd: string
   readonly env: Readonly<Record<string, string | undefined>>
 }
@@ -59,36 +61,29 @@ function yesNo(answer: string, fallback: boolean): boolean {
  *
  * A non-TTY stdin implies `--yes` — a CI job, a `| sh`, or an editor task runner has nobody to
  * answer, and blocking on a question nothing will ever answer is a hang rather than an error.
+ * `src/cli.ts` passes `ask: undefined` in exactly that case.
  */
 export async function resolveOptions(cli: CliOptions, io: PromptIo): Promise<ProjectPlan> {
   const packageManager = cli.packageManager ?? detectPackageManager(io.env['npm_config_user_agent'])
-  const interactive = io.input.isTTY === true && !cli.yes
+  const ask = cli.yes ? undefined : io.ask
 
   let dir = cli.dir
   let testing = cli.testing
   let install = cli.install
   let git = cli.git
 
-  if (interactive) {
-    const rl = createInterface({ input: io.input, output: io.output })
-    try {
-      if (dir === undefined) {
-        dir = (await rl.question(`Directory (${DEFAULT_DIR}): `)).trim() || DEFAULT_DIR
-      }
-      if (testing === undefined) {
-        testing = yesNo(await rl.question('Add a vitest + PGlite test fixture? (Y/n) '), true)
-      }
-      if (install === undefined) {
-        install = yesNo(
-          await rl.question(`Install dependencies with ${packageManager}? (Y/n) `),
-          true,
-        )
-      }
-      if (git === undefined) {
-        git = yesNo(await rl.question('Initialise a git repository? (Y/n) '), true)
-      }
-    } finally {
-      rl.close()
+  if (ask !== undefined) {
+    if (dir === undefined) {
+      dir = (await ask(`Directory (${DEFAULT_DIR}): `)).trim() || DEFAULT_DIR
+    }
+    if (testing === undefined) {
+      testing = yesNo(await ask('Add a vitest + PGlite test fixture? (Y/n) '), true)
+    }
+    if (install === undefined) {
+      install = yesNo(await ask(`Install dependencies with ${packageManager}? (Y/n) `), true)
+    }
+    if (git === undefined) {
+      git = yesNo(await ask('Initialise a git repository? (Y/n) '), true)
     }
   }
 

@@ -143,7 +143,7 @@ for (const page of pages) {
     if (typeof block.attrs.cli !== 'string') continue
     cliBlocks++
     const argv = block.attrs.cli.split(/\s+/)
-    const bin = BINS[argv[0]] === undefined ? DEFAULT_BIN : argv.shift()
+    const bin = Object.hasOwn(BINS, argv[0]) ? argv.shift() : DEFAULT_BIN
     const res = spawnSync(process.execPath, [BINS[bin], ...argv], { encoding: 'utf8' })
     const actual = (res.stdout + res.stderr).replace(/\s+$/, '')
     const expected = block.text.replace(/\s+$/, '')

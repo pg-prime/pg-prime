@@ -7,13 +7,17 @@
 
 import { spawnSync } from 'node:child_process'
 import { relative } from 'node:path'
-import type { Writable } from 'node:stream'
 import { HELP, VERSION, parseArgs } from './args.js'
 import { resolveOptions, type ProjectPlan, type PromptIo } from './prompts.js'
 import { scaffold } from './scaffold.js'
 
+/**
+ * Where the command writes. Two functions, not two streams — see the note on `PromptIo`: nothing
+ * in this package's declarations may name a module outside it.
+ */
 export interface MainIo extends PromptIo {
-  readonly stderr: Writable
+  readonly out: (text: string) => void
+  readonly err: (text: string) => void
 }
 
 const NEXT_STEP_ENV = 'export DATABASE_URL=postgres://postgres:postgres@localhost:5432/app'
@@ -45,15 +49,15 @@ function nextSteps(plan: ProjectPlan, cwd: string): readonly string[] {
 export async function main(argv: readonly string[], io: MainIo): Promise<number> {
   const { options, errors } = parseArgs(argv)
 
-  if (options.help) io.output.write(`${HELP}\n`)
+  if (options.help) io.out(`${HELP}\n`)
   if (errors.length > 0) {
-    for (const error of errors) io.stderr.write(`create-pg-prime: ${error}\n`)
-    if (!options.help) io.stderr.write('create-pg-prime: run with --help for the options\n')
+    for (const error of errors) io.err(`create-pg-prime: ${error}\n`)
+    if (!options.help) io.err('create-pg-prime: run with --help for the options\n')
     return 1
   }
   if (options.help) return 0
   if (options.version) {
-    io.output.write(`${VERSION}\n`)
+    io.out(`${VERSION}\n`)
     return 0
   }
 
@@ -63,27 +67,27 @@ export async function main(argv: readonly string[], io: MainIo): Promise<number>
   try {
     result = scaffold(plan)
   } catch (error) {
-    io.stderr.write(`create-pg-prime: ${error instanceof Error ? error.message : String(error)}\n`)
+    io.err(`create-pg-prime: ${error instanceof Error ? error.message : String(error)}\n`)
     return 1
   }
 
-  io.output.write(
+  io.out(
     `\ncreate-pg-prime — wrote ${String(result.files.length)} files to ` +
       `${relative(io.cwd, plan.dir) || '.'}\n`,
   )
 
   if (plan.git && !runCommand('git', ['init', '--quiet'], plan.dir)) {
     // Not fatal: the project is written, and a missing `git` is not a reason to fail a scaffold.
-    io.stderr.write('create-pg-prime: `git init` failed — the project is written anyway\n')
+    io.err('create-pg-prime: `git init` failed — the project is written anyway\n')
   }
   if (plan.install) {
-    io.output.write(`\n${plan.packageManager} install\n`)
+    io.out(`\n${plan.packageManager} install\n`)
     if (!runCommand(plan.packageManager, ['install'], plan.dir)) {
-      io.stderr.write(`create-pg-prime: \`${plan.packageManager} install\` failed\n`)
+      io.err(`create-pg-prime: \`${plan.packageManager} install\` failed\n`)
       return 1
     }
   }
 
-  io.output.write(`\nNext:\n${nextSteps(plan, io.cwd).join('\n')}\n`)
+  io.out(`\nNext:\n${nextSteps(plan, io.cwd).join('\n')}\n`)
   return 0
 }
