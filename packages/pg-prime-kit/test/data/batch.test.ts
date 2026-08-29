@@ -125,6 +125,24 @@ describe("design/06 §7 lane 2 — a batched, resumable backfill", () => {
       child.kill("SIGKILL");
       await child.done;
 
+      // The kernel closed the runner's sockets, but a COMMIT that was already on the wire
+      // lands after the client is gone, and PostgreSQL only terminates the orphaned backend on
+      // its next read. Two reads racing that commit — `counts` at 2 000, `progressOf` at 3 000 —
+      // is what the nightly's PG 17 leg measured (run 33246087296). Read nothing until every
+      // backend the runner owned has exited, so both reads see one quiescent state.
+      await waitFor(
+        "the runner's backends to exit",
+        () =>
+          withClient(conn, async (client) => {
+            const r = await client.query<{ n: string }>(
+              `SELECT count(*)::text AS n FROM pg_stat_activity
+               WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_type = 'client backend'`,
+            );
+            return r.rows[0]!.n === "0" ? true : false;
+          }),
+        30_000,
+      );
+
       /* Negative control: the kill really landed mid-backfill. */
       const mid = await counts(conn);
       expect(mid.filled, "the kill must land before the backfill finished").toBeLessThan(ROWS);
