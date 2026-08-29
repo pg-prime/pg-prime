@@ -1,108 +1,108 @@
 {
-  "generatedAt": "2026-08-27T20:15:09.309Z",
+  "generatedAt": "2026-08-29T07:49:42.660Z",
   "node": "v24.14.1",
   "platform": "darwin/arm64",
   "quick": false,
-  "compileOnly": false,
+  "compileOnly": true,
   "calibration": {
     "samples": [
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 3.789249999999993,
-        "p95": 4.030199999999991,
-        "p99": 4.117658399999982,
-        "min": 3.7483418000000026,
-        "max": 4.117658399999982
+        "p50": 3.897516599999972,
+        "p95": 4.248016600000028,
+        "p99": 4.57324179999996,
+        "min": 3.761708399999997,
+        "max": 4.57324179999996
       },
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 6.407600000000093,
-        "p95": 13.305099999999948,
-        "p99": 15.770566600000166,
-        "min": 5.230933399999776,
-        "max": 15.770566600000166
+        "p50": 7.918258200000127,
+        "p95": 16.33457500000004,
+        "p99": 20.22634160000016,
+        "min": 6.3648082000003345,
+        "max": 20.22634160000016
       },
       {
         "iters": 5000,
         "samples": 40,
-        "p50": 6.640958200002205,
-        "p95": 12.956508400000166,
-        "p99": 13.60694159999839,
-        "min": 5.4099584000010505,
-        "max": 13.60694159999839
+        "p50": 8.18859999999986,
+        "p95": 16.321050000000106,
+        "p99": 17.154158400000235,
+        "min": 7.081049999999959,
+        "max": 17.154158400000235
       }
     ],
-    "referenceUs": 3.7483418000000026,
-    "driftFraction": 0.44329377859859176
+    "referenceUs": 3.761708399999997,
+    "driftFraction": 0.8824026870344241
   },
   "compile": {
     "timing": {
       "heavyBuildAndCompile": {
         "iters": 2000,
         "samples": 60,
-        "p50": 19.555499999999938,
-        "p95": 34.07225000000017,
-        "p99": 38.147583499999996,
-        "min": 16.240916999999854,
-        "max": 38.147583499999996
+        "p50": 20.509000000000015,
+        "p95": 35.69516700000008,
+        "p99": 38.27879200000007,
+        "min": 15.469958499999848,
+        "max": 38.27879200000007
       },
       "heavyEmit": {
         "iters": 2000,
         "samples": 60,
-        "p50": 3.8683750000000146,
-        "p95": 4.2097499999999854,
-        "p99": 5.775124999999889,
-        "min": 3.8150834999999006,
-        "max": 5.775124999999889
+        "p50": 4.034520499999871,
+        "p95": 4.281978999999865,
+        "p99": 5.514395500000319,
+        "min": 3.9134165000000394,
+        "max": 5.514395500000319
       },
       "simpleBuildAndCompile": {
         "iters": 4000,
         "samples": 60,
-        "p50": 4.248489500000005,
-        "p95": 10.951979000000165,
-        "p99": 77.61896875000004,
-        "min": 3.693239500000118,
-        "max": 77.61896875000004
+        "p50": 4.617937500000153,
+        "p95": 10.175385499999948,
+        "p99": 80.13534374999995,
+        "min": 3.6702499999998963,
+        "max": 80.13534374999995
       }
     },
     "allocation": {
       "heavyBuildAndCompile": {
-        "median": 31120,
+        "median": 31456,
         "batch": 8,
         "stable": true,
         "exact": true
       },
       "heavyToAst": {
-        "median": 9751,
-        "batch": 27,
-        "stable": true,
+        "median": 9984,
+        "batch": 26,
+        "stable": false,
         "exact": true
       },
       "heavyEmit": {
-        "median": 9020,
+        "median": 9123,
         "batch": 29,
         "stable": true,
         "exact": true
       },
       "simpleBuildAndCompile": {
-        "median": 6972,
-        "batch": 37,
+        "median": 7220,
+        "batch": 36,
         "stable": true,
         "exact": true
       }
     },
     "allocBySource": {
-      "builderChain": 9751,
+      "builderChain": 9984,
       "planner": 12349,
-      "emitter": 9020,
-      "total": 31120
+      "emitter": 9123,
+      "total": 31456
     },
-    "simplePerSec": 235377.77367697362,
-    "simplePerSecNorm": 235273.69276382416,
-    "simplePerSecBest": 270765.00183645496,
-    "simplePerSecBestNorm": 270645.2731628431
+    "simplePerSec": 216546.88916858812,
+    "simplePerSecNorm": 217223.0005278257,
+    "simplePerSecBest": 272461.0040188075,
+    "simplePerSecBestNorm": 273311.69266399497
   },
   "structure": {
     "heavy": {
@@ -143,305 +143,122 @@
     "pairs": {
       "vsUnchecked": {
         "a": {
-          "p50": 8237.00000000008,
-          "p95": 8925.833999999668,
-          "p99": 9757.99999999981,
-          "min": 8070.24999999976
+          "p50": 8308.082999999897,
+          "p95": 8975.125000000844,
+          "p99": 25241.125000000466,
+          "min": 8098.292000000583
         },
         "b": {
-          "p50": 3159.9169999999503,
-          "p95": 3683.458999999857,
-          "p99": 3719.625000000633,
-          "min": 3106.416999999965
+          "p50": 3183.4579999995185,
+          "p95": 3688.5000000002037,
+          "p99": 4045.249999999214,
+          "min": 3106.8749999994907
         },
-        "ratioP50": 2.6067140371092687,
-        "ratioP95": 2.423220673828598,
-        "ratioP99": 2.623382733473979,
+        "ratioP50": 2.6097668007560184,
+        "ratioP95": 2.4332723329267583,
+        "ratioP99": 6.239694703666119,
         "iters": 1,
         "samples": 60
       },
       "vsChecked": {
         "a": {
-          "p50": 8167.7920000001905,
-          "p95": 10171.20900000009,
-          "p99": 10224.91699999955,
-          "min": 8040.542000000642
+          "p50": 8303.667000000132,
+          "p95": 10321.749999999156,
+          "p99": 10428.040999999212,
+          "min": 8116.165999999794
         },
         "b": {
-          "p50": 5378.708999999617,
-          "p95": 5573.999999999614,
-          "p99": 5706.249999999272,
-          "min": 5333.50000000064
+          "p50": 5473.87499999968,
+          "p95": 5630.041999998866,
+          "p99": 5747.166000001016,
+          "min": 5347.708999999668
         },
-        "ratioP50": 1.5185413451444896,
-        "ratioP95": 1.8247594187299594,
-        "ratioP99": 1.7918803066814202,
+        "ratioP50": 1.5169632116189387,
+        "ratioP95": 1.8333344582511524,
+        "ratioP99": 1.8144666432111702,
         "iters": 1,
         "samples": 60
       },
       "dispatchOnly": {
         "a": {
-          "p50": 1882.9580000001442,
-          "p95": 2025.1659999994445,
-          "p99": 2983.124999998836,
-          "min": 1864.7499999988213
+          "p50": 1986.0420000004524,
+          "p95": 2131.416000000172,
+          "p99": 3126.416999999492,
+          "min": 1893.8749999997526
         },
         "b": {
-          "p50": 70.66699999995762,
-          "p95": 120.5420000005688,
-          "p99": 363.04200000085984,
-          "min": 64.20799999978044
+          "p50": 79.20800000101735,
+          "p95": 93.20900000057009,
+          "p99": 362.2080000004644,
+          "min": 75.83299999896553
         },
-        "ratioP50": 26.645506389138824,
-        "ratioP95": 16.80050107008253,
-        "ratioP99": 8.217024476484182,
+        "ratioP50": 25.073755175928486,
+        "ratioP95": 22.867062193426985,
+        "ratioP99": 8.631551484217587,
         "iters": 1,
         "samples": 60
       },
       "codegenVsUnchecked": {
         "a": {
-          "p50": 6107.707999999548,
-          "p95": 6681.249999999636,
-          "p99": 6823.416000001089,
-          "min": 6028.707999999824
+          "p50": 6355.125000000044,
+          "p95": 6904.500000000553,
+          "p99": 7222.750000000815,
+          "min": 6057.37500000032
         },
         "b": {
-          "p50": 3141.9999999998254,
-          "p95": 3504.3750000004366,
-          "p99": 3805.9590000011667,
-          "min": 3091.5420000001177
+          "p50": 3243.4160000011616,
+          "p95": 3606.374999999389,
+          "p99": 4065.290999998979,
+          "min": 3120.707999998558
         },
-        "ratioP50": 1.9438917886696012,
-        "ratioP95": 1.9065453896911158,
-        "ratioP99": 1.7928243578028553,
+        "ratioP50": 1.9593925046918952,
+        "ratioP95": 1.9145263595720698,
+        "ratioP99": 1.7766870809500794,
         "iters": 1,
         "samples": 60
       },
       "codegenVsChecked": {
         "a": {
-          "p50": 6110.5420000003505,
-          "p95": 8757.833000001483,
-          "p99": 22461.54100000058,
-          "min": 6039.207999998325
+          "p50": 6533.625000000029,
+          "p95": 9061.582999998791,
+          "p99": 26086.750000000393,
+          "min": 6161.416999999346
         },
         "b": {
-          "p50": 5388.791999999739,
-          "p95": 5964.584000001196,
-          "p99": 8338.333000001512,
-          "min": 5305.041999999958
+          "p50": 5712.125000000015,
+          "p95": 6006.040999998731,
+          "p99": 6087.292000000161,
+          "min": 5411.375000001499
         },
-        "ratioP50": 1.1339353977664468,
-        "ratioP95": 1.4683057527565588,
-        "ratioP99": 2.6937687664904373,
+        "ratioP50": 1.143816880758039,
+        "ratioP95": 1.5087447787986636,
+        "ratioP99": 4.285444167948524,
         "iters": 1,
         "samples": 60
       },
       "codegenDispatchOnly": {
         "a": {
-          "p50": 127.74999999965075,
-          "p95": 268.540999999459,
-          "p99": 769.8749999999563,
-          "min": 122.2089999992022
+          "p50": 160.54100000110338,
+          "p95": 287.58399999969697,
+          "p99": 1441.541000000143,
+          "min": 137.79199999953562
         },
         "b": {
-          "p50": 67.16599999890605,
-          "p95": 76.95799999964947,
-          "p99": 1718.9159999998083,
-          "min": 64.7079999998823
+          "p50": 82.37499999995634,
+          "p95": 140.625,
+          "p99": 150.83299999969313,
+          "min": 75.62499999949068
         },
-        "ratioP50": 1.9020039901398247,
-        "ratioP95": 3.489448790258091,
-        "ratioP99": 0.44788401527476746,
+        "ratioP50": 1.9489044006214078,
+        "ratioP95": 2.045041777775623,
+        "ratioP99": 9.557199021454693,
         "iters": 1,
         "samples": 60
       }
     }
   },
   "e2e": {
-    "serverVersion": "17.11 (Debian 17.11-1.pgdg13+2)",
-    "url": "postgres://pgorm:***@127.0.0.1:54330/pgorm_c",
-    "cases": [
-      {
-        "name": "point select by PK",
-        "a": {
-          "p50": 0.22870416666664822,
-          "p95": 0.3164222333333479,
-          "p99": 0.3737666666667186,
-          "min": 0.21531526666670592
-        },
-        "b": {
-          "p50": 0.2070041666667142,
-          "p95": 0.23386666666671468,
-          "p99": 0.3004777666666996,
-          "min": 0.19463749999995344
-        },
-        "ratioP50": 1.1048288077933812,
-        "ratioP95": 1.3530027080955656,
-        "ratioP99": 1.243907896457822,
-        "iters": 30,
-        "samples": 100
-      },
-      {
-        "name": "select 1 000 rows (12 cols, 2 joins)",
-        "a": {
-          "p50": 3.4123545000002196,
-          "p95": 3.6470210000006773,
-          "p99": 5.214916500000072,
-          "min": 3.3026664999997593
-        },
-        "b": {
-          "p50": 2.849167000000307,
-          "p95": 3.271062499999971,
-          "p99": 4.133979000000181,
-          "min": 2.7733125000004293
-        },
-        "ratioP50": 1.1976674234960085,
-        "ratioP95": 1.114934673367051,
-        "ratioP99": 1.261476291969515,
-        "iters": 2,
-        "samples": 60
-      },
-      {
-        "name": "insert one",
-        "a": {
-          "p50": 0.3567500000001019,
-          "p95": 0.47181670000009035,
-          "p99": 0.654541700000118,
-          "min": 0.3402791000000434
-        },
-        "b": {
-          "p50": 0.3178749999999127,
-          "p95": 0.3823082999999315,
-          "p99": 0.4079542000001311,
-          "min": 0.30394169999999576
-        },
-        "ratioP50": 1.122296500197247,
-        "ratioP95": 1.2341262274456894,
-        "ratioP99": 1.6044489798117232,
-        "iters": 10,
-        "samples": 100
-      },
-      {
-        "name": "insert 1 000 (batch)",
-        "a": {
-          "p50": 11.555582999999388,
-          "p95": 14.932624999999462,
-          "p99": 21.689249999999447,
-          "min": 7.808791999999812
-        },
-        "b": {
-          "p50": 6.570665999999619,
-          "p95": 7.962332999999489,
-          "p99": 8.178875000001426,
-          "min": 6.21258300000045
-        },
-        "ratioP50": 1.7586623639064987,
-        "ratioP95": 1.875408250320656,
-        "ratioP99": 2.6518622671205594,
-        "iters": 1,
-        "samples": 40
-      },
-      {
-        "name": "update by PK",
-        "a": {
-          "p50": 0.37017500000001746,
-          "p95": 0.6463624999998501,
-          "p99": 0.7235749999999825,
-          "min": 0.3339542000001529
-        },
-        "b": {
-          "p50": 0.33459580000017014,
-          "p95": 0.4857083000000785,
-          "p99": 0.6073707999999897,
-          "min": 0.30279999999984286
-        },
-        "ratioP50": 1.1063348673229887,
-        "ratioP95": 1.3307627232224477,
-        "ratioP99": 1.191323323412971,
-        "iters": 10,
-        "samples": 100
-      },
-      {
-        "name": "delete by PK",
-        "a": {
-          "p50": 0.32665099999985614,
-          "p95": 0.45596362499964016,
-          "p99": 0.7742083749999438,
-          "min": 0.28214587499996924
-        },
-        "b": {
-          "p50": 0.32735937500001455,
-          "p95": 0.4178542499998912,
-          "p99": 1.07636975000014,
-          "min": 0.2970156249998581
-        },
-        "ratioP50": 0.9978360937420583,
-        "ratioP95": 1.0912025544786463,
-        "ratioP99": 0.7192773440537912,
-        "iters": 8,
-        "samples": 60
-      },
-      {
-        "name": "5-statement transaction",
-        "a": {
-          "p50": 1.4087082500000179,
-          "p95": 1.7143332499999815,
-          "p99": 2.6073124999993524,
-          "min": 1.3410000000003492
-        },
-        "b": {
-          "p50": 1.3399167500001568,
-          "p95": 1.67321875000016,
-          "p99": 2.7964270000002216,
-          "min": 1.2437394999997196
-        },
-        "ratioP50": 1.0513401298997516,
-        "ratioP95": 1.0245721009281168,
-        "ratioP99": 0.932372810017621,
-        "iters": 4,
-        "samples": 100
-      },
-      {
-        "name": "relation load, one level",
-        "a": {
-          "p50": 85.69589599999927,
-          "p95": 88.25193750000108,
-          "p99": 96.86650000000009,
-          "min": 84.95510400000057
-        },
-        "b": {
-          "p50": 84.19845850000092,
-          "p95": 85.73985449999782,
-          "p99": 86.65154200000143,
-          "min": 83.56783349999932
-        },
-        "ratioP50": 1.0177846189428554,
-        "ratioP95": 1.0292988950663933,
-        "ratioP99": 1.1178854728286138,
-        "iters": 2,
-        "samples": 40
-      },
-      {
-        "name": "relation load, two levels",
-        "a": {
-          "p50": 182.12362500000017,
-          "p95": 196.355770999995,
-          "p99": 197.34197899999708,
-          "min": 180.23393750000105
-        },
-        "b": {
-          "p50": 180.71770800000377,
-          "p95": 192.7881669999988,
-          "p99": 194.64414599999873,
-          "min": 179.1580834999986
-        },
-        "ratioP50": 1.007779630538455,
-        "ratioP95": 1.0185053058780118,
-        "ratioP99": 1.013860334643706,
-        "iters": 2,
-        "samples": 40
-      }
-    ]
+    "skipped": "--compile-only"
   },
   "budget": {
     "_source": "design/03 Appendix B rows 4-5 and §1.1; design/08 §5. CI fails the build on breach (R9). Loosening any line here is a reviewed change to this file with the reason in the commit message.",
@@ -557,7 +374,7 @@
   "checks": [
     {
       "name": "compile · emitter p50 (design/03 §1.1)",
-      "measured": 3.868,
+      "measured": 4.035,
       "limit": 25,
       "unit": "µs",
       "mode": "max",
@@ -565,7 +382,7 @@
     },
     {
       "name": "compile · emitter / reference",
-      "measured": 1.03,
+      "measured": 1.07,
       "limit": 1.4,
       "unit": "",
       "mode": "max",
@@ -573,7 +390,7 @@
     },
     {
       "name": "compile · build+compile / reference",
-      "measured": 5.22,
+      "measured": 5.45,
       "limit": 12,
       "unit": "",
       "mode": "max",
@@ -581,7 +398,7 @@
     },
     {
       "name": "compile · simple select / reference",
-      "measured": 1.13,
+      "measured": 1.23,
       "limit": 2,
       "unit": "",
       "mode": "max",
@@ -589,7 +406,7 @@
     },
     {
       "name": "compile · simple selects/sec (machine-normalised, best-case)",
-      "measured": 270645,
+      "measured": 273312,
       "limit": 200000,
       "unit": "/s",
       "mode": "min",
@@ -597,7 +414,7 @@
     },
     {
       "name": "compile · bytes/op, build+compile",
-      "measured": 31120,
+      "measured": 31456,
       "limit": 32500,
       "unit": "B",
       "mode": "max",
@@ -605,7 +422,7 @@
     },
     {
       "name": "compile · bytes/op, emitter",
-      "measured": 9020,
+      "measured": 9123,
       "limit": 9900,
       "unit": "B",
       "mode": "max",
@@ -613,7 +430,7 @@
     },
     {
       "name": "compile · bytes/op, simple",
-      "measured": 6972,
+      "measured": 7220,
       "limit": 7600,
       "unit": "B",
       "mode": "max",
@@ -685,7 +502,7 @@
     },
     {
       "name": "decode · vs unchecked hand mapper (p50)",
-      "measured": 2.607,
+      "measured": 2.61,
       "limit": 2.8,
       "unit": "",
       "mode": "max",
@@ -693,7 +510,7 @@
     },
     {
       "name": "decode · vs same-checks hand mapper (p50)",
-      "measured": 1.519,
+      "measured": 1.517,
       "limit": 1.65,
       "unit": "",
       "mode": "max",
@@ -701,7 +518,7 @@
     },
     {
       "name": "decode · rows/sec (machine-normalised)",
-      "measured": 1213497,
+      "measured": 1207405,
       "limit": 1000000,
       "unit": "/s",
       "mode": "min",
@@ -709,7 +526,7 @@
     },
     {
       "name": "decode · codegen vs unchecked hand mapper (p50)",
-      "measured": 1.944,
+      "measured": 1.959,
       "limit": 2.15,
       "unit": "",
       "mode": "max",
@@ -717,7 +534,7 @@
     },
     {
       "name": "decode · codegen vs same-checks hand mapper (p50)",
-      "measured": 1.134,
+      "measured": 1.144,
       "limit": 1.3,
       "unit": "",
       "mode": "max",
@@ -725,7 +542,7 @@
     },
     {
       "name": "decode · codegen rows/sec (machine-normalised)",
-      "measured": 1636551,
+      "measured": 1578446,
       "limit": 1400000,
       "unit": "/s",
       "mode": "min",
@@ -733,224 +550,8 @@
     },
     {
       "name": "decode · codegen is faster than the closure tree",
-      "measured": 0.741,
+      "measured": 0.765,
       "limit": 0.85,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · point select by PK · p50 orm/raw",
-      "measured": 1.105,
-      "limit": 1.45,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · point select by PK · p95 orm/raw",
-      "measured": 1.353,
-      "limit": 2.2,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · point select by PK · p99 orm/raw",
-      "measured": 1.244,
-      "limit": 12,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · select 1 000 rows (12 cols, 2 joins) · p50 orm/raw",
-      "measured": 1.198,
-      "limit": 1.55,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · select 1 000 rows (12 cols, 2 joins) · p95 orm/raw",
-      "measured": 1.115,
-      "limit": 3,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · select 1 000 rows (12 cols, 2 joins) · p99 orm/raw",
-      "measured": 1.261,
-      "limit": 12,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · insert one · p50 orm/raw",
-      "measured": 1.122,
-      "limit": 1.65,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · insert one · p95 orm/raw",
-      "measured": 1.234,
-      "limit": 2.8,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · insert one · p99 orm/raw",
-      "measured": 1.604,
-      "limit": 12,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · insert 1 000 (batch) · p50 orm/raw",
-      "measured": 1.759,
-      "limit": 1.9,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · insert 1 000 (batch) · p95 orm/raw",
-      "measured": 1.875,
-      "limit": 6,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · insert 1 000 (batch) · p99 orm/raw",
-      "measured": 2.652,
-      "limit": 12,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · update by PK · p50 orm/raw",
-      "measured": 1.106,
-      "limit": 1.5,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · update by PK · p95 orm/raw",
-      "measured": 1.331,
-      "limit": 2.8,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · update by PK · p99 orm/raw",
-      "measured": 1.191,
-      "limit": 12,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · delete by PK · p50 orm/raw",
-      "measured": 0.998,
-      "limit": 1.6,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · delete by PK · p95 orm/raw",
-      "measured": 1.091,
-      "limit": 2.4,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · delete by PK · p99 orm/raw",
-      "measured": 0.719,
-      "limit": 12,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · 5-statement transaction · p50 orm/raw",
-      "measured": 1.051,
-      "limit": 1.4,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · 5-statement transaction · p95 orm/raw",
-      "measured": 1.025,
-      "limit": 2,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · 5-statement transaction · p99 orm/raw",
-      "measured": 0.932,
-      "limit": 12,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · relation load, one level · p50 orm/raw",
-      "measured": 1.018,
-      "limit": 1.25,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · relation load, one level · p95 orm/raw",
-      "measured": 1.029,
-      "limit": 1.8,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · relation load, one level · p99 orm/raw",
-      "measured": 1.118,
-      "limit": 12,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · relation load, two levels · p50 orm/raw",
-      "measured": 1.008,
-      "limit": 1.25,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · relation load, two levels · p95 orm/raw",
-      "measured": 1.019,
-      "limit": 1.8,
-      "unit": "",
-      "mode": "max",
-      "ok": true
-    },
-    {
-      "name": "e2e · relation load, two levels · p99 orm/raw",
-      "measured": 1.014,
-      "limit": 12,
       "unit": "",
       "mode": "max",
       "ok": true
@@ -1013,7 +614,8 @@
   "caveats": [
     "The `…RefRatio` gates divide by sampler.mjs's reference workload. It tracks CPU speed well and GC pressure only roughly, so the build-and-compile ratio is the noisiest line here (4.8-5.4 quiet, 5.5-6.0 at load average 20-25, and 21.6 for the pre-perf-pass code under saturation); the tight gate on that path is bytes/op, not time.",
     "`decode · row-loop dispatch only` is reported, not gated, for either builder -- see decode._notGated.",
-    "`decode.codegen.*` gates a code path that is OFF by default. It is measured on every run anyway, because design/03 §1.3's disposition is that the flag exists only as long as the benchmark says it is worth having."
+    "`decode.codegen.*` gates a code path that is OFF by default. It is measured on every run anyway, because design/03 §1.3's disposition is that the flag exists only as long as the benchmark says it is worth having.",
+    "end-to-end skipped: --compile-only"
   ],
   "ok": true
 }
