@@ -697,6 +697,29 @@ TS-only (`$` prefix — never in the IR, per D4):
 
 `.codec(c)` is the one non-`$` type-affecting modifier: it swaps the encode/decode pair **and** may change the SQL type, so it belongs in the IR.
 
+> **AS BUILT (design/12 §4 F1).** `.$default(fn)` and `.$onUpdate(fn)` are **applied**, which they
+> were not: both were recorded on `ColumnTsMeta` and read by nothing, so `Insert<>` marked a
+> `$default` column optional and the insert then omitted it — a `NOT NULL` column whose only
+> default was a `$default` failed with `23502` (design/12 §4 D finding a).
+>
+> `$default` is called **once per row**, at `.values(…)` / `.valuesMany(…)` rather than at
+> `.compile()`, because `toAst()` and `compileAll()` each build from the stored rows and a factory
+> evaluated there would run twice for a builder that is inspected and then executed — `03` §1.3's
+> "the same builder always produces the same tree" would stop being true. An explicit value wins;
+> a key present with the value `undefined` counts as absent, since that is the shape a
+> `{ ...partial }` spread produces for an optional column.
+>
+> `$onUpdate` is applied at `toAst()` (memoised, so once per builder) and only for a column
+> `.set({…})` did not already assign — doing it inside `.set()` would produce two assignments to
+> one column, which PostgreSQL rejects with 42701. Two places deliberately do **not** apply either:
+> `insertInto(t).defaultValues()`, which means the *database's* defaults and sends no values, and
+> `onConflict(…).doUpdate(…)`, whose list is the caller's chosen conflict action.
+>
+> The `$` law (D4) is intact throughout: neither reaches DDL or the migration IR. The runtime seam
+> is `TableCodecMeta.clientDefaults` / `.clientOnUpdates` in `src/query/meta.ts`, built once per
+> (registry, table) and `undefined` when no column declares one, so a schema that uses neither pays
+> a single property read on the insert path.
+
 > **AS BUILT 2026-08-28 (design/11 §3 K2a).** Eleven of the DDL-affecting rows above exist;
 > the rest are named here so the gap is a row and not an absence.
 >

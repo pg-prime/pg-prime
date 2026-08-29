@@ -28,8 +28,9 @@ const app = pgPrime({ connection: process.env['DATABASE_URL']!, schema, signal: 
 // One transaction. The statement is cancelled, the transaction rolls back, and it is never retried.
 await app.transaction(async (db) => db.sql`select 1`.execute(), { signal: ac.signal })
 
-// One statement, two spellings — `run(q, opts)` and a scoped handle.
+// One statement, three spellings — on the builder, through `run(q, opts)`, or on a scoped handle.
 const q = app.from(app.h.users, 'u').select((t) => ({ id: t.u.id }))
+await q.signal(ac.signal).execute()
 await app.run(q, { signal: ac.signal })
 await app.withOptions({ signal: ac.signal }).run(q)
 
@@ -40,12 +41,15 @@ await app.listen('cache', () => {}, { signal: ac.signal })
 ```
 
 <Aside type="note">
-There is no `.signal(s)` or `.timeout(ms)` **on the query builder**. The design notes spell them
-that way, and the shipped API does not: they are `run(q, { signal, timeoutMs })` and
-`handle.withOptions({ … })`, one level up, because the builder's own type is owned by a different
-part of the library than the session layer. The behaviour is identical; only the call site moved.
-`withOptions` on a `Db` returns a `Queryable`, so it carries the query surface but not
-`transaction()` — a signal for a whole transaction goes in `TxOptions`.
+The three spellings are one mechanism. `.signal(s)`, `.timeout(ms)`, `.outsideTransaction()` and
+`.withExecMode(mode)` on a builder are **setters**: they record a field in the same options object
+`run(q, opts)` passes and `withOptions({ … })` folds in, and the SQL is byte-identical either way.
+Where two of them say the same thing, the **call** wins over the builder and the builder wins over
+the handle — `db.run(q.timeout(250), { timeoutMs: 50 })` runs at 50 ms.
+
+They survive `.prepare()` and are overridable on the artifact, and `withOptions` on a `Db` returns a
+`Queryable`, so it carries the query surface but not `transaction()` — a signal for a whole
+transaction goes in `TxOptions`.
 </Aside>
 
 ## What an abort does depends on when it lands
@@ -176,21 +180,22 @@ Three statements, two `set_config` round trips: the first is the `BEGIN` batch, 
 statement that wanted something different, and the third statement pays one more to go back. A loop
 of ten statements sharing one timeout pays for one.
 
-The restore is written as `set_config('statement_timeout', <baseline>, true)`, and where there is
-no baseline it is `set_config('statement_timeout', NULL, true)` rather than `'0'`, because in
-PostgreSQL `0` **disables** the timeout — writing it would turn a per-statement bound into a
-per-transaction exemption for everything after it.
+The restore is written as `set_config('statement_timeout', <baseline>, true)`, and `'0'` is never
+the baseline, because in PostgreSQL `0` **disables** the timeout — writing it would turn a
+per-statement bound into a per-transaction exemption for everything after it.
 
-<Aside type="caution">
-`NULL` restores PostgreSQL's **reset value**, which is not the same thing as "whatever the session
-currently has". A GUC set with `SET` — which is what pg-prime emits for `session.statementTimeout`
-on the `connection:` path — does not become the reset value, so with **no** transaction-level
-`timeoutMs` the restore lands on the server's own default. Measured on PostgreSQL 18.3: after one
-`withOptions({ timeoutMs })` statement inside a plain `db.transaction`, `statement_timeout` reads
-`0` for the remainder of that transaction, and the session's `30s` comes back at `COMMIT`. Give the
-transaction its own `timeoutMs`, as above, or set the default server-side with
-`ALTER ROLE … SET statement_timeout = '30s'` — where it *is* the reset value and the restore has
-something to restore.
+The baseline is, in order: the transaction's own `timeoutMs` if it has one; otherwise the
+`session.statementTimeout` **pg-prime installed on this physical connection**; otherwise `NULL`.
+
+<Aside type="note">
+That middle case is the one worth knowing about, because `NULL` looks like it should cover it and
+does not. `set_config(name, NULL, true)` restores the GUC's **reset value**, and a value applied at
+session level never becomes the reset value — so restoring with `NULL` after a `.timeout(ms)` would
+land on the server's own default, which for `statement_timeout` is `0`. pg-prime therefore remembers
+what it applied per connection and puts *that* back; `NULL` is emitted only when it applied nothing,
+which is the `pool:` / `driver:` case with no `session:` and every transaction-pooler profile (where
+§3.6 refuses to set session GUCs at all). A default that came from `postgresql.conf` or
+`ALTER ROLE … SET statement_timeout = '30s'` **is** the reset value, so `NULL` restores it exactly.
 </Aside>
 
 ## `QueryCanceledError` and `QueryTimeoutError`

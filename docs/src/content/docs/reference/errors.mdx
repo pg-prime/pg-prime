@@ -200,13 +200,15 @@ matters, the answer is a transaction, and if the failure happened at `COMMIT` th
 | <a id="ConnectionError"/>`ConnectionError` | `08000` | The generic case: bytes could not be moved to or from a backend and none of the leaves matched. Log `cause` — it is the driver's own error. |
 | <a id="ConnectionRefusedError"/>`ConnectionRefusedError` | `08000` | `ECONNREFUSED`, `ENOTFOUND` or `EHOSTUNREACH`: nothing is listening at that host and port. Check the URL before anything else. |
 | <a id="ConnectionTimeoutError"/>`ConnectionTimeoutError` | `08000` | The TCP or TLS handshake did not finish in time — a firewall that drops rather than rejects, or a server that is up but not accepting. |
+| <a id="TlsError"/>`TlsError` | `08000` | TLS itself refused: a bad or self-signed certificate, a hostname mismatch, an unsupported protocol version. Distinguished by the Node error code on `cause` — `ERR_TLS_*`, `CERT_*` or `UNABLE_TO_*`. |
 | <a id="AuthenticationError"/>`AuthenticationError` | `08000` | SCRAM or MD5 failed during startup, or the server rejected the role before the connection was usable. The same credentials rejected on a *statement* are `InvalidPasswordError` instead. |
 | <a id="ConnectionTerminatedError"/>`ConnectionTerminatedError` | `08000` | The backend went away mid-statement: `ECONNRESET`, `08006`, or a `57P01` admin shutdown that arrived while a query was in flight. Retry only if the statement is idempotent. |
 | <a id="ConfigError"/>`ConfigError` | `CONFIG` | An invalid configuration, thrown **eagerly** by `pgPrime(...)` rather than at the first query, and naming the key that is wrong. Nothing in your process has connected yet when you see one. |
 
-A TLS failure — a bad certificate, a name mismatch, an unsupported protocol version — is reported as
-a `ConnectionError` whose `name` is `'TlsError'`. The class itself is not exported in this release,
-so match it with `e instanceof ConnectionError && e.name === 'TlsError'`.
+A TLS failure is a `TlsError`, which is a `ConnectionError`, so `catch (e) { if (e instanceof
+ConnectionError) … }` still sees it and `e instanceof TlsError` narrows to the certificate case.
+`e.name` is `'TlsError'` as well, and matching on that is what to do across a dual-package or
+bundler boundary where class identity cannot be relied on.
 
 ### `PoolTimeoutError`
 

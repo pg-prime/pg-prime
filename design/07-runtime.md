@@ -804,9 +804,25 @@ We reject Drizzle's design (`tx.rollback()` throws, and the promise silently res
 > `pool:` / `driver:` **only when the caller passed `session:` explicitly** — reaching into a Pool we
 > did not build to `SET` things nobody asked for is the surprise `02` §4.7 forbids, and it would put
 > a statement on the wire before every existing user's first query. And a per-statement timeout
-> inside a transaction restores the transaction's **baseline** rather than `0` when it ends:
-> `set_config('statement_timeout', NULL, true)` puts back what the session would otherwise have
-> (measured on PG 15 and 17), where `'0'` would silently disable the bound for the rest of the block.
+> inside a transaction restores the transaction's **baseline** rather than `0` when it ends, where
+> `'0'` would silently disable the bound for the rest of the block.
+>
+> **AMENDED (design/12 §4 F1).** That baseline is not `NULL`. `set_config(name, NULL, true)`
+> restores the GUC's **reset** value, and a value applied at session level — which is what the
+> `set_config` batch above installs, and what a `SET` would install — never becomes the reset
+> value. So `NULL` put back the *server's* default, which for `statement_timeout` is `0`: one
+> `.timeout(ms)` statement disabled the timeout for the remainder of its transaction, the exact
+> exemption the `'0'` spelling was rejected for. Measured on PG 17.11 (`SET
+> statement_timeout='30s'` · `BEGIN` · local `250ms` · local `NULL` · `SHOW` → `0`) and reported
+> as design/12 §4 D finding b. The baseline is now, in order: the transaction's own `timeoutMs`;
+> otherwise **the value we installed on this physical connection** (`SessionState
+> .sessionStatementTimeout`, gated on the same `configured` set `applyConnectSettings` keys on, so
+> a connection whose batch failed restores nothing); otherwise `NULL`. `NULL` is therefore still
+> emitted, and still correct, exactly where we installed nothing — `pool:`/`driver:` with no
+> `session:`, and every transaction profile, where §3.6 refuses to set session GUCs at all. The
+> server is the oracle on both sides: `test/pg/session.test.ts` reads `SHOW statement_timeout`
+> inside the transaction on a direct connection, and `test/pg/session-pooler.test.ts` proves the
+> pooler half through a real PgBouncer.
 >
 > §3.7's two exits are built, including `rollbackWith`'s exact type and `TransactionAbandonedError`
 > on a doomed handle.
@@ -1042,6 +1058,24 @@ export const SQLSTATE_CLASS_FALLBACK: Readonly<Record<string, PgPrimeErrorCtor>>
 
 Lookup order: exact SQLSTATE → class prefix → `UnknownQueryError`. That is what makes rule #3 in §4.1 true.
 
+> **AS BUILT (design/12 §4 F1).** Two corrections to §4.3, both of them the same shape — a field
+> the document calls "always present" that was not.
+>
+> `paramCount` **read `0` for every statement**. The runner passed `params: undefined` to the
+> mapper unconditionally and `paramCount` was derived from `params.length`, so the one field §4.3
+> offers in place of the values was a constant zero, and `errors.includeParams` had no effect on a
+> statement error either. There is now one source: the statement descriptor's `paramValues(opts)`,
+> built on the failure path only, from which the mapper takes the count always and the values only
+> under `includeParams`. R10 M8 and M9 are the two halves, and the first arrangement of this fix —
+> a redaction test in the runner *and* in the mapper — was itself caught by M9 as decoration:
+> deleting the runner's copy changed nothing observable, because the real guard was one function
+> away. One guard, in the layer that owns redaction.
+>
+> **`TlsError` is exported.** §4.2 lists it, `errors/map.ts` throws it for `ERR_TLS_*` / `CERT_*` /
+> `UNABLE_TO_*`, and it was in neither barrel — so it was absent from the api-snapshot goldens and
+> the only way to catch a certificate failure was `e instanceof ConnectionError && e.name ===
+> 'TlsError'`. Reported as design/12 §4 D finding d.
+
 > **AS BUILT (design/12 §3 S).** The whole §4.2 tree exists under `src/errors/`, mapped once at the
 > executor boundary from `PgDriverErrorData`. `PgPrimeError` stays the single root — it moved to
 > `src/errors/base.ts`, a module with no imports, so that the runtime classes can extend `UsageError`
@@ -1187,6 +1221,27 @@ Where it is used:
 - `db.diagnose()` bundles it with pool stats, effective GUC values, `max_connections` arithmetic (§1.2), server version, and any exec-mode downgrade that has occurred.
 
 We explicitly do **not** use PgBouncer's `SHOW POOLS` admin console: it needs admin credentials and only speaks the simple query protocol, making it a CLI diagnostic at best and not a runtime signal.
+
+> **AS BUILT (design/12 §4 F1).** The dev-mode startup check of §5.4 **never runs while the
+> application is using the pool**, which §5.4 does not say and has to.
+>
+> `diagnosePooler()` acquires a connection and, because the naive pid pair is a measured false
+> negative through an idle pooler, up to three more to create contention. Scheduled on the next
+> macrotask after the first acquire, that left one checked out *between two awaited statements*:
+> `pgPrime({ connection })` plus two sequential selects reported `{ total: 2, idle: 1 }`, which
+> reads exactly like a leaked handle and was reported as one (design/12 §4 D finding e). The
+> second-order effect was worse: on a one-backend bridge (PGlite, `08` F8) the extra socket makes
+> the transaction a *different* transaction, so a diagnostic silently changed the semantics of the
+> code it was watching — which is why design/12 §4 D had to turn `devGuard` off in every executed
+> documentation example.
+>
+> The probe is now armed on the first acquire and fires only when `poolStats` says nothing is
+> checked out and nobody is queued, re-arming every 250 ms and giving up in silence after twenty
+> tries. It therefore cannot interleave with an open transaction at all, because a transaction
+> holds its connection for its whole life. The rule is one line — **a diagnostic never opens a
+> connection while the application holds one** — and R10 M11 / M11b pin both halves: the arming
+> delay at tier 1, the gate itself on the server, where `pg_stat_activity` is counted across
+> several probe ticks while a transaction is open.
 
 > **AS BUILT (design/12 §3 S).** `POOLER_PROFILES` is exported data, one entry per mode, and a
 > tier-0 case asserts what §5.2's matrix claims: `resetQuery` is `'never'` in every profile, `listen`
@@ -1386,6 +1441,20 @@ for await (const chunk of db.copyTo(sql`copy (select …) to stdout with (format
 `COPY` requires `pg-copy-streams` (**optional peer**; `7.0.0`, 2025-05-27, maintained by `jeromew` rather than brianc — a maintenance risk worth stating in the docs). Not installed and you call it ⇒ a `ConfigError` naming the package and pointing at `insertMany` as the alternative. Documented crossover from measurement, expected around 5–10 k rows; we will publish the measured number rather than a guess.
 
 `COPY` is transaction-scoped and therefore works under transaction pooling. `statementTimeout` defaults to `null` for the duration.
+
+> **AS BUILT (design/12 §4 F1).** §6.1's and §6.2's own spellings now exist on the builder:
+> `.signal(s)`, `.timeout(ms)`, plus `.outsideTransaction()` (§1.5 layer 3) and `.withExecMode(mode)`
+> (§2.3), on `Query`, `GroupedQuery`, `SetQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery` and
+> `PreparedQuery`. design/12 §3 S shipped them handle-level because `Query` belonged to another
+> workstream that round; they are **setters over the same `RunOptions`** the handle path threads,
+> so there is no second execution path and the SQL is byte-identical (a tier-0 golden asserts it).
+> Precedence, since three levels can now say the same thing: **call > builder > handle**.
+>
+> Measured, because the concern was the type budget and not the runtime: the four are written out
+> per interface rather than behind one self-parameterised `QueryOptionMethods<Self>` mixin, and the
+> headline instantiation counts did not move on either compiler (82 028 / 133 822), nor did any
+> per-query fixture. The `.d.ts` cost is 76 358 B for `query/types.d.ts` (+4 168) and the shipped
+> `.js` +15.9 KB, both re-baselined with the account in `tools/budgets.json`.
 
 > **AS BUILT (design/12 §3 S).** `signal` composes downward from `pgPrime({ signal })` (which
 > drains the pool) through `transaction`, `run`, `stream`, `copy*` and `listen`; per-statement it is

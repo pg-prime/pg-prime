@@ -126,6 +126,10 @@ interface Query<S extends Sources, O, N = never> extends SetOps<O, readonly [unk
   $call<O2>(f: (q: this) => Query<S, O2, N>): Query<S, O2, N>
   asScalar(): Expr<O[keyof O] | null>
   as<A extends string>(name: A): CteHandle<A, O>
+  signal(signal: AbortSignal): Query<S, O, N>
+  timeout(ms: number): Query<S, O, N>
+  outsideTransaction(): Query<S, O, N>
+  withExecMode(mode: StatementMode): Query<S, O, N>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
 }
@@ -156,6 +160,16 @@ The members not shown above:
 - `toAst()` returns the AST node and `compile()` the compiled artifact. Both are pure and
   deterministic: the same builder always produces the same tree, and `compile()` is memoised on the
   instance, because a builder cannot change and so the memo cannot go stale.
+
+The last four are **per-statement options**, and every builder stage has them — `GroupedQuery`,
+`SetQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery` and `PreparedQuery` too. They are setters:
+each records a field in the same options object `run(q, opts)` passes and `handle.withOptions({ … })`
+folds in, so the SQL is byte-identical with or without them and there is no second execution path.
+`.timeout(ms)` is `SET LOCAL statement_timeout` inside a transaction and a client-side timer plus a
+`CancelRequest` outside one; `.outsideTransaction()` is the per-statement opt-out from the dev
+guard; `.withExecMode(mode)` overrides `pgPrime({ statement })` for this query. Where two levels say
+the same thing the **call** wins over the builder and the builder wins over the handle. See
+[Cancellation and timeouts](/pg-prime/guides/cancellation/).
 
 ### `GroupedQuery`
 

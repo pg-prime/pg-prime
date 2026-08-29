@@ -2062,6 +2062,181 @@ the merged tree's measurement once more), `knip.json` (one line: the `bench/comp
 
 ---
 
+### F1 — RESULT (2026-08-29)
+
+**Branch** `worktree-agent-a416304ac23cb7ee4`, on top of `ef73a1d` (all of design/12 merged). All
+five of D's "found, reproduced, NOT fixed" rows for `packages/pg-prime` — a, b, c, d, e — are fixed,
+and S's own "not done" item, the builder-level option methods, ships. Nothing in
+`packages/pg-prime-kit/**` was touched (F2's round).
+
+#### Item by item — finding, fix, test, docs
+
+| # | What was wrong | The fix | Tests | Docs |
+|---|---|---|---|---|
+| **a** | `.$default()` / `.$onUpdate()` were recorded on `ColumnTsMeta` and read by **nothing**. `Insert<>` marked a `$default` column optional and the insert then omitted it, so a `NOT NULL` column whose only default was a `$default` failed with `23502` | `TableCodecMeta` gains `clientDefaults` / `clientOnUpdates` (`src/query/meta.ts`), built once per (registry, table) and `undefined` when no column declares one. `InsertBuilder.#withClientDefaults` fills them **per row at `.values()` / `.valuesMany()` time**; `UpdateBuilder.#withOnUpdate` appends at `toAst()` for columns `.set()` did not assign | tier 0: 8 cases in `test/query/insert.test.ts` + 5 in `test/query/update.test.ts` (goldens, per-row evaluation, explicit-wins, `undefined`-as-absent, `.compile()` purity, `defaultValues()` untouched, `doUpdate()` untouched, the mock wire). tier 1: 4 round-trip cases in `test/live/session.test.ts` incl. the `compileOnly` golden | `guides/schema` — the caution replaced by the two evaluation rules and a note naming the two places that deliberately do not apply them |
+| **b** | `set_config('statement_timeout', NULL, true)` restores the GUC's **reset** value, which a session-level `SET` never becomes — so after one `.timeout(250)` the rest of the transaction ran with **no** timeout | `SessionState.sessionStatementTimeout` records what we install; `ConnRunner.#restoreValue` puts *that* back when it was applied to **this physical connection** (same `configured` set, keyed on `serverParameters`, that `applyConnectSettings` uses), and `NULL` only when we installed nothing | tier 0: 3 cases in `test/session/session.test.ts` (session value restored · `NULL` when the batch failed · `NULL` under a transaction profile). tier 2, R18: 3 cases in `test/pg/session.test.ts` reading `SHOW` on a direct connection, incl. one that proves the restored bound still **kills** a `pg_sleep(3)`; 1 case in `test/pg/session-pooler.test.ts` through PgBouncer | `guides/cancellation` — the caution replaced by the baseline order and a note on why `NULL` is still right where it is right |
+| **c** | `QueryError.paramCount` was always `0` (`runner.ts` passed `params: undefined`), so `errors.includeParams` had no effect on a statement error either | `StatementDescriptor.paramValues(opts)` (required; `CompiledStatement` rebuilds the `Bind` array, `raw.ts` returns the ones it sent), built on the **failure path only**. `mapDriverError` takes the count from it always and the values only under `includeParams` — **one** guard, in the layer that owns redaction | tier 0: 3 cases in `test/session/session.test.ts` (count with redaction on · values under `includeParams` · a raw `` db.sql`…` ``). tier 2: 2 cases on a real `23505` | `reference/errors` and `guides/errors` already claimed "always present"; they are now true, and the errors reference's example is unchanged |
+| **d** | `TlsError` was declared, thrown, and exported from neither barrel — not in the api-snapshot, matchable only by `e.name` | exported from `src/errors/index.ts` and the root barrel; `api-snapshot` + both `types@<5.9` stubs regenerated | tier 0: one case mapping a real `UNABLE_TO_VERIFY_LEAF_SIGNATURE` carrier through `mapError` and asserting the class, the base class and the name | `reference/errors` — a row in the connection-error table with an anchor (docs-coverage demanded it), and the "not exported in this release" paragraph rewritten |
+| **e** | `pgPrime({ connection })` + two awaited statements read `{ total: 2, idle: 1 }` | **The statement path was never the problem** — see below. `07` §5.4's dev-mode startup probe was firing on the macrotask after the first acquire and holding a pooled connection across the caller's second statement. It is now armed there and fires only when `poolStats` says nothing is checked out and nobody is queued, re-arming every 250 ms, twenty times, then silent | tier 1: 2 cases with the `connection:` shape through the PGlite bridge (`{ total: 1, idle: 1 }` after two awaited statements with the dev guard **on**; the transaction's own checkout and return). tier 2: 2 cases counting `pg_stat_activity` by `application_name`, one of them across several probe ticks while a transaction is open | `guides/cancellation`'s pool table needed no change; `07` §5.4 gains the AS BUILT amendment |
+| **S's open item** | `.signal()` / `.timeout()` / `.outsideTransaction()` / `.withExecMode()` existed only handle-level | a `run: QueryRunOptions` field on the five builder state records, four setters per builder (`Select`, `SetOp`, `Insert`, `Update`, `Delete`) and on `PreparedQueryImpl`, `withRunOption` / `mergeRun` in `terminals.ts`, threaded into the same `Runner.run(compiled, opts)` the handle path uses. `Runner.runChunked` gained the same optional parameter | tier 0: 8 cases in `test/session/session.test.ts` incl. the byte-identical-SQL golden and the merge case; 9 type probes + 3 `@ts-expect-error` in `test/query/types/session.probe.ts`. tier 2: 4 cases, one per option, incl. `pg_prepared_statements` as the oracle for `.withExecMode('named')` | `guides/cancellation` — the "there is no `.signal(s)` on the builder" note replaced by the precedence rule; `reference/query` — the four in `Query`'s signature block plus a paragraph |
+
+#### The finding that was misdiagnosed, and what it actually was
+
+D's row e reads "a pooled handle keeps a connection checked out after `await` … the lazy-init path".
+Reproduced exactly (`{"total":2,"idle":1}`), and then measured with one variable changed:
+
+```
+dev  (default)   after stmt 1: {"total":2,"idle":1}   after stmt 2: {"total":2,"idle":1}   after 2 s: {"total":3,"idle":3}
+devGuard: false  after stmt 1: {"total":1,"idle":1}   after stmt 2: {"total":1,"idle":1}   after 2 s: {"total":1,"idle":1}
+```
+
+**The statement path releases its connection before its promise resolves, and always did.** What
+held one was `07` §5.4's startup probe: `diagnosePooler()` acquires a connection and — because S
+measured the naive pid pair to be a false negative through an idle pooler — up to three more to
+create contention. Fired on the next macrotask after the first acquire, it overlapped the caller's
+second statement.
+
+That is worth more than a tidy-up, because the same diagnostic is why design/12 §4 D had to write
+`devGuard: false` into every executed documentation example: on PGlite the extra socket makes the
+transaction a *different* transaction (`08` F8), so a diagnostic was silently changing the semantics
+of the code it was watching. Two workstreams hit the same wall from opposite sides. The rule that
+closes it is one line and it is checkable — **a diagnostic never opens a connection while the
+application holds one** — and it also means the probe can never interleave with an open transaction,
+because a transaction holds its connection for its whole life.
+
+#### Numbers
+
+| Gate | Result |
+|---|---|
+| `pnpm test` (tier 0) | **1 012 passed / 48 files**, 3.99 / 4.23 / 4.29 / 4.45 s across four runs (baseline 981 / 3.82–4.73) |
+| `pnpm test:live` (tier 1) | **1 789 passed + 6 skipped / 82 files**, 28.2 s (baseline 1 752 + 6) |
+| tier 2, PG 17.11 + PgBouncer 1.25 | **1 861 passed, zero skips / 90 files**, 13.5 s (baseline 1 812) |
+| `pnpm lint` | exit 0; 65 warnings, **the same 65** the branch point produces (measured by stashing) |
+| `pnpm format:check` | green |
+| `pnpm typecheck` | green, both packages |
+| `pnpm build` + `pnpm api-snapshot` | one name added (`TlsError`), both `types@<5.9` stubs regenerated |
+| `pnpm package:check` | **8/8 size gates, 4/4 tree-shake (module sets unchanged), emit parity 0 FAIL, `check:dts` on 5.9.3 + 7.0.2, publint, attw, pack smoke** |
+| `pnpm bench:types` | green. **Headline instantiations unchanged on both compilers: 82 028 (TS 5.9.3) / 133 822 (TS 7.0.2)**; every per-query fixture unchanged (94 · 177 · 252 · 8 739.8 · 937); largest movement anywhere in the report **+0.75 %** on a schema-declaration arm (55 705 → 56 124) |
+| `pnpm bench:compile` | green including the statement-path gate: `production / pre-session path` **1.932 / 2.006 / 2.027** (budget 2.40, P measured 1.917–2.077 — unchanged) and its byte twin **3 112–3 113 B** (budget 3 400, P measured 3 121) |
+| `pnpm docs:check` | `docs:typecheck` 526 blocks / 45 pages · `docs:examples` 83 examples / 26 pages, 12.1 s · `docs:coverage` **1 182 / 1 182 (100 %)** · `docs:build` 46 pages |
+
+Budgets moved, each at the measurement with the account in the JSON:
+
+| Line | Was | Now | Measured | Why |
+|---|---|---|---|---|
+| `packages/pg-prime.largestDtsBytes` | 72 809 | **76 358** | 76 358 | the 28 option-method signatures on seven interfaces; set AT the measurement, as the previous note requires |
+| `packages/pg-prime.jsBytes` | 903 168 | **919 552** | 918 630 | +15.9 KB: the setters, the `run` field through five state records and every terminal, the client-default application, `#restoreValue`, the idle-gated probe, and the comments that say why (tsc keeps comments) |
+| `treeshake.connect-one-select` | 72 704 | **73 728** | 72 983 | +864 B min+gz, **module set unchanged** |
+| `treeshake.full-crud-tx` | 72 704 | **73 728** | 73 234 | +885 B |
+| `treeshake.root-import-all` | 79 872 | **80 896** | 80 140 | +905 B |
+| `bench/types` `packageDtsBytes` | 537 600 | **550 912** | 549 122 | +11 579 B, all of it the option methods' declarations |
+
+One of those is a decision rather than an arithmetic step. `withRunOption` started life in
+`src/query/builder-state.ts`, which is **types only** at runtime; one exported value there put
+`builder-state.js` into all three tree-shake bundles (+305 B on `connect-one-select`, and three
+`expected-modules.json` diffs). It lives in `./terminals.ts` instead, which is already in every
+graph, so the module-set goldens — the thing design/08 §2.4 step 3 says actually catches
+regressions — did not move at all.
+
+#### Divergences from the brief, with reasons
+
+| Brief | Built | Why |
+|---|---|---|
+| e: "a connection is held between statements (the lazy-init path)" and "fix it so an autocommit statement releases its connection before its promise resolves" | The autocommit statement already did. The fix is in `07` §5.4's dev-mode startup probe | Measured both ways in one script with one variable changed (`devGuard`), printed above. The observable the brief names is fixed and pinned at both tiers; the cause is named honestly |
+| e, tier 1: "pin it … through the PGlite bridge" | Two cases pin the `connection:`-shape observable at tier 1; the **gate** itself is pinned at tier 2 only | Measured: on PGlite the probe's connection is refused by the bridge before `pg` emits `connect`, so a tier-1 test of the gate passes with the gate removed — three runs out of three (R10 M11's first version). A test that cannot fail is worse than no test, so it was deleted and the reason left in its place. R18 says the server is the oracle for this class of claim anyway |
+| `.timeout(ms)` on the builder | `timeout(ms: number)` only — no `timeoutStrategy` argument | Four setters is the surface `07` §6.1/§6.2 name. `timeoutStrategy` stays on `withOptions`/`run`, where it already is, rather than growing an overload on seven interfaces to carry a flag two people will use |
+| — | `$onUpdate` is **not** applied to `onConflict().doUpdate()` | That list is the upsert's conflict action — the columns a caller chose to overwrite on a collision, usually a subset. Adding one silently changes what an upsert writes. `$onUpdate` means `UPDATE`, and a tier-0 case pins the refusal |
+| — | `$default` is **not** applied to `defaultValues()` | `insert into … default values` means the *database's* defaults and sends no values at all; filling it would make the two spellings the same statement |
+| — | `MapOptions.paramCount` was added and then removed again | R10 M8: with `params` passed unconditionally the count is derivable from it, and a second source for the same number is a second thing that can disagree. One source |
+| c: "values only under `includeParams`, redaction per `07` §4.3" | The **values are built** on the failure path whatever the policy says; only publishing is gated | R10 M9: with the test duplicated in the runner *and* in `map.ts`, deleting the runner's copy changed nothing observable — it read like a policy and was not one. The array is built next to an `Error` constructor, on a path that has already lost, and nothing retains it |
+| — | `design/05` §6.2 gained an AS BUILT note as well as `07` | The `$` law's two runtime members are specified there, and "recorded but never called" was a statement about `05`'s table |
+
+#### R10 — sixteen mutations, sixteen caught, three survived first
+
+`node packages/pg-prime/test/session/fix-mutations.mjs` (`PG_PRIME_TEST_URL` for the tier-2 rows;
+they skip **loudly** without it, R19). Every fix this round is the same shape — *a feature that was
+recorded and never applied* — so every mutation undoes exactly one application and asks whether
+anything notices.
+
+| # | Mutation | Caught by |
+|---|---|---|
+| M1 | `meta.ts` stops carrying `defaultFn` — the exact pre-round state | tier 0 · insert |
+| M2 | the `$default` factory runs once for the batch instead of once per row | tier 0 · insert |
+| M3 | an explicit `undefined` counts as a value, so a `NOT NULL` column gets NULL | tier 0 · insert |
+| M4 | the filled value never reaches the column list, so the statement omits it again | tier 0 · insert |
+| M5 | `$onUpdate` overrides an explicit `.set()` — two assignments to one column, 42701 | tier 0 · update |
+| M6 | the timeout restore goes back to `NULL` | tier 0 · session |
+| M6b | the same mutation, asked of the server — `SHOW` is the oracle (R18) | tier 2 · `test/pg/session.test.ts` |
+| M7 | a connection whose GUC batch **failed** is told to restore a value it never had | tier 0 · session |
+| M8 | the runner passes no params — finding c exactly, and `paramCount` reads 0 again | tier 0 · session |
+| M9 | the bind values are published whatever the redaction policy says | tier 0 · session |
+| M10 | `TlsError` leaves the root barrel again | `pnpm build && pnpm api-snapshot:check` |
+| M11 | the probe goes back to firing on the macrotask after the first acquire, ungated | tier 1 · live session |
+| M11b | only the **gate** removed, leaving the delay | tier 2 · `pg_stat_activity` |
+| M12 | `.timeout(ms)` is a setter that sets nothing | tier 0 · session |
+| M13 | a second setter replaces the first instead of merging | tier 0 · session |
+| M14 | a prepared artifact forgets the options the builder that made it carried | tier 0 · session |
+
+**Three survived their first run, and all three changed the code rather than the test.**
+
+- **M9** survived because the `includeParams` test existed in *two* places — the runner and
+  `map.ts` — so deleting one changed nothing a caller could see. The runner's copy was deleted:
+  one guard, in the layer that owns redaction. That made **M8** survive in turn (with `params`
+  always passed, `paramCount` was derivable from it), so the separate `paramCount` argument went
+  too, and M8 was re-pointed at the line that caused finding c in the first place — `params:
+  undefined`.
+- **M11** survived at tier 1 in its first form (gate removed, delay kept) because two awaited
+  statements are over long before the first 250 ms tick: the *delay* was doing the work the test
+  attributed to the *gate*. Two consequences, both recorded above — the mutation is now the
+  faithful undo of the pre-round scheduling, and the tier-1 case that could only have tested the
+  gate was deleted rather than left as a test that cannot fail.
+
+#### Not done, and uncertain
+
+- **The `pg_stat_activity` tier-2 case reads through `db.outsideTransaction()`**, which is the dev
+  guard being right: a statement on the root handle inside a transaction *does* run on a different
+  connection, and that is exactly what makes it a usable oracle here. It failed once without the
+  opt-out, in a full-suite run and not in a single-file one, because the guard's
+  `AsyncLocalStorage` is process-global and only armed once some earlier file has opened a
+  transaction. Worth knowing before writing the next such test.
+- **`.$default()` is evaluated at `.values()` time, which is a decision and not obviously the only
+  one.** Drizzle evaluates at query build; evaluating at `.compile()` would let a builder held
+  across two executions produce two different timestamps, and would make `.compile()` impure. The
+  cost is that a builder stored in a module constant and executed repeatedly reuses its first
+  value — documented on `guides/schema`, and the reason is in `insert.ts`.
+- **`localSettings: { statement_timeout: … }` is not a timeout baseline.** `TxOptions.timeoutMs` is,
+  and a raw GUC spelling in `localSettings` is invisible to `#restoreValue`, so a `.timeout(ms)`
+  inside such a transaction restores the session value rather than the local one. It was that way
+  before this round too; `timeoutMs` is the supported spelling and is what the docs use.
+- **The dev-mode probe still perturbs the pool, once, when the pool is quiet.** `{ total: 3, idle:
+  3 }` two seconds after an idle handle's first statement, in development only. That is `07` §5.4's
+  documented trade at a time nobody is looking; making it zero means either dropping the
+  behavioural probe for the hostname heuristic alone (a real loss on a non-obvious host) or opening
+  connections outside the pool (which `pg_stat_activity` would see anyway). Recorded rather than
+  done.
+- **`bench:runtime`'s end-to-end half was not re-run**; only `bench:compile`, which is what carries
+  the `statement-path` gate this round could plausibly move. R21's rule stands: the runner's
+  distribution is the gate, and nothing here re-sized an e2e budget.
+- **No number in this section is from the runner.** Same caveat P recorded: every measurement is
+  from the design machine (MacBook Pro 18,1, Node 24.14.1, PostgreSQL 17.11 on `:54334` with
+  PgBouncer 1.25 on `:56434`).
+
+#### Conflict surface for the integrator
+
+Changed outside `packages/pg-prime/**` and `docs/**`: `tools/api-snapshot/pg-prime.json` (one name,
+three lists), `tools/budgets.json` (`largestDtsBytes`, `jsBytes`, the three treeshake budgets and
+their `_measured` block, plus three `_overDesign` accounts), `bench/types/budget.json`
+(`packageDtsBytes` and its note), `bench/types/report.json` and `bench/runtime/report.json`
+(regenerated), `design/05-schema-api.md` (one AS BUILT block after §6.2's `$` table),
+`design/07-runtime.md` (four notes: §3.6 AMENDED, §4.3, §5.4, §6.1/§6.2), `design/12` (this
+section). **Not** touched: `packages/pg-prime/src/schema/**` — including `column.ts`, which F2 also
+edits — `packages/pg-prime-kit/**`, `ci.yml`, `ci-nightly.yml`, `knip.json`, `package.json`,
+`pnpm-lock.yaml`, `.oxfmtrc.json`. F2's `tools/budgets.json` `.js` line (905 216) and
+`bench/types/budget.json` `packageDtsBytes` (539 648) are the same two lines this round moves, so
+both need the ceil-to-1 KB rule re-applied once to the merged tree's measurement.
+
+---
+
 ## 5. Definition of done — v1 completion
 
 - [ ] `07` §0's snippet runs unchanged on a direct connection and through PgBouncer transaction mode; a

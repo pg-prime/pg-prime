@@ -256,12 +256,22 @@ column optional on insert; `.$onUpdate(fn)` records a value for update. Neither 
 and neither emits a trigger — the migration generated for a column carrying only a `.$default()` has
 no default in it at all.
 
-<Aside type="caution">
-On this release the two functions are **recorded but never called**. `Insertable` marks a
-`.$default()` column optional, and the insert builder then omits the column from the statement
-entirely, so a `NOT NULL` column whose only default is a `.$default()` fails at insert with `23502`.
-Until the builder applies them, give such a column a DDL default with `.default()` or
-`.defaultSql()`, or pass the value explicitly.
+`.$default(fn)` is called **once per row**, when you write the row — at `.values(...)` /
+`.valuesMany(...)`, not at `.compile()`. That is what keeps `.compile()` pure: a builder you inspect
+and then execute produces one statement with one set of binds, and a bulk insert of a thousand rows
+calls the factory a thousand times rather than once. A value you pass explicitly always wins, and a
+key present with the value `undefined` counts as absent — `Insertable` marks the column optional, so
+that is how a caller spells "I have nothing for this".
+
+`.$onUpdate(fn)` is called once per `update(...)` builder, at `toAst()`, and only for a column the
+`.set({...})` did not already assign. Assigning it yourself wins; PostgreSQL allows one assignment
+per column per `UPDATE`, so there is no version of this that could do both.
+
+<Aside type="note">
+Two places deliberately do **not** apply them. `insertInto(t).defaultValues()` means *the database's*
+defaults and sends no values at all, and `onConflict(...).doUpdate(...)` is the upsert's conflict
+action — the columns you chose to overwrite on a collision, usually a subset — where adding one
+silently would change what the upsert writes. `$onUpdate` means `UPDATE`.
 </Aside>
 
 ### Identity columns
