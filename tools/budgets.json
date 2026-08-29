@@ -17,7 +17,7 @@
       "dtsWarnBytes": 768000,
       "dtsFiles": 200,
       "largestDtsBytes": 72809,
-      "jsBytes": 903168,
+      "jsBytes": 905216,
       "zeroDependencies": true,
       "optionalPeers": ["pg"]
     },
