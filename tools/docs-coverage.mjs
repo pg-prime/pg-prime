@@ -21,7 +21,7 @@ import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { CONTENT, ROOT, readAllPages } from './docs-blocks.mjs'
+import { ROOT, readAllPages } from './docs-blocks.mjs'
 
 const WRITE = process.argv.includes('--write')
 /** `--missing <entry>` prints one name per line, for whoever is writing that page. */
@@ -58,7 +58,9 @@ for (const page of pages) {
   for (const key of declared) {
     const entry = entries.get(key)
     if (!entry) {
-      failures.push(`${page.page}: apiEntry '${key}' is not an entry point in the api-snapshot goldens`)
+      failures.push(
+        `${page.page}: apiEntry '${key}' is not an entry point in the api-snapshot goldens`,
+      )
       continue
     }
     entry.pages.push(page.page)
@@ -97,7 +99,9 @@ for (const entry of entries.values()) {
     failures.push(
       `${entry.spec}: ${missing.length} exported name(s) have no reference entry:\n      ` +
         head +
-        (missing.length > 30 ? `, … (+${missing.length - 30} more; \`node tools/docs-coverage.mjs --missing ${entry.spec}\` lists them)` : ''),
+        (missing.length > 30
+          ? `, … (+${missing.length - 30} more; \`node tools/docs-coverage.mjs --missing ${entry.spec}\` lists them)`
+          : ''),
     )
   }
 }
@@ -132,7 +136,11 @@ for (const page of pages) {
     const expected = block.text.replace(/\s+$/, '')
     if (actual === expected) continue
     if (WRITE) {
-      edits.push({ from: block.bodyLine - 1, to: block.bodyLine - 1 + block.text.split('\n').length, text: actual })
+      edits.push({
+        from: block.bodyLine - 1,
+        to: block.bodyLine - 1 + block.text.split('\n').length,
+        text: actual,
+      })
       continue
     }
     failures.push(
@@ -170,15 +178,19 @@ const planSrc = readFileSync(join(ROOT, 'packages/pg-prime-kit/src/plan/plan.ts'
 const rulesSrc = readFileSync(join(ROOT, 'packages/pg-prime-kit/src/lint/rules.ts'), 'utf8')
 const severityBlock = /const HAZARD_SEVERITY[^{]*\{([\s\S]*?)\n\};/.exec(planSrc)
 if (!severityBlock) {
-  failures.push('docs-coverage: could not find HAZARD_SEVERITY in packages/pg-prime-kit/src/plan/plan.ts')
+  failures.push(
+    'docs-coverage: could not find HAZARD_SEVERITY in packages/pg-prime-kit/src/plan/plan.ts',
+  )
 }
 const hazardCodes = new Set(
   [...(severityBlock?.[1] ?? '').matchAll(/([A-Z]{2}\d{3}):/g)].map((m) => m[1]),
 )
 const styleCodes = new Set(
-  [...(/STYLE_CODES[^=]*=\s*\[([^\]]*)\]/.exec(rulesSrc)?.[1] ?? '').matchAll(/"([A-Z]{2}\d{3})"/g)].map(
-    (m) => m[1],
-  ),
+  [
+    ...(/STYLE_CODES[^=]*=\s*\[([^\]]*)\]/.exec(rulesSrc)?.[1] ?? '').matchAll(
+      /"([A-Z]{2}\d{3})"/g,
+    ),
+  ].map((m) => m[1]),
 )
 const allCodes = new Set([...hazardCodes, ...styleCodes])
 
@@ -196,31 +208,37 @@ for (const page of pages) {
 }
 
 if (documented.size === 0) {
-  failures.push('docs-coverage: no hazard-code table found — expected rows of the form `| <a id="LK101"/> `LK101` | warn | … |`')
+  failures.push(
+    'docs-coverage: no hazard-code table found — expected rows of the form `| <a id="LK101"/> `LK101` | warn | … |`',
+  )
 }
 for (const code of allCodes) {
   const row = documented.get(code)
   if (!row) {
-    failures.push(`hazard code ${code} is implemented by the kit and has no row in the hazard-code table`)
+    failures.push(
+      `hazard code ${code} is implemented by the kit and has no row in the hazard-code table`,
+    )
     continue
   }
   const expected = isStyleCode(code) ? 'off' : hazardSeverity(code)
   if (row.severity !== expected) {
-    failures.push(`${row.where}: hazard ${code} is documented as \`${row.severity}\`; the kit says \`${expected}\``)
+    failures.push(
+      `${row.where}: hazard ${code} is documented as \`${row.severity}\`; the kit says \`${expected}\``,
+    )
   }
 }
 for (const code of documented.keys()) {
   if (!allCodes.has(code)) {
-    failures.push(`${documented.get(code).where}: hazard code ${code} is documented and the kit does not implement it`)
+    failures.push(
+      `${documented.get(code).where}: hazard code ${code} is documented and the kit does not implement it`,
+    )
   }
 }
 
 // ── 4. Internal links ────────────────────────────────────────────────────────
 // Astro does not fail a build on a dead internal link, and this site has hundreds of them. The
 // slug set is the pages themselves, so a renamed page fails here rather than 404ing in production.
-const slugs = new Set(
-  pages.map((p) => p.page.replace(/\.mdx?$/, '').replace(/(^|\/)index$/, '')),
-)
+const slugs = new Set(pages.map((p) => p.page.replace(/\.mdx?$/, '').replace(/(^|\/)index$/, '')))
 const LINK = /\]\((\/pg-prime\/[^)\s]*)\)/g
 let links = 0
 for (const page of pages) {
@@ -233,11 +251,12 @@ for (const page of pages) {
     if (fence) continue
     for (const m of page.lines[i].matchAll(LINK)) {
       links++
-      const target = m[1].replace(/^\/pg-prime\//, '').replace(/#.*$/, '').replace(/\/$/, '')
+      const target = m[1]
+        .replace(/^\/pg-prime\//, '')
+        .replace(/#.*$/, '')
+        .replace(/\/$/, '')
       if (slugs.has(target)) continue
-      failures.push(
-        `${page.page}:${i + 1}: link to /pg-prime/${target}/ — no page has that slug`,
-      )
+      failures.push(`${page.page}:${i + 1}: link to /pg-prime/${target}/ — no page has that slug`)
     }
   }
 }

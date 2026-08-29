@@ -118,13 +118,11 @@ so the two plans cannot silently diverge. See [Proof and witness](/pg-prime/conc
 
 ### Tier 4, refused
 
-`--offline` reaches the ladder and gets a typed error and exit `1`:
+`--offline` (and `--shadow none`) reaches the ladder and gets a typed refusal, printed under
+`REFUSED:` with exit `1`. The message is:
 
-```text frame="terminal"
-shadow tier 4 (--offline) is not implemented: the desired state cannot be normalized
-without a PostgreSQL to load it into, so a plan generated offline would compare human
-DDL against catalog DDL and diff forever. Use --shadow <url>, a role with CREATEDB, or
-the temp-schema tier.
+```text wrap
+shadow tier 4 (--offline) is not implemented: the desired state cannot be normalized without a PostgreSQL to load it into, so a plan generated offline would compare human DDL against catalog DDL and diff forever. Use --shadow <url>, a role with CREATEDB, or the temp-schema tier.
 ```
 
 This is the release's answer, not an omission.

@@ -3,4 +3,199 @@ title: LISTEN and NOTIFY
 description: Subscriptions, the dedicated connection, reconnection, and the gap event.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+PostgreSQL's `LISTEN`/`NOTIFY` is a publish/subscribe channel inside the database: a transaction
+commits, a `NOTIFY` goes out, and every session that has said `LISTEN` on that channel gets a
+message. It is the cheapest way to make one process tell another that something changed, and it
+has exactly one property you must design around — **it is at-most-once**. A notification published
+while you were disconnected is gone. There is no queue, no replay and no acknowledgement.
+
+pg-prime therefore does two things no wrapper of `pg` does by default: it keeps the listening
+connection off the pool, and it tells you when you missed something.
+
+## Subscribing
+
+{/* docs: use=blog */}
+```ts title="subscribe.ts"
+const sub = await db.listen('post_published', (payload, ctx) => {
+  console.log(`${ctx.channel} #${ctx.processId}: ${payload}`)
+})
+
+console.log(sub.channel)
+// post_published
+
+// `close()` sends UNLISTEN and, when it was the last subscription, closes the connection.
+await sub.close()
+```
+
+`db.listen` resolves once the `LISTEN` is on the wire, so a `NOTIFY` issued after it has returned
+cannot be missed. The `Subscription` it gives back has `close()` (and
+`[Symbol.asyncDispose]()`, so `await using sub = await db.listen(…)` works) plus three events:
+
+| Event | Payload | Fires when |
+|---|---|---|
+| `reconnect` | `{ attempt, downMs }` | the connection was lost and has been re-established |
+| `gap` | `{ downMs }` | immediately after a reconnect, once every channel has been re-`LISTEN`ed |
+| `error` | the mapped error | a reconnect attempt failed, or your own handler threw |
+
+`on(...)` returns an unsubscribe function, like `db.observe`.
+
+## One dedicated connection, off the pool
+
+A connection holding `LISTEN` is pinned for its lifetime. Taking it from the pool silently shrinks
+`max` and eventually starves the application — and with `max: 1`, which is what every serverless
+preset sets, the *first* subscription deadlocks the process. So a `Db` owns **one dedicated
+connection outside the pool**, shared by every channel, reference-counted: opened on the first
+subscription, and closed when the last one goes away. Two channels are one extra backend in
+`pg_stat_activity`, not two, and none after the last `close()`.
+
+That connection comes from an optional driver seam, `PgDriver.connect?()`. The `pg` adapter
+implements it from the same configuration your pool was built from, so `connection:` needs nothing
+extra. An adapter that does not implement it falls back to holding a pool checkout for the
+subscription's lifetime — which costs one slot and says so, because §6.5's objection was to doing
+that *silently*.
+
+## Behind a transaction pooler
+
+A transaction pooler reassigns the server connection between transactions, so a `LISTEN`
+registered on one is delivered to nobody. pg-prime does not pretend otherwise:
+
+- with `directConnection` configured, `db.listen()` is routed there **automatically** — by feature,
+  not by call site. You never pick a connection;
+- without it, `db.listen()` throws `UnsupportedInPoolerModeError` naming `directConnection` and
+  what to point it at.
+
+`db.notify()` needs none of this. It is one statement inside whatever transaction you are already
+in, so it works in **every** profile, including the two where `listen()` cannot. The compatibility
+matrix is asymmetric and this is the asymmetry — see [poolers](/pg-prime/operations/poolers/).
+
+## Reconnection, and the gap
+
+When the connection drops — a failover, a `pg_terminate_backend`, a network blip — pg-prime
+reconnects with **full-jitter** backoff (`sleep(random(0, min(30s, 100ms × 2 ** (attempt - 1))))`),
+re-`LISTEN`s on every channel, and only then emits `reconnect` and `gap`. The order is deliberate:
+a reconcile started from the `gap` handler cannot miss a notification published between the
+re-subscribe and the callback.
+
+<Aside type="caution">
+**A `LISTEN`-based cache invalidation that does not handle `gap` is incorrect.** After a reconnect
+you have missed every notification published while the connection was down, and nothing will ever
+tell you what they were. A handler that only processes the ids it is given will serve stale data
+until the next unrelated write happens to touch the same key — which is a bug that reproduces once
+a month in production and never in a test. The only safe response to `gap` is a **full refresh**:
+drop the cache, re-read the watermark, re-poll the table. Treat `gap` as "you were offline", not as
+a diagnostic.
+</Aside>
+
+The shape to copy:
+
+{/* docs: use=blog no-run */}
+```ts title="invalidate-cache.ts" no-run
+// no-run: delivery needs two backend sessions. PGlite multiplexes every socket onto one backend,
+// so a NOTIFY published here is never delivered to the listener — this pattern is tier 2.
+const cache = new Map<string, string>()
+
+async function refreshAll(): Promise<void> {
+  cache.clear()
+  const rows = await db
+    .from(db.h.posts, 'p')
+    .select((t) => ({ id: t.p.id, title: t.p.title }))
+    .execute()
+  for (const row of rows) cache.set(String(row.id), row.title)
+}
+
+async function refreshOne(id: string): Promise<void> {
+  const [row] = await db
+    .from(db.h.posts, 'p')
+    .where((t, { eq }) => eq(t.p.id, BigInt(id)))
+    .select((t) => ({ title: t.p.title }))
+    .execute()
+  if (row === undefined) cache.delete(id)
+  else cache.set(id, row.title)
+}
+
+await refreshAll()
+
+const sub = await db.listen('post_changed', (payload) => void refreshOne(payload))
+
+// The correctness feature. Anything less than a full refresh here is a stale cache.
+sub.on('gap', (info) => {
+  console.warn(`pg-prime: LISTEN was down for ${info.downMs} ms; refreshing everything`)
+  void refreshAll()
+})
+
+sub.on('error', (e) => console.error('subscription error', e))
+```
+
+`reconnect` is the same moment reported for metrics rather than correctness: `attempt` tells you
+how hard it was, `downMs` how long you were blind. If you only handle one of the two, handle `gap`.
+
+## Publishing
+
+`db.notify(channel, payload)` compiles to `select pg_notify($1, $2)` — a function call with two
+**bind parameters**, never `NOTIFY chan, 'literal'`. The SQL form needs identifier quoting for the
+channel and literal escaping for the payload, which is two injection surfaces for no benefit; a
+payload containing `'); drop table x; --` is just a string here.
+
+It is available on every handle, so a `Tx` can publish inside the transaction that made the change.
+That is usually what you want: PostgreSQL **queues** notifications until commit, so subscribers see
+the notification only if the transaction that sent it committed, and never see one from a
+transaction that rolled back.
+
+{/* docs: use=blog,blog-ddl no-run */}
+```ts title="notify-on-commit.ts" no-run
+// no-run: as above — the listener would be the same backend on PGlite, so nothing is delivered.
+await db.transaction(async (tx) => {
+  const [post] = await tx
+    .insertInto(tx.h.posts)
+    .values({ authorId: 1n, title: 'Hello', body: '…', published: true })
+    .returning((t) => ({ id: t.posts.id }))
+    .execute()
+
+  // Queued here; delivered at COMMIT. If this transaction rolls back, nothing is ever sent.
+  await tx.notify('post_changed', String(post!.id))
+})
+```
+
+### The payload limit is 8000 bytes, exclusive
+
+PostgreSQL's own check is `strlen(payload) >= NOTIFY_PAYLOAD_MAX_LENGTH`, and that constant is
+8000 — so **8000 bytes is already too long and 7999 is the largest that works**. pg-prime enforces
+the same bound client-side, as a `UsageError`, rather than letting the server produce a `22023`
+from three layers down. The exported constant is `MAX_NOTIFY_PAYLOAD_BYTES`, and it is the
+exclusive bound it really is.
+
+{/* docs: use=blog */}
+```ts title="payload-limit.ts"
+import { MAX_NOTIFY_PAYLOAD_BYTES, UsageError } from 'pg-prime'
+
+console.log(MAX_NOTIFY_PAYLOAD_BYTES)
+// 8000
+
+await db.notify('big', 'x'.repeat(7999)) // the largest payload PostgreSQL accepts
+
+const err = await db.notify('big', 'x'.repeat(8000)).catch((e: unknown) => e)
+console.log(err instanceof UsageError, (err as Error).message.includes('8000 bytes'))
+// true true
+```
+
+The limit is measured in **bytes**, not characters, so a payload of emoji runs out four times
+sooner than one of ASCII. The advice everybody arrives at eventually: **send an id, not a
+document.** The listener can read the row, and the row is the version of the truth that survives a
+`gap`.
+
+### Channel names
+
+A channel is a PostgreSQL identifier, so `LISTEN` takes it quoted rather than bound. pg-prime
+quotes it, and refuses the two cases where quoting cannot save you: a name containing a NUL byte
+(it reaches the wire as a C string and would be silently truncated), and a name longer than 63
+bytes (PostgreSQL truncates it, so `LISTEN` and `NOTIFY` would silently disagree about which
+channel you meant).
+
+## Where to go next
+
+- [Poolers](/pg-prime/operations/poolers/) — the full matrix, and `directConnection`.
+- [Observability](/pg-prime/guides/observability/) — `onInternal` reports every reconnect as a
+  `listen-reconnect` event, whether or not anything is subscribed to `gap`.
+- [Testing with PGlite](/pg-prime/guides/testing/) — why none of this can be tested in-process.

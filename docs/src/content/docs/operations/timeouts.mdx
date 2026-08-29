@@ -3,4 +3,259 @@ title: Timeouts
 description: statementTimeout, lock_timeout, and ALTER ROLE under transaction pooling.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+Three PostgreSQL settings decide what happens when something takes too long, and they protect three
+different things. Getting them wrong is not usually visible until an incident, at which point it is
+extremely visible: an unbounded query holds a connection, an unbounded lock wait holds a table, and
+an unbounded idle transaction holds both plus the vacuum horizon.
+
+| GUC | Bounds | The failure it prevents |
+|---|---|---|
+| `statement_timeout` | how long one statement may run | a slow query holds a pool connection forever; the pool exhausts; every request queues |
+| `lock_timeout` | how long a statement may **wait for a lock** before it starts | a blocked `ALTER TABLE` collects a queue of readers behind it and stalls the whole table |
+| `idle_in_transaction_session_timeout` | how long a transaction may sit **idle** between statements | an `await` on an HTTP call inside a transaction holds its locks and blocks `VACUUM` indefinitely |
+
+They are independent, and each is the wrong tool for the other two. `statement_timeout` does not
+bound lock waiting in a useful way: a statement blocked on a lock has not started, and by the time
+`statement_timeout` fires you have already been queueing for the whole duration. `lock_timeout` says
+nothing about a statement that acquired its locks instantly and is now doing a sequential scan of a
+billion rows.
+
+## What pg-prime sets by default
+
+| GUC | Default | Why |
+|---|---|---|
+| `application_name` | `'pg-prime'` | free, and the difference between a readable and an unreadable `pg_stat_activity` at 3 a.m. |
+| `statement_timeout` | **`30s`** | unbounded is how an application hangs forever holding a connection. Generous enough that no normal OLTP query trips it, tight enough to bound the blast radius. Explicitly not Prisma's 5 s, which is a documented recurring production surprise |
+| `lock_timeout` | unset | a default here breaks legitimate queuing, and PostgreSQL's own default is unset. The migrator is the opposite case and sets it aggressively — see [locks](/pg-prime/operations/locks/) |
+| `idle_in_transaction_session_timeout` | `60s` | pg-prime's own transactions cannot leak — `transaction()` always commits or rolls back in a `finally` — but your callback awaiting the network inside one can |
+| `TimeZone` | `UTC` | the codecs are offset-driven, but `TimeZone` changes the *text* representation of several types. Pinning it removes a class of environment-dependent bug |
+
+### Why there is a default at all
+
+Most libraries ship no `statement_timeout`, on the theory that a timeout is a policy decision. That
+is true and it is also how an application hangs: PostgreSQL's own default is unlimited, so the
+absence of an opinion is itself an opinion, and it is the worst one available.
+
+The reason the default was contentious is cost, and the cost turned out to be small enough to
+settle it. **It is not per query.** The GUCs are applied once per *physical* connection, in one
+`set_config` batch:
+
+```sql
+select set_config($1,$2,false), set_config($3,$4,false), set_config($5,$6,false), set_config($7,$8,false)
+```
+
+A pool of ten pays for that ten times per connection lifetime and never again. Applying the
+settings is keyed on the underlying connection's server parameters, not on the handle object, so
+reacquiring a pooled connection does not re-send them.
+
+Failure is non-fatal. A restricted role that is not allowed to change `statement_timeout` is a real
+deployment, so a failed `set_config` emits an internal event and the query proceeds rather than
+erroring.
+
+### Changing them
+
+{/* docs: use=blog-schema */}
+```ts title="db.ts" no-run
+import { pgPrime } from 'pg-prime'
+
+export const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  session: {
+    applicationName: 'checkout-api',
+    statementTimeout: '10s',
+    lockTimeout: '2s',
+    idleInTransactionSessionTimeout: '30s',
+  },
+  schema,
+})
+```
+
+`null` disables a setting explicitly, and that is different from omitting it — omitting takes the
+default, `null` sends nothing:
+
+{/* docs: use=blog-schema */}
+```ts title="no-statement-timeout.ts" no-run
+import { pgPrime } from 'pg-prime'
+
+export const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  session: { statementTimeout: null },   // no statement_timeout on this pool
+  schema,
+})
+```
+
+Durations are what a GUC accepts: a string like `'30s'` or `'5min'`, or a number of milliseconds.
+
+<Aside type="caution">
+**The defaults apply only when pg-prime built the pool.** With `connection:`, pg-prime owns the
+connections and sets them. With `pool:` or `driver:` it does not touch the session **unless you pass
+`session:` explicitly** — you brought the connections, so it is not pg-prime's place to configure
+them behind your back. If you use `pool:` and want the 30 s bound, ask for it:
+`session: { statementTimeout: '30s' }`.
+</Aside>
+
+## Per-query and per-transaction overrides
+
+A session default is a floor, not a ceiling. One report that legitimately takes two minutes should
+not force the whole pool to 120 s.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="slow-report.ts"
+const rows = await db
+  .withOptions({ timeoutMs: 120_000 })
+  .from(db.h.posts, 'p')
+  .select((t) => ({ id: t.p.id }))
+  .execute()
+
+console.log(rows.length) // 0
+```
+
+Inside a transaction the override is `SET LOCAL statement_timeout`, which is exactly what you want:
+it lasts for the transaction and PostgreSQL restores the previous value at the end.
+
+Outside a transaction there is nothing for `SET LOCAL` to be local to, so `timeoutMs` is a
+client-side timer plus a `CancelRequest`. That is best-effort — the cancel may not land, and the
+server may still be burning CPU when your promise rejects. When you need the server-side guarantee
+for an autocommit statement, ask for it explicitly and pay the two extra round trips of a
+`BEGIN` / `set_config` / `COMMIT` wrapper:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="hard-timeout.ts"
+const rows = await db
+  .withOptions({ timeoutMs: 5_000, timeoutStrategy: 'transaction' })
+  .from(db.h.users, 'u')
+  .select((t) => ({ id: t.u.id }))
+  .execute()
+
+console.log(rows.length) // 0
+```
+
+The two errors are deliberately different classes, because the fix is different:
+
+- **`QueryTimeoutError`** — pg-prime's own client-side timer fired. A `CancelRequest` was sent, but
+  it is best-effort and the server may still be running the statement.
+- **`QueryCanceledError`** (`57014`) — the server gave up. `context.reason` distinguishes
+  `'statement_timeout'` (the backend stopped on its own) from `'cancel'` (something asked it to).
+
+For a whole transaction, `timeoutMs` and `lockTimeoutMs` are `TxOptions`, sent as one `set_config`
+batch immediately after `BEGIN`. Streams are exempt by default — a long `.stream()` must not trip
+the 30 s session default — and take their own `statementTimeoutMs` when you want one.
+
+## Under a transaction pooler, session GUCs are skipped entirely
+
+This is the part that surprises people, and it is a genuine capability gap rather than a workaround
+pg-prime can paper over.
+
+A `SET` issued at connect time under a transaction pooler lands on a *server* connection that the
+pooler will hand to another client at the next transaction boundary. PgBouncer does not run
+`server_reset_query` in transaction mode by default, so the setting **leaks across tenants**.
+Applying your `statement_timeout` to somebody else's queries is worse than not applying it to your
+own.
+
+So under `poolerMode: 'pgbouncer-transaction'` or `'transaction'`, pg-prime does not emit them at
+all. It says so once, at `info`, at construction:
+
+```text
+pg-prime: session defaults (application_name, statement_timeout,
+idle_in_transaction_session_timeout, TimeZone) were NOT applied, because poolerMode 'transaction'
+means a SET at connect lands on a server connection the pooler will hand to another client — the
+setting would leak across tenants (07 §3.6). Set them server-side instead: ALTER ROLE <your_user>
+SET application_name = '…'. That survives the pooler, the reconnect and the failover; a SET at
+connect does not, and under transaction pooling it would leak onto another client's server
+connection (07 §3.6).
+```
+
+One line, naming the settings that were skipped and the fix. It is not repeated per connection, and
+`db.diagnose()` carries the same note plus the *observed* values read back with `SHOW`, so nobody
+has to guess what is actually in force.
+
+### The fix is `ALTER ROLE`
+
+```sql
+ALTER ROLE app_user SET statement_timeout = '30s';
+ALTER ROLE app_user SET idle_in_transaction_session_timeout = '60s';
+ALTER ROLE app_user SET lock_timeout = '2s';
+```
+
+This is not a consolation prize; it is the better mechanism, and it is worth doing even without a
+pooler:
+
+- **It is server-side.** The value applies to every backend that authenticates as that role,
+  whatever connects — your application, a migration, `psql`, the reporting job nobody remembers
+  writing.
+- **It survives everything.** A reconnect, a pooler restart, a failover to a replica that was
+  promoted, a deploy of a version of your app that forgot to pass the config.
+- **It cannot leak**, because the pooler is not carrying it — PostgreSQL applies it at
+  authentication.
+
+Verify it took effect:
+
+```sql
+SELECT rolname, rolconfig FROM pg_roles WHERE rolname = 'app_user';
+SHOW statement_timeout;
+```
+
+`application_name` is the one setting that still gets through on a `connection:` handle even under
+a transaction profile, because it rides pg's own top-level startup field rather than the session,
+PgBouncer forwards it per client, and it changes no query semantics.
+
+<Aside type="note">
+Per-query and per-transaction timeouts are unaffected by all of this. They are `SET LOCAL` /
+`set_config(…, true)`, which is transaction-scoped and therefore works in every pooler mode — see
+the [pooler matrix](/pg-prime/operations/poolers/#the-rows-the-profile-data-does-not-carry).
+</Aside>
+
+## Why not the startup packet
+
+libpq lets you put GUCs in the connection's startup packet as `options=-c statement_timeout=30s`,
+which would cost literally nothing — no extra statement, ever. pg-prime does not use it, and the
+reason is measured rather than theoretical:
+
+**PgBouncer 1.25 rejects the entire connection** with FATAL `08P01 unsupported startup parameter in
+options: statement_timeout`. Pointing `connection:` at a pooler while leaving `poolerMode` at its
+default would therefore not merely lose the GUCs — it would fail to *connect at all*, which is a
+worse failure than the one it was avoiding.
+
+So the fallback is the mechanism, uniformly: one `set_config` batch per physical connection, which
+costs one statement per connection lifetime rather than one per query, and behaves identically for
+`connection:`, `pool:` and `driver:`. `application_name` is the exception, because it is pg's own
+top-level connection field rather than part of `options`, and PgBouncer forwards it per client.
+
+## The migration runner's own timeouts
+
+`@pg-prime/kit` is the opposite case from the runtime, and sets `lock_timeout` aggressively:
+
+```sh
+pg-prime migrate apply --lock-timeout 3s --statement-timeout 60s
+```
+
+| Flag | Default | Applies to |
+|---|---|---|
+| `--lock-timeout` | `3s` | every statement, including the concurrent builds |
+| `--statement-timeout` | per statement | ordinary DDL gets `30s`; intentionally long builds get none |
+
+A short `lock_timeout` plus a retry is strictly better than a long one, because a statement waiting
+for `ACCESS EXCLUSIVE` collects a queue of every subsequent query on that table. Failing fast with
+`55P03` and retrying with backoff drains the queue; waiting patiently does not. The runner retries
+`55P03` up to five times with exponential backoff and full jitter, and never retries `57014` — a
+`statement_timeout` means the operation is genuinely too slow, and running it again will not change
+that.
+
+**A `CREATE INDEX CONCURRENTLY` is exempt.** Statements whose lock class is `shareUpdateExclusive`
+— the concurrent builds, the `VALIDATE CONSTRAINT` scans, `REINDEX` — record `null` for their
+statement timeout, so the runner sets `statement_timeout = 0` and lets them run for as long as they
+need. A 30 s cap on a concurrent index build would guarantee failure on exactly the tables that
+need one. `lock_timeout` still applies, which is the point: such a build should be allowed to take
+an hour, and should not be allowed to sit in a lock queue for one.
+
+Passing `--statement-timeout` explicitly is what those statements fall back to, so it does cap
+them. Leave it unset if you want the long builds uncapped.
+
+## Related
+
+- [Locks and CREATE INDEX CONCURRENTLY](/pg-prime/operations/locks/) — `lock_timeout` from the
+  migrator's side, and the lock queue it exists to break.
+- [Poolers](/pg-prime/operations/poolers/) — why a transaction profile skips session state.
+- [Cancellation and timeouts](/pg-prime/guides/cancellation/) — `AbortSignal` end to end.

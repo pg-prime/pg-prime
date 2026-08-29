@@ -58,7 +58,8 @@ function main() {
     for (const block of page.blocks) {
       if (!['ts', 'tsx'].includes(block.lang)) continue
       if (typeof block.attrs.title !== 'string') continue
-      if (block.attrs['no-run'] || block.attrs['skip-check'] || block.attrs['expect-error']) continue
+      if (block.attrs['no-run'] || block.attrs['skip-check'] || block.attrs['expect-error'])
+        continue
       if (block.attrs.signature) continue
       const composed = compose(block, snippets, setups)
       examples.push({ block, composed })
@@ -104,7 +105,9 @@ async function runAll(examples) {
   const started = Date.now()
   const server = await startPglite()
   const bootMs = Date.now() - started
-  console.log(`docs-examples: ${server.version.split(' on ')[0]} at ${server.url} (boot ${bootMs} ms)`)
+  console.log(
+    `docs-examples: ${server.version.split(' on ')[0]} at ${server.url} (boot ${bootMs} ms)`,
+  )
 
   // `pg` as the docs workspace resolves it — the same copy an example gets.
   const require = createRequire(pathToFileURL(join(DOCS, 'package.json')).href)
@@ -127,7 +130,10 @@ async function runAll(examples) {
       // so the example's own `import { db } from './db.js'` resolves the way the page says it does.
       const maps = new Map()
       const entry = join(dir, 'index.ts')
-      for (const file of [...ex.composed.files, { name: 'index.ts', text: ex.composed.text, map: ex.composed.map }]) {
+      for (const file of [
+        ...ex.composed.files,
+        { name: 'index.ts', text: ex.composed.text, map: ex.composed.map },
+      ]) {
         const { text, substituted } = substitute(file.text, server.url)
         if (substituted) substitutions.push(`${ex.block.page}:${ex.block.line} — ${substituted}`)
         writeFileSync(join(dir, file.name), text + '\n')
@@ -182,7 +188,9 @@ function remap(output, maps) {
     const re = new RegExp(`(?:file://)?${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:(\\d+)`, 'g')
     out = out.replaceAll(re, (_m, line) => {
       const origin = map[Number(line) - 1]
-      return origin ? `${relative(ROOT, origin.file)}:${origin.line}` : `${relative(ROOT, file)}:${line}`
+      return origin
+        ? `${relative(ROOT, origin.file)}:${origin.line}`
+        : `${relative(ROOT, file)}:${line}`
     })
   }
   return out
@@ -199,7 +207,10 @@ function substitute(text, url) {
     if (!m) continue
     const before = lines[i]
     lines[i] = lines[i].replace(URL_LITERAL, `'${url}'`)
-    return { text: lines.join('\n'), substituted: `one line rewritten to the PGlite URL: ${before.trim()}` }
+    return {
+      text: lines.join('\n'),
+      substituted: `one line rewritten to the PGlite URL: ${before.trim()}`,
+    }
   }
   return { text, substituted: undefined }
 }
@@ -241,7 +252,12 @@ function runOne(dir, entry, url) {
   return new Promise((resolve) => {
     const child = spawn(
       process.execPath,
-      ['--enable-source-maps', '--disable-warning=ExperimentalWarning', join(GEN, '_run.mjs'), bundle],
+      [
+        '--enable-source-maps',
+        '--disable-warning=ExperimentalWarning',
+        join(GEN, '_run.mjs'),
+        bundle,
+      ],
       {
         cwd: dir,
         env: { ...process.env, DATABASE_URL: url, NODE_ENV: 'test' },

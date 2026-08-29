@@ -166,7 +166,12 @@ export function readSnippets() {
     for (const line of lines) {
       const m = /^\s*\/\/\s*docs:\s*use=(\S+)\s*$/.exec(line)
       if (m) {
-        uses.push(...m[1].split(',').map((x) => x.trim()).filter(Boolean))
+        uses.push(
+          ...m[1]
+            .split(',')
+            .map((x) => x.trim())
+            .filter(Boolean),
+        )
         kept.push('')
         continue
       }

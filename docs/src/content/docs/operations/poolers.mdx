@@ -3,6 +3,71 @@ title: Poolers
 description: The compatibility matrix, generated from POOLER_PROFILES.
 ---
 
+import { Aside } from '@astrojs/starlight/components'
+
+A connection pooler between your application and PostgreSQL is not a transparent proxy. In session
+mode it hands you one server connection for the life of yours, and almost everything works. In
+transaction mode it hands you a *different* server connection at every transaction boundary, and a
+whole category of things that look like they work stop working: a `LISTEN` registered on one
+backend is delivered to nobody, a session advisory lock is released under you, a `SET` you made
+leaks onto the next tenant.
+
+pg-prime's answer is one configuration key.
+
+## `poolerMode` is declared, not detected
+
+> **`poolerMode` is a declared environment profile, not a detected one: it selects a table of
+> capability toggles that can only ever *restrict* what the runtime will emit, so a wrong value
+> costs performance or produces a loud error — never silent incorrectness.**
+
+That sentence is the whole design, and the word that carries it is *restrict*. The profiles are
+data, not branches, and nothing anywhere reads a profile in order to **enable** something. There is
+no code path that only exists under `poolerMode: 'none'`; there are code paths that refuse to run
+under the transaction profiles.
+
+The consequence is that the two ways of being wrong are not symmetric:
+
+- **Too conservative** — you declare `transaction` on a direct connection. You lose named prepared
+  statements, `db.session()` and `db.listen()` on the main pool. That is a performance and
+  ergonomics cost, and nothing you write becomes incorrect.
+- **Too permissive** — you declare `none` behind Supavisor. pg-prime emits things the pooler cannot
+  carry, and you get the pooler's own failure modes: `26000` on a named statement, a subscription
+  that receives nothing, an advisory lock that is not held. These are the failures pg-prime cannot
+  prevent, because it was told they were safe.
+
+In development, pg-prime checks. Once, asynchronously, after the first connection has already
+succeeded, it runs the probes described below and logs one `warn` if the declared mode and the
+observed one disagree. It never blocks a query, it never runs in production, and it never changes
+the configuration.
+
+## The four modes
+
+| `poolerMode` | What it is | Products |
+|---|---|---|
+| `none` | direct to PostgreSQL — the default | anything not behind a pooler |
+| `session` | a session-mode pooler: one server connection for the life of your connection | PgBouncer in session mode, Supabase `:5432`, pgpool-II |
+| `pgbouncer-transaction` | a transaction pooler **with** protocol-level prepared statements | PgBouncer ≥ 1.24 (which defaults `max_prepared_statements=200`), Neon `-pooler`, Cloudflare Hyperdrive, RDS Proxy, PgDog, pgcat |
+| `transaction` | a transaction pooler **without** them — the conservative floor | Supavisor `:6543`, PgBouncer with `max_prepared_statements=0` |
+
+The two transaction profiles differ in **exactly one** capability: whether named prepared statements
+survive. Everything else a transaction pooler breaks, it breaks in both.
+
+{/* docs: use=blog-schema */}
+```ts title="pooled-db.ts" no-run
+import { pgPrime } from 'pg-prime'
+
+export const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,
+  poolerMode: 'pgbouncer-transaction',
+  schema,
+})
+```
+
+## The compatibility matrix
+
+This table is generated from `POOLER_PROFILES` — the exported data the runtime itself reads — so
+the prose and the behaviour cannot drift.
+
 {/* GENERATED:pooler-matrix — tools/pooler-matrix.mjs, from POOLER_PROFILES. Do not edit. */}
 
 | Capability | `none` | `session` | `pgbouncer-transaction` | `transaction` |
@@ -18,3 +83,210 @@ description: The compatibility matrix, generated from POOLER_PROFILES.
 
 {/* /GENERATED:pooler-matrix */}
 
+### The rows the profile data does not carry
+
+Eight capabilities are toggles in `POOLER_PROFILES`, and those are the eight above. The following
+are just as important to an operator and are **not** in the generated table, because they are not
+per-mode data: each is a property that holds identically in every profile, or a property of the
+migrator rather than of the runtime. They are hand-written, and marked as such.
+
+| Capability | Every mode | Why |
+|---|---|---|
+| `SET LOCAL` / `set_config(…, true)` | works | it is transaction-scoped, so there is nothing for a pooler to leak between clients. Every per-query and per-transaction timeout pg-prime sets uses this form |
+| `db.notify()` | works | `NOTIFY` is a statement inside a transaction and needs no session state. **The matrix is asymmetric — `NOTIFY` works everywhere and `LISTEN` does not** |
+| `pg_advisory_xact_lock` | works | transaction-scoped, and the reason `tx.advisoryLock()` is the answer when a session advisory lock is refused |
+| `WITHOUT HOLD` cursors (`.stream()`) | works, inside a transaction | the cursor lives and dies inside the transaction, which is the unit a transaction pooler preserves. `WITH HOLD` is the one that outlives it, and that is in the generated table |
+| `COPY FROM`/`TO STDIN` | works, transaction-scoped | same reason |
+| SQL `PREPARE` / `EXECUTE` / `DEALLOCATE` | never emitted | pg-prime uses the extended protocol's named statements, never the SQL-level verbs. Those are session state a pooler cannot see, and `DEALLOCATE` in particular pins an RDS Proxy connection |
+| Default `execMode` | `unnamedExtended`, in every mode | one round trip, no session state, safe on every pooler — which is a large part of why it is the default |
+| Migrations | need a direct connection under a transaction pooler | `CREATE INDEX CONCURRENTLY` cannot run inside a transaction, a session `lock_timeout` does not survive to the next statement, and the deploy's advisory lock is not held. See [below](#migrations-behind-a-pooler) |
+
+## `directConnection`
+
+A transaction pooler is right for your queries and wrong for four things. The answer is a second,
+non-pooled URL, and the rule for using it is **route by feature, not by call site**: you never pick
+a connection by hand.
+
+{/* docs: use=blog-schema */}
+```ts title="direct-db.ts" no-run
+import { pgPrime } from 'pg-prime'
+
+export const db = pgPrime({
+  connection: process.env['DATABASE_URL']!,      // through the pooler
+  directConnection: process.env['DIRECT_URL']!,  // straight to PostgreSQL
+  poolerMode: 'transaction',
+  schema,
+})
+```
+
+What that buys you, precisely:
+
+- **`db.listen()` is routed automatically.** Under a transaction profile the subscription opens on
+  the direct connection instead, and your code is unchanged. Without `directConnection` the call
+  throws `UnsupportedInPoolerModeError` naming the key that fixes it.
+- **`db.session()` and session advisory locks are refused, not routed.** They throw
+  `UnsupportedInPoolerModeError`, and the message names the alternative: `db.transaction()` *is* one
+  backend for its duration, and `tx.advisoryLock()` is `pg_advisory_xact_lock`, which works
+  everywhere. If you genuinely need a session handle against the direct URL, build a second
+  `pgPrime` handle pointed at it.
+- **Migrations do not read it at all.** `@pg-prime/kit` has no `directConnection` key; point the
+  migrator's own `url` at the direct endpoint instead.
+
+`directConnection` is only honoured on the `connection:` source — pg-prime has to build the second
+pool for it to exist. With `pool:` or `driver:` you own the connections, so the routing is yours
+too.
+
+## Presets
+
+Presets are plain functions returning a partial config, so they compose and are inspectable rather
+than being magic strings:
+
+{/* docs: use=blog-schema */}
+```ts title="neon-db.ts" no-run
+import { pgPrime, presets } from 'pg-prime'
+
+export const db = pgPrime({
+  ...presets.neonPooled(),
+  connection: process.env['DATABASE_URL']!,
+  schema,
+})
+```
+
+| Preset | What it sets |
+|---|---|
+| `presets.serverless()` | `poolOptions: { max: 1, idleTimeoutMillis: 1_000, allowExitOnIdle: true, connectionTimeoutMillis: 5_000 }` — and **no** `poolerMode` |
+| `presets.neonPooled()` | `poolerMode: 'pgbouncer-transaction'`, plus everything `serverless()` sets |
+| `presets.supabaseTransaction()` | `poolerMode: 'transaction'` — Supavisor at `:6543` does not carry named statements through |
+| `presets.rdsProxy()` | `poolerMode: 'pgbouncer-transaction'` |
+
+Spread one and override whatever you disagree with; the result is ordinary data.
+
+## `db.diagnosePooler()`
+
+`diagnosePooler()` reports. It never reconfigures, and its `confidence` is never `'high'` — that is
+a property of the type, not of a code path.
+
+The reasoning is asymmetric in the same direction as everything else on this page. A false negative
+on a heuristic costs performance; a false positive that silently switched modes would cost
+correctness. Prisma #21799 is the case study in what happens when a client-side pooler workaround
+outlives the pooler bug it worked around.
+
+{/* docs: use=blog-schema */}
+```ts title="check-pooler.ts" no-run
+import { pgPrime } from 'pg-prime'
+
+const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema })
+
+const report = await db.diagnosePooler()
+console.log(report.verdict, report.confidence, report.recommendedPoolerMode, report.agrees)
+for (const signal of report.signals) {
+  console.log(`  ${signal.name}: ${signal.result} — ${signal.detail}`)
+}
+```
+
+Six probes, one of them opt-in:
+
+1. **`hostname-heuristic`** — zero cost, always run. Recognises a Neon `-pooler` host, a
+   `*.pooler.supabase.com`, port `:6543`, and an RDS Proxy endpoint shape.
+2. **`server-version`** — `select version()`. Inconclusive on its own; it confirms there is a real
+   PostgreSQL at the other end.
+3. **`backend-pid-across-statements`** — `pg_backend_pid()` twice, as two separate autocommit
+   statements. **The naive form of this probe is a false negative, and that is measured.** Through
+   an idle PgBouncer 1.25 in transaction mode the two reads are `343` and `343`: the pooler has no
+   reason to reassign an idle server connection, so the single-client case a diagnostic is usually
+   run in never trips it. pg-prime's probe therefore *creates the contention it needs* — three more
+   pooled connections, taken in parallel on a 250 ms budget each so an exhausted pool costs nothing,
+   held busy while the pid is read again. Under contention the same pooler reads `343`, then `364`.
+   A direct connection reads `359` and `359` either way, because a real backend belongs to the
+   socket and cannot move.
+4. **`backend-pid-within-transaction`** — the same two calls inside one transaction. They must be
+   equal. If they are not, something is badly broken and the report says so loudly rather than
+   guessing: no correct pooler reassigns a connection mid-transaction.
+5. **`named-statement-survives`** — the decisive probe, and the only one that distinguishes
+   `pgbouncer-transaction` from `transaction`. It prepares a trivial named statement and executes it
+   by name in a separate protocol exchange; `26000` means named statements are not usable. Cleanup
+   is a protocol `Close`, never a SQL `DEALLOCATE`.
+6. **`application-name-sticky`** — **opt-in** (`diagnosePooler({ probeSessionState: true })`),
+   because it writes session state, and under a pooler that leaks a value onto a shared server
+   connection. It is also a false negative against PgBouncer ≥ 1.21, which tracks `application_name`
+   per client and re-applies it after a reassignment.
+
+`confidence` is `'medium'` once probe 5 has answered and `'low'` before it. `agrees` is deliberately
+generous in one direction: a recommendation of `none` is satisfied by *any* configured mode, because
+a profile only ever restricts, and being more conservative than necessary is a choice rather than a
+mismatch.
+
+`db.diagnose()` is the wider report — pool statistics, the effective GUC values read back with
+`SHOW`, the `max_connections` arithmetic, the server version, and a `notes` array that names the
+`ALTER ROLE` fix when a profile skipped the session GUCs.
+
+<Aside type="note">
+pg-prime does not use PgBouncer's `SHOW POOLS` admin console. It needs admin credentials and speaks
+only the simple query protocol, which makes it a CLI diagnostic at best and never a runtime signal.
+</Aside>
+
+## RDS Proxy, and pinning
+
+RDS Proxy multiplexes until you do something it cannot multiplex, and then it **pins**: your client
+keeps one backend for the rest of the connection's life and the pool's whole benefit evaporates
+quietly. Its pinning triggers are worth knowing, because most of them are things an ORM does
+casually:
+
+- `SET` (session-level)
+- SQL `PREPARE`, `EXECUTE`, `DEALLOCATE`, `DISCARD`
+- creating a temporary table or any other temporary object
+- **declaring a cursor**
+- `LISTEN`
+- `LOAD`
+- `nextval` / `setval`
+- session advisory locks — the `_xact_` variants are explicitly exempt
+- any statement larger than **16 KB**
+
+pg-prime avoids the first eight by construction under a transaction profile: session GUCs are not
+emitted, the SQL-level prepared-statement verbs are never emitted in any mode, `db.session()` and
+session advisory locks are refused, `LISTEN` is routed to `directConnection`, and `.stream()` uses a
+`WITHOUT HOLD` cursor inside a transaction.
+
+The 16 KB threshold is the one left to you, because it is a function of your data rather than of
+your configuration: a large `insertMany` or a wide `VALUES` list can cross it. pg-prime does not
+enforce a 16 KB ceiling. Chunk your bulk writes if you are behind RDS Proxy, or use `copyFrom`,
+which is [faster anyway](/pg-prime/guides/copy/).
+
+<Aside type="caution">
+**`DISCARD ALL` is never emitted, in any profile.** It is `resetQuery: 'never'` in all four rows of
+the generated table, and a test asserts that rather than leaving it to convention. `DISCARD ALL`
+clears PgBouncer's own statement tracking, and on RDS Proxy it pins the connection on release — a
+reset query is a way of making a pooler slower and less correct at the same time.
+</Aside>
+
+## Migrations behind a pooler
+
+`migrate apply` probes for transaction pooling before it does anything, and refuses rather than
+running:
+
+```text frame="terminal"
+REFUSED: this connection is behind a transaction-mode pooler: two transactions on it reported
+different pg_backend_pid()s. A session advisory lock taken here is silently broken — the unlock
+no-ops on the wrong backend and the original one returns to the pool still holding it. Point
+`apply` at the direct PostgreSQL port instead (the server behind this pooler reports port 5432;
+PgBouncer is commonly 6432 in front of 5432, Supabase 6543 in front of 5432).
+```
+
+That is exit **1**, not 6: nothing holds the lock, the connection is simply unusable for the job.
+Three separate things are wrong with migrating over a transaction pooler, and each on its own is
+fatal — `CREATE INDEX CONCURRENTLY` cannot run inside a transaction, a session-level
+`SET lock_timeout` does not survive to the next statement, and the session advisory lock that stops
+two deploys racing is released the moment the transaction that took it ends.
+
+Give the migrator the direct URL:
+
+```sh
+DATABASE_URL="$DIRECT_URL" pg-prime migrate apply
+```
+
+## Related
+
+- [Timeouts](/pg-prime/operations/timeouts/) — why session GUCs are skipped under a transaction
+  profile, and the `ALTER ROLE` fix that replaces them.
+- [Migrations in CI/CD](/pg-prime/operations/ci-cd/) — where `apply` belongs in a deploy.
+- [LISTEN / NOTIFY](/pg-prime/guides/listen-notify/) — the asymmetric half of the matrix.

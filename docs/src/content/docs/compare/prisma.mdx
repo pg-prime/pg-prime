@@ -3,4 +3,220 @@ title: Prisma
 description: What Prisma does, what it does not, and what pg-prime took from it.
 ---
 
-TODO
+Prisma is the reason a large part of the TypeScript world expects a database client to be typed at
+all, and this project's design documents cite it more than any other library — both for what to
+copy and for what to avoid. The figures below come from the 2026-08 survey in
+[`research/prisma.md`](https://github.com/pg-prime/pg-prime/blob/main/research/prisma.md), which
+read `prisma@7.9.1`, `@prisma/client@7.9.1` and `prisma-next@8.0.0-rc.1` from the registry and out
+of their tarballs.
+
+Read that survey with one thing in front of you: at the time it was written there were **two
+products wearing the name**. Prisma 7 is the stable, production-recommended one; Prisma Next
+(`prisma-next@8.0.0-rc.1`) is a full TypeScript rewrite in a separate repository, PostgreSQL-first
+and GA on PostgreSQL, with extension packs, a compiled contract IR, a typed SQL builder beside the
+ORM, and graph-based migrations. Most of the criticism below is of Prisma 7. Prisma Next has
+conceded most of the multi-database critique already, and it is the more interesting competitor.
+
+## What it does well
+
+**PSL is the best declarative data-model DSL in the ecosystem.** A model block reads like a table
+definition and a schema diff is legible to someone who did not write it — a real advantage over a
+TypeScript builder, where a column-type change hides inside a method chain. It comes with
+`prisma format`, `prisma validate` and a first-class language server, which is a genuine moat.
+
+**Exact result narrowing from a literal argument.** `select: { id: true, posts: { select: { title:
+true } } }` returns exactly `{ id: number; posts: { title: string }[] }[]`. The survey calls this
+"the single feature that keeps people on Prisma", and pg-prime's projection typing exists to match
+it.
+
+**Nested writes.** `create` / `connect` / `connectOrCreate` / `upsert` inside one parent write,
+executed atomically. Writing the equivalent by hand is genuinely tedious, and pg-prime does not
+have it yet.
+
+**Relation filters that read like English** (`some` / `every` / `none` / `is` / `isNot`), `_count`
+with a filter, and `omit` as the inverse of `select` so "everything except the password hash" does
+not mean enumerating forty columns.
+
+**Migration artifacts a DBA will accept.** `prisma/migrations/<ts>_<name>/migration.sql` is plain,
+hand-editable SQL; `_prisma_migrations` records a checksum; `migrate diff --from-* --to-*` diffs any
+two of empty, schema, migrations directory and live database. Introspection (`db pull`) round-trips
+`@map`, preserves manual renames, and is the main reason an existing database can adopt Prisma at
+all.
+
+**Machine-readable error codes with suggested fixes.** Cheap, high-leverage, and copied here.
+
+## Where pg-prime differs
+
+### There is no schema language to wait on
+
+A closed DSL creates a permanent feature backlog, and the backlog is the thing to look at rather
+than any single missing feature. As of the 2026-08 survey, in stable Prisma: `CHECK` constraints
+had been open since 2020 (issue 3388, 294 👍) and were still absent; `EXCLUDE` constraints absent;
+generated columns absent; triggers and functions absent; partial indexes shipped in **7.4.0**, after
+a 4.8-year wait, and were immediately buggy enough to produce infinite regenerating migrations;
+expression indexes arrived only in Prisma 8; views had been a preview feature since **4.9.0, in
+January 2023** — and relations to views were added in 6.14.0 and then withdrawn, leaving schemas
+that no longer validated. RLS was not expressible at all.
+
+The pattern the survey drew out of that is the one worth stating: *a schema feature that lands in
+the DSL before the differ can round-trip it produces phantom migrations, which is worse than not
+having the feature at all.*
+
+Authoring in TypeScript removes the queue rather than shortening it. A JSON column's shape is just
+a type; a shared `id` / `createdAt` / `tenantId` group is object spread rather than issue 2371
+(231 👍, "reuse collections of fields inside models"); and PostgreSQL's own vocabulary —
+`CHECK`, `EXCLUDE`, partial and expression indexes, opclasses, `INCLUDE`, generated columns,
+domains, sequences, partitions — is in [the schema DSL](/pg-prime/guides/schema/) because there is
+no second database whose absence of a feature has to be negotiated.
+
+### No codegen step, and no emitted type graph
+
+Prisma's types come from `prisma generate`: an O(models × relations) surface of `Select`,
+`Include`, `WhereInput`, `GetPayload` conditional types. That has a documented cost — Prisma's own
+docs say that past 50 tables you should expect "compilation times exceeding several minutes",
+degraded IDE responsiveness and CI type-checks timing out — and one failure mode that is worth
+reading twice.
+
+In the pull request that removed the library engine, a single generic default changed from a
+constraint type to `undefined`. Because `undefined` is structurally distinct from the constraint,
+TypeScript could no longer reuse cached instantiations and re-evaluated the full generic chain per
+model. On a real 406-model schema that was **30.2 M instantiations** and 7.3 GB of memory; the fix
+(PR 29592, shipped in 7.9.0) brought instantiations from **32,823,262 to 2,650,891** and check time
+from 16.97 s to 2.47 s. One incidental token, invisible in review, made large-schema Prisma 7
+effectively uncompilable for roughly six months.
+
+pg-prime infers over a schema *value*: no generate step for the ORM types, nothing to run after
+`npm install`, nothing to commit or gitignore. The blast radius of that class of accident is
+smaller by construction, and the property is gated in CI — the marginal cost of one more query is
+the same at 25 tables and at 300 (ratio 1.00 against a 1.15 gate), because no whole-schema type
+parameter is threaded through the builder.
+
+### Transactions
+
+Three of Prisma's transaction defaults are things this project decided against explicitly.
+
+{/* docs: skip-check="@prisma/client is not a dependency of this repository" */}
+```ts
+// Prisma 7. `timeout` defaults to 5 000 ms and `maxWait` to 2 000 ms, so a backfill written
+// inside a transaction fails with P2028 unless you remember to raise it.
+await prisma.$transaction(
+  async (tx) => {
+    await tx.user.update({ where: { id }, data: { name } })
+  },
+  { isolationLevel: 'Serializable', timeout: 5_000 },
+)
+
+// There is no savepoint API, no retry helper for the 40001 that `Serializable` guarantees you
+// will see, and no supported `SET LOCAL` — RLS needs a `$extends` query component to inject it.
+```
+
+The same shape in pg-prime. `setLocal` is a parameterised `set_config(name, value, true)` on the
+transaction handle, so a row-level-security policy has the value it needs for exactly the length of
+the transaction; the retry is on by default at this isolation level; and `attempt` tells you which
+try you are on:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="rls-and-retry.ts"
+const created = await db.transaction(
+  async (db) => {
+    await db.setLocal('app.tenant_id', 'acme')
+
+    const [user] = await db
+      .insertInto(db.h.users)
+      .values({ email: 'zoe@example.com', name: 'Zoe' })
+      .returning((t) => ({ id: t.users.id }))
+      .execute()
+
+    const [seen] = await db.sql`select current_setting('app.tenant_id') as tenant`.execute()
+
+    return { id: user!.id, tenant: seen!['tenant'], attempt: db.attempt }
+  },
+  { isolation: 'serializable', label: 'signup' },
+)
+
+console.log(created)
+// { id: 1n, tenant: 'acme', attempt: 1 }
+```
+
+There is no transaction timeout by default. `statement_timeout` is a **30 s session default** and
+one line of config to change, which is a deliberate difference from a 5-second cap that people
+discover in production. The retry covers `40001` only, at repeatable read and serializable, with
+full jitter; it never retries `40P01`, and never after an `IndeterminateCommitError` — if the
+connection dies between writing `COMMIT` and reading the reply, the transaction may have committed,
+and retrying that is how you charge a card twice. Because a retried callback runs more than once,
+**it must be idempotent**. [Transactions](/pg-prime/guides/transactions/) is the long version.
+
+### Migrations
+
+**The shadow database.** Prisma's `migrate dev` needs a second database and therefore `CREATEDB` or
+superuser, which managed PostgreSQL frequently does not give you; the survey records this as
+Prisma's number-one migration complaint, with a string of issues about Supabase, restricted RDS
+roles and `CREATE EXTENSION` in the shadow. pg-prime treats the *technique* as right and the
+*requirement* as hostile: it walks a ladder of shadow strategies and never requires `CREATEDB` — see
+[the shadow ladder](/pg-prime/concepts/shadow-ladder/).
+
+**Drift.** Prisma's drift detection compares replayed history against the live database, so it
+flags every object Prisma cannot express — triggers, policies, extension types, a DBA's index —
+and the remedy `migrate dev` offers is to reset the database. Data loss behind a prompt is a thing
+this project will not ship. Here, unmodelled objects are reported by kind and count rather than
+silently dropped, an object can be marked as owned elsewhere, and `migrate checkpoint` plus
+`migrate status` name the drifted objects rather than proposing a reset.
+
+**Proof.** Prisma dry-runs a migration on the shadow database to detect data loss. pg-prime goes
+further: it replays the generated plan on a fresh clone, diffs the result against the desired state,
+and asks `pg_dump` — PostgreSQL's own serializer, which shares no code with the differ — for an
+independent second opinion. If either disagrees, the file is not written.
+[Proof and witness](/pg-prime/concepts/proof/).
+
+**Nothing is downloaded at install.** Prisma's CLI still fetches a Rust `schema-engine` binary; in
+July 2025 a CDN misconfiguration broke `prisma generate` worldwide and drew 401 comments in a day.
+An ORM that downloads nothing cannot have that outage, so "no post-install network access" is a
+stated guarantee here rather than an accident.
+
+### Latency
+
+Prisma's own benchmark site, running the open-source Drizzle benchmark suite on the same hardware,
+measured **Prisma 7 at roughly 11× the average latency and 27× the p99 of raw `pg`** — 8.1 ms
+average and 116.7 ms p99 against 0.7 ms and 4.3 ms — with Prisma Next at 1.2 ms and 8.9 ms. A
+Prisma engineer reproduced the v7 regression seven days after it was reported and attributed it to
+the per-query compilation step introduced to remove the Rust runtime.
+
+Two lessons were taken from that rather than a slogan. The compile-to-SQL step is cached by query
+shape, so a warm repeated query pays no recompilation. And the benchmark that counts is p99 on a
+small indexed lookup — the shape of nearly all OLTP traffic — not throughput on a 25 000-row scan.
+
+### Serialization contracts
+
+Prisma returns `Decimal` as a `decimal.js` instance, which makes `JSON.stringify` throw; `BigInt`
+has the same problem without a replacer; `Json` columns are `Prisma.JsonValue` with three distinct
+nulls (`JsonNull`, `DbNull`, `AnyNull`); and `$queryRaw<T>` is an unverified assertion.
+
+Here every result value is `JSON.stringify`-safe by default: `numeric` decodes to `string`, `int8`
+to `bigint` (a decision, and an opt-in codec gives you `number`), `date` to a branded
+`YYYY-MM-DD` string, `timestamptz` to `Date`, and a `jsonb` column is typed by you. `NULL` versus
+JSON `null` is modelled as `T | null` on a nullable column rather than with sentinel values, and a
+`sql` fragment cannot be given a result type without a real codec — there is no silent-lie generic.
+[Codecs](/pg-prime/concepts/codecs/).
+
+### No preview flags
+
+Prisma had eight at the time of the survey, several two to three years old — `views` since January
+2023, `relationJoins` since December 2023, `typedSql` since September 2024. A feature here is in a
+released version or it does not exist.
+
+## Choose Prisma if
+
+You need more than PostgreSQL — and note that Prisma Next narrows this, because it is PG-first, so
+the honest version is "if you need MongoDB, MySQL or SQL Server". Choose it if the `.prisma` file
+and its language server are how your team wants to review schema changes, which is a real and
+underrated advantage. Choose it if nested writes and `connectOrCreate` are load-bearing in your
+codebase, because reimplementing them by hand is tedious. Choose it if you want Studio, a hosted
+Postgres, and one vendor to call. And choose it if your application is at a scale where 8 ms of
+client overhead does not matter, which is most applications — the v7 latency numbers are a reason
+to measure, not a reason to panic.
+
+The deployment complaints that drove the 2023–24 exodus are largely stale: v7 removed the query
+engine binary and moved the generated client out of `node_modules`, and people who left over those
+things have publicly reversed. What has not changed, and is structural, is PostgreSQL coverage in
+the schema language, escape-hatch composability, p99 latency and the codegen type graph. Those four
+are the honest basis for using something else.

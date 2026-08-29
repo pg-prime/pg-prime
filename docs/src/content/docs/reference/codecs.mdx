@@ -1,6 +1,671 @@
 ---
 title: pg-prime/codecs
 description: Every export of the codecs entry point.
+apiEntry:
+  - pg-prime#./codecs
+  - pg-prime#.
 ---
 
-TODO
+import { Aside } from '@astrojs/starlight/components'
+
+A **codec** is the one place a PostgreSQL type meets a TypeScript type. Nothing below it interprets
+a value: an adapter hands back raw wire text (or `null`, or bytes), and the codec turns that into
+the JavaScript value you see — and turns your value back into a parameter on the way out.
+
+Every codec carries five things:
+
+- **`encode`** — a JavaScript value to `string` (text format), `Uint8Array` (binary) or `null`
+  (SQL NULL);
+- **`decodeText`** — the wire text back to a JavaScript value, plus **`decodeJson`**, the same datum
+  as it arrives inside a `json_agg` payload. The two must agree, which is what makes a column's type
+  identical whether you read it at the top level or five relations deep;
+- **`oid`** — the PostgreSQL type OID this codec claims. `forOid` is how a `RowDescription` becomes
+  a decode plan, and `paramOid` is the OID sent in `Parse` for a parameter carrying this codec;
+- **`sqlName`** — the SQL type name emitted in DDL and in `::type` casts. `int4Codec`'s is
+  `integer`, not `int4`;
+- **`typeClass`** and **`jsonEncode`** — the family it belongs to, and whether a value of this type
+  survives `json_build_object` as a JSON native or must be cast `::text` first.
+
+Decoding is planned **once per `RowDescription`**, never per row: `planFor` builds a positional
+array of closures with `null` short-circuited and the typmod already bound, so decoding a cell is
+roughly one monomorphic call.
+
+<Aside title="pg's global type parsers are never touched">
+pg-prime does not call `pg.types.setTypeParser`. That function is process-wide mutation and would
+change how every other library in your process reads a `date`. Instead the adapter neutralises pg's
+own parsers **per query**, by passing a `types` value whose `getTypeParser` returns the identity
+function for every OID, so raw wire text reaches these codecs and nothing outside pg-prime changes.
+It needs no cooperation from how you constructed your `Pool`.
+</Aside>
+
+## Decode defaults that differ from a naive mapping
+
+Four of the defaults are deliberately not what a driver would pick on its own. Each is a sign-off
+decision, and each has a named alternate if it is wrong for you.
+
+- **`int8` → `bigint`.** `int8` is the type of every `bigserial` primary key and of `count(*)`, and
+  `number` silently loses precision above 2<sup>53</sup> — `9007199254740993` is a real, storable
+  `int8`. Alternates: `int8NumberCodec` (`int8:number`, which *throws* rather than rounds above
+  `Number.MAX_SAFE_INTEGER`) and `int8StringCodec` (`int8:string`).
+- **`numeric` → `string`.** There is no lossless JavaScript primitive for arbitrary-precision
+  decimal, and pg-prime has zero runtime dependencies, so it cannot ship a `Decimal`. `number` is
+  wrong twice: it loses precision beyond 17 significant digits, and it loses **scale**, which is
+  semantically meaningful — `numeric(10,2)` renders `1.10`, not `1.1`. Text also carries `'NaN'`,
+  `'Infinity'` and `'-Infinity'`. Alternate: `numericNumberCodec` (`numeric:number`).
+- **`date` → `PgDateString`.** A `DATE` has no time and no time zone, so every mapping to `Date` has
+  to invent both. Measured with pg's default parser in a UTC−5 process, `'2026-08-14'` becomes
+  `2026-08-13T19:00:00.000Z` — the calendar day changes. The verbatim wire text makes that shift
+  structurally impossible, and it round-trips `'infinity'`, `'0001-01-01 BC'` and `'294276-12-31'`
+  as well. There is no alternate, because there is no correct `Date` to offer.
+- **`timestamptz` → `Date`.** The one temporal type where `Date` is semantically right, because the
+  value *is* an absolute instant. Two costs: PostgreSQL stores microseconds and `Date` holds
+  milliseconds, so the value is truncated; and `infinity` / `-infinity` have no `Date`
+  representation, so decoding one **throws**, naming the column. Alternate:
+  `timestamptzStringCodec` (`timestamptz:string`), which is the verbatim wire text and keeps both.
+
+A fifth is worth stating even though nothing changes it: **`timestamp` → `PgTimestampString`**. A
+zoneless timestamp with a `Date` for a value would have invented a zone, and microseconds are
+preserved by keeping the text.
+
+## The built-in codecs
+
+Every codec below is registered by OID *and* by name, and every scalar also contributes an array
+codec derived from its `arrayOid` — so `text[]` decodes to `(string | null)[]` with no extra
+registration. `Decodes to` is what a `select` of that column yields; the encode side usually accepts
+a wider set.
+
+| Codec | PostgreSQL type | OID | Decodes to | Notes |
+|---|---|---|---|---|
+| <a id="bitCodec"/> `bitCodec` | `bit` | 1560 | `string` | The digit string, e.g. `101`. `null::bit` is `bit(1)`. |
+| <a id="boolCodec"/> `boolCodec` | `boolean` | 16 | `boolean` | Only `t` and `f` are accepted; anything else is a decode error rather than a silent `false`. |
+| <a id="bpcharCodec"/> `bpcharCodec` | `char(n)` | 1042 | `string` | PostgreSQL **space-pads** `bpchar` — measured, `"ab   "`. Not trimmed. |
+| <a id="byteaCodec"/> `byteaCodec` | `bytea` | 17 | `Uint8Array` | Not `Buffer`: that would leak a Node-only type. Encodes in binary format, which avoids the 2× size of `\x` hex. |
+| <a id="charCodec"/> `charCodec` | `"char"` | 18 | `string` | The one-byte internal type. **Not** `char(n)`, which is `bpchar`. |
+| <a id="cidrCodec"/> `cidrCodec` | `cidr` | 650 | `string` | |
+| <a id="dateCodec"/> `dateCodec` | `date` | 1082 | `PgDateString` | Verbatim `'YYYY-MM-DD'`. See the decode defaults above. |
+| <a id="daterangeCodec"/> `daterangeCodec` | `daterange` | 3912 | `string` | Canonical range text, e.g. `[2026-01-01,2026-02-01)`. |
+| <a id="float4Codec"/> `float4Codec` | `real` | 700 | `number` | `NaN`, `Infinity` and `-Infinity` decode to their JavaScript counterparts. |
+| <a id="float8Codec"/> `float8Codec` | `double precision` | 701 | `number` | |
+| <a id="inetCodec"/> `inetCodec` | `inet` | 869 | `string` | |
+| <a id="int2Codec"/> `int2Codec` | `smallint` | 21 | `number` | Range-checked on encode. |
+| <a id="int4Codec"/> `int4Codec` | `integer` | 23 | `number` | |
+| <a id="int4rangeCodec"/> `int4rangeCodec` | `int4range` | 3904 | `string` | |
+| <a id="int8Codec"/> `int8Codec` | `bigint` | 20 | `bigint` | `jsonEncode: 'text'` — a JSON *number* would be rounded by `JSON.parse`. |
+| <a id="int8rangeCodec"/> `int8rangeCodec` | `int8range` | 3926 | `string` | |
+| <a id="intervalCodec"/> `intervalCodec` | `interval` | 1186 | `PgInterval` | Reads both `IntervalStyle` spellings pg-prime accepts; encodes ISO-8601, which PostgreSQL accepts under every style. |
+| <a id="jsonbCodec"/> `jsonbCodec` | `jsonb` | 3802 | `unknown` | PostgreSQL **reformats** `jsonb` (key order, whitespace). Never compare its text. |
+| <a id="jsonpathCodec"/> `jsonpathCodec` | `jsonpath` | 4072 | `string` | The right operand of `jsonb @?` and `jsonb @@`. |
+| <a id="macaddr8Codec"/> `macaddr8Codec` | `macaddr8` | 774 | `string` | |
+| <a id="macaddrCodec"/> `macaddrCodec` | `macaddr` | 829 | `string` | |
+| <a id="moneyCodec"/> `moneyCodec` | `money` | 790 | `string` | Formatted by `lc_monetary` (`$12.34`), so it is not portably parseable. The schema DSL warns on it. |
+| <a id="nameCodec"/> `nameCodec` | `name` | 19 | `string` | The catalogue's identifier type. |
+| <a id="numericCodec"/> `numericCodec` | `numeric` | 1700 | `string` | `jsonEncode: 'text'`, so scale survives. See the decode defaults above. |
+| <a id="numrangeCodec"/> `numrangeCodec` | `numrange` | 3906 | `string` | |
+| <a id="oidCodec"/> `oidCodec` | `oid` | 26 | `number` | Range-checked to `[0, 4294967295]`. |
+| <a id="pgLsnCodec"/> `pgLsnCodec` | `pg_lsn` | 3220 | `string` | |
+| <a id="textCodec"/> `textCodec` | `text` | 25 | `string` | Decode is the identity — zero cost. |
+| <a id="timeCodec"/> `timeCodec` | `time` | 1083 | `string` | |
+| <a id="timestampCodec"/> `timestampCodec` | `timestamp` | 1114 | `PgTimestampString` | Verbatim wire text; microseconds preserved. `to_json` inserts an ISO `T` that `decodeJson` normalises back. |
+| <a id="timestamptzCodec"/> `timestamptzCodec` | `timestamptz` | 1184 | `Date` | Truncates to milliseconds; throws on `infinity`. |
+| <a id="timetzCodec"/> `timetzCodec` | `timetz` | 1266 | `string` | |
+| <a id="tsqueryCodec"/> `tsqueryCodec` | `tsquery` | 3615 | `string` | Its own `typeClass`, so `matches()` accepts it and refuses a plain `text` operand. |
+| <a id="tsrangeCodec"/> `tsrangeCodec` | `tsrange` | 3908 | `string` | |
+| <a id="tstzrangeCodec"/> `tstzrangeCodec` | `tstzrange` | 3910 | `string` | |
+| <a id="tsvectorCodec"/> `tsvectorCodec` | `tsvector` | 3614 | `string` | Normalised lexemes with positions, e.g. `'bodi':2 'one':1`. |
+| <a id="uuidCodec"/> `uuidCodec` | `uuid` | 2950 | `string` | Encode validates the shape and lower-cases; PostgreSQL normalises case on output anyway. |
+| <a id="varbitCodec"/> `varbitCodec` | `bit varying` | 1562 | `string` | |
+| <a id="varcharCodec"/> `varcharCodec` | `varchar` | 1043 | `string` | |
+| <a id="xmlCodec"/> `xmlCodec` | `xml` | 142 | `string` | |
+
+The six range codecs decode to their **canonical text form**, never to a `{ lower, upper }` object.
+That is the same call as `date`, and for the same reason: the text form is lossless and total. An
+object would have to invent a representation for inclusivity per side, for unbounded, and for
+`empty` — which has no lower or upper at all.
+
+The string-valued codecs above are decode-identity **by design, not by omission**: PostgreSQL's own
+output is already the canonical, round-trippable spelling, and parsing it would only invent a second
+representation to disagree with.
+
+## Registries
+
+### `defaultRegistry`
+
+{/* docs: signature */}
+```ts
+function defaultRegistry(): Registry
+```
+
+The process-wide registry used when no explicit one is supplied. It is lazy, because building one
+allocates about fifty codecs and a real application has a connection — and therefore its own
+registry — before it compiles a query.
+
+A registry is scoped to **one physical database**, because user-type OIDs are not stable across dev,
+production and shadow. Resolving user types on this one is therefore discouraged: it is a singleton,
+so the second database to resolve would overwrite the first one's OIDs for every caller. Use
+`defaultRegistry().clone()` or `createRegistry()` per database instead.
+
+### `createRegistry`
+
+{/* docs: signature */}
+```ts
+function createRegistry(): Registry
+```
+
+A fresh registry carrying every built-in scalar, its derived array codec, and the four named
+alternates. Pass one as `registry` to `pgPrime` to change what a type decodes to.
+
+{/* docs: use=blog */}
+```ts title="alternate-codecs.ts"
+import { createRegistry, int8StringCodec, numericNumberCodec } from 'pg-prime/codecs'
+
+const [byDefault] = await db.sql`
+  select 1.10::numeric(10,2) as amount, 9007199254740993::int8 as id
+`.execute()
+console.log(byDefault) // { amount: '1.10', id: 9007199254740993n }
+
+const registry = createRegistry()
+registry.register(numericNumberCodec, { override: true })
+registry.register(int8StringCodec, { override: true })
+
+const relaxed = pgPrime({
+  connection: process.env['DATABASE_URL'] ?? 'postgres://localhost:5432/postgres',
+  schema,
+  registry,
+})
+
+const [byAlternate] = await relaxed.sql`
+  select 1.10::numeric(10,2) as amount, 9007199254740993::int8 as id
+`.execute()
+console.log(byAlternate) // { amount: 1.1, id: '9007199254740993' }
+```
+
+The second row is the whole argument for the defaults in one line: `1.10` became `1.1` — the scale a
+`numeric(10,2)` column exists to carry is gone — while the `int8` survived only because
+`int8:string` keeps it as text. `int8NumberCodec` would have thrown on that value rather than round
+it, which is the other half of the same policy.
+
+`{ override: true }` is required whenever the codec claims an OID some other codec already claims;
+without it `register` throws and names the incumbent.
+
+### `Registry`
+
+{/* docs: signature */}
+```ts
+class Registry implements CodecRegistry {
+  constructor(codecs?: readonly AnyCodec[])
+  get resolved(): boolean
+  get generation(): number
+  setServerParameters(p: Readonly<Record<string, string>>): void
+  forOid(oid: number): AnyCodec | undefined
+  byName(name: string): AnyCodec | undefined
+  register(codec: AnyCodec, options?: { override?: boolean }): void
+  clone(): Registry
+  onUnknownOid(handler: ((info: { oid: number; column: string }) => void) | undefined): void
+  planFor(fields: readonly PgField[]): readonly ((raw: PgRawValue) => unknown)[]
+  jsonPlanFor(codecs: readonly (AnyCodec | undefined)[]): readonly ((raw: unknown) => unknown)[]
+  jsonCastFor(codec: AnyCodec): string
+  resolveDynamic(connection: PgConnection, requests: readonly DynamicTypeRequest[]): Promise<void>
+}
+```
+
+The shipped implementation of <a id="CodecRegistry"/> `CodecRegistry`. Three members are worth
+knowing beyond the interface:
+
+- **`clone()`** is the supported way to obey "one registry per physical database": clone the one
+  holding your application's registrations, then `resolveDynamic` the clone against that database's
+  catalogue.
+- **`onUnknownOid(handler)`** fires once per column per `RowDescription` for an OID with no codec —
+  the case `planFor` handles by passing the raw text through. It is a callback and not a throw
+  because an unregistered type is a *compile* error in the schema DSL, and a `select` of some
+  incidental catalogue column must not take the query down. Without the hook, "why is this column a
+  string?" was unanswerable.
+- **`generation`** is bumped by every `register` and every `resolveDynamic`. Anything that memoises
+  a derived view of the registry stores this alongside it and recomputes when it moves.
+
+`resolveDynamic` is how user types get OIDs: it looks each declared type up in `pg_catalog` by name,
+checks that `pg_type.typtype` matches what the schema declared, compares enum labels against
+`pg_enum` in `enumsortorder`, and derives the array codec from `t.typarray` using the catalogue's own
+`t.typdelim` — which is not always `,`, because `box` and `_box` use `;`. A label mismatch is a hard
+error at connect, not a runtime surprise. An unqualified request resolves the way PostgreSQL itself
+would, through `pg_type_is_visible`.
+
+### `builtinCodecs`
+
+{/* docs: signature */}
+```ts
+function builtinCodecs(): readonly AnyCodec[]
+```
+
+Every default scalar codec plus the array codec derived from each one's `arrayOid`. This is what
+`new Registry()` registers when you give it no list; pass your own list to build a registry that
+knows only the types you want.
+
+### `ALTERNATE_CODECS`
+
+{/* docs: signature */}
+```ts
+const ALTERNATE_CODECS: readonly AnyCodec[]
+```
+
+The four codecs that change a decode default. They are registered by **name only**, because each
+deliberately collides on OID with a default — installing one is the `register(codec,
+{ override: true })` above, or naming it on a column in the schema DSL.
+
+| Codec | Name | PostgreSQL type | Decodes to | Instead of |
+|---|---|---|---|---|
+| <a id="int8NumberCodec"/> `int8NumberCodec` | `int8:number` | `bigint` | `number` | `bigint`. Throws above `Number.MAX_SAFE_INTEGER` rather than rounding. |
+| <a id="int8StringCodec"/> `int8StringCodec` | `int8:string` | `bigint` | `string` | `bigint`. The verbatim digits. |
+| <a id="numericNumberCodec"/> `numericNumberCodec` | `numeric:number` | `numeric` | `number` | `string`. Loses scale and precision; you are choosing that. |
+| <a id="timestamptzStringCodec"/> `timestamptzStringCodec` | `timestamptz:string` | `timestamptz` | `string` | `Date`. Keeps microseconds and `infinity`. |
+
+`timestamptzStringCodec` is `jsonEncode: 'text'` while the default `timestamptzCodec` is `'native'`,
+and that is not an oversight. Measured: the wire text of a `timestamptz` is
+`2026-08-14 06:30:00.123456+00`, but `json_build_object` renders the same value as
+`2026-08-14T06:30:00.123456+00:00`. The default codec absorbs the difference because it parses both
+into the same instant; a codec defined as "the verbatim wire text" cannot, so it asks the compiler
+for `::text` and the two depths agree by construction.
+
+## Arrays
+
+### `arrayCodec`
+
+{/* docs: signature */}
+```ts
+function arrayCodec<TIn, TOut, N extends string>(
+  element: Codec<TIn, TOut, N>,
+  oid: number | undefined,
+  options?: { delimiter?: string; name?: string },
+): Codec<readonly (TIn | null)[], (TOut | null)[], `${N}[]`>
+```
+
+Derives an array codec from an element codec. The element decides two things the array cannot know
+on its own: the **delimiter** (from `pg_type.typdelim`), and whether a JavaScript array reaching
+`encode` is a nested array or a single element that happens to be an array. A `jsonb[]` holding
+`[[1, 2]]` is a one-element array whose element is the document `[1,2]` — wire text `{"[1, 2]"}` —
+not the two-dimensional `{{1,2}}` that a structural `Array.isArray` check alone would produce.
+
+`undefined` inside an array is an **error**, not SQL NULL: it is a hole in your array — usually an
+off-by-one, or a `map` that forgot to return — and writing NULL for it would store a lie. Pass
+`null`.
+
+At depth 3 an array arrives in one of two shapes, and which one depends on the *element*: a `native`
+element (`text`, `int4`, `date`) comes back as a real JSON array, and a `text` element (`int8`,
+`numeric`) comes back as a PostgreSQL array literal string, because the whole array was cast
+`::text`. Both are handled, so `int8[]` decodes to the identical `bigint[]` at any depth.
+
+### `arrayCodecOf`
+
+{/* docs: signature */}
+```ts
+function arrayCodecOf(element: AnyCodec, registry?: CodecRegistry): AnyCodec
+```
+
+Resolve the array codec whose element is `element`. Prefers the registry, so `text[]` is the *same
+object* every time and carries OID 1009; falls back to deriving one from `element.arrayOid`, memoised
+per element. `oid: undefined` is the honest outcome for an element whose array type cannot be
+named — the shape assertion then has nothing to compare, which is correct, whereas inventing an OID
+would make it compare against a lie.
+
+### `parseArrayLiteral`
+
+{/* docs: signature */}
+```ts
+function parseArrayLiteral(raw: string, delimiter?: string): PgArrayLiteral
+```
+
+### `writeArrayLiteral`
+
+{/* docs: signature */}
+```ts
+function writeArrayLiteral(
+  values: readonly (string | null | readonly unknown[])[],
+  delimiter?: string,
+  encodeLeaf?: (v: unknown) => string | null,
+  isLeaf?: (v: readonly unknown[]) => boolean,
+): string
+```
+
+The array-literal grammar, exported because it is useful on its own — for a `COPY` payload, or for
+reading a column no codec claims. Both are measured against the real grammar rather than guessed:
+
+```ts title="array-literals.ts"
+import { parseArrayLiteral, writeArrayLiteral } from 'pg-prime/codecs'
+
+console.log(parseArrayLiteral('{a,"b,c",NULL,"NULL"}'))
+// [ 'a', 'b,c', null, 'NULL' ]
+
+console.log(parseArrayLiteral('{{1,2},{3,4}}'))
+// [ [ '1', '2' ], [ '3', '4' ] ]
+
+console.log(parseArrayLiteral('[0:1]={a,b}'))
+// [ 'a', 'b' ]
+
+console.log(writeArrayLiteral(['a', 'b,c', null, 'NULL', '']))
+// {a,"b,c",NULL,"NULL",""}
+```
+
+Four cases every hand-rolled parser gets wrong, all of them above: unquoted `NULL` is SQL NULL while
+quoted `"NULL"` is the four-character string, so a writer must quote the string and must not quote a
+real null; a non-default lower bound emits a dimension prefix (`[0:1]=`); arrays nest; and the
+delimiter is not always `,`.
+
+### `PgArrayLiteral`
+
+{/* docs: signature */}
+```ts
+type PgArrayLiteral = readonly (string | null | PgArrayLiteral)[]
+```
+
+The parsed shape: arbitrarily nested, leaves are `string | null`. Elements are **not** decoded —
+that is the element codec's job.
+
+## User-defined types
+
+### `enumCodec`
+
+{/* docs: signature */}
+```ts
+function enumCodec(
+  name: string,
+  oid: number,
+  labels: readonly string[],
+  sqlName?: string,
+): Codec<string, string>
+```
+
+The cheapest possible enum: decode is the identity plus a membership check. `resolveDynamic` builds
+one for you from `pg_enum`, so you rarely call this directly; when you do, `oid` is the type's OID in
+*that* database and `sqlName` is the schema-qualified, quoted spelling the compiler splices into a
+`::type` cast.
+
+```ts title="enum-codec.ts"
+import { createRegistry, enumCodec, PgEncodeError } from 'pg-prime/codecs'
+
+const registry = createRegistry()
+const mood = enumCodec('mood', 0, ['sad', 'ok', 'happy'])
+const ctx = { typmod: -1, registry, serverParameters: {} }
+
+console.log(mood.encode('ok')) // ok
+console.log(mood.decodeText('happy', ctx)) // happy
+
+try {
+  mood.encode('elated')
+} catch (e) {
+  console.log(e instanceof PgEncodeError, (e as Error).message)
+  // true pg-prime: cannot encode a member of enum mood [sad, ok, happy] as mood (got string)
+}
+```
+
+A bad value on the way **out** is a `PgEncodeError`, not a `PgDecodeError` — the distinction matters
+to a caller that catches one to report which insert value was wrong.
+
+### `DynamicTypeRequest`
+
+{/* docs: signature */}
+```ts
+interface DynamicTypeRequest {
+  readonly schema?: string
+  readonly name: string
+  readonly kind: 'enum' | 'composite' | 'domain' | 'range' | 'multirange' | 'base'
+  readonly enumLabels?: readonly string[]
+  readonly fields?: Readonly<Record<string, string>>
+}
+```
+
+What `resolveDynamic` is asked to resolve. Omit `schema` and the type resolves the way PostgreSQL
+would on this session's `search_path`; qualify it and it matches on `(nspname, typname)` and nothing
+else. `enum` and `domain` are implemented; the other kinds are refused with a sentence.
+
+Domains are widened to `paramOid` 705 (`unknown`) so PostgreSQL applies the domain's own cast and
+constraints. Note a measured asymmetry: PostgreSQL reports a *scalar* domain column in the
+`RowDescription` under its **base** type's OID, so the domain codec earns its keep on the parameter
+side and in the schema DSL — but a `domain[]` column *is* reported under its own OID, which is why
+the derived array codec matters.
+
+## Two codecs that are not what their names suggest
+
+### `jsonCodecJson`
+
+{/* docs: signature */}
+```ts
+const jsonCodecJson: Codec<unknown, unknown, 'json'>
+```
+
+The codec for PostgreSQL's `json` (OID 114), spelled this way because `jsonCodec` is the internal
+factory that builds both it and `jsonbCodec`. Its name is `'json'` and that is what you look it up
+by. Unlike `jsonb`, `json` preserves the **exact** source text, whitespace and all.
+
+Both JSON codecs refuse to guess on encode. `undefined`, a function, a symbol, a `bigint`, a
+circular structure and a throwing `toJSON` are all `PgEncodeError`s. `JSON.stringify(v) ?? 'null'`
+would have turned the first three into the JSON *null*, so a mistyped field name stored `null`
+instead of failing.
+
+### `unknownCodec`
+
+{/* docs: signature */}
+```ts
+const unknownCodec: Codec<unknown, unknown>
+```
+
+The codec on a bare `${value}` hole in the `sql` tag when you supply none. It claims **no OID**, so
+it is registered by name only and can never win a `forOid` lookup; its `paramOid` is `0`, the
+protocol's own spelling of "unspecified, infer from context", which is what lets
+`where "email" = $1` work with a plain JavaScript string.
+
+It has no `JSON.stringify` fallback and no `toPostgres()` duck-typing. An object is an **error**,
+because `${{ a: 1 }}` is ambiguous — `jsonb`? a composite? a range? — and the fix is one word:
+`val(obj, jsonbCodec)`. `undefined`, functions and symbols are errors for a sharper reason: they
+used to reach the wire as SQL NULL, so a forgotten `await` or a mistyped property wrote NULL into a
+column instead of failing.
+
+## The type layer
+
+### `Codec`
+
+{/* docs: signature */}
+```ts
+interface Codec<TIn = never, TOut = unknown, N extends string = string> {
+  readonly name: N
+  readonly oid: number | undefined
+  readonly paramOid: number | undefined
+  readonly sqlName: string
+  readonly typeClass: TypeClass
+  readonly jsonEncode: JsonEncode
+  readonly arrayOf?: Codec<never, unknown, string>
+  readonly arrayOid?: number
+  encode(value: TIn): PgParam
+  decodeText(raw: string, ctx: CodecContext): TOut
+  decodeJson(raw: unknown, ctx: CodecContext): TOut
+  decodeBinary?(raw: Uint8Array, ctx: CodecContext): TOut
+  toJson?(value: TOut): unknown
+}
+```
+
+`TIn` is a superset — what you may pass as a parameter or an insert value — and `TOut` is exactly
+one type. `N` is the codec's own name kept as a **literal**: `typeof textCodec` is
+`Codec<string, string, 'text'>`, not `Codec<string, string, string>`. That literal is what makes
+`` sql`lower(x)`.as(textCodec) `` a class-specific operand, because `.as(c)` republishes `c['name']`
+as the fragment's PostgreSQL type and a fragment then reaches the operator gate through the same
+door a column does.
+
+`encode` must not throw for values inside `TIn`, and must throw `PgEncodeError` outside it.
+`decodeText` never sees `null` — the registry short-circuits it — which is why its signature is
+non-nullable. `decodeBinary` is unimplemented for every built-in in v1, because binary results are
+off.
+
+### `AnyCodec`
+
+{/* docs: signature */}
+```ts
+type AnyCodec = Codec<never, unknown, string>
+```
+
+The heterogeneous bucket a registry stores. Method parameters are bivariant, so a concrete codec
+assigns to it freely.
+
+### `CodecIn`
+
+{/* docs: signature */}
+```ts
+type CodecIn<C> = C extends Codec<infer I, unknown, string> ? I : never
+```
+
+### `CodecOut`
+
+{/* docs: signature */}
+```ts
+type CodecOut<C> = C extends Codec<never, infer O, string> ? O : never
+```
+
+### `CodecPg`
+
+{/* docs: signature */}
+```ts
+type CodecPg<C extends AnyCodec> = C['name']
+```
+
+`CodecIn` and `CodecOut` project a codec's two sides; `CodecPg` is its name as a literal, and is an
+indexed access rather than a conditional on purpose — it costs nothing to instantiate.
+
+### `CodecContext`
+
+{/* docs: signature */}
+```ts
+interface CodecContext {
+  readonly typmod: number
+  readonly registry: CodecRegistry
+  readonly serverParameters: Readonly<Record<string, string>>
+  readonly column?: string
+}
+```
+
+The second argument to every decode. `typmod` is `PgField.dataTypeModifier`; `registry` lets a
+container codec recurse; `serverParameters` is the session's `ParameterStatus`, so a codec asserts on
+`DateStyle` and `IntervalStyle` rather than guessing; `column` is there so an error can name the
+column that failed.
+
+The query runtime assembles this from the **live connection** rather than from the registry, because
+a pooled registry outlives any one session and `TimeZone` and `IntervalStyle` are per-session.
+
+### `TypeClass`
+
+{/* docs: signature */}
+```ts
+type TypeClass =
+  | 'boolean'
+  | 'number'
+  | 'bigint'
+  | 'string'
+  | 'datetime'
+  | 'json'
+  | 'binary'
+  | 'array'
+  | 'enum'
+  | 'composite'
+  | 'range'
+  | 'other'
+```
+
+The PostgreSQL type family a codec belongs to. It does **not** drive operator dispatch — that gate is
+a type-level one over `Codec['name']` literals — so nothing reads it at runtime to choose a method.
+It exists for the two places that need a family rather than a name: `arrayCodec`, where a
+`json`-classed element is a leaf, and anything that groups codecs for display.
+
+### `JsonEncode`
+
+{/* docs: signature */}
+```ts
+type JsonEncode = 'native' | 'text'
+```
+
+How a column of this type must be rendered inside `json_build_object` for `decodeJson` to be exact.
+`'native'` embeds it as-is; `'text'` makes the compiler emit `::text`.
+
+`int8` and `numeric` must be `'text'`, and both were measured:
+`json_build_object('a', 9007199254740993::int8)` emits the JSON *number* `9007199254740993`, which
+`JSON.parse` silently rounds to `9007199254740992`; and a `numeric(10,2)` `1.10` becomes the JSON
+number `1.10`, which parses to `1.1`. An array inherits its element's setting, so `int8[]` is cast
+too.
+
+The union has exactly two members. A custom expression wrapper would invert the layering — the
+compiler depends on the codec layer, so the reverse edge would be a cycle — and anything it could
+express is already expressible as a codec with `jsonEncode: 'text'` whose `decodeJson` parses the
+text spelling, which is how `int8`, `numeric` and every array of them already work.
+
+### `PgDateString`
+
+{/* docs: signature */}
+```ts
+const dateBrand: unique symbol
+type PgDateString = string & { readonly [dateBrand]: 'date' }
+```
+
+### `PgTimestampString`
+
+{/* docs: signature */}
+```ts
+const timestampBrand: unique symbol
+type PgTimestampString = string & { readonly [timestampBrand]: 'timestamp' }
+```
+
+Branded strings — both are `string` at runtime, and the brand is a `unique symbol` the package does
+not export, so you cannot mint one by accident. `PgDateString` is `'YYYY-MM-DD'`: lossless, sorts
+lexicographically, JSON-safe, and cannot shift a day. `PgTimestampString` is the zoneless
+`'YYYY-MM-DD HH:mm:ss[.ffffff]'` wire text, with microseconds intact.
+
+To hand either to something that wants a plain `string`, it already *is* one; to go the other way,
+you are asserting that your string is a valid date, and the assertion should be visible.
+
+### `PgInterval`
+
+{/* docs: signature */}
+```ts
+interface PgInterval {
+  readonly years: number
+  readonly months: number
+  readonly days: number
+  readonly hours: number
+  readonly minutes: number
+  readonly seconds: number
+}
+```
+
+What `intervalCodec` decodes to. Components carry their own sign, exactly as PostgreSQL prints them,
+and there is no normalisation between them: `1 mon` and `30 days` are different intervals and stay
+different. `intervalCodec` reads both `IntervalStyle` spellings pg-prime accepts (`postgres` and
+`iso_8601`) by sniffing the text, which is correct even for a JSON payload produced under a
+different setting than the one now in force; `sql_standard` and `postgres_verbose` are refused at
+connect.
+
+## Errors
+
+### `PgDecodeError`
+
+{/* docs: signature */}
+```ts
+class PgDecodeError extends Error {
+  readonly codec: string
+  readonly raw: unknown
+  constructor(codec: string, raw: unknown, detail: string)
+}
+```
+
+### `PgEncodeError`
+
+{/* docs: signature */}
+```ts
+class PgEncodeError extends Error {
+  readonly codec: string
+  readonly value: unknown
+  constructor(codec: string, value: unknown, detail: string)
+}
+```
+
+`PgDecodeError` means the server sent something this codec could not read; `PgEncodeError` means you
+passed something it could not send. Both carry the codec name and the offending value.
+
+The message formatter is deliberately not `JSON.stringify`, for two reasons that are both reachable
+from an ordinary failure: `JSON.stringify` **throws** on a `bigint`, so the error about a bad value
+would be replaced by a `TypeError` about the error; and it materialises the whole value, which
+turned a 10 MB `bytea` into a 10 MB exception message. Raw excerpts are bounded at 200 characters,
+and a `Uint8Array` is summarised as `<n bytes>`.

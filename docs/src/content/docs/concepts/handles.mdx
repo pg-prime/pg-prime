@@ -58,8 +58,8 @@ type instead of being sprinkled through the codebase.
 
 ## They are not interchangeable, and the compiler says so
 
-A function that declares `Tx<S>` cannot be handed the pool-backed `db`. The `kind` literals differ,
-so the assignment fails on its own:
+A function that declares `Tx<S>` cannot be handed the pool-backed `db`. The two disagree on `kind`
+and `Tx` has ten members `Db` does not, so the assignment fails with no help from anybody:
 
 {/* docs: use=blog expect-error */}
 ```ts

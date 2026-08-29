@@ -21,17 +21,19 @@ import { DOCS, ROOT } from './docs-blocks.mjs'
 
 const CHECK = process.argv.includes('--check')
 const PAGE = join(DOCS, 'src', 'content', 'docs', 'operations', 'poolers.mdx')
-const BEGIN = '{/* GENERATED:pooler-matrix — tools/pooler-matrix.mjs, from POOLER_PROFILES. Do not edit. */}'
+const BEGIN =
+  '{/* GENERATED:pooler-matrix — tools/pooler-matrix.mjs, from POOLER_PROFILES. Do not edit. */}'
 const END = '{/* /GENERATED:pooler-matrix */}'
 
 /** Field → the row label and the phrasing of each value. Every field of `PoolerProfile` appears. */
 const ROWS = [
   {
     field: 'namedPreparedStatements',
-    label: 'Named prepared statements (`execMode: { statement: \'named\' }`)',
+    label: "Named prepared statements (`execMode: { statement: 'named' }`)",
     render: {
       ok: '✅ ok',
-      'shared-lru': '⚠️ shared-lru — allowed; the pooler\'s per-server cache is shared across clients',
+      'shared-lru':
+        "⚠️ shared-lru — allowed; the pooler's per-server cache is shared across clients",
       unsupported: '❌ unsupported — `ConfigError` at construction',
     },
   },
@@ -48,7 +50,8 @@ const ROWS = [
     label: '`db.listen()`',
     render: {
       ok: '✅ ok',
-      unsupported: '❌ unsupported — routed to `directConnection`, or `ConfigError` if there is none',
+      unsupported:
+        '❌ unsupported — routed to `directConnection`, or `ConfigError` if there is none',
     },
   },
   {
@@ -114,7 +117,9 @@ if (start === -1 || end === -1) {
 const next = page.slice(0, start) + generated + page.slice(end + END.length)
 
 if (next === page) {
-  console.log(`pooler-matrix: up to date (${ROWS.length} capabilities × ${POOLER_MODES.length} modes)`)
+  console.log(
+    `pooler-matrix: up to date (${ROWS.length} capabilities × ${POOLER_MODES.length} modes)`,
+  )
   process.exit(0)
 }
 if (CHECK) {
@@ -124,4 +129,6 @@ if (CHECK) {
   process.exit(1)
 }
 writeFileSync(PAGE, next)
-console.log(`pooler-matrix: wrote ${ROWS.length} capabilities × ${POOLER_MODES.length} modes into operations/poolers.mdx`)
+console.log(
+  `pooler-matrix: wrote ${ROWS.length} capabilities × ${POOLER_MODES.length} modes into operations/poolers.mdx`,
+)

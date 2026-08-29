@@ -4,15 +4,327 @@ description: The error class tree and every error type pg-prime throws.
 apiEntry: pg-prime#.
 ---
 
+import { Aside } from '@astrojs/starlight/components'
+
+Everything pg-prime throws descends from `PgPrimeError`, so `e instanceof PgPrimeError` reliably
+answers "did this come from the database layer". Below that root the tree follows PostgreSQL:
+a server error is mapped **once**, at the executor boundary, from its SQLSTATE, and the class it
+lands on is a leaf for a SQLSTATE pg-prime models and the SQLSTATE *class* ancestor for one it does
+not. Anything left over becomes `UnknownQueryError`. In every case `e.code` is the raw five-character
+SQLSTATE, so nothing is lost and adding a leaf class in a later release is not a breaking change for
+code that was catching the ancestor.
+
+That is the whole contract, and it is what lets you choose how narrowly to catch:
+`catch (e) { if (e instanceof IntegrityConstraintError) … }` covers all of class 23, and
+`… instanceof UniqueViolationError` covers only `23505`, with no lookup table on your side and no
+message parsing anywhere. Every error carries structured fields; if you ever have to read our prose
+to branch, that is a bug.
+
+Two names deviate from [design/07 §4.2](/pg-prime/guides/errors/) because the name was already
+taken: `SchemaObjectError` (SQLSTATE class 42) rather than `SchemaError`, which is what
+`defineSchema(...)` throws for a bad declaration, and `SqlSyntaxError` (`42601`) rather than
+`SyntaxError`, which would shadow the ECMAScript global in every file that imports the barrel.
+
+## The tree
+
+```text
+PgPrimeError                                          the root; message, code, cause, callSite, context
+├── QueryError                                        the server rejected a statement — always a SQLSTATE
+│   ├── IntegrityConstraintError                      23  (class fallback)
+│   │   ├── RestrictViolationError                    23001
+│   │   ├── NotNullViolationError                     23502
+│   │   ├── ForeignKeyViolationError                  23503
+│   │   ├── UniqueViolationError                      23505
+│   │   ├── CheckViolationError                       23514
+│   │   └── ExclusionViolationError                   23P01
+│   ├── TransactionError                              25, 40  (class fallback)
+│   │   ├── ReadOnlySqlTransactionError               25006
+│   │   ├── InFailedTransactionError                  25P02   carries the poisoning error
+│   │   ├── IdleInTransactionTimeoutError             25P03
+│   │   ├── SerializationFailureError                 40001   retried by default at RR / SERIALIZABLE
+│   │   └── DeadlockDetectedError                     40P01   never retried by default
+│   ├── DataError                                     22  (class fallback)
+│   │   ├── StringDataRightTruncationError            22001
+│   │   ├── NumericValueOutOfRangeError               22003
+│   │   ├── InvalidDatetimeFormatError                22007
+│   │   ├── DivisionByZeroError                       22012
+│   │   └── InvalidTextRepresentationError            22P02
+│   ├── AccessError                                   28  (class fallback)
+│   │   ├── InsufficientPrivilegeError                42501
+│   │   └── InvalidPasswordError                      28000, 28P01
+│   ├── SchemaObjectError                             42  (class fallback)
+│   │   ├── SqlSyntaxError                            42601
+│   │   ├── UndefinedColumnError                      42703
+│   │   ├── UndefinedFunctionError                    42883
+│   │   ├── UndefinedTableError                       42P01
+│   │   └── DuplicateTableError                       42P07
+│   ├── PreparedStatementError                        26  (class fallback)
+│   │   ├── InvalidStatementNameError                 26000
+│   │   └── DuplicateStatementError                   42P05
+│   ├── CachedPlanChangedError                        0A000
+│   ├── LockNotAvailableError                         55P03
+│   ├── QueryCanceledError                            57014
+│   ├── InsufficientResourcesError                    53  (class fallback)
+│   │   ├── DiskFullError                             53100
+│   │   ├── OutOfMemoryError                          53200
+│   │   └── TooManyConnectionsError                   53300
+│   ├── OperatorInterventionError                     57  (class fallback), 57P01–57P04
+│   └── UnknownQueryError                             any SQLSTATE not in the tables
+├── ConnectionError                                   08000 — no bytes reached or left a backend
+│   ├── ConnectionRefusedError                        08000   ECONNREFUSED / ENOTFOUND / EHOSTUNREACH
+│   ├── ConnectionTimeoutError                        08000   TCP or TLS handshake timed out
+│   ├── AuthenticationError                           08000   SCRAM / MD5 failure during startup
+│   ├── ConnectionTerminatedError                     08000   ECONNRESET, 08006, 57P01 mid-query
+│   └── PoolTimeoutError                              08000   carries PoolStats
+├── IndeterminateCommitError                          INDETERMINATE_COMMIT — a sibling, deliberately
+├── TimeoutError                                      TIMEOUT
+│   ├── QueryTimeoutError                             TIMEOUT  our client-side timer fired
+│   └── TransactionTimeoutError                       TIMEOUT  a signal around a whole transaction
+├── AbortError                                        ABORT
+├── CodecMismatchError                                CODEC_MISMATCH
+├── UsageError                                        USAGE — programmer error, never the database's
+│   ├── HandleMisuseError                             USAGE
+│   ├── TransactionClosedError                        USAGE
+│   ├── TransactionAbandonedError                     USAGE
+│   ├── TransactionRollback                           USAGE
+│   ├── DbClosedError                                 USAGE
+│   └── UnsupportedInPoolerModeError                  USAGE
+└── ConfigError                                       CONFIG — thrown eagerly at pgPrime(...)
+```
+
+The builder and the compiler throw from the same root: `BuilderError`, `SchemaError`,
+`InvalidIdentifierError`, `NoCodecError`, `NullOperandError`, `TooManyParametersError` and the rest
+are documented on [pg-prime/sql](/pg-prime/reference/sql/). `TooManyParametersError` is a
+`UsageError`, so nothing retries it.
+
+## Reading a server error
+
+The `23505` below is real: it is raised by PostgreSQL, mapped at the boundary, and everything the
+example prints is read off the object rather than parsed out of a message.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="duplicate-email.ts"
+import { UniqueViolationError, isUniqueViolation } from 'pg-prime'
+
+await db.insertInto(db.h.users).values({ email: 'alice@example.com', name: 'Alice' }).execute()
+
+try {
+  await db.insertInto(db.h.users).values({ email: 'alice@example.com', name: 'Impostor' }).execute()
+} catch (e) {
+  if (!(e instanceof UniqueViolationError)) throw e
+
+  console.log(e.code) // '23505'
+  console.log(e.message) // 'unique constraint violated: users(email) [users_email_key]'
+  console.log(e.constraintName) // 'users_email_key'
+  console.log(e.table?.$.name) // 'users'
+  console.log(e.columns?.map((c) => c.$.dbName)) // [ 'email' ]
+
+  // The DETAIL keeps the columns and drops the value — it read
+  // `Key (email)=(alice@example.com) already exists.` on the wire.
+  console.log(e.detail, e.detailRedacted) // 'Key (email)=(…) [values redacted]' true
+
+  // The SQL is kept (it is $n-parameterised), the parameter values are not.
+  console.log(e.paramCount, e.params) // 2 undefined
+
+  // And the match is on the column, not on the constraint name, so a rename is a compile error.
+  console.log(isUniqueViolation(e, schema.tables.users.cols.email)) // true
+  console.log(isUniqueViolation(e, schema.tables.users.cols.name)) // false
+}
+```
+
+`e.table` and `e.columns` are the schema objects you declared, not strings, because
+`pgPrime({ schema })` was handed the schema and can resolve `users_email_key` back to it. When it
+cannot — a constraint created by a hand-written SQL migration or by an extension — those fields are
+`undefined`, the message falls back to PostgreSQL's own, and a sentence says the constraint is not
+declared in your schema. There is never a guess.
+
+### `QueryError`
+
+Every server error is one of these. The PostgreSQL `ErrorResponse` fields are verbatim and
+unredacted, because none of them contains a user value; `sql`, `params` and `detail` are governed by
+[`ErrorOptions`](#ErrorOptions).
+
+{/* docs: signature */}
+```ts
+class QueryError extends PgPrimeError {
+  readonly code: string // the SQLSTATE: '23505'
+  readonly sqlStateClass: string // '23' — the branch key, precomputed
+  readonly severity: 'ERROR' | 'FATAL' | 'PANIC'
+  readonly context: ErrorContext
+
+  // PG ErrorResponse, verbatim
+  readonly schemaName?: string
+  readonly tableName?: string
+  readonly columnName?: string
+  readonly dataTypeName?: string
+  readonly constraintName?: string
+  readonly hint?: string
+  readonly position?: number
+  readonly internalPosition?: number
+  readonly where?: string
+  readonly routine?: string
+  readonly file?: string
+  readonly line?: string
+
+  // redaction-governed
+  readonly sql?: string
+  readonly params?: readonly unknown[]
+  readonly paramCount: number
+  readonly paramTypes?: readonly number[]
+  readonly detail?: string
+  readonly detailRedacted: boolean
+}
+```
+
+`sqlStateClass` exists so that a `switch (e.sqlStateClass)` is as cheap as an `instanceof`, and
+`routine` is what drives the self-healing in the prepared-statement table below: `pg` gives you the
+backend C function that raised the error, which is more precise than the SQLSTATE alone.
+
+## Connection and configuration
+
+A connection failure never reached a SQLSTATE of its own, so every class here reports `08000` unless
+the server managed to send one first. None of them tells you whether the statement ran: if that
+matters, the answer is a transaction, and if the failure happened at `COMMIT` the answer is
+[`IndeterminateCommitError`](#IndeterminateCommitError).
+
+| Class | `code` | What it means |
+|---|---|---|
+| <a id="ConnectionError"/>`ConnectionError` | `08000` | The generic case: bytes could not be moved to or from a backend and none of the leaves matched. Log `cause` — it is the driver's own error. |
+| <a id="ConnectionRefusedError"/>`ConnectionRefusedError` | `08000` | `ECONNREFUSED`, `ENOTFOUND` or `EHOSTUNREACH`: nothing is listening at that host and port. Check the URL before anything else. |
+| <a id="ConnectionTimeoutError"/>`ConnectionTimeoutError` | `08000` | The TCP or TLS handshake did not finish in time — a firewall that drops rather than rejects, or a server that is up but not accepting. |
+| <a id="AuthenticationError"/>`AuthenticationError` | `08000` | SCRAM or MD5 failed during startup, or the server rejected the role. The same rejection *after* startup is `InsufficientPrivilegeError` or `InvalidPasswordError`. |
+| <a id="ConnectionTerminatedError"/>`ConnectionTerminatedError` | `08000` | The backend went away mid-statement: `ECONNRESET`, `08006`, or a `57P01` admin shutdown that arrived while a query was in flight. Retry only if the statement is idempotent. |
+| <a id="ConfigError"/>`ConfigError` | `CONFIG` | An invalid configuration, thrown **eagerly** by `pgPrime(...)` rather than at the first query, and naming the key that is wrong. Nothing in your process has connected yet when you see one. |
+
+A TLS failure — a bad certificate, a name mismatch, an unsupported protocol version — is reported as
+a `ConnectionError` whose `name` is `'TlsError'`. The class itself is not exported in this release,
+so match it with `e instanceof ConnectionError && e.name === 'TlsError'`.
+
+### `PoolTimeoutError`
+
+{/* docs: signature */}
+```ts
+class PoolTimeoutError extends ConnectionError {
+  readonly stats?: PoolStats // { total, idle, waiting, max }
+}
+```
+
+`connectionTimeoutMillis` elapsed while queueing for a pooled connection — the socket was never
+reached, which is what separates this from `ConnectionTimeoutError`. `pg`'s own default for that
+setting is `0`, "wait forever", which turns pool exhaustion into an unbounded hang with no error and
+no metric; pg-prime sets a finite one and attaches `stats` so that exhaustion is alertable rather
+than merely slow. A `waiting` count near your `max` is the signature of a leaked handle or a query
+that should not be holding a connection.
+
+## Integrity constraints
+
+SQLSTATE class 23, plus the schema resolution pg-prime layers on top of it. These are the errors
+worth catching by name in application code: each one corresponds to a rule you wrote down, and the
+right response is usually a `409` rather than a `500`.
+
+| Class | SQLSTATE | What it means |
+|---|---|---|
+| <a id="RestrictViolationError"/>`RestrictViolationError` | `23001` | A `RESTRICT` referential action refused a delete or update. Unlike `NO ACTION` it is checked immediately, so a deferred constraint will not save you — remove the dependents first. |
+| <a id="NotNullViolationError"/>`NotNullViolationError` | `23502` | A `NOT NULL` column got `null`. It carries `columnName`, and resolves through `(table, column)` rather than a constraint name, because PostgreSQL sends none for this one. |
+| <a id="ForeignKeyViolationError"/>`ForeignKeyViolationError` | `23503` | The referenced row does not exist, or a delete would orphan a referencing one. `constraint.referencedTable` tells you which side. |
+| <a id="CheckViolationError"/>`CheckViolationError` | `23514` | A `CHECK` failed. PostgreSQL does not report which column, so the constraint name is the whole signal — name your checks. |
+| <a id="ExclusionViolationError"/>`ExclusionViolationError` | `23P01` | An `EXCLUDE` constraint rejected the row: typically two overlapping ranges in a booking or scheduling table. |
+
+### `IntegrityConstraintError`
+
+{/* docs: signature */}
+```ts
+class IntegrityConstraintError extends QueryError {
+  readonly constraint?: ConstraintRef
+  readonly table?: TableRef
+  readonly columns?: readonly ColumnRef[]
+}
+```
+
+The class-23 ancestor, and the fallback for any `23xxx` with no leaf of its own. The three extra
+fields are the resolved constraint: `constraint.name` is what PostgreSQL reported,
+`table` and `columns` are the objects from your schema. All three are `undefined` for a constraint
+the schema does not declare.
+
 ### `UniqueViolationError`
 
 {/* docs: signature */}
 ```ts
 class UniqueViolationError extends IntegrityConstraintError {
+  readonly code: '23505'
+  readonly constraintName?: string // 'users_email_key'
   readonly constraint?: ConstraintRef
   readonly table?: TableRef
   readonly columns?: readonly ColumnRef[]
 }
+```
+
+A unique index or constraint rejected the row — the duplicate-signup error, and the most common
+error worth handling in a request path. `columns` is more informative than it looks: on a composite
+key PostgreSQL does not otherwise tell you which columns collided, and pg-prime recovers them from
+the `DETAIL` before redacting the values out of it. Prefer
+[`isUniqueViolation`](#isUniqueViolation) over `instanceof` when you care *which* uniqueness broke,
+and consider `.onConflict(...)` when you would rather not raise at all.
+
+## Transactions and concurrency
+
+| Class | SQLSTATE | What it means |
+|---|---|---|
+| <a id="TransactionError"/>`TransactionError` | `25`, `40` | The ancestor of both classes, and the fallback for any `25xxx` or `40xxx` with no leaf. Catch it to mean "the transaction, not the statement, is what went wrong". |
+| <a id="ReadOnlySqlTransactionError"/>`ReadOnlySqlTransactionError` | `25006` | A write inside a read-only transaction. Either the handle was opened `readOnly`, or the connection is pointed at a hot standby and the write should not have been routed there. |
+| <a id="IdleInTransactionTimeoutError"/>`IdleInTransactionTimeoutError` | `25P03` | The server killed the session for holding a transaction open past `idle_in_transaction_session_timeout`. Almost always an `await` on something that is not the database inside a transaction callback. |
+| <a id="SerializationFailureError"/>`SerializationFailureError` | `40001` | Two transactions could not be serialized. Retried automatically, with full jitter, **only** at repeatable read or serializable — which is exactly where it is the expected outcome rather than a bug. A retried callback must be idempotent. |
+| <a id="DeadlockDetectedError"/>`DeadlockDetectedError` | `40P01` | Two transactions took locks in opposite orders and PostgreSQL broke the tie. **Not** retried by default: a deadlock is nearly always a lock-ordering bug, and retrying turns a reproducible bug into an intermittent latency spike. Its `detail` is kept verbatim (see below) and names both processes and both relations. |
+| <a id="LockNotAvailableError"/>`LockNotAvailableError` | `55P03` | `NOWAIT` found the row already locked, or `lock_timeout` expired while waiting for one. Both are deliberate: the fix is to shorten the transaction holding the lock, not to raise the timeout. See [locks](/pg-prime/operations/locks/). |
+
+### `InFailedTransactionError`
+
+{/* docs: signature */}
+```ts
+class InFailedTransactionError extends TransactionError {
+  readonly code: '25P02'
+  /** The earlier error that aborted this transaction. */
+  readonly poisonedBy?: PgPrimeError
+}
+```
+
+The transaction is already aborted and PostgreSQL is refusing every statement until it ends. The
+retained `poisonedBy` is the whole point: by the time a `25P02` reaches you, the statement that
+actually failed is several awaits in the past and its message would otherwise be gone. The fix is a
+savepoint around the statement that may fail, and the message says so.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="poisoned-transaction.ts"
+import { InFailedTransactionError, UniqueViolationError } from 'pg-prime'
+
+await db.insertInto(db.h.users).values({ email: 'alice@example.com', name: 'Alice' }).execute()
+
+// Without a savepoint: the duplicate aborts the transaction, and the *next* statement is the
+// one that throws.
+const failed = await db
+  .transaction(async (db) => {
+    const inner = await db.insertInto(db.h.users).values({ email: 'alice@example.com', name: 'A' }).execute().catch((x: unknown) => x)
+    console.log('INNER', inner)
+    await db.insertInto(db.h.users).values({ email: 'bob@example.com', name: 'Bob' }).execute()
+  })
+  .catch((e: unknown) => e)
+
+console.log('FAILED IS', failed)
+console.log(failed instanceof InFailedTransactionError) // true
+console.log((failed as InFailedTransactionError).poisonedBy instanceof UniqueViolationError) // true
+
+// With one: the speculative insert fails inside its savepoint, and the transaction commits.
+await db.transaction(async (db) => {
+  await db
+    .savepoint(async (sp) => {
+      await sp.insertInto(sp.h.users).values({ email: 'alice@example.com', name: 'A' }).execute()
+    })
+    .catch(() => undefined)
+  await db.insertInto(db.h.users).values({ email: 'bob@example.com', name: 'Bob' }).execute()
+})
+
+const rows = await db.from(db.h.users, 'u').select((t) => ({ email: t.u.email })).execute()
+console.log(rows.length) // 2
 ```
 
 ### `IndeterminateCommitError`
@@ -21,15 +333,369 @@ class UniqueViolationError extends IntegrityConstraintError {
 ```ts
 class IndeterminateCommitError extends PgPrimeError {
   readonly code: 'INDETERMINATE_COMMIT'
+  readonly context: ErrorContext
 }
 ```
 
-### `ErrorContext`
+`COMMIT` was written to the socket and never acknowledged. **The transaction may have committed.**
+
+It is a sibling of `ConnectionError` rather than a subclass, and that is the entire point: if it
+inherited, every `catch (e) { if (e instanceof ConnectionError) retry() }` already in the wild would
+silently do the wrong thing — which, for a payment, is a double charge. Making it a sibling forces a
+deliberate decision. It is also the first hard exclusion in the retry policy, so nothing in this
+library will ever re-run the callback that produced one. The only correct response is to look: read
+the row back, or reconcile against an idempotency key you wrote inside the transaction.
+
+## Access and privileges
+
+| Class | SQLSTATE | What it means |
+|---|---|---|
+| <a id="AccessError"/>`AccessError` | `28` | The class-28 ancestor and the fallback for any `28xxx`. Catch it to mean "the server would not let this role do that". |
+| <a id="InsufficientPrivilegeError"/>`InsufficientPrivilegeError` | `42501` | A missing `GRANT`, or a policy that denied the statement outright. This is the row-level-security boundary worth knowing: a policy that *filters* gives you zero rows and no error, while a missing privilege gives you this — if you are debugging "the row vanished", it is the first case, not this one. |
+| <a id="InvalidPasswordError"/>`InvalidPasswordError` | `28000`, `28P01` | The server rejected the credentials on a statement rather than at startup — `SET ROLE`, `SET SESSION AUTHORIZATION`, or a re-authentication. The startup case is `AuthenticationError`. |
+
+## Data and types
+
+SQLSTATE class 22: the value reached the server and the server would not accept it. Almost all of
+these are better caught at the boundary where the value entered your process, and the class exists
+so that "bad input" and "broken schema" are distinguishable in a log.
+
+| Class | SQLSTATE | What it means |
+|---|---|---|
+| <a id="DataError"/>`DataError` | `22` | The class-22 ancestor and the fallback for any `22xxx` with no leaf of its own. |
+| <a id="StringDataRightTruncationError"/>`StringDataRightTruncationError` | `22001` | A value was longer than a `varchar(n)` or `char(n)`. Validate the length where the value arrives, or widen the column — PostgreSQL will not silently truncate. |
+| <a id="NumericValueOutOfRangeError"/>`NumericValueOutOfRangeError` | `22003` | A number did not fit its target: an `int4` past 2 147 483 647, or a `numeric(10,2)` given more digits than its precision allows. |
+| <a id="InvalidDatetimeFormatError"/>`InvalidDatetimeFormatError` | `22007` | A string could not be parsed as a date, time or timestamp. Send a `Date` or an ISO-8601 string; a locale-formatted one is a coin flip. |
+| <a id="DivisionByZeroError"/>`DivisionByZeroError` | `22012` | Division, modulo or `NULLIF`-less arithmetic hit a zero divisor. `nullif(x, 0)` in the denominator is the usual fix. |
+| <a id="InvalidTextRepresentationError"/>`InvalidTextRepresentationError` | `22P02` | A text value the target type cannot parse: `'abc'` for an integer, a malformed UUID, or a label that is not in an enum. On an enum it usually means a pending migration, not bad input. |
+
+### `CodecMismatchError`
+
+{/* docs: signature */}
+```ts
+class CodecMismatchError extends PgPrimeError {
+  readonly code: 'CODEC_MISMATCH'
+  readonly mismatch: CodecMismatch // { column, declared, declaredOid, actual, actualOid, origin? }
+}
+```
+
+Client-side, and the only error on this page the server never sees: the codec a query declared for a
+column and the OID PostgreSQL reported in `RowDescription` disagree. It is thrown **before** any row
+is decoded, because decoding first would hand back a value that is already wrong — `int4`'s decoder
+turns `'10.50'` into `10`. The check runs in dev mode only (`NODE_ENV !== 'production'`, or
+`pgPrime({ assertShape: true })`): it costs one integer comparison per column per query and buys
+nothing in production that a test run has not already bought. When the column belongs to a schema
+table the message says "schema drift" and points at the pending migration rather than at your call
+site, because that is where the mistake is.
+
+## Schema objects and syntax
+
+SQLSTATE class 42. In a typed codebase these usually mean the database and the schema module have
+drifted apart, not that somebody wrote bad SQL — a `42703` on a query the compiler emitted is a
+migration that has not been applied.
+
+| Class | SQLSTATE | What it means |
+|---|---|---|
+| <a id="SchemaObjectError"/>`SchemaObjectError` | `42` | The class-42 ancestor and the fallback for any `42xxx` with no leaf. Named `SchemaObjectError` because `SchemaError` is what `defineSchema(...)` throws for a bad declaration. |
+| <a id="SqlSyntaxError"/>`SqlSyntaxError` | `42601` | The server could not parse the statement. `position` is the one-based character offset it stopped at, which is worth printing next to `sql`. Reachable from the builder only through a raw fragment. |
+| <a id="UndefinedColumnError"/>`UndefinedColumnError` | `42703` | The column does not exist. Run `pg-prime migrate status`: a pending migration is the usual cause, and drift is the next. |
+| <a id="UndefinedFunctionError"/>`UndefinedFunctionError` | `42883` | No function or operator matches those argument types. PostgreSQL's `hint` names the near misses, and an explicit cast usually resolves it. |
+| <a id="UndefinedTableError"/>`UndefinedTableError` | `42P01` | The table (or view, or CTE name) does not exist. Also what you get when `search_path` is not what you assumed under a connection pooler. |
+| <a id="DuplicateTableError"/>`DuplicateTableError` | `42P07` | The object already exists. Most often two migrations creating the same thing, or a `CREATE` replayed after a partial apply. |
+
+## Resources and operator intervention
+
+Server-side capacity and administration. None of these is your statement's fault, and all of them
+are worth an alert rather than a retry loop.
+
+| Class | SQLSTATE | What it means |
+|---|---|---|
+| <a id="InsufficientResourcesError"/>`InsufficientResourcesError` | `53` | The class-53 ancestor and the fallback for any `53xxx`. |
+| <a id="DiskFullError"/>`DiskFullError` | `53100` | The server ran out of disk. Frequently a `temp_file_limit` or a sort spilling, not the data directory itself. |
+| <a id="OutOfMemoryError"/>`OutOfMemoryError` | `53200` | The backend could not allocate. A `work_mem` set too high times too many concurrent sorts is the common shape. |
+| <a id="TooManyConnectionsError"/>`TooManyConnectionsError` | `53300` | `max_connections` is exhausted. Lower your pool `max` or put a pooler in front — see [poolers](/pg-prime/operations/poolers/) — because more application processes cannot fix it. |
+| <a id="OperatorInterventionError"/>`OperatorInterventionError` | `57P01`–`57P04` | An administrator or the server itself ended things: `57P01` admin shutdown, `57P02` crash shutdown, `57P03` cannot connect now (recovery), `57P04` database dropped. Back off and reconnect; `57P03` in particular resolves on its own. |
+
+## Prepared statements and the protocol
+
+Three of these pg-prime handles for you, once, and then re-raises if the retry fails too. You will
+normally see them only in a log line, and mostly under a transaction-mode pooler.
+
+| Class | `code` | What it means |
+|---|---|---|
+| <a id="PreparedStatementError"/>`PreparedStatementError` | `26` | The class-26 ancestor and the fallback for any `26xxx`. |
+| <a id="InvalidStatementNameError"/>`InvalidStatementNameError` | `26000` | The server has no statement by that name: a pooler handed you a different backend from the one you prepared on. Self-healed once by re-preparing. |
+| <a id="DuplicateStatementError"/>`DuplicateStatementError` | `42P05` | The name is already taken on this backend — pg-prime's per-connection map is stale. Self-healed once. |
+| <a id="CachedPlanChangedError"/>`CachedPlanChangedError` | `0A000` | "Cached plan must not change result type": DDL ran under a plan that a prepared statement had already cached. Self-healed once, plus a process-wide flush of the description cache. This is the PgBouncer-after-a-migration case. |
+| <a id="UnknownQueryError"/>`UnknownQueryError` | any | A SQLSTATE with no leaf class and no class fallback. `code` is the raw state and every `QueryError` field is populated, so nothing is lost — this is the class that makes adding a leaf later a non-breaking change. |
+
+## Cancellation, timeouts and aborts
+
+Four different things that all look like "it stopped". The distinction that matters is whether the
+**server** stopped working, and only `QueryCanceledError` with `reason: 'statement_timeout'`
+guarantees that it did.
+
+| Class | `code` | What it means |
+|---|---|---|
+| <a id="TimeoutError"/>`TimeoutError` | `TIMEOUT` | The ancestor of the two client-side timeouts. Never raised directly. |
+| <a id="QueryTimeoutError"/>`QueryTimeoutError` | `TIMEOUT` | Your own client-side timer fired. The server may still be burning CPU on that statement — this is precisely why it is not a `QueryCanceledError`. |
+| <a id="TransactionTimeoutError"/>`TransactionTimeoutError` | `TIMEOUT` | A `signal` from `AbortSignal.timeout(ms)` around a whole transaction fired. The transaction is rolled back. |
+| <a id="AbortError"/>`AbortError` | `ABORT` | Your `AbortSignal` fired — usually a client disconnecting. Never retried, because the caller asked to stop. |
+
+### `QueryCanceledError`
+
+{/* docs: signature */}
+```ts
+class QueryCanceledError extends QueryError {
+  readonly code: '57014'
+  readonly context: ErrorContext // context.reason says which of the three
+}
+```
+
+PostgreSQL raises `57014` for three different events, and `context.reason` is the only thing that
+separates them: `'statement_timeout'` means the backend gave up and is no longer working,
+`'lock_timeout'` means it gave up waiting for a lock, and `'cancel'` means pg-prime sent a
+`CancelRequest` and the server honoured it. The first two are the server's decision and the
+statement is definitely over; the third is yours. [Timeouts](/pg-prime/operations/timeouts/) has the
+budget-setting version of this.
+
+## Usage errors
+
+Programmer error — ours or yours, never the database's. The distinction is operational rather than
+aesthetic: a `UsageError` is never transient, so nothing in the retry policy will re-run a
+transaction that raised one.
+
+| Class | `code` | What it means |
+|---|---|---|
+| <a id="UsageError"/>`UsageError` | `USAGE` | The ancestor. Catch it to mean "this is a bug in the calling code and retrying cannot help". |
+| <a id="HandleMisuseError"/>`HandleMisuseError` | `USAGE` | The outer `db` was used inside a transaction callback, so the statement would have run on a *different* connection, outside your transaction, and can deadlock against it. Name the callback parameter `db` so it shadows the outer handle. A development guard: it needs `AsyncLocalStorage` and is off in production. |
+| <a id="TransactionClosedError"/>`TransactionClosedError` | `USAGE` | A `Tx` or `Session` handle was used after its callback returned. The connection is back in the pool and the transaction is over; a handle cannot outlive its scope. |
+| <a id="TransactionAbandonedError"/>`TransactionAbandonedError` | `USAGE` | A handle was used after `rollbackWith(...)` doomed the transaction. Every further statement would be discarded at `ROLLBACK`, which is why it throws instead of pretending. |
+| <a id="TransactionRollback"/>`TransactionRollback` | `USAGE` | What `tx.rollback()` throws. `db.transaction(...)` rolls back and rethrows it, so it is visible to your `catch`. It is a `UsageError` and not a `TransactionError` because nothing went wrong on the server — you asked to abort. Use `rollbackWith(value)` to resolve with a value instead. |
+| <a id="DbClosedError"/>`DbClosedError` | `USAGE` | A query after `db.end()`. Usually a background job that outlived the shutdown hook. |
+| <a id="UnsupportedInPoolerModeError"/>`UnsupportedInPoolerModeError` | `USAGE` | `LISTEN`, a session-level advisory lock, `db.session()` or a named prepared statement under a transaction-mode pooler, where none of them can work. Either use a session-mode connection for that one thing or drop the feature; see [poolers](/pg-prime/operations/poolers/). |
+
+## `ErrorContext`
+
+Present on every error the runtime raises and absent on the ones the builder raises before a handle
+is involved, which is why every field is optional.
 
 {/* docs: signature */}
 ```ts
 interface ErrorContext {
   readonly label?: string
   readonly attempt?: number
+  readonly durationMs?: number
+  readonly handle?: 'db' | 'tx' | 'session'
+  readonly reason?: 'statement_timeout' | 'lock_timeout' | 'cancel'
+  readonly queryId?: string
+  readonly txId?: string
+  readonly depth?: number
 }
 ```
+
+`attempt` is one-based and counts retries, so `attempt > 1` on an error tells you the retry policy
+was in play and gave up. `depth` is savepoint nesting depth: `0` is the transaction itself. `reason`
+is only ever set on a `57014`.
+
+Alongside it, `PgPrimeError.callSite` is a single stack frame captured **at query start** — the
+caller's own file and line rather than the useless async stack a rejected database promise carries.
+It costs a few microseconds per query, so it is on outside production and off inside; see
+[`ErrorOptions.captureCallSite`](#ErrorOptions).
+
+## `ErrorOptions`
+
+The `errors` key of the config, and the redaction policy. The defaults are chosen so that an error
+object is shippable to a third-party error tracker without a review.
+
+{/* docs: signature */}
+```ts
+interface ErrorOptions {
+  /** Default `true`. pg-prime's SQL never inlines a user value. */
+  readonly includeSql?: boolean
+  /** Default `4096`, then elided with a marker naming the number of characters dropped. */
+  readonly maxSqlLength?: number
+  /** Default `false`. Parameters are the PII. */
+  readonly includeParams?: boolean
+  /** Default `false`. PostgreSQL's DETAIL leaks user values. */
+  readonly includeDetail?: boolean
+  /** Default `NODE_ENV !== 'production'`. */
+  readonly captureCallSite?: boolean
+}
+```
+
+Three decisions, each with a reason:
+
+1. **`sql` is included by default**, because every statement the builder emits is `$n`-parameterised
+   by construction and therefore carries no user value, and because an error report without the text
+   is close to useless. The one leak vector is a `sql.unsafe` fragment that interpolates a literal,
+   which is that fragment's owner's responsibility.
+2. **`params` are redacted by default.** Parameters are *precisely* the PII, the tokens and the
+   password hashes, and errors flow into logs and trackers. `paramCount` and `paramTypes` are always
+   present and are enough to debug an arity or a type mismatch.
+3. **`DETAIL` is redacted by default**, and this is the one that is usually got wrong. A unique
+   violation's detail reads `Key (email)=(alice@example.com) already exists.`, and passing it into
+   `error.message` puts a user's address in a log line. pg-prime parses it, keeps the **columns** and
+   drops the **values**, and sets `detailRedacted: true` so a reader knows the value was removed
+   deliberately rather than never sent.
+
+There are two deliberate exceptions to the third rule, both measured against what they cost:
+
+- A **`40P01`** keeps its `DETAIL` verbatim. PostgreSQL's deadlock detail names both processes and
+  both relations, contains no user value at all, and is the only thing that makes a deadlock
+  diagnosable — dropping it would obey the letter of the rule and destroy its purpose.
+- A **unique or foreign-key violation keeps its columns**. PostgreSQL does not otherwise tell you
+  which columns of a composite key collided, so the column list is both safe and the most useful
+  half of the detail.
+
+<Aside type="caution">
+`includeParams: true` and `includeDetail: true` put user values into every error object your process
+produces, including the ones your error tracker receives. They are development switches.
+</Aside>
+
+## `ConstraintRef`
+
+What a constraint name resolves to. The index is built lazily, on the first constraint error, from
+the schema's runtime metadata — not at startup, because startup cost matters on serverless and the
+majority of processes never see a `23xxx` at all. It is cached per schema object thereafter.
+
+{/* docs: signature */}
+```ts
+interface ConstraintRef {
+  readonly kind: ConstraintKind
+  readonly name: string
+  readonly table: TableRef
+  readonly columns: readonly ColumnRef[]
+  /** For foreign keys. */
+  readonly referencedTable?: TableRef
+  readonly referencedColumns?: readonly ColumnRef[]
+}
+```
+
+### `ConstraintKind`
+
+{/* docs: signature */}
+```ts
+type ConstraintKind = 'unique' | 'primaryKey' | 'foreignKey' | 'check' | 'exclusion' | 'notNull'
+```
+
+Both the name you declared **and** PostgreSQL's own default name are registered for an unnamed
+constraint (`users_email_key`, `users_pkey`, `posts_author_id_fkey`), because which one the server
+reports depends on whether the migration named it, and resolving a constraint twice is better than
+not resolving it at all. `23502` carries no constraint name, so it resolves by `(table, column)`
+instead and gets `kind: 'notNull'`.
+
+## The SQLSTATE tables
+
+The mapping ships as data rather than as a `switch`, so that a test can walk every entry and you can
+read the table instead of the source.
+
+### `SQLSTATE_MAP`
+
+{/* docs: signature */}
+```ts
+const SQLSTATE_MAP: Readonly<Record<string, QueryErrorCtor>>
+```
+
+Exact SQLSTATE to class: the 36 states listed in the tree above, frozen.
+
+### `SQLSTATE_CLASS_FALLBACK`
+
+{/* docs: signature */}
+```ts
+const SQLSTATE_CLASS_FALLBACK: Readonly<Record<string, QueryErrorCtor>>
+```
+
+Two-character SQLSTATE class to class: `22`, `23`, `25`, `26`, `28`, `40`, `42`, `53`, `57`. `08` is
+deliberately **absent** — a connection exception is a `ConnectionError` and not a `QueryError`, and
+it is routed by the driver seam's `kind` before this table is consulted. Listing it here as well
+would make the answer depend on which lookup ran first.
+
+### `classForSqlState`
+
+{/* docs: signature */}
+```ts
+function classForSqlState(code: string | undefined): QueryErrorCtor
+```
+
+Exact SQLSTATE, then class prefix, then `UnknownQueryError` — the lookup order, as one function.
+Useful if you are mapping errors from a code path that does not go through pg-prime's executor.
+
+### `SqlState`
+
+{/* docs: signature */}
+```ts
+type SqlState = string
+```
+
+A five-character SQLSTATE. Deliberately widened to `string` rather than a union of the states
+pg-prime models, so that an unmodelled one is still expressible — the same rule as rule 3 of the
+taxonomy, at the type level.
+
+### `PgPrimeErrorCode`
+
+{/* docs: signature */}
+```ts
+type PgPrimeErrorCode =
+  | 'INVALID_IDENTIFIER'
+  | 'UNSAFE_LITERAL'
+  | 'UNSUPPORTED_NODE'
+  | 'TOO_MANY_PARAMETERS'
+  | 'INVALID_FRAGMENT'
+  | 'NO_CODEC'
+  | 'NULL_OPERAND'
+  | 'DECODE_PLAN'
+  | 'BUILDER'
+  | 'SCHEMA'
+  | 'CODEC_MISMATCH'
+  | 'CONFIG'
+  | 'USAGE'
+```
+
+The vocabulary for the errors that have **no** SQLSTATE, because they never reached a server.
+`PgPrimeError.code` is typed `string` rather than this union, because for a server error it is the
+SQLSTATE; the union is what the builder and compiler classes pass, and what to compare against when
+you are branching on one of them.
+
+## Predicates
+
+`isUniqueViolation(e, users.cols.email)` beats `e instanceof UniqueViolationError` whenever you care
+*which* constraint broke. The status quo everywhere is `e.constraint === 'users_email_key'`, which
+breaks silently the moment somebody renames a column and PostgreSQL regenerates the constraint name;
+passing the column *reference* makes that rename a compile error instead. All four are permissive
+about how much you say: with no extra argument they are a plain `instanceof`, with a `ConstraintRef`
+they compare identity, and with column references they require every named column to be part of the
+violated constraint. They are also type guards, so the narrowed error is typed inside the branch.
+
+| Predicate | Signature |
+|---|---|
+| <a id="isUniqueViolation"/>`isUniqueViolation` | `(e: unknown, ...cols: ColumnRef[]) => e is UniqueViolationError`, or one `ConstraintRef` |
+| <a id="isForeignKeyViolation"/>`isForeignKeyViolation` | `(e: unknown, ...cols: ColumnRef[]) => e is ForeignKeyViolationError`, or one `ConstraintRef` |
+| <a id="isCheckViolation"/>`isCheckViolation` | `(e: unknown, ...cols: ColumnRef[]) => e is CheckViolationError`, or one `ConstraintRef` |
+| <a id="isNotNullViolation"/>`isNotNullViolation` | `(e: unknown, ...cols: ColumnRef[]) => e is NotNullViolationError` |
+
+A predicate given a column the schema could not resolve returns `false` rather than throwing, which
+is the graceful degradation the constraint index promises: a constraint created by a raw SQL
+migration matches `instanceof` and does not match a column reference.
+
+### The `is*` operators of the query builder
+
+Eight more `is*` functions are exported from the root, and they are not error predicates at all —
+they are SQL's three-valued-logic tests, built for `where(...)`, and they are documented with the
+rest of the operator vocabulary on [pg-prime/query](/pg-prime/reference/query/). They are listed
+here only because the name suggests otherwise.
+
+| Function | Compiles to |
+|---|---|
+| <a id="isNull"/>`isNull` | `a IS NULL` |
+| <a id="isNotNull"/>`isNotNull` | `a IS NOT NULL` |
+| <a id="isTrue"/>`isTrue` | `a IS TRUE` |
+| <a id="isNotTrue"/>`isNotTrue` | `a IS NOT TRUE` |
+| <a id="isFalse"/>`isFalse` | `a IS FALSE` |
+| <a id="isNotFalse"/>`isNotFalse` | `a IS NOT FALSE` |
+| <a id="isDistinctFrom"/>`isDistinctFrom` | `a IS DISTINCT FROM b` — a null-safe `<>` |
+| <a id="isNotDistinctFrom"/>`isNotDistinctFrom` | `a IS NOT DISTINCT FROM b` — a null-safe `=` |
+
+The reason they exist is the reason `eq(a, null)` is refused: `a = NULL` is `NULL`, never true, so a
+builder that accepted it would silently return no rows. `isNull(a)` and `isDistinctFrom(a, b)` are
+the two things the caller might have meant, said out loud.

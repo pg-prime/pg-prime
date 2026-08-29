@@ -2,8 +2,8 @@
   "name": "@pg-prime/docs",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
   "description": "The pg-prime documentation site (Astro Starlight). Not published; see docs/README.md.",
+  "type": "module",
   "scripts": {
     "dev": "node ../tools/pooler-matrix.mjs && astro dev",
     "build:site": "node ../tools/pooler-matrix.mjs && astro build",

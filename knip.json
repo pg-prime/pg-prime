@@ -6,7 +6,7 @@
     ".": {
       "entry": ["tools/*.mjs"],
       "project": ["tools/**/*.mjs"],
-      "ignoreDependencies": ["@arethetypeswrong/cli", "publint"]
+      "ignoreDependencies": ["@arethetypeswrong/cli", "publint", "pg"]
     },
     "packages/pg-prime": {
       "entry": [
@@ -30,6 +30,11 @@
     "bench/types": {
       "entry": ["arms/*.ts"],
       "project": ["**/*.mjs", "**/*.ts"]
+    },
+    "docs": {
+      "entry": ["src/snippets/**/*.ts"],
+      "project": ["**/*.{ts,mjs}"],
+      "ignoreDependencies": ["@pg-prime/kit", "@electric-sql/pglite"]
     }
   },
   "rules": {

@@ -23,9 +23,9 @@
 //                   compiling is a failure, because the page claims the code is refused.
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, relative } from 'node:path'
+import { join, relative } from 'node:path'
 import { DOCS, ROOT, compose, pageSetupsOf, readAllPages, readSnippets } from './docs-blocks.mjs'
 
 const require = createRequire(import.meta.url)
@@ -35,7 +35,9 @@ const GEN = join(DOCS, '.gen', `typecheck-${process.pid}`)
 
 /** `typescript59` is the repo's alias for the consumer floor (root `package.json`). */
 const TSC = require.resolve('typescript59/bin/tsc')
-const TS_VERSION = JSON.parse(readFileSync(require.resolve('typescript59/package.json'), 'utf8')).version
+const TS_VERSION = JSON.parse(
+  readFileSync(require.resolve('typescript59/package.json'), 'utf8'),
+).version
 
 /** Every exported TYPE name per entry point, from the committed api-snapshot goldens. */
 function typeNamesByEntry() {
@@ -83,11 +85,26 @@ function main() {
       mkdirSync(join(GEN, dir), { recursive: true })
       for (const file of composed.files) {
         writeFileSync(join(GEN, dir, file.name), file.text + '\n')
-        units.push({ id: `${id}:${file.name}`, name: `${dir}/${file.name}`, block, map: file.map, offset: 0, expectError: false, sibling: true })
+        units.push({
+          id: `${id}:${file.name}`,
+          name: `${dir}/${file.name}`,
+          block,
+          map: file.map,
+          offset: 0,
+          expectError: false,
+          sibling: true,
+        })
       }
       const { text, offset } = wrap(block, composed, apiEntries, entries)
       writeFileSync(join(GEN, name), text)
-      units.push({ id, name, block, map: composed.map, offset, expectError: !!block.attrs['expect-error'] })
+      units.push({
+        id,
+        name,
+        block,
+        map: composed.map,
+        offset,
+        expectError: !!block.attrs['expect-error'],
+      })
     }
   }
 
@@ -124,10 +141,14 @@ function main() {
   )
 
   const started = Date.now()
-  const res = spawnSync(process.execPath, [TSC, '-p', join(GEN, 'tsconfig.json'), '--pretty', 'false'], {
-    cwd: GEN,
-    encoding: 'utf8',
-  })
+  const res = spawnSync(
+    process.execPath,
+    [TSC, '-p', join(GEN, 'tsconfig.json'), '--pretty', 'false'],
+    {
+      cwd: GEN,
+      encoding: 'utf8',
+    },
+  )
   const ms = Date.now() - started
   const diagnostics = parse(res.stdout + res.stderr, units)
 
@@ -148,7 +169,8 @@ function main() {
     if (unit.expectError && got.length === 0) {
       failures.push({
         where: `${unit.block.page}:${unit.block.line}`,
-        message: 'expect-error block compiled clean — the page says this code is refused, and it is not',
+        message:
+          'expect-error block compiled clean — the page says this code is refused, and it is not',
       })
     }
     if (!unit.expectError) {
@@ -202,13 +224,16 @@ function wrap(block, composed, apiEntries, entries) {
   const imports = []
   for (const key of apiEntries) {
     const entry = entries.get(key)
-    if (!entry) fail(`${block.page}: apiEntry ${key} is not an entry point in the api-snapshot goldens`)
+    if (!entry)
+      fail(`${block.page}: apiEntry ${key} is not an entry point in the api-snapshot goldens`)
     const names = entry.types.filter((t) => !seen.has(t))
     for (const t of names) seen.add(t)
     if (names.length > 0) imports.push(`import type { ${names.join(', ')} } from '${entry.spec}'`)
   }
   if (imports.length === 0) {
-    fail(`${block.page}:${block.line}: a signature block needs the page to declare apiEntry in its frontmatter`)
+    fail(
+      `${block.page}:${block.line}: a signature block needs the page to declare apiEntry in its frontmatter`,
+    )
   }
   const head = [...imports, `declare namespace __sig {`].join('\n')
   return { text: `${head}\n${composed.text}\n}\n`, offset: head.split('\n').length }

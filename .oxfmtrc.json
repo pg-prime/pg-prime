@@ -17,7 +17,12 @@
     "**/node_modules/**",
     "fixtures/**",
     "tools/api-snapshot/**",
+    // Markdown is not this formatter's job, and MDX is Markdown: oxfmt re-aligns every table to
+    // its widest cell, which on a reference page of 300 rows makes an unreadable diff out of a
+    // one-word edit. The docs site's TypeScript — `docs/src/snippets/**` and the fenced blocks,
+    // which `tools/docs-typecheck.mjs` compiles — is checked by that gate instead.
     "**/*.md",
+    "**/*.mdx",
     "**/*.probe.ts",
     "packages/pg-prime/test/query/types/**",
     "tools/type-errors/**",

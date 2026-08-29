@@ -4,11 +4,1283 @@ description: Every export of the root entry point.
 apiEntry: pg-prime#.
 ---
 
+import { Aside } from '@astrojs/starlight/components'
+
+The root entry point re-exports every subpath, so one import specifier is enough for an
+application: the schema DSL, the `sql` tag, the codec registry, the driver seam, the error tree and
+the runtime all resolve from `pg-prime`. The subpaths exist for readers who prefer narrower
+imports, and each has its own page.
+
+This page documents the **runtime** half of the root entry: the constructor, the three handles, the
+option bags a call accepts, `EXPLAIN`, `LISTEN`/`NOTIFY`, `COPY`, pooling, and the observability
+surface. The rest of the root entry lives here:
+
+| Page | What it covers |
+|---|---|
+| [The query builder](/pg-prime/reference/query/) | `from`, the statement builders, the operators, projections, relations |
+| [pg-prime/schema](/pg-prime/reference/schema/) | `pgTable`, `defineSchema`, `defineRelations`, columns and their metadata |
+| [pg-prime/sql](/pg-prime/reference/sql/) | the `sql` tag, fragments, identifier quoting |
+| [pg-prime/codecs](/pg-prime/reference/codecs/) | every built-in codec and the registry |
+| [pg-prime/driver](/pg-prime/reference/driver/) | `PgDriver`, the wire types, the `pg` adapter |
+| [Errors](/pg-prime/reference/errors/) | the error class tree and the SQLSTATE map |
+
+```ts
+import { compileOnly, pgPrime, presets, statementStats } from 'pg-prime'
+```
+
+## The constructor
+
+`pgPrime(config)` is the only constructor. It is synchronous and opens no socket: everything that
+can be wrong about the configuration is decided at the call, eagerly, with a message naming the key
+— exactly one connection source, no named statements under a pooler profile that forbids them, no
+session GUCs under a transaction profile.
+
 ### `pgPrime`
 
 {/* docs: signature */}
 ```ts
-function pgPrime<Sc extends AnySchema>(config: DbConfig<Sc>): Db<Sc>
+function pgPrime<Sc extends AnySchema>(config: PgPrimeOptions<Sc>): Db<Sc>
 ```
 
-Builds the root handle.
+Builds the root handle from a schema and one connection source. Nothing connects until the first
+query, so importing the module that calls it costs nothing and a test that never queries never
+opens a connection.
+
+### `PgPrimeOptions`
+
+{/* docs: signature */}
+```ts
+interface PgPrimeOptions<Sc extends AnySchema> extends DbConfig<Sc> {}
+```
+
+The name every call site uses. It adds nothing to [`DbConfig`](#DbConfig) and exists so that the
+constructor's parameter type and the configuration type can be spelled apart.
+
+### `DbConfig`
+
+{/* docs: signature */}
+```ts
+interface DbConfig<Sc extends AnySchema> extends ExecOptions {
+  readonly schema: Sc
+  readonly connection?: string | ConnectionParams
+  readonly pool?: PgLikePool
+  readonly driver?: PgDriver
+  readonly directConnection?: string | ConnectionParams
+  readonly poolerMode?: PoolerMode
+  readonly poolOptions?: PoolOptions
+  readonly session?: SessionDefaults
+  readonly registry?: CodecRegistry
+  readonly transaction?: TransactionDefaults
+  readonly hooks?: QueryHooks
+  readonly log?: LogOptions
+  readonly errors?: ErrorOptions
+  readonly devGuard?: boolean
+  readonly signal?: AbortSignal
+}
+```
+
+Exactly one of `connection`, `pool` and `driver` may be given, and giving none or two throws a
+`ConfigError` at the call.
+
+| Key | Type | What it does |
+|---|---|---|
+| `schema` | `Sc` | The schema. Powers typing, codec resolution for user types, and constraint-to-table error mapping. Required. |
+| `connection` | `string \| ConnectionParams` | A URL or discrete parameters. pg-prime builds the pool through the bundled `pg` adapter, which means a lazy `import('pg')` on the first connect and an **optional** peer dependency. |
+| `pool` | `PgLikePool` | Bring your own pool. Structurally typed, so `pg.Pool`, `@neondatabase/serverless`'s pool and a Hyperdrive-fed pool all satisfy it with no adapter code. A zero-dependency path. |
+| `driver` | `PgDriver` | The full seam override: your own driver implementation. The other zero-dependency path, and what the test suite is written against. |
+| `directConnection` | `string \| ConnectionParams` | A second, non-pooled URL. Required when `poolerMode` is a transaction mode **and** you use migrations, `db.listen()`, session advisory locks or `WITH HOLD` cursors. Routed by feature, never by call site. |
+| `poolerMode` | `PoolerMode` | The declared environment profile. Default `'none'`. A profile can only ever restrict what the runtime emits. |
+| `poolOptions` | `PoolOptions` | Consulted only when pg-prime builds the pool, i.e. with `connection:`. Named apart from `pool` so the two cannot be confused. |
+| `session` | `SessionDefaults` | The GUCs applied once per physical connection: `application_name`, `statement_timeout` and friends. |
+| `registry` | `CodecRegistry` | Overrides on top of the ORM-owned OID-to-codec table. pg-prime never calls `pg`'s global `setTypeParser`. |
+| `transaction` | `TransactionDefaults` | The per-database defaults every `transaction()` starts from. |
+| `hooks` | `QueryHooks` | Query, transaction, pool, notice and internal events. |
+| `log` | `LogOptions` | Level, slow-query threshold, sink and format. |
+| `errors` | `ErrorOptions` | The redaction policy: what an error message and an event may carry. |
+| `devGuard` | `boolean` | The footgun guard of the handle layer. Default `NODE_ENV !== 'production'`. |
+| `signal` | `AbortSignal` | Abort means a graceful pool drain, so `pgPrime` can take part in a process lifecycle signal. |
+
+`DbConfig` also extends [`ExecOptions`](#ExecOptions), so `assertShape`, `statement`,
+`preparedStatements` and `decoder` are accepted at the top level and become the defaults every
+statement inherits.
+
+### `ConnectionParams`
+
+{/* docs: signature */}
+```ts
+interface ConnectionParams {
+  readonly host?: string
+  readonly port?: number
+  readonly database?: string
+  readonly user?: string
+  readonly password?: string | (() => string | Promise<string>)
+  readonly ssl?: boolean | Record<string, unknown>
+  readonly applicationName?: string
+  readonly [key: string]: unknown
+}
+```
+
+Discrete connection parameters, for people who do not want a URL. `password` may be a function, so
+a rotating credential — an IAM token, a Vault lease — is fetched per connection rather than pinned
+at construction. Anything else `pg.Pool` accepts passes through untouched.
+
+### `presets`
+
+{/* docs: signature */}
+```ts
+const presets: {
+  readonly serverless: () => Partial<DbConfig<never>>
+  readonly neonPooled: () => Partial<DbConfig<never>>
+  readonly supabaseTransaction: () => Partial<DbConfig<never>>
+  readonly rdsProxy: () => Partial<DbConfig<never>>
+}
+```
+
+Presets are plain functions returning a partial configuration, so they compose and are inspectable:
+`{ ...presets.serverless(), poolOptions: { max: 3 } }` is a legal thing to write and to read.
+
+| Preset | What it sets |
+|---|---|
+| `serverless()` | `poolOptions` of `max: 1`, `idleTimeoutMillis: 1000`, `allowExitOnIdle: true`, `connectionTimeoutMillis: 5000` |
+| `neonPooled()` | `poolerMode: 'pgbouncer-transaction'`, plus everything `serverless()` sets |
+| `supabaseTransaction()` | `poolerMode: 'transaction'` — Supavisor at `:6543` does not carry named statements through |
+| `rdsProxy()` | `poolerMode: 'pgbouncer-transaction'` |
+
+### `SessionDefaults`
+
+{/* docs: signature */}
+```ts
+interface SessionDefaults {
+  readonly applicationName?: string
+  readonly statementTimeout?: Duration | null
+  readonly lockTimeout?: Duration | null
+  readonly idleInTransactionSessionTimeout?: Duration | null
+  readonly searchPath?: readonly string[]
+  readonly timeZone?: string | null
+}
+```
+
+Applied **once per physical connection**, in one `set_config` batch, and not at all under a
+transaction-pooler profile — where a `SET` at connect would leak onto a server connection another
+client is about to get, and the fix is `ALTER ROLE … SET`. They do not ride the startup packet:
+PgBouncer rejects `options=-c statement_timeout=…` with a FATAL `08P01`.
+
+The defaults are `applicationName: 'pg-prime'`, `statementTimeout: '30s'`, `lockTimeout: null`,
+`idleInTransactionSessionTimeout: '60s'` and `timeZone: 'UTC'` (with `DateStyle` pinned to
+`ISO, MDY`). `null` disables one. A 30-second statement timeout is a deliberate default and stays
+one; [timeouts and cancellation](/pg-prime/operations/timeouts/) is the long answer.
+
+## Handles
+
+There are three handles — `Db`, `Tx` and `Session` — and they are mutually **non-assignable**. None
+is a subtype of the others; only [`Queryable`](#Queryable) is shared. That is load-bearing: a
+function declaring `tx: Tx<S>` cannot be handed the root `db`, which kills a class of real bugs at
+compile time. Helper functions should take `Queryable`. [Handles](/pg-prime/concepts/handles/) is
+the concept page.
+
+### `Queryable`
+
+{/* docs: signature */}
+```ts
+interface Queryable<Sc extends AnySchema> extends Executor {
+  readonly kind: 'db' | 'tx' | 'session'
+  readonly schema: Sc
+  run<O>(q: Runnable<O>, opts?: RunCallOptions): Promise<O[]>
+  explain<O>(q: Runnable<O>, opts?: ExplainOptions): Promise<ExplainResult>
+  stream<O>(q: Runnable<O>, opts?: StreamCallOptions): AsyncIterable<O>
+  streamBatches<O>(q: Runnable<O>, opts?: StreamCallOptions): AsyncIterable<O[]>
+  notify(channel: string, payload?: string): Promise<void>
+  withOptions(opts: CallOptions): Queryable<Sc>
+  outsideTransaction(): Queryable<Sc>
+  copyFrom: CopyFromApi
+  copyTo: CopyToApi
+}
+```
+
+Anything you can run a query against. It also carries `h`, the handle record: `db.h.users` is the
+`users` table as a `Handle<Sc, 'users'>`, and it is the handle rather than the bare table because
+relations live on the schema — a bare table would silently have none.
+
+`run`, `explain` and `stream` accept anything that compiles: a builder, a prepared query, or an
+already-compiled artifact. `notify` works in **every** pooler profile, including the two where
+`listen()` does not; the matrix is asymmetric and this is the asymmetry. The statement entry points
+themselves (`from`, `insertInto`, `update`, `deleteFrom`, `with`, `sql`) come from
+[`Executor`](/pg-prime/reference/query/#Executor).
+
+### `Db`
+
+{/* docs: signature */}
+```ts
+interface Db<Sc extends AnySchema = AnySchema> extends Queryable<Sc>, AsyncDisposable_ {
+  readonly kind: 'db'
+  transaction<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: TxOptions): Promise<NoHandleEscape<T>>
+  transaction<T>(opts: TxOptions, fn: (db: Tx<Sc>) => Promise<T>): Promise<NoHandleEscape<T>>
+  session<T>(fn: (s: Session<Sc>) => Promise<T>): Promise<NoHandleEscape<T>>
+  listen(channel: string, handler: NotificationHandler, opts?: ListenOptions): Promise<Subscription>
+  diagnosePooler(opts?: DiagnosePoolerOptions): Promise<PoolerDiagnosis>
+  diagnose(): Promise<DbDiagnosis>
+  observe(hooks: QueryHooks): () => void
+  stats(): PoolStats | undefined
+  connect(): Promise<void>
+  end(): Promise<void>
+}
+```
+
+The root handle, pool-backed: every statement may land on a different backend. `connect()` is an
+optional eager warm-up, `end()` drains the pool, and `await using db = pgPrime(…)` calls `end()` for
+you.
+
+Name the transaction callback's parameter `db`, not `tx`. Shadowing the outer handle is deliberate:
+it is the cheapest half of the whole footgun story, because the shadowed name makes
+`await db.…` inside the callback the transactional one.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="one-transaction.ts"
+const authorId = await db.transaction(async (db) => {
+  const [author] = await db
+    .insertInto(db.h.users)
+    .values({ email: 'ada@example.com', name: 'Ada' })
+    .returning((t) => ({ id: t.users.id }))
+    .execute()
+
+  await db
+    .insertInto(db.h.posts)
+    .values({ authorId: author!.id, title: 'On the engine', body: '…' })
+    .execute()
+
+  return author!.id
+}, { isolation: 'serializable' })
+
+console.log(typeof authorId) // 'bigint'
+```
+
+Everything inside runs on one connection inside one `BEGIN … COMMIT`, and a bulk insert within it
+does not open its own. Any rejection rolls back and rethrows.
+
+### `Tx`
+
+{/* docs: signature */}
+```ts
+interface Tx<Sc extends AnySchema = AnySchema> extends Queryable<Sc> {
+  readonly kind: 'tx'
+  readonly attempt: number
+  readonly depth: number
+  readonly isolation: IsolationLevel
+  readonly accessMode: AccessMode
+  readonly status: 'idle' | 'active' | 'failed'
+  transaction<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: SavepointOptions): Promise<NoHandleEscape<T>>
+  savepoint<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: SavepointOptions): Promise<NoHandleEscape<T>>
+  setLocal(name: string, value: string | number | boolean): Promise<void>
+  setLocal(settings: Readonly<Record<string, string | number | boolean>>): Promise<void>
+  advisoryLock(key: bigint | string, opts?: AdvisoryLockOptions): Promise<boolean>
+  rollback(): never
+  rollbackWith<V>(value: V): V
+  withOptions(opts: CallOptions): Tx<Sc>
+  outsideTransaction(): Tx<Sc>
+}
+```
+
+Inside a transaction: the same query surface, different capabilities. `attempt` is 1 on the first
+try and increments on a serialization retry; `depth` is 0 at the outermost level and greater inside
+a savepoint. A nested `transaction()` is a `SAVEPOINT`.
+
+`setLocal` is a parameterised `set_config(…, true)` — row-level security in one line, transaction
+local, rolled back with the transaction. `advisoryLock` here is `pg_advisory_xact_lock` and friends,
+the only advisory locks that are safe behind a pooler. `rollback()` throws a `TransactionRollback`
+which `db.transaction` rethrows; `rollbackWith(value)` aborts but resolves the transaction with
+`value`, fully typed and with no `| undefined`.
+
+### `Session`
+
+{/* docs: signature */}
+```ts
+interface Session<Sc extends AnySchema = AnySchema> extends Queryable<Sc> {
+  readonly kind: 'session'
+  readonly backendPid: number | undefined
+  transaction<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: TxOptions): Promise<NoHandleEscape<T>>
+  set(name: string, value: string | number | boolean): Promise<void>
+  set(settings: Readonly<Record<string, string | number | boolean>>): Promise<void>
+  advisoryLock(key: bigint | string, opts?: AdvisoryLockOptions): Promise<AdvisoryLock | boolean>
+  withOptions(opts: CallOptions): Session<Sc>
+  outsideTransaction(): Session<Sc>
+}
+```
+
+A pinned connection with no open transaction, from `db.session(fn)`. It is the one handle a
+transaction pooler cannot support at all: `set` and the session-level `advisoryLock` are refused
+under such a profile, with the transaction-scoped alternative named in the message.
+
+### `HandleKind`
+
+{/* docs: signature */}
+```ts
+type HandleKind = 'db' | 'tx' | 'session'
+```
+
+Which handle a statement was issued on. It is the `kind` discriminant that makes the three mutually
+non-assignable, the `handle` field of every query event, and part of an error's context.
+
+### `NoHandleEscape`
+
+{/* docs: signature */}
+```ts
+type NoHandleEscape<T> = T extends { readonly kind: 'tx' | 'session' }
+  ? ['Error: a Tx/Session handle escaped its callback. It is closed and unusable.', never]
+  : T
+```
+
+The return type of every callback-scoped handle method. A `return tx` from inside
+`db.transaction(…)` becomes a tuple type whose first member is the sentence, so the mistake is a
+compile error at the call site rather than a closed handle used two lines later. Deliberately
+shallow — one conditional, no recursion — because a deep walk would cost instantiations on every
+`transaction()` in the program, and `return tx` is the mistake people actually make.
+
+### `SchemaExecutor`
+
+{/* docs: signature */}
+```ts
+type SchemaExecutor<Sc extends AnySchema> = Queryable<Sc>
+```
+
+**Deprecated.** Renamed to [`Queryable`](#Queryable); the alias stays for one release.
+
+### `AsyncDisposeKey`
+
+{/* docs: signature */}
+```ts
+type AsyncDisposeKey = typeof Symbol extends { readonly asyncDispose: infer S extends symbol }
+  ? S
+  : never
+```
+
+`Symbol.asyncDispose`, inferred from the ambient `SymbolConstructor` rather than written directly.
+Writing the computed key makes the emitted `.d.ts` fail with TS2550 on any consumer whose `lib`
+predates the disposable declarations. Inferred, the key is that symbol where the consumer's lib
+declares it and `never` where it does not — in which case the mapped type contributes no member and
+the declaration still compiles. The runtime is unaffected either way: `end()` is always there and
+is the same function.
+
+### `AsyncDisposable_`
+
+{/* docs: signature */}
+```ts
+type AsyncDisposable_ = { readonly [K in AsyncDisposeKey]: () => Promise<void> }
+```
+
+`{ [Symbol.asyncDispose](): Promise<void> }`, or `{}` on a lib that has no such symbol. `Db`,
+[`Subscription`](#Subscription) and [`AdvisoryLock`](#AdvisoryLock) extend it, which is what makes
+`await using` work on all three.
+
+## Transactions
+
+`db.transaction(fn, opts)` runs `fn` inside one `BEGIN … COMMIT` on one connection. Retry is on by
+default for `40001` (serialization failure) **only at repeatable read or serializable**, and never
+for `40P01` (deadlock), never after an `IndeterminateCommitError`, never after an aborted signal or
+a partially consumed stream, and never for a throw that is not a `PgPrimeError`.
+
+<Aside type="caution">
+A retried transaction callback runs again from the top. It must be **idempotent**: every side
+effect outside the database — an HTTP call, a queue publish, a counter — happens once per attempt,
+not once per transaction.
+</Aside>
+
+### `TxOptions`
+
+{/* docs: signature */}
+```ts
+type TxOptions =
+  | (TxOptionsBase & {
+      readonly isolation?: 'read committed' | 'repeatable read'
+      readonly accessMode?: AccessMode
+      readonly deferrable?: never
+    })
+  | (TxOptionsBase & {
+      readonly isolation: 'serializable'
+      readonly accessMode?: 'read write'
+      readonly deferrable?: never
+    })
+  | (TxOptionsBase & {
+      readonly isolation: 'serializable'
+      readonly accessMode: 'read only'
+      readonly deferrable?: boolean
+    })
+```
+
+`DEFERRABLE` is only meaningful with `SERIALIZABLE READ ONLY`, and the **type** is what enforces
+that. PostgreSQL accepts and silently ignores it otherwise, which is worse than an error.
+
+### `TxOptionsBase`
+
+{/* docs: signature */}
+```ts
+interface TxOptionsBase {
+  readonly retry?: RetryPolicy | boolean
+  readonly timeoutMs?: number
+  readonly lockTimeoutMs?: number
+  readonly localSettings?: Readonly<Record<string, string | number | boolean>>
+  readonly signal?: AbortSignal
+  readonly label?: string
+}
+```
+
+Everything a transaction takes that does not interact with the isolation union. `timeoutMs` is
+`SET LOCAL statement_timeout` for the whole transaction and `lockTimeoutMs` is `SET LOCAL
+lock_timeout`; `localSettings` are applied immediately after `BEGIN`, in one round trip. `label` is
+free-form and appears in hooks, spans, slow-query logs and retry warnings.
+
+### `SavepointOptions`
+
+{/* docs: signature */}
+```ts
+interface SavepointOptions {
+  readonly timeoutMs?: number
+  readonly lockTimeoutMs?: number
+  readonly localSettings?: Readonly<Record<string, string | number | boolean>>
+  readonly label?: string
+  readonly signal?: AbortSignal
+}
+```
+
+What a nested `transaction()` or `savepoint()` takes. `isolation`, `accessMode`, `deferrable` and
+`retry` are **absent by construction**: PostgreSQL cannot change the first three mid-transaction,
+and a `40001` aborts the whole transaction, so retrying at savepoint level is meaningless. Drizzle
+and MikroORM both accept them on nested calls, where they are silently ignored.
+
+### `IsolationLevel`
+
+{/* docs: signature */}
+```ts
+type IsolationLevel = 'read committed' | 'repeatable read' | 'serializable'
+```
+
+`read uncommitted` is deliberately not offered: PostgreSQL accepts the keyword and silently gives
+you `read committed`. Being PostgreSQL-only is the licence not to ship a no-op option.
+
+### `AccessMode`
+
+{/* docs: signature */}
+```ts
+type AccessMode = 'read write' | 'read only'
+```
+
+`READ ONLY` is refused by the server for any statement that writes, which makes it a cheap way to
+prove a reporting path does not.
+
+### `RetryPolicy`
+
+{/* docs: signature */}
+```ts
+interface RetryPolicy {
+  readonly on?: readonly string[]
+  readonly maxAttempts?: number
+  readonly baseDelayMs?: number
+  readonly maxDelayMs?: number
+  readonly jitter?: 'full' | 'equal' | 'none'
+  readonly shouldRetry?: (err: unknown, attempt: number) => boolean
+  readonly onRetry?: (info: {
+    readonly err: unknown
+    readonly attempt: number
+    readonly delayMs: number
+    readonly label?: string
+  }) => void
+}
+```
+
+Defaults: `on` is `['40001']` at repeatable read and serializable and `[]` at read committed;
+`maxAttempts` 5, so up to four retries; `baseDelayMs` 25; `maxDelayMs` 1000; `jitter` `'full'`,
+which sleeps `random(0, min(maxDelay, base * 2 ** (attempt - 1)))`. Full jitter rather than plain
+exponential because serialization failures are inherently correlated: the conflicting transactions
+failed at the same instant and would otherwise retry in lockstep, reproducing the conflict.
+`shouldRetry` is the last word — return `false` to stop.
+
+### `RetryEvent`
+
+{/* docs: signature */}
+```ts
+interface RetryEvent {
+  readonly err: PgPrimeError
+  readonly attempt: number
+  readonly delayMs: number
+  readonly label?: string | undefined
+  readonly txId: string
+}
+```
+
+What `hooks.onRetry` receives, before the sleep. `attempt` is the attempt that just failed.
+
+### `TransactionDefaults`
+
+{/* docs: signature */}
+```ts
+interface TransactionDefaults {
+  readonly isolation?: IsolationLevel
+  readonly accessMode?: AccessMode
+  readonly retry?: RetryPolicy | boolean
+  readonly timeoutMs?: number
+  readonly lockTimeoutMs?: number
+  readonly label?: string
+}
+```
+
+`pgPrime({ transaction })` — the per-database defaults every `transaction()` starts from, before
+its own options are merged on top.
+
+### `AdvisoryLock`
+
+{/* docs: signature */}
+```ts
+interface AdvisoryLock extends AsyncDisposable_ {
+  readonly key: bigint
+  readonly shared: boolean
+  unlock(): Promise<boolean>
+}
+```
+
+A session-level advisory lock, which only a [`Session`](#Session) can hold — it outlives a
+transaction, so it needs a pinned connection. `await using lock = await s.advisoryLock('jobs')`
+unlocks at the end of the block. `Tx.advisoryLock` returns a plain `boolean` instead, because a
+transaction-scoped lock is released by `COMMIT` and has nothing to dispose.
+
+### `AdvisoryLockOptions`
+
+{/* docs: signature */}
+```ts
+interface AdvisoryLockOptions {
+  readonly try?: boolean
+  readonly shared?: boolean
+}
+```
+
+`try: true` selects the `try_` family, which returns `false` instead of blocking; `shared: true`
+selects the `_shared` family. [Locks](/pg-prime/operations/locks/) has the decision table.
+
+## Execution options
+
+Options compose downward: what you pass to `pgPrime()` is the default for the handle, what you pass
+to `withOptions()` is the default for statements issued through it, and what you pass to a single
+call wins over both.
+
+### `ExecOptions`
+
+{/* docs: signature */}
+```ts
+interface ExecOptions {
+  readonly assertShape?: boolean
+  readonly statement?: StatementMode
+  readonly preparedStatements?: PreparedStatementOptions
+  readonly decoder?: DecoderMode
+}
+```
+
+The four executor-level switches, accepted by [`DbConfig`](#DbConfig) itself.
+
+`assertShape` defaults to `NODE_ENV !== 'production'`. `false` in production is not a shrug: the
+check compares metadata the server sent anyway, so it cannot catch anything one test run against
+the same schema would not have caught, and it costs one integer comparison per column per query.
+
+### `CallOptions`
+
+{/* docs: signature */}
+```ts
+interface CallOptions {
+  readonly signal?: AbortSignal | undefined
+  readonly timeoutMs?: number | undefined
+  readonly timeoutStrategy?: 'auto' | 'transaction' | 'client' | undefined
+  readonly label?: string | undefined
+  readonly statement?: StatementMode | undefined
+  readonly outsideTransaction?: boolean | undefined
+}
+```
+
+What every handle-level call accepts, and what `withOptions()` folds in. Inside a transaction
+`timeoutMs` is `SET LOCAL statement_timeout`; outside it is a client-side timer plus a
+`CancelRequest`, unless `timeoutStrategy: 'transaction'` asks for the server-side guarantee.
+`outsideTransaction` is the per-call opt-out from the dev guard, for a deliberate out-of-band
+query.
+
+### `RunCallOptions`
+
+{/* docs: signature */}
+```ts
+interface RunCallOptions extends CallOptions {
+  readonly params?: Readonly<Record<string, unknown>> | undefined
+}
+```
+
+`CallOptions` plus the values for a prepared query's named holes: `db.run(prepared, { params })`.
+
+### `StreamCallOptions`
+
+{/* docs: signature */}
+```ts
+interface StreamCallOptions extends CallOptions {
+  readonly batchSize?: number | undefined
+  readonly statementTimeoutMs?: number | null | undefined
+}
+```
+
+`batchSize` is rows per `FETCH`, default 1000. `statementTimeoutMs` defaults to `null`, because a
+long stream must not trip the 30-second session default; a stream is the one thing exempt from it.
+The interface is written out rather than declared as an intersection because under
+`exactOptionalPropertyTypes` the two parents declare `signal` with different property types.
+
+### `PreparedStatementOptions`
+
+{/* docs: signature */}
+```ts
+interface PreparedStatementOptions {
+  readonly maxPerConnection?: number
+  readonly downgradeAfterFailures?: number
+  readonly prefix?: string
+}
+```
+
+`maxPerConnection` defaults to 100, deliberately under PgBouncer's per-server-connection default of
+200: PgBouncer shares one server connection across clients and its own LRU is the real ceiling.
+`downgradeAfterFailures` defaults to 3 — that many consecutive self-heals and the pool permanently
+falls back to `'unnamed'` and logs at error level. `prefix` defaults to `pgprime`; names are
+`${prefix}_${fnv1a(sql)}_${seq}`.
+
+The rest of the option types are small:
+
+| Type | Shape | Notes |
+|---|---|---|
+| <a id="RunOptions"/> `RunOptions` | `{ params?, statement?, signal?, timing? }` | The executor-level form, one layer below `RunCallOptions`. `timing` is an out-parameter the session layer fills. |
+| <a id="RunTiming"/> `RunTiming` | `{ serverMs: number; decodeMs: number }` | Filled when `RunOptions.timing` is supplied, so the split is measured rather than estimated. A mutable slot because threading a second return value through five terminals to serve one observer would cost more. |
+| <a id="StreamOptions"/> `StreamOptions` | `{ batchSize?: number; signal?: AbortSignal }` | The builder-level form of `StreamCallOptions`. |
+| <a id="PrepareOptions"/> `PrepareOptions` | `{ statement?: StatementMode }` | `.prepare(name, opts)`. `'named'` additionally pins server-side prepared statements for this query. |
+| <a id="Duration"/> `Duration` | `string \| number` | A PostgreSQL interval-ish duration, as a GUC accepts it: `'30s'`, `'5min'`, or `250` for milliseconds. |
+| <a id="StatementMode"/> `StatementMode` | `'unnamed' \| 'named'` | Default `'unnamed'`: one round trip, zero session state, safe on every pooler. `'named'` pins server-side prepared statements. The `simple` protocol mode is the migrator's, never the query builder's. |
+| <a id="DecoderMode"/> `DecoderMode` | `'closure' \| 'codegen'` | How a result row is materialised. Default `'closure'`. `'codegen'` builds the row with `new Function` and is measurably faster, but a Content-Security-Policy without `unsafe-eval` forbids it — choosing it on such a runtime throws at `pgPrime()`, not at the first query. |
+
+## EXPLAIN
+
+`db.explain(query, opts)` and `query.explain(opts)` return a parsed plan. Under `analyze` the
+statement really runs, so a mutating statement is wrapped and rolled back unless you say otherwise.
+
+### `ExplainOptions`
+
+{/* docs: signature */}
+```ts
+interface ExplainOptions {
+  readonly analyze?: boolean
+  readonly verbose?: boolean
+  readonly costs?: boolean
+  readonly buffers?: boolean
+  readonly wal?: boolean
+  readonly timing?: boolean
+  readonly summary?: boolean
+  readonly settings?: boolean
+  readonly format?: 'text' | 'json'
+  readonly rollback?: boolean
+  readonly signal?: AbortSignal
+}
+```
+
+`analyze` defaults to false and **true executes the query**. `costs`, `settings` and `rollback`
+default to true; `buffers` and `timing` default to true when `analyze` is on (PostgreSQL before 16
+rejects `buffers` without it). `format` defaults to `'json'`.
+
+### `ExplainResult`
+
+{/* docs: signature */}
+```ts
+interface ExplainResult {
+  readonly plan: ExplainNode | undefined
+  readonly text: string
+  readonly planningTimeMs?: number
+  readonly executionTimeMs?: number
+  readonly executed: boolean
+  readonly rolledBack: boolean
+  toString(): string
+}
+```
+
+`plan` is present iff `format` was `'json'`. A typed tree cannot be recovered from PostgreSQL's
+text rendering without writing a parser for it, and running a second `EXPLAIN` to get both would
+execute a mutating statement twice under `analyze` — so it is one request, one format, and `text` is
+always there. `executed` is true iff the statement really ran; `rolledBack` is true iff pg-prime
+wrapped it.
+
+### `ExplainNode`
+
+{/* docs: signature */}
+```ts
+interface ExplainNode {
+  readonly 'Node Type': string
+  readonly 'Relation Name'?: string
+  readonly 'Plan Rows'?: number
+  readonly 'Actual Rows'?: number
+  readonly 'Actual Loops'?: number
+  readonly Plans?: readonly ExplainNode[]
+  readonly [key: string]: unknown
+}
+```
+
+One node of `EXPLAIN (FORMAT JSON)`'s plan tree, loosely typed on purpose: PostgreSQL grows keys
+with every release, and an index signature is honest about that.
+
+## LISTEN and NOTIFY
+
+`db.listen(channel, handler)` takes a dedicated connection and returns a
+[`Subscription`](#Subscription); `queryable.notify(channel, payload)` is `pg_notify($1, $2)` and
+needs none. Under a transaction-pooler profile `listen()` is refused and `directConnection` is the
+fix. [LISTEN/NOTIFY](/pg-prime/guides/listen-notify/) is the guide.
+
+### `Subscription`
+
+{/* docs: signature */}
+```ts
+interface Subscription extends AsyncDisposable_ {
+  readonly channel: string
+  close(): Promise<void>
+  on(event: 'reconnect', h: (info: { attempt: number; downMs: number }) => void): () => void
+  on(event: 'gap', h: (info: { downMs: number }) => void): () => void
+  on(event: 'error', h: (e: unknown) => void): () => void
+}
+```
+
+`on` returns its own unsubscribe function. The `gap` event fires after a reconnect and is the one
+that matters: notifications delivered while the connection was down are **lost** — PostgreSQL has
+no replay — so `gap` is where you reconcile from the tables instead.
+
+### `ListenOptions`
+
+{/* docs: signature */}
+```ts
+interface ListenOptions {
+  readonly signal?: AbortSignal
+}
+```
+
+Aborting the signal closes the subscription.
+
+### `NotificationHandler`
+
+{/* docs: signature */}
+```ts
+type NotificationHandler = (
+  payload: string,
+  ctx: { readonly channel: string; readonly processId: number },
+) => void
+```
+
+`processId` is the backend PID of the notifying session, which is how you recognise your own
+writes and skip them.
+
+### `MAX_NOTIFY_PAYLOAD_BYTES`
+
+{/* docs: signature */}
+```ts
+const MAX_NOTIFY_PAYLOAD_BYTES: 8000
+```
+
+PostgreSQL's own limit, checked client-side rather than left to produce a confusing `22023`. It is
+an **exclusive** bound, measured on PostgreSQL 17.11: the backend test is
+`strlen(payload) >= NOTIFY_PAYLOAD_MAX_LENGTH`, so a payload of exactly 8000 bytes is already
+`payload string too long` and 7999 is the largest that works.
+
+## COPY
+
+`copyFrom` and `copyTo` are on every handle. `copyFrom` is 1.5–1.8× faster than `insertMany` at
+10–100 rows, about 2× at 1000–10 000 and 2.3–3.8× at 100 000 (PostgreSQL 17.11, local TCP): there
+is **no crossover**, so the reason to prefer `insertMany` for a few thousand rows is ergonomics, not
+speed. [COPY](/pg-prime/guides/copy/) is the guide.
+
+### `CopyFromApi`
+
+{/* docs: signature */}
+```ts
+interface CopyFromApi {
+  (
+    table: TableRef,
+    rows: AsyncIterable<Record<string, unknown>> | Iterable<Record<string, unknown>>,
+    opts?: CopyOptions,
+  ): Promise<CopyResult>
+  raw(
+    sql: string | { readonly sql: string },
+    bytes: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+    opts?: CopyOptions,
+  ): Promise<CopyResult>
+}
+```
+
+A callable object rather than two methods, because `copyFrom.raw` is the spelling and a function
+carrying a property is the smallest thing that is both. The call form encodes rows with the
+columns' own codecs; `raw` is the escape hatch — your own `COPY … FROM STDIN`, your own bytes, no
+encoding by pg-prime.
+
+### `CopyToApi`
+
+{/* docs: signature */}
+```ts
+interface CopyToApi {
+  (sql: string | { readonly sql: string }, opts?: CopyOptions): AsyncIterable<Uint8Array>
+  lines(sql: string | { readonly sql: string }, opts?: CopyOptions): AsyncIterable<string>
+}
+```
+
+`lines` is the same stream split into lines of text, which is the shape people actually want for
+CSV.
+
+### `CopyOptions`
+
+{/* docs: signature */}
+```ts
+interface CopyOptions {
+  readonly signal?: AbortSignal
+  readonly format?: 'text' | 'csv'
+  readonly columns?: readonly string[]
+  readonly highWaterMark?: number
+}
+```
+
+`format` defaults to `'text'`; binary COPY is not a v1 format. `columns` defaults to every column
+the schema declares as insertable, in order. `highWaterMark` is the bytes buffered before
+backpressure is applied to the source, default 64 KiB.
+
+### `CopyResult`
+
+{/* docs: signature */}
+```ts
+interface CopyResult {
+  readonly rowCount: number
+}
+```
+
+What the server reported, not what you sent.
+
+## Pooling, pooler profiles and diagnosis
+
+`poolerMode` is a **declared** environment profile, not a detected one. It selects a table of
+capability toggles that can only ever *restrict* what the runtime emits, so a wrong value costs
+performance or produces a loud error — never silent incorrectness. The profile table is data, and
+[poolers](/pg-prime/operations/poolers/) renders it from the shipped constant, so prose and
+behaviour cannot drift.
+
+### `PoolOptions`
+
+{/* docs: signature */}
+```ts
+interface PoolOptions {
+  readonly max?: number
+  readonly min?: number
+  readonly idleTimeoutMillis?: number
+  readonly connectionTimeoutMillis?: number
+  readonly maxLifetimeSeconds?: number
+  readonly maxUses?: number
+  readonly allowExitOnIdle?: boolean
+}
+```
+
+Applied only when pg-prime builds the pool. A user-supplied `pool:` keeps whatever it was
+constructed with, because reaching into it would be a surprise.
+
+`max` defaults to 10 and `min` to 0 — a warm pool costs real connections in every idle replica. Two
+of `pg-pool`'s defaults are actively hostile in production and are overridden here:
+`connectionTimeoutMillis` becomes 10 000 (`pg` uses 0, wait forever, which turns pool exhaustion
+into an unbounded hang with no error and no metric) and `maxLifetimeSeconds` becomes 1800 (`pg`
+uses 0, off, so connections survive DNS changes and failovers by not noticing them).
+
+### `PoolStats`
+
+{/* docs: signature */}
+```ts
+interface PoolStats {
+  readonly total: number
+  readonly idle: number
+  readonly waiting: number
+  readonly max: number | undefined
+}
+```
+
+`db.stats()`, and the snapshot attached to a `PoolTimeoutError` so exhaustion is alertable rather
+than merely slow.
+
+### `PoolerMode`
+
+{/* docs: signature */}
+```ts
+type PoolerMode = 'none' | 'session' | 'pgbouncer-transaction' | 'transaction'
+```
+
+`'none'` is direct to PostgreSQL and the default. `'session'` is a session-mode pooler: PgBouncer
+in session mode, Supabase at `:5432`, pgpool-II. `'pgbouncer-transaction'` is a transaction pooler
+**with** protocol-level prepared statements: PgBouncer 1.24 or newer, Neon `-pooler`, Hyperdrive,
+RDS Proxy, PgDog, pgcat. `'transaction'` is a transaction pooler **without** them — Supavisor at
+`:6543`, PgBouncer with `max_prepared_statements=0` — and is the conservative floor.
+
+### `PoolerProfile`
+
+{/* docs: signature */}
+```ts
+interface PoolerProfile {
+  readonly namedPreparedStatements: 'ok' | 'shared-lru' | 'unsupported'
+  readonly sessionGucsAtConnect: 'ok' | 'unsafe'
+  readonly listen: 'ok' | 'unsupported'
+  readonly sessionAdvisoryLocks: 'ok' | 'unsupported'
+  readonly withHoldCursors: 'ok' | 'unsupported'
+  readonly sessionHandle: 'ok' | 'unsupported'
+  readonly cancelRequest: 'ok' | 'best-effort'
+  readonly resetQuery: 'never'
+}
+```
+
+One row of the capability table. `sessionGucsAtConnect: 'unsafe'` means a `SET` at connect would
+leak onto a server connection another client will get. `sessionHandle` is the one capability a
+transaction pooler cannot offer at all. `resetQuery` is `'never'` in every profile, always:
+`DISCARD ALL` clears PgBouncer's own tracking and pins RDS Proxy.
+
+The three module-level values that go with it:
+
+| Name | Type | Notes |
+|---|---|---|
+| <a id="POOLER_PROFILES"/> `POOLER_PROFILES` | `Readonly<Record<PoolerMode, PoolerProfile>>` | The table itself. `diagnosePooler()` compares its verdict against it and the docs page is generated from it, so a test can walk every mode instead of every branch. |
+| <a id="POOLER_MODES"/> `POOLER_MODES` | `readonly PoolerMode[]` | Every mode, in order, for iterating in a test or a settings UI. |
+| <a id="profileOf"/> `profileOf` | `(mode: PoolerMode \| undefined) => PoolerProfile` | The profile for a mode, with `undefined` meaning `'none'`. |
+
+### `DiagnosePoolerOptions`
+
+{/* docs: signature */}
+```ts
+interface DiagnosePoolerOptions {
+  readonly probeSessionState?: boolean
+  readonly host?: string | undefined
+}
+```
+
+`probeSessionState` turns on the `application-name-sticky` signal, which writes session state; it
+is off by default. `host` is the URL or host you were configured with, for the zero-cost hostname
+heuristic.
+
+### `PoolerDiagnosis`
+
+{/* docs: signature */}
+```ts
+interface PoolerDiagnosis {
+  readonly verdict: 'direct' | 'likely-session-pooled' | 'likely-transaction-pooled' | 'inconclusive'
+  readonly confidence: 'low' | 'medium'
+  readonly recommendedPoolerMode: PoolerMode
+  readonly configuredPoolerMode: PoolerMode
+  readonly agrees: boolean
+  readonly signals: readonly DiagnosticSignal[]
+  readonly warnings: readonly string[]
+}
+```
+
+What `db.diagnosePooler()` returns. `confidence` is never `'high'` — this is a heuristic by
+construction, which is why `poolerMode` is declared and not detected.
+
+### `DiagnosticSignal`
+
+{/* docs: signature */}
+```ts
+interface DiagnosticSignal {
+  readonly name:
+    | 'backend-pid-across-statements'
+    | 'backend-pid-within-transaction'
+    | 'named-statement-survives'
+    | 'application-name-sticky'
+    | 'hostname-heuristic'
+    | 'server-version'
+  readonly result:
+    | 'supports-direct'
+    | 'supports-transaction-pooling'
+    | 'supports-session-pooling'
+    | 'inconclusive'
+  readonly detail: string
+}
+```
+
+One probe and what it saw. The verdict is the combination; a single signal is never enough.
+
+### `DbDiagnosis`
+
+{/* docs: signature */}
+```ts
+interface DbDiagnosis {
+  readonly serverVersion: string | undefined
+  readonly serverVersionNum: number | undefined
+  readonly pool: PoolStats | undefined
+  readonly effectiveSettings: Readonly<Record<string, string>>
+  readonly connections: {
+    readonly maxConnections: number | undefined
+    readonly superuserReserved: number | undefined
+    readonly inUse: number | undefined
+    readonly poolMax: number | undefined
+    readonly headroom: number | undefined
+  }
+  readonly statements: {
+    readonly statement: 'unnamed' | 'named'
+    readonly selfHeals: number
+    readonly downgraded: boolean
+    readonly assertShape: boolean
+  }
+  readonly poolerMode: PoolerMode
+  readonly pooler: PoolerDiagnosis | undefined
+  readonly notes: readonly string[]
+}
+```
+
+`db.diagnose()` — one round trip that answers the questions a production incident asks.
+`effectiveSettings` are the GUCs that actually apply on a fresh connection, read back with `SHOW`
+rather than assumed from the configuration. `connections` is the headroom arithmetic
+(`instances × poolOptions.max` against the server's `max_connections`) with the observed numbers in
+it.
+
+## Observability
+
+`hooks` on the configuration and `db.observe(hooks)` at runtime are the same interface; `observe`
+returns its own removal function. A hook that throws is disabled and reported once through
+`onInternal`, because an observer must not be able to fail a query.
+[Observability](/pg-prime/guides/observability/) has the worked example.
+
+### `QueryHooks`
+
+{/* docs: signature */}
+```ts
+interface QueryHooks {
+  onQueryStart?(e: QueryStartEvent): void
+  onQueryEnd?(e: QueryEndEvent): void
+  onQueryError?(e: QueryErrorEvent): void
+  onTransactionStart?(e: TxStartEvent): void
+  onTransactionEnd?(e: TxEndEvent): void
+  onRetry?(e: RetryEvent): void
+  onPool?(e: PoolEvent): void
+  onNotice?(e: NoticeEvent): void
+  onInternal?(e: InternalEvent): void
+}
+```
+
+Every hook is synchronous and returns nothing. Doing real work in one — an `await`, a network call
+— puts it on the query's critical path, so buffer instead.
+
+### `QueryStartEvent`
+
+{/* docs: signature */}
+```ts
+interface QueryStartEvent {
+  readonly queryId: string
+  readonly sql: string
+  readonly paramCount: number
+  readonly execMode: StatementMode
+  readonly handle: HandleKind
+  readonly txId?: string | undefined
+  readonly depth: number
+  readonly attempt: number
+  readonly label?: string | undefined
+  readonly startedAt: number
+  readonly operation?: QueryOperation | undefined
+  readonly tables?: readonly string[] | undefined
+  readonly params?: readonly unknown[] | undefined
+}
+```
+
+`queryId` correlates start, end, error and spans; it is monotonic per process and prefixed so it
+reads as pg-prime's. `operation` and `tables` come from the compiled query's metadata, never from a
+regular expression over the SQL. `params` is present only when `errors.includeParams` is on.
+
+### `QueryEndEvent`
+
+{/* docs: signature */}
+```ts
+interface QueryEndEvent extends QueryStartEvent {
+  readonly durationMs: number
+  readonly rowCount: number
+  readonly command: string
+  readonly serverMs: number
+  readonly decodeMs: number
+  readonly waitedForConnectionMs: number
+}
+```
+
+The duration is split three ways so you can see driver time against decode time against pool wait.
+`waitedForConnectionMs` is separated deliberately: "slow query" and "pool exhausted" look identical
+in every ORM's logs today and have completely different fixes.
+
+The remaining event types are small:
+
+| Type | Shape | Notes |
+|---|---|---|
+| <a id="QueryErrorEvent"/> `QueryErrorEvent` | `QueryStartEvent` + `{ durationMs, error: PgPrimeError, waitedForConnectionMs }` | The typed error, not a string. |
+| <a id="TxStartEvent"/> `TxStartEvent` | `{ txId, depth, attempt, isolation, accessMode, label?, startedAt }` | `depth` greater than 0 means a savepoint. |
+| <a id="TxEndEvent"/> `TxEndEvent` | `TxStartEvent` + `{ outcome: 'commit' \| 'rollback' \| 'error', durationMs, error? }` | One end event per attempt. |
+| <a id="PoolEvent"/> `PoolEvent` | `{ kind: 'acquire' \| 'release' \| 'create' \| 'destroy' \| 'timeout', waitedMs? }` | The pool's own lifecycle, independent of any query. |
+| <a id="NoticeEvent"/> `NoticeEvent` | `{ notice: PgNoticeData, queryId: string }` | PostgreSQL `NoticeResponse` — `RAISE NOTICE` from your own functions. |
+| <a id="InternalEvent"/> `InternalEvent` | `{ kind, message, cause?, hook? }` | Everything the runtime decided on its own: an exec-mode `'downgrade'`, a `'cache-flush'`, a `'self-heal'`, a `'hook-failed'`, a `'pooler-mismatch'`, a `'session-guc-skipped'`, a `'listen-reconnect'`, `'concurrent-statements'`. |
+| <a id="QueryOperation"/> `QueryOperation` | `'select' \| 'insert' \| 'update' \| 'delete' \| 'ddl' \| 'other'` | From the compiled metadata. |
+| <a id="QueryErrorCtor"/> `QueryErrorCtor` | `new (message: string, init: QueryErrorInit) => QueryError` | The constructor every `QueryError` subclass has, for code that maps a SQLSTATE to a class. See [Errors](/pg-prime/reference/errors/). |
+
+### `LogOptions`
+
+{/* docs: signature */}
+```ts
+interface LogOptions {
+  readonly level?: LogLevel
+  readonly slowQueryMs?: number | null
+  readonly logAllQueries?: boolean
+  readonly force?: boolean
+  readonly sink?: (record: LogRecord) => void
+  readonly format?: 'pretty' | 'json'
+}
+```
+
+`level` defaults to `'warn'` and `slowQueryMs` to `null`, which is off; 500 is a good start.
+`logAllQueries` is a development switch and refuses to run in production unless `force` acknowledges
+it. `format` defaults to pretty on a TTY and JSON otherwise.
+
+### `LogRecord`
+
+{/* docs: signature */}
+```ts
+interface LogRecord {
+  readonly level: Exclude<LogLevel, 'silent'>
+  readonly kind: 'slow-query' | 'query' | 'query-error' | 'internal'
+  readonly message: string
+  readonly queryId?: string
+  readonly sql?: string
+  readonly paramCount?: number
+  readonly durationMs?: number
+  readonly serverMs?: number
+  readonly decodeMs?: number
+  readonly waitedForConnectionMs?: number
+  readonly rowCount?: number
+  readonly label?: string
+  readonly callSite?: string
+  readonly code?: string
+}
+```
+
+What a `sink` receives: one flat object, already redacted according to `errors`.
+
+### `LogLevel`
+
+{/* docs: signature */}
+```ts
+type LogLevel = 'silent' | 'error' | 'warn' | 'info' | 'debug'
+```
+
+`'silent'` is a level rather than an absent logger, so turning logging off is a value and not a
+different code path.
+
+### `SEMCONV`
+
+{/* docs: signature */}
+```ts
+const SEMCONV: {
+  readonly dbSystemName: 'db.system.name'
+  readonly dbNamespace: 'db.namespace'
+  readonly dbQueryText: 'db.query.text'
+  readonly dbQuerySummary: 'db.query.summary'
+  readonly dbOperationName: 'db.operation.name'
+  readonly dbCollectionName: 'db.collection.name'
+  readonly dbResponseStatusCode: 'db.response.status_code'
+  readonly dbResponseReturnedRows: 'db.response.returned_rows'
+  readonly dbOperationBatchSize: 'db.operation.batch.size'
+  readonly serverAddress: 'server.address'
+  readonly serverPort: 'server.port'
+  readonly errorType: 'error.type'
+}
+```
+
+The OpenTelemetry semantic conventions for database client spans, pinned at v1.34 (stable) and
+exported as a record so a semconv bump is one edit rather than a refactor.
+
+### `spanAttributes`
+
+{/* docs: signature */}
+```ts
+function spanAttributes(
+  e: QueryStartEvent | QueryEndEvent | QueryErrorEvent,
+  ctx?: SpanContext,
+): SpanAttributes
+```
+
+An event as OTel attributes. Pure, with no imports beyond types: pg-prime ships no tracer and this
+is what you adapt to yours.
+
+### `spanName`
+
+{/* docs: signature */}
+```ts
+function spanName(e: QueryStartEvent): string
+```
+
+The name OTel wants — `"<operation> <collection>"`, for example `"SELECT users"`.
+
+### `SpanContext`
+
+{/* docs: signature */}
+```ts
+interface SpanContext {
+  readonly namespace?: string
+  readonly serverAddress?: string
+  readonly serverPort?: number
+  readonly poolerMode?: string
+}
+```
+
+Everything a span needs that the event itself cannot know: which database, which host, which
+profile.
+
+### `SpanAttributes`
+
+{/* docs: signature */}
+```ts
+type SpanAttributes = Readonly<Record<string, string | number | boolean>>
+```
+
+What every OTel exporter accepts, and nothing wider.
+
+### `statementStats`
+
+{/* docs: signature */}
+```ts
+function statementStats(db: Executor | Db<AnySchema> | Queryable<AnySchema>): StatementStats
+```
+
+Executor-level counters. Folded into `db.diagnose().statements` as well, but kept as a free
+function because it is synchronous and `diagnose()` is not: a test that wants to know whether the
+pool downgraded should not have to open a connection to find out.
+
+### `StatementStats`
+
+{/* docs: signature */}
+```ts
+interface StatementStats {
+  readonly statement: 'unnamed' | 'named'
+  readonly selfHeals: number
+  readonly downgraded: boolean
+  readonly assertShape: boolean
+}
+```
+
+`selfHeals` counts consecutive self-heal events since the last successful named execution.
+`downgraded` is a one-way door: once the pool has fallen back to unnamed it stays there for its
+lifetime.
+
+## The description cache
+
+Statements built with the `sql` tag have no declared codecs, so their result OIDs are only known
+from the server's `RowDescription`. The cache is keyed on SQL text and holds the **decode plan**,
+one `registry.planFor(fields)` walk per result — not `Parse` messages, which in unnamed mode are
+sent per execution anyway and are not what there is to save.
+
+| Name | Signature | Notes |
+|---|---|---|
+| <a id="describeCacheStats"/> `describeCacheStats` | `() => DescribeCacheStats` | The counters, for a test or a metric. |
+| <a id="clearDescribeCache"/> `clearDescribeCache` | `(resetCounters?: boolean) => void` | Drop everything. Called automatically on `0A000`, `42P18` and `42804`, and by tests between cases. |
+| <a id="DescribeCacheStats"/> `DescribeCacheStats` | `{ hits, misses, builds, size }` | `builds` is decode plans actually constructed, which is the number a tier-1 test pins. |
+
+## Compiling without a database
+
+### `compileOnly`
+
+{/* docs: signature */}
+```ts
+function compileOnly<Sc extends AnySchema>(schema: Sc, registry?: CodecRegistry): Queryable<Sc>
+```
+
+A builder with no database: `.toSQL()` and `.compile()` work, and `.execute()` throws with a
+sentence saying why. It is what the unit-test suites use, and it is a real product surface — the
+SQL for a migration tool, a lint rule, or a test that wants the statement and nothing else.

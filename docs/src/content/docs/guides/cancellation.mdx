@@ -144,13 +144,12 @@ nothing until it fires and one connection when it does.
 statement in `BEGIN; set_config('statement_timeout', …, true); …; COMMIT` for a hard, backend-
 enforced bound at +2 round trips. `'client'` forces the timer even inside a transaction.
 
-### The restore is `NULL`, not `0`
+### The transaction's timeout is a baseline, not a one-shot
 
-When a statement's own timeout is over, pg-prime restores the transaction's baseline with
-`set_config('statement_timeout', NULL, true)` — which puts back the value the session would
-otherwise have. Sending `'0'` would look equivalent and is not: in PostgreSQL `0` **disables** the
-timeout, so it would silently convert a per-statement bound into a per-transaction exemption for
-every statement after it. The database itself is the oracle:
+`TxOptions.timeoutMs` sets the value every statement in the transaction starts from, and a
+statement that asks for its own gets it for exactly that statement. Without the baseline, one
+`withOptions({ timeoutMs })` call would silently clear the bound the caller put on the whole
+transaction. The database itself is the oracle:
 
 {/* docs: use=blog */}
 ```ts title="set-local-timeout.ts"
@@ -160,18 +159,39 @@ const read = async (h: { sql: typeof db.sql }): Promise<void> => {
   seen.push(String(row?.['v']))
 }
 
-await db.transaction(async (tx) => {
-  await read(tx)
-  await read(tx.withOptions({ timeoutMs: 250 }))
-  await read(tx)
-})
+await db.transaction(
+  async (tx) => {
+    await read(tx)
+    await read(tx.withOptions({ timeoutMs: 250 }))
+    await read(tx)
+  },
+  { timeoutMs: 9_000 },
+)
 
 console.log(seen)
-// [ '30s', '250ms', '30s' ]  — the third would be '0' if the restore used '0'
+// [ '9s', '250ms', '9s' ]
 ```
 
-The `'30s'` at either end is the session default, described below. The middle value is the one the
-statement asked for, and it is gone again by the next statement.
+Three statements, two `set_config` round trips: the first is the `BEGIN` batch, the second is the
+statement that wanted something different, and the third statement pays one more to go back. A loop
+of ten statements sharing one timeout pays for one.
+
+The restore is written as `set_config('statement_timeout', <baseline>, true)`, and where there is
+no baseline it is `set_config('statement_timeout', NULL, true)` rather than `'0'`, because in
+PostgreSQL `0` **disables** the timeout — writing it would turn a per-statement bound into a
+per-transaction exemption for everything after it.
+
+<Aside type="caution">
+`NULL` restores PostgreSQL's **reset value**, which is not the same thing as "whatever the session
+currently has". A GUC set with `SET` — which is what pg-prime emits for `session.statementTimeout`
+on the `connection:` path — does not become the reset value, so with **no** transaction-level
+`timeoutMs` the restore lands on the server's own default. Measured on PostgreSQL 18.3: after one
+`withOptions({ timeoutMs })` statement inside a plain `db.transaction`, `statement_timeout` reads
+`0` for the remainder of that transaction, and the session's `30s` comes back at `COMMIT`. Give the
+transaction its own `timeoutMs`, as above, or set the default server-side with
+`ALTER ROLE … SET statement_timeout = '30s'` — where it *is* the reset value and the restore has
+something to restore.
+</Aside>
 
 ## `QueryCanceledError` and `QueryTimeoutError`
 

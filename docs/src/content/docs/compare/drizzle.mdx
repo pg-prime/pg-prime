@@ -94,8 +94,8 @@ const authors = await db
   }))
   .execute()
 
-console.log(authors)
-// [ { name: 'Ada', total: 3n, latest: [ { title: 'Second' }, { title: 'First' } ] } ]
+console.log(authors[0])
+// { name: 'Ada', total: 3n, latest: [ { title: 'Second' }, { title: 'First' } ] }
 ```
 
 `total` is a `bigint` because `count()` is `int8`, `latest` is `{ title: string }[]`, and the whole
