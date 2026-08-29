@@ -1,0 +1,22 @@
+/* The site's own palette. Starlight's defaults, with a hue that is not the default purple. */
+:root {
+  --sl-color-accent-low: #10251d;
+  --sl-color-accent: #1f7a5a;
+  --sl-color-accent-high: #a9e6cd;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #cfeee1;
+  --sl-color-accent: #12694c;
+  --sl-color-accent-high: #06301f;
+}
+
+/* Reference pages are dense tables of names; keep them readable. */
+.sl-markdown-content table code {
+  white-space: nowrap;
+}
+
+.sl-markdown-content table {
+  display: table;
+  width: 100%;
+}

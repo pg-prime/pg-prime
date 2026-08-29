@@ -1,0 +1,36 @@
+---
+title: pg-prime
+description: PostgreSQL-only, type-safe TypeScript ORM and migration engine. Zero dependencies, ESM-only.
+template: splash
+hero:
+  tagline: A PostgreSQL-only ORM and migration engine for TypeScript. Zero runtime dependencies, ESM-only, and every example on this site is compiled and executed in CI.
+  actions:
+    - text: Getting started
+      link: /pg-prime/guides/getting-started/
+      icon: right-arrow
+    - text: Why not Drizzle, Prisma, Kysely, MikroORM
+      link: /pg-prime/compare/why-not/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components'
+
+<CardGrid stagger>
+  <Card title="One database, modelled properly" icon="seti:db">
+    Partial indexes, `INCLUDE`, opclasses, partitions, domains, sequences, RLS, `CLUSTER ON` — the
+    schema DSL declares what PostgreSQL actually has, and the migration engine diffs the catalog
+    rather than a file of its own.
+  </Card>
+  <Card title="Three handles, not one" icon="puzzle">
+    `Db`, `Tx` and `Session` are mutually non-assignable. A helper that takes a `Tx` cannot be
+    handed the pool-backed root handle by accident.
+  </Card>
+  <Card title="Migrations that prove themselves" icon="approve-check">
+    Every generated migration is replayed on a shadow clone and the result is diffed against the
+    desired state before the file is written — and `pg_dump` is asked for a second opinion.
+  </Card>
+  <Card title="Docs that cannot rot" icon="document">
+    Every code block on this site type-checks on TypeScript 5.9.3 against the built packages, and
+    every block with a file name runs against a real PostgreSQL in CI.
+  </Card>
+</CardGrid>

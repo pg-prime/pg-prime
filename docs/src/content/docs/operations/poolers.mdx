@@ -1,0 +1,20 @@
+---
+title: Poolers
+description: The compatibility matrix, generated from POOLER_PROFILES.
+---
+
+{/* GENERATED:pooler-matrix — tools/pooler-matrix.mjs, from POOLER_PROFILES. Do not edit. */}
+
+| Capability | `none` | `session` | `pgbouncer-transaction` | `transaction` |
+|---|---|---|---|---|
+| Named prepared statements (`execMode: { statement: 'named' }`) | ✅ ok | ✅ ok | ⚠️ shared-lru — allowed; the pooler's per-server cache is shared across clients | ❌ unsupported — `ConfigError` at construction |
+| Session GUCs at connect (`session: { … }`) | ✅ ok | ✅ ok | ❌ unsafe — skipped, with one `info` line naming the `ALTER ROLE` fix | ❌ unsafe — skipped, with one `info` line naming the `ALTER ROLE` fix |
+| `db.listen()` | ✅ ok | ✅ ok | ❌ unsupported — routed to `directConnection`, or `ConfigError` if there is none | ❌ unsupported — routed to `directConnection`, or `ConfigError` if there is none |
+| Session advisory locks (`session.advisoryLock()`) | ✅ ok | ✅ ok | ❌ unsupported — use `tx.advisoryLock()` | ❌ unsupported — use `tx.advisoryLock()` |
+| `WITH HOLD` cursors | ✅ ok | ✅ ok | ❌ unsupported | ❌ unsupported |
+| `db.session()` | ✅ ok | ✅ ok | ❌ unsupported — `UnsupportedInPoolerModeError` | ❌ unsupported — `UnsupportedInPoolerModeError` |
+| Cancel request (abort mid-query) | ✅ ok | ⚠️ best-effort | ⚠️ best-effort | ⚠️ best-effort |
+| Reset query (`DISCARD ALL`) | never emitted | never emitted | never emitted | never emitted |
+
+{/* /GENERATED:pooler-matrix */}
+

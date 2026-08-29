@@ -1,0 +1,6 @@
+# Astro
+dist/
+.astro/
+
+# The gates' scratch space and the reference scaffolder's output (docs/README.md).
+.gen/
