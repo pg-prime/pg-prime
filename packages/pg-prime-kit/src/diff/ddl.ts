@@ -63,6 +63,17 @@ export interface BuildOptions {
    * the caller renders the `-- pg-prime:data` backfill stub.
    */
   readonly multiFile?: boolean;
+  /**
+   * Encoded `index` ids the `CONCURRENTLY` rewrite must NOT fire for — design/05 §2.4's
+   * `index('i').concurrently(false)`, D15's per-index opt-out.
+   *
+   * It arrives as an option rather than as an `IndexPayload` field because `CONCURRENTLY` is
+   * a property of how an index is BUILT and not of the index: `pg_get_indexdef` has nothing
+   * to say about it, so a payload field would be `false` on the DSL side and absent on the
+   * catalog side and every such index would diff for ever. `generate` reads the flag off the
+   * registry and passes it here, the same route `renamedFrom` takes to `renameHints`.
+   */
+  readonly noConcurrentIndexes?: ReadonlySet<string>;
 }
 
 const id = encodeId;
@@ -225,6 +236,10 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
     const table = desired.get(parseId(tableKey));
     return table === undefined || table.payload["partitionStrategy"] === null;
   };
+
+  /** The same three refusals, plus the per-index opt-out (`BuildOptions.noConcurrentIndexes`). */
+  const indexConcurrentOk = (ir: SchemaIR, x: StableId): boolean =>
+    !(options.noConcurrentIndexes?.has(id(x)) ?? false) && concurrentOk(indexTableId(ir, x));
 
   /**
    * Everything a fact (and its descendants) REFERENCES — released the moment it
@@ -719,7 +734,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
             break;
           }
           case "index": {
-            statements.push(...createIndex(f, desired, [], concurrentOk(indexTableId(desired, f.id))));
+            statements.push(...createIndex(f, desired, [], indexConcurrentOk(desired, f.id)));
             break;
           }
           default:
@@ -748,7 +763,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
                 after,
                 desired,
                 !wasUnique && isUnique ? ["MF102"] : [],
-                concurrentOk(indexTableId(desired, after.id)),
+                indexConcurrentOk(desired, after.id),
               ),
             );
             break;

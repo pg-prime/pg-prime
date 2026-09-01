@@ -216,10 +216,12 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       extractorDiagnostics.filter((d) => d.code === "volatile_default").map((d) => d.subject ?? ""),
     );
 
+    const noConcurrentIndexes = nonConcurrentIndexes(input.schema, schemas[0] ?? "public");
     const buildOptions: BuildOptions = {
       volatileDefaults,
       emptyTables,
       multiFile: input.multiFile !== false,
+      ...(noConcurrentIndexes.size === 0 ? {} : { noConcurrentIndexes }),
       ...(input.noSafeRewrite === undefined ? {} : { noSafeRewrite: input.noSafeRewrite }),
     };
     let built = buildStatements(diff, desired.ir, buildOptions);
@@ -512,6 +514,33 @@ async function proveIt(
     ...(input.allowSkippedOracle === undefined ? {} : { allowSkippedOracle: input.allowSkippedOracle }),
     ...(input.pgDump === undefined ? {} : { pgDump: input.pgDump }),
   });
+}
+
+/* --------------------------- the D15 index opt-out ------------------------- */
+
+/**
+ * `index('i').concurrently(false)` — encoded `index` ids the `CONCURRENTLY` rewrite skips.
+ *
+ * Read straight off the registry, exactly as {@link annotationHints} reads `renamedFrom`, and
+ * for the same reason: it is a fact about what the plan should DO, not about what the database
+ * contains, so there is no catalog counterpart and it cannot ride in the IR. A `false` here
+ * leaves the literal `CREATE INDEX` and its LK101 hazard in the single transactional file —
+ * which is what the caller asked for.
+ */
+export function nonConcurrentIndexes(schema: SchemaLike, defaultSchema = "public"): Set<string> {
+  const out = new Set<string>();
+  for (const table of Object.values(schema.tables)) {
+    const runtime = table.$;
+    const ns = runtime.schema ?? defaultSchema;
+    for (const extra of runtime.extras) {
+      // `concurrently` is absent on an extras array built before design/14 G (a hand-made
+      // node in a test, or an older `pg-prime` on the peer range), and absent means "the
+      // default", which is the rewrite.
+      if (extra.node !== "index" || extra.concurrently !== false) continue;
+      out.add(encodeId({ kind: "index", schema: ns, name: extra.name }));
+    }
+  }
+  return out;
 }
 
 /* ---------------------------- rename annotations --------------------------- */

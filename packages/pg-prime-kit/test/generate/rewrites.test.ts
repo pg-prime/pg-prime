@@ -123,7 +123,72 @@ async function run(c: Case): Promise<{
   return { files: result.files, result, dir, database };
 }
 
+/**
+ * Row 1 again, with design/05 §2.4's `i6` — `index('…').concurrently(false)`.
+ *
+ * The same schema in every other respect, so the ONLY thing that can make the two plans
+ * differ is the opt-out.
+ */
+const rowOneOptOut: Case = {
+  slug: "cicoff",
+  current: rowOne.current,
+  schema: asSchemaLike(
+    defineSchema({
+      orders: pgTable(
+        "orders",
+        (t) => ({
+          id: t.bigint().generatedAlways().primaryKey(),
+          status: t.text(),
+        }),
+        (t) => [index("orders_status_idx").concurrently(false).on(t.status)],
+      ),
+    }),
+  ),
+};
+
 describe("design/06 §3.5 — the three rewrites that need a second file", () => {
+  /**
+   * design/14 G — D15's per-index opt-out, and the reason it is not a payload field.
+   *
+   * `CONCURRENTLY` is a property of how an index is BUILT, so `pg_get_indexdef` has nothing
+   * to say about it and an `IndexPayload.concurrently` would be `false` on the DSL side and
+   * absent on the catalog side for ever. `generate` reads the flag off the registry instead
+   * — the same route `renamedFrom` takes to the rename hints — and hands it to
+   * `BuildOptions.noConcurrentIndexes`.
+   */
+  it(
+    "concurrently(false) keeps the literal CREATE INDEX, in one transactional file, with LK101",
+    async () => {
+      expect(await serverAvailable()).toBe(true);
+      const { files, result, dir, database } = await run(rowOneOptOut);
+      try {
+        expect(result.status, JSON.stringify(result.diagnostics)).toBe("generated");
+        expect(result.proof?.status, result.proof?.error).toBe("passed");
+        expect(result.proof?.dumpOracle?.status).toBe("passed");
+
+        // one file, not two, and it is the transactional one
+        expect(files.map((f) => `${f.id}:${f.stage}`)).toEqual(["0001_cicoff:main"]);
+        const plan = files[0]!.plan!;
+        expect(plan.txmode).toBe("transactional");
+        expect(plan.statements.map((s) => s.sql)).toEqual([
+          'CREATE INDEX "orders_status_idx" ON public.orders USING btree (status)',
+        ]);
+
+        // …and the hazard the rewrite exists to prevent is REPORTED, because the caller
+        // asked for the form that has it. A silent opt-out would be the worst of both.
+        const sqlText = await readFile(files[0]!.sqlPath!, "utf8");
+        const lint = lintPlan(plan, sqlText);
+        expect(lint.findings.map((f) => f.code)).toContain("LK101");
+
+        const applied = await applyPending(dbConn(database), dir, { schemas: ["public"] });
+        expect(applied.status, applied.error?.message).toBe("applied");
+      } finally {
+        await destroyDatabase(database).catch(() => undefined);
+      }
+    },
+    T,
+  );
+
   it(
     "row 1: CREATE INDEX becomes DROP INDEX CONCURRENTLY IF EXISTS + CREATE INDEX CONCURRENTLY, in a txmode none file",
     async () => {

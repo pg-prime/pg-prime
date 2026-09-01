@@ -232,6 +232,7 @@ export {
   emptyMigrationSql,
   generate,
   generateFromDatabases,
+  nonConcurrentIndexes,
   readHintsFile,
   slug,
   GenerateRefusedError,
