@@ -272,9 +272,15 @@ describe('codecFor — failing loudly, at seam time', () => {
 
     const unresolved = m.keys.filter((k) => m.byKey[k]?.codec === undefined)
     expect(unresolved).toEqual([])
-    // Every non-enum builder resolves against the built-ins; the enum is the documented pending
-    // case, so it is the only one allowed to have no OID before `resolveDynamic`.
+    /**
+     * Every builder over a BUILT-IN type resolves to a codec with a fixed OID. The three that do
+     * not are the documented pending window (02 §4.6): an enum's OID is allocated by
+     * `CREATE TYPE` and `citext`'s and `vector`'s by `CREATE EXTENSION`, so all three are
+     * per-database and none of them may be baked in. They get their number from
+     * `resolveDynamic`, and until then they still encode and decode — which is what the
+     * `unresolved` assertion above says.
+     */
     const oidless = m.keys.filter((k) => m.byKey[k]?.codec.oid === undefined)
-    expect(oidless).toEqual(['enum', 'enum_arr'])
+    expect(oidless).toEqual(['citext', 'citext_arr', 'vector', 'vector_arr', 'enum', 'enum_arr'])
   })
 })

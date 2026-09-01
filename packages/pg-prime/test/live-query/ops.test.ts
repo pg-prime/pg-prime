@@ -30,6 +30,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  bitCodec,
   boolCodec,
   float4Codec,
   float8Codec,
@@ -41,6 +42,7 @@ import {
   numericCodec,
   Registry,
   textCodec,
+  vectorCodec,
 } from '../../src/codec/index.js'
 import type { AnyCodec } from '../../src/codec/index.js'
 import type { Expr } from '../../src/compile/ast.js'
@@ -53,7 +55,7 @@ import { metaOf } from '../../src/query/meta.js'
 import { CONFIRMABLE, OPS } from '../../src/query/ops.manifest.js'
 import { refsOf } from '../../src/query/ref.js'
 import * as q from '../../src/query/types.js'
-import { makeHarness, type Harness } from '../live/_harness.js'
+import { announce, liveTarget, makeHarness, type Harness } from '../live/_harness.js'
 import { makeFixture } from '../live/fixture.js'
 
 const fx = makeFixture('pgprime_q_ops')
@@ -61,6 +63,39 @@ const fx = makeFixture('pgprime_q_ops')
 let h: Harness
 let conn: PgConnection
 let registry: Registry
+
+/**
+ * Why the six `vector` rows may not run, or `undefined` when they will (design/14 decision 6).
+ *
+ * pgvector is an EXTENSION: PGlite does not ship it, and neither do the `postgres:N` images the
+ * CI and nightly matrices use — so this is the one class in the manifest whose differential
+ * depends on the target having something installed. It is NOT a deferral: the rows are
+ * `CONFIRMABLE`, the goldens exist, and against a server that has the extension every one of them
+ * runs here. When it does not, each case skips with this sentence rather than passing quietly.
+ */
+let vectorSkip: string | undefined
+
+async function probeVector(): Promise<string | undefined> {
+  const missing =
+    `pgvector is not installed on this target (${liveTarget().kind}), so \`03\` §2.9's six ` +
+    `distance operators are UNVERIFIED in this run. They are confirmed against a pgvector image ` +
+    `— see packages/pg-prime/test/pg/vector.test.ts and PG_PRIME_TEST_VECTOR_URL (design/14 V).`
+  try {
+    await conn.execute({
+      text: 'create extension if not exists vector',
+      params: [],
+      mode: 'simple',
+    })
+    const r = await conn.execute({
+      text: `select extversion from pg_catalog.pg_extension where extname = 'vector'`,
+      params: [],
+      mode: 'simple',
+    })
+    return r.rows.length === 0 ? missing : undefined
+  } catch {
+    return missing
+  }
+}
 
 beforeAll(async () => {
   h = await makeHarness()
@@ -73,6 +108,13 @@ beforeAll(async () => {
   await registry.resolveDynamic(conn, [
     { schema: fx.ns, name: 'user_role', kind: 'enum', enumLabels: ['admin', 'owner', 'member'] },
   ])
+  vectorSkip = await probeVector()
+  if (vectorSkip === undefined) {
+    // The extension type's OID is per-database, so it is read here exactly as the enum's is.
+    await registry.resolveDynamic(conn, [{ name: 'vector', kind: 'base' }])
+  } else {
+    announce(`[live] skip: ${vectorSkip}`)
+  }
 }, 120_000)
 
 afterAll(async () => {
@@ -115,6 +157,19 @@ const TSV = () => q.fn.toTsvector('english', u().name)
 const TSQ = () => q.fn.websearchToTsquery('english', 'Ada')
 const R = () => q.val('[1,5)', int4rangeCodec)
 const NET = () => q.val('10.0.0.0/8', inetCodec)
+
+/**
+ * A `vector` and a `bit` **built from the row**, so the vector differentials discriminate.
+ *
+ * `users` has no vector column and must not grow one: the fixture is shared by every tier-1 file
+ * and a `vector` column would make all of them require an extension. `u.id` is `1..6` in a freshly
+ * seeded schema, so `[id,1,0]` gives six distinct vectors and `id::int::bit(3)` six distinct bit
+ * strings — enough that each predicate below picks a different, non-empty subset.
+ */
+const VEC = () => q.sql`('[' || ${u().id} || ',1,0]')::vector`.as(vectorCodec)
+const VEC_SQL = `('[' || u.id || ',1,0]')::vector`
+const BITS = () => q.sql`(${u().id}::int4)::bit(3)`.as(bitCodec)
+const BITS_SQL = `(u.id::int4)::bit(3)`
 
 /**
  * A three-valued boolean over the fixture, for `isTrue` and friends.
@@ -628,6 +683,55 @@ const CASES: Readonly<Record<string, Case>> = {
     rows: 6,
   },
 
+  // ── vector (pgvector) ────────────────────────────────────────────────────
+  //
+  // Every threshold below is chosen so that no two of the six select the same set of ids — a
+  // transposed token (`<->` for `<+>`, `<~>` for `<%>`) changes the answer and fails, which is
+  // the only property a differential over six operators that all return `float8` can have.
+  // Measured on pgvector 0.8.6 with `u.id` = 1…6:
+  //   l2  vs [3,1,0] = |id-3|              → < 2  ⇒ {2,3,4}
+  //   cos vs [1,0,0] = 1 - id/√(id²+1)     → < .1 ⇒ {3,4,5,6}
+  //   ip  vs [1,0,0] = -id  (NEGATED)      → < -3 ⇒ {4,5,6}
+  //   l1  vs [3,4,0] = |id-3| + 3          → < 4  ⇒ {3}        (l2 would give five rows)
+  //   ham vs B'110'  = differing bits      → < 2  ⇒ {2,4,6}
+  //   jac vs B'110'                        → < 1  ⇒ {2,3,4,5,6}
+  l2: {
+    expr: () => q.l2(VEC(), [3, 1, 0]),
+    pred: () => q.lt(q.l2(VEC(), [3, 1, 0]), 2),
+    oracle: `(${VEC_SQL} <-> '[3,1,0]'::vector) < 2`,
+    rows: 3,
+  },
+  cosine: {
+    expr: () => q.cosine(VEC(), [1, 0, 0]),
+    pred: () => q.lt(q.cosine(VEC(), [1, 0, 0]), 0.1),
+    oracle: `(${VEC_SQL} <=> '[1,0,0]'::vector) < 0.1`,
+    rows: 4,
+  },
+  innerProduct: {
+    expr: () => q.innerProduct(VEC(), [1, 0, 0]),
+    pred: () => q.lt(q.innerProduct(VEC(), [1, 0, 0]), -3),
+    oracle: `(${VEC_SQL} <#> '[1,0,0]'::vector) < -3`,
+    rows: 3,
+  },
+  l1: {
+    expr: () => q.l1(VEC(), [3, 4, 0]),
+    pred: () => q.lt(q.l1(VEC(), [3, 4, 0]), 4),
+    oracle: `(${VEC_SQL} <+> '[3,4,0]'::vector) < 4`,
+    rows: 1,
+  },
+  hamming: {
+    expr: () => q.hamming(BITS(), '110'),
+    pred: () => q.lt(q.hamming(BITS(), '110'), 2),
+    oracle: `(${BITS_SQL} <~> B'110') < 2`,
+    rows: 3,
+  },
+  jaccard: {
+    expr: () => q.jaccard(BITS(), '110'),
+    pred: () => q.lt(q.jaccard(BITS(), '110'), 1),
+    oracle: `(${BITS_SQL} <%> B'110') < 1`,
+    rows: 5,
+  },
+
   // ── boolean ──────────────────────────────────────────────────────────────
   and: {
     expr: () => q.and(q.eq(u().role, 'member'), q.isNull(u().deletedAt)),
@@ -793,10 +897,24 @@ async function idsWhere(
   return r.rows.map((row) => String(row[0]))
 }
 
+/**
+ * `undefined` when this row can run against this target, the reason when it cannot.
+ *
+ * Only the `vector` class can answer with a reason, and only when the extension is absent. It is
+ * a runtime check and not a collection-time one because "does this server have pgvector?" needs a
+ * round trip — so the skip is announced once in `beforeAll` and marked per case here, which puts
+ * both the sentence and six `skipped` markers in the output.
+ */
+function unavailable(spec: { readonly class: string }): string | undefined {
+  return spec.class === 'vector' ? vectorSkip : undefined
+}
+
 describe("result-codec differential — the server confirms every operator's claimed OID", () => {
   for (const spec of CONFIRMABLE) {
     const kase = CASES[spec.name]
-    it(`${spec.name} → ${spec.result}`, async () => {
+    it(`${spec.name} → ${spec.result}`, async (ctx) => {
+      const why = unavailable(spec)
+      if (why !== undefined) return ctx.skip(why)
       expect(kase, `no live case for ${spec.name}`).toBeDefined()
       const expr = kase!.expr()
       const claimed = codecOf(expr as Expr)
@@ -810,7 +928,9 @@ describe("result-codec differential — the server confirms every operator's cla
 describe('semantic differential — the builder predicate and hand-written SQL agree', () => {
   for (const spec of CONFIRMABLE) {
     const kase = CASES[spec.name]
-    it(spec.name, async () => {
+    it(spec.name, async (ctx) => {
+      const why = unavailable(spec)
+      if (why !== undefined) return ctx.skip(why)
       const c = compiled(kase!.pred())
       const mine = await idsWhere(c.sql, c.params, c.oids)
       const theirs = await idsWhere(kase!.oracle, [], [])

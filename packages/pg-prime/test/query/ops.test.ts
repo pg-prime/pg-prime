@@ -21,12 +21,14 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  bitCodec,
   inetCodec,
   jsonCodecJson,
   textCodec,
   tsqueryCodec,
   tstzrangeCodec,
   tsvectorCodec,
+  vectorCodec,
 } from '../../src/codec/index.js'
 import type { Expr } from '../../src/compile/ast.js'
 import { compileExpr } from '../../src/compile/compiler.js'
@@ -68,6 +70,14 @@ const tsq = sql`websearch_to_tsquery('english', ${'x'})`.as(tsqueryCodec)
 const rng = sql`${u.at}`.as(tstzrangeCodec)
 const net = sql`${u.name}`.as(inetCodec)
 const js = sql`${u.meta}`.as(jsonCodecJson)
+/**
+ * `vector` and `bit` operands, the same way — and here `.as(codec)` earns its keep twice over.
+ * `t.vector(3)` exists now, but a `vector` COLUMN in this fixture would make all ninety-five
+ * unrelated goldens depend on an extension type; a fragment keeps the blast radius at six rows.
+ * Both literals are static template text with no interpolation, so nothing is spliced.
+ */
+const vec = sql`'[1,2,3]'::vector`.as(vectorCodec)
+const bits = sql`'101'::bit(3)`.as(bitCodec)
 
 function render(e: unknown): { sql: string; binds: unknown[] } {
   const out = compileExpr(e as Expr)
@@ -208,6 +218,17 @@ const CASES: Readonly<Record<string, Case>> = {
   ]),
   overlapsNet: c(() => q.overlapsNet(net, '10.0.0.0/8'), '("u"."name") && $1', ['10.0.0.0/8']),
 
+  // ── vector (pgvector) ────────────────────────────────────────────────────
+  // Four take a `vector`; `hamming` and `jaccard` take a `bit`, which is what pgvector 0.8.6
+  // declares in `pg_operator`. The BINDS are the half a token-only golden would miss: `[3,2,1]`
+  // is pgvector's bracket form, which is neither a PostgreSQL array literal nor JSON.
+  l2: c(() => q.l2(vec, [3, 2, 1]), `('[1,2,3]'::vector) <-> $1`, ['[3,2,1]']),
+  cosine: c(() => q.cosine(vec, [3, 2, 1]), `('[1,2,3]'::vector) <=> $1`, ['[3,2,1]']),
+  innerProduct: c(() => q.innerProduct(vec, [3, 2, 1]), `('[1,2,3]'::vector) <#> $1`, ['[3,2,1]']),
+  l1: c(() => q.l1(vec, [3, 2, 1]), `('[1,2,3]'::vector) <+> $1`, ['[3,2,1]']),
+  hamming: c(() => q.hamming(bits, '110'), `('101'::bit(3)) <~> $1`, ['110']),
+  jaccard: c(() => q.jaccard(bits, '110'), `('101'::bit(3)) <%> $1`, ['110']),
+
   // ── boolean / ordering ───────────────────────────────────────────────────
   and: c(() => q.and(q.eq(u.name, 'a'), q.isNull(u.at)), '("u"."name" = $1 and "u"."at" is null)', [
     'a',
@@ -279,15 +300,21 @@ describe('every operator emits exactly this SQL and exactly these binds', () => 
 
 describe('the manifest is the contract', () => {
   it('every OPS row has a golden, and every golden has an OPS row (the CI gate)', () => {
-    const manifest = OPS.filter((o) => o.class !== 'vector').map((o) => o.name)
+    const manifest = OPS.map((o) => o.name)
     const golden = Object.keys(CASES)
     expect([...manifest].sort()).toStrictEqual([...golden].sort())
   })
 
-  it('the vector rows are deferred with a reason, not silently absent', () => {
+  it('the six vector rows are confirmable, not deferred (design/14 V)', () => {
+    // They were the WS5 deferral until `definePgType()` gave `vector` a codec and a pgvector
+    // container gave the differential a target. `deferred` back on any of them would mean the
+    // live suite had silently stopped running them — which is what this row exists to catch.
     const vector = OPS.filter((o) => o.class === 'vector')
     expect(vector.length).toBe(6)
-    for (const o of vector) expect(o.deferred).toMatch(/pgvector EXTENSION type/)
+    for (const o of vector) expect(o.deferred).toBeUndefined()
+    expect(OPS.filter((o) => o.deferred !== undefined).map((o) => o.name)).toStrictEqual([
+      'fn.rank',
+    ])
   })
 
   it("the runtime range→subtype table is `ops.types.ts`'s `RangeElemPg`, spelled once", () => {
