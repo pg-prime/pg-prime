@@ -497,7 +497,7 @@ interface ErrorContext {
   readonly label?: string
   readonly attempt?: number
   readonly durationMs?: number
-  readonly handle?: 'db' | 'tx' | 'session'
+  readonly handle?: HandleKind
   readonly reason?: 'statement_timeout' | 'lock_timeout' | 'cancel'
   readonly queryId?: string
   readonly txId?: string

@@ -72,6 +72,7 @@ interface Executor {
   update<H extends AnyHandle>(t: H): UpdateQuery<H, never, never>
   deleteFrom<H extends AnyHandle>(t: H): DeleteQuery<H, never>
   sql(strings: TemplateStringsArray, ...values: readonly unknown[]): RawQuery
+  // …
 }
 ```
 
@@ -132,6 +133,7 @@ interface Query<S extends Sources, O, N = never> extends SetOps<O, readonly [unk
   withExecMode(mode: StatementMode): Query<S, O, N>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  // …
 }
 ```
 
@@ -181,6 +183,7 @@ interface GroupedQuery<S extends Sources, O, N, G extends string> extends SetOps
   as<A extends string>(name: A): CteHandle<A, O>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  // …
 }
 ```
 
@@ -212,6 +215,7 @@ interface SetQuery<O, B extends readonly unknown[]> extends SetOps<O, B> {
   stream(opts?: StreamOptions): AsyncIterable<O>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  // …
 }
 ```
 
@@ -256,6 +260,7 @@ interface InsertQuery<H extends AnyHandle, O, C extends Sources = {}> extends Ro
   prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  // …
 }
 ```
 
@@ -296,6 +301,7 @@ interface UpdateQuery<H extends AnyHandle, O, V> extends RowSource<O> {
   prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  // …
 }
 ```
 
@@ -311,7 +317,11 @@ compile error here rather than a `PgEncodeError` at execute time, and `V` become
 
 {/* docs: signature */}
 ```ts
-interface DeleteQuery<H extends AnyHandle, O, S extends Sources> extends RowSource<O> {
+interface DeleteQuery<
+  H extends AnyHandle,
+  O,
+  S extends Sources = Record<H[typeof NAME] & string, H>,
+> extends RowSource<O> {
   where(f: (t: ScopeOf<S>) => Expr<boolean>): DeleteQuery<H, O, S>
   allRows(): DeleteQuery<H, O, S>
   using<H2 extends AnyHandle, A extends string>(t: H2, alias: A): DeleteQuery<H, O, S & Record<A, H2>>
@@ -322,6 +332,7 @@ interface DeleteQuery<H extends AnyHandle, O, S extends Sources> extends RowSour
   prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  // …
 }
 ```
 
@@ -367,6 +378,7 @@ interface PreparedQuery<P, O> {
   executeTakeFirst(params: P): Promise<O | undefined>
   stream(params: P, opts?: StreamOptions): AsyncIterable<O>
   explain(params: P, opts?: ExplainOptions): Promise<ExplainResult>
+  // …
 }
 ```
 
@@ -392,6 +404,7 @@ interface RawQuery {
   stream(opts?: StreamOptions): AsyncIterable<RawRow>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
+  // …
 }
 ```
 
@@ -423,6 +436,7 @@ interface CteExecutor<C extends Sources> {
   from<H extends AnyHandle, A extends string>(t: H, alias: A): Query<Record<A, H>, unknown>
   fromCte<K extends keyof C & string, A extends string>(name: K, alias: A): Query<Record<A, C[K]>, unknown>
   fromCte<K extends keyof C & string>(name: K): Query<Record<K, C[K]>, unknown>
+  // …
 }
 ```
 
@@ -456,7 +470,9 @@ The remaining builder types are small:
 
 {/* docs: signature */}
 ```ts
-interface RowSource<O> {}
+interface RowSource<O> {
+  // …
+}
 ```
 
 Anything that yields rows: a `Query`, a `GroupedQuery`, a `SetQuery` — **and** an `InsertQuery`,
@@ -468,7 +484,9 @@ call.
 
 {/* docs: signature */}
 ```ts
-interface SelectSource<O> extends RowSource<O> {}
+interface SelectSource<O> extends RowSource<O> {
+  // …
+}
 ```
 
 A `RowSource` that is a `SELECT`: the only thing a set operation, a lateral join or a `fromSelect`
@@ -504,6 +522,7 @@ interface SqlSnapshot {
   readonly sql: string
   readonly params: readonly (PgParam | PlaceholderRef)[]
   readonly placeholders: readonly string[]
+  // …
 }
 ```
 
@@ -990,7 +1009,7 @@ carry.
 
 {/* docs: signature */}
 ```ts
-type OrderArg = Order | ExprOf<unknown>
+type OrderArg = Order | { readonly [OUT]: unknown }
 ```
 
 What one item of an `orderBy` may be: a bare expression, which sorts ascending, or an `asc`/`desc`

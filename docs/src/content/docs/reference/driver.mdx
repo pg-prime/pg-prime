@@ -138,10 +138,19 @@ Two members that used to fail here no longer do, and both were pg-prime's fault:
 
 {/* docs: signature */}
 ```ts
+// `PgLikeCancelClient` is unexported; its shape is inlined for the checker.
+interface PgLikeCancelClient {
+  cancel(client: PgLikeClient, query?: unknown): void
+  end?(): Promise<void> | void
+  readonly connection?: unknown
+  readonly host?: string
+  readonly port?: number
+}
+
 interface PgDriverConfig {
   pool: PgLikePool
   directPool?: PgLikePool
-  createCancelClient?: () => { cancel(client: PgLikeClient, query?: unknown): void; end?(): Promise<void> | void }
+  createCancelClient?: () => PgLikeCancelClient
   createDedicatedClient?: () => PgLikeDedicatedClient
 }
 ```
@@ -208,10 +217,11 @@ interface PgLikeConnection {
 interface PgLikeClient {
   query(config: PgLikeQueryConfig): Promise<PgLikeResult | PgLikeResult[]>
   query<T extends PgLikeSubmittable>(submittable: T): T
-  on(event: 'notice' | 'notification' | 'error' | 'end', listener: (arg: never) => void): unknown
-  removeListener(event: string, listener: (arg: never) => void): unknown
-  getTransactionStatus?(): 'I' | 'T' | 'E'
+  on(event: 'notice' | 'notification' | 'error' | 'end', listener: (...args: any[]) => void): unknown
+  removeListener(event: string, listener: (...args: any[]) => void): unknown
+  getTransactionStatus?(): 'I' | 'T' | 'E' | null
   readonly processID?: number
+  readonly secretKey?: number
   readonly activeQuery?: unknown
   readonly connection?: PgLikeConnection
   readonly readyForQuery?: boolean

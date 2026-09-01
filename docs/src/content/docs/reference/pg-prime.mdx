@@ -194,6 +194,7 @@ interface Queryable<Sc extends AnySchema> extends Executor {
   outsideTransaction(): Queryable<Sc>
   copyFrom: CopyFromApi
   copyTo: CopyToApi
+  // …
 }
 ```
 
@@ -791,10 +792,14 @@ speed. [COPY](/pg-prime/guides/copy/) is the guide.
 
 {/* docs: signature */}
 ```ts
+// `TableLike` and `CopyRows` are unexported; stand-ins keep the block compiling.
+type TableLike = object
+type CopyRows = AsyncIterable<Record<string, unknown>> | Iterable<Record<string, unknown>>
+
 interface CopyFromApi {
   (
-    table: TableRef,
-    rows: AsyncIterable<Record<string, unknown>> | Iterable<Record<string, unknown>>,
+    table: TableLike,
+    rows: CopyRows,
     opts?: CopyOptions,
   ): Promise<CopyResult>
   raw(

@@ -325,7 +325,7 @@ empty string counts as unset.
 
 {/* docs: signature */}
 ```ts
-const TEST_URL_ENV: string
+const TEST_URL_ENV = 'PG_PRIME_TEST_URL'
 ```
 
 `'PG_PRIME_TEST_URL'`. The one environment variable this package reads, exported so a suite never
@@ -501,7 +501,7 @@ suite dropped my database" is a bug you get to make once.
 
 {/* docs: signature */}
 ```ts
-const SCRATCH_PREFIX: string
+const SCRATCH_PREFIX = 'pgprime_test_'
 ```
 
 `'pgprime_test_'` — the one prefix this module creates, and the only one it will drop. `pgprime_`
