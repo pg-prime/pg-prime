@@ -120,13 +120,13 @@ CI + dispatched nightly, appends the integration record here.
 
 ## 4. Definition of done
 
-- [ ] design/01 §3 rows 49, 50, 51, 54(types), 58, 61, 62 each either built to their acceptance
-      sentence or re-recorded here with the measured reason.
-- [ ] Every new object kind: strict D10 witness fixture; negative control still fails.
-- [ ] Type-level: generated/identity erasure pinned; view read-only typing pinned; budgets ≤ +2 %.
-- [ ] Docs: coverage 100 %, R22 reasons on every new `no-run`, examples tiers green.
-- [ ] Full chain green on the merged tree; CI + nightly green on the pushed record.
-- [ ] This file carries G/W/V RESULTs + the integration record; memory updated.
+- [x] design/01 §3 rows 49, 50, 51, 54(types), 58, 61, 62 each either built to their acceptance
+      sentence or re-recorded here with the measured reason. (All seven built — the G/V/W RESULTs.)
+- [x] Every new object kind: strict D10 witness fixture; negative control still fails. (G's R10 record.)
+- [x] Type-level: generated/identity erasure pinned; view read-only typing pinned; budgets ≤ +2 % (one recorded exception: W's `empty` fixture +3.49 %, a constant 350 instantiations, accounted in its RESULT).
+- [x] Docs: coverage 1 325/1 325, R22 43 explained, both example tiers green — plus the signature-drift gate (400 declarations), built this round.
+- [x] Full chain green on the merged tree (12/12); CI 33463040140 and dispatched nightly 33463039887 green on b895b6d.
+- [x] This file carries G/W/V RESULTs + the integration record; memory updated.
 
 ---
 
