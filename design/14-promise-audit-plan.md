@@ -127,3 +127,205 @@ CI + dispatched nightly, appends the integration record here.
 - [ ] Docs: coverage 100 %, R22 reasons on every new `no-run`, examples tiers green.
 - [ ] Full chain green on the merged tree; CI + nightly green on the pushed record.
 - [ ] This file carries G/W/V RESULTs + the integration record; memory updated.
+
+---
+
+#### G — RESULT (2026-09-01)
+
+Branch `worktree-agent-a8bbf175e51185134`, on `9d3f01d`. design/01 §3 rows **49**, **50**, **51**
+and **54(types)** are built end to end — DSL → `emitSchema` → shadow → diff → `generate` → `pull` —
+plus design/12 K4's `NOCREATEDB` residue item. Ten commits, oldest first; this record is the
+eleventh and last on the branch:
+
+| SHA | what |
+|---|---|
+| `0eed210` | `feat(schema)`: `exclude()`, `.generatedAlwaysAs()`, the five index options, `comment` on `pgEnum`/`pgDomain` |
+| `765e0c6` | `fix(query)`: `insertableKeys` drops a stored generated column; COPY says `42P10` itself |
+| `ba568d2` | `feat(kit)`: the emitter — EXCLUDE, generated columns, index `WITH`/`TABLESPACE`/expressions, `COMMENT ON TYPE` |
+| `15efebd` | `feat(kit)`: `pull` learns all four, plus the `NOCREATEDB` test |
+| `a4d7758` | `test(kit)`: `fixtures/diff/generated` and `fixtures/diff/index-options`, strict D10 |
+| `61b0613` | `feat(kit)`: `.concurrently(false)` reaches the differ |
+| `757b1d7` | `docs(schema)`: reference + guides + regenerated api-snapshot goldens |
+| `b4ee330` | `chore(budgets)`: the three size gates, re-baselined with the account |
+| `71a8623` | `chore(changeset)`: one per touched package, `minor` |
+| `afaaeab` | `design(05)`: the AS BUILT records, in the layered style |
+
+##### What is built
+
+**Row 49 — `exclude()`.** `exclude(name).using(m).where(sql\`…\`).deferrable()/.initiallyDeferred()
+.requires(ext).on([ref | sql, 'op'], …)`. Elements are column references (quoted identifiers) or
+fragments (parenthesised); the operator is checked against PostgreSQL's own operator alphabet at
+declaration time. The emitter writes PostgreSQL's clause order and the shadow load is what proves
+it. **`.requires()` IS built** — decision 2 left it optional, and it turned out to be free in the
+sense the decision meant: `emitSchema` already has `schema.extensions`, so the capability check is
+eight lines and an `error` diagnostic naming the `pgExtension(...)` to add, instead of a `42704`
+about an operator class three steps later.
+
+**Row 51 — `.generatedAlwaysAs(expr, { stored })`.** Fragment or `(cols) => fragment`; the callback
+is resolved by `pgTable` off a names-only pre-pass built ONLY when some column of that table asks
+for one. `ro: true`, so the key is erased from `Insert<>`/`Update<>` with no new type machinery.
+`{ stored: false }` is an `OrmTypeError` in parameter position plus a runtime sentence naming PG 18.
+
+**Row 50 — the rest of the i1–i8 sketch.** Expression keys (bare fragment or item object), `.with()`
+(sorted, text values quoted, merging), `.fillfactor(n)`, `.tablespace(name)`, `.concurrently(false)`.
+
+**Row 54 — `comment` on `pgEnum` / `pgDomain`**, emitted as `COMMENT ON TYPE` for both, which is
+what the catalog-side renderer already said.
+
+**`pull`** learns all four plus `TABLESPACE`, and `test/pull/ddl-closeout.test.ts` asserts the
+residue is EMPTY on a fixture that contains every one of them, with `generate` against the same
+database `up_to_date` under a strict D10 witness. Its second `describe` is design/12 K4's item: the
+same loop as a `WITH LOGIN NOCREATEDB NOSUPERUSER` role, asserting `shadow.tier === 3`, an empty
+diff, and no `pgprime_shadow_%` schema left behind.
+
+##### Divergences from the plan, and why
+
+1. **`exclude(...).on(...)` is terminal.** Decision 2 fixes the spelling at `05`:783's sketch, which
+   chains `.where()` AFTER `.on()`. That requires the builder itself to be the `TableExtra`, and the
+   node's fields are exactly the method names — `using`, `where`, `deferrable`, `initiallyDeferred`
+   — so one object cannot hold both. Renaming the fields (`method`, `predicate`, `deferral`) would
+   work and would make `TableExtra` inconsistent with every other node in the file for the sake of
+   one call order. Terminal `.on()` is what `index` and `unique` already do. Recorded in `05` §2.4.
+2. **`.concurrently(false)` is NOT an IR fact.** Decision 4 says "a *generate*-time fact, carried on
+   the IR like `nullsNotDistinct`". `nullsNotDistinct` is a **catalog** fact — it is inside
+   `pg_get_indexdef` — and `CONCURRENTLY` is not, and can never be: it describes how the index is
+   built. A payload field would read `false` on the DSL side and absent on the catalog side and
+   every such index would diff for ever. It travels as `BuildOptions.noConcurrentIndexes`, filled by
+   the new `nonConcurrentIndexes(schema)` straight off the registry — the same out-of-band route
+   `annotationHints` already uses for `renamedFrom`.
+3. **`copyColumns` REFUSES an explicitly named generated expression column.** The brief says
+   `insertableKeys` "turns F3's server-side 42P10 COPY refusal into a client-side sentence". Doing
+   only the default list would leave `{ columns: ['total'] }` reaching the server, so
+   `TableCodecMeta` gained `generatedKeys` and the explicit path refuses with the SQLSTATE and the
+   column in the message. An **identity** column named explicitly is still honoured — F3's rule,
+   because COPY writes the value you give it and that is what makes a restore possible.
+4. **Two public type changes.** `IndexItem.column` widens to `string | undefined` beside a new
+   `expression` (exactly one is set), and `NullableFn`'s sentence is amended to name both generated
+   spellings. Both are `minor` on a `0.x` package; the second also edits the reference page, which
+   reproduces that type verbatim.
+5. **`.tablespace()` has no live fixture.** A tablespace is a cluster-level object with a filesystem
+   path behind it: no CI leg has one and creating one needs a `docker exec mkdir` plus a superuser.
+   The emitted clause is pinned by exact text in `test/schema-emit/emit.test.ts`, `pull` reads one
+   back out of `pg_get_indexdef` and `parseIndexDef` has a unit path for it — but nothing loads a
+   `TABLESPACE` clause into a shadow, so its round-trip is untested against a server. Said out loud
+   rather than hidden behind a green tick.
+6. **`fixtures/diff/generated` adds one column per table, and there is a finding behind that.**
+   Two `add` deltas on one table are ordered by NAME (`diff/diff.ts` sorts on the encoded id), not
+   by the desired `attnum`, so adding `label` and `total` to one table produces `label, total` where
+   the desired state says `total, label` and the D10 witness classifies the table as `reordered`.
+   It is *repairable* — unlike `evolve`'s, which is `ADD COLUMN` having nowhere else to put a
+   column — so recording it in the fixture's `reordered` list would weaken what that field means.
+   The fixture uses two tables instead, and the differ's sibling-`add` ordering is left as a note
+   for the backlog: it is a change to a shared sort that every plan's statement order reads, and it
+   is not in G's deliverable.
+
+##### The gate chain (verbatim, exit 0)
+
+macOS arm64, Node 24.14.1, PostgreSQL 17.11 in `pgprime-k4` (127.0.0.1:54333),
+`PG_PRIME_SPIKE_CONTAINER=pgprime-k4`, **no PgBouncer**.
+
+| Gate | Result |
+|---|---|
+| lint · format:check · typecheck | green, 4 packages (oxlint: warnings only, all pre-existing) |
+| tier 0 | pg-prime **1 046** in **4.72 s** measured alone (5.13 s inside `pnpm -r`, which runs three packages at once) · create **35** · testing **23** |
+| tier 1 | pg-prime **1 834** · testing **28** |
+| tier 2 | pg-prime **1 896 / 11 skipped** · kit **438 / 6 skipped** · testing **36** · create **42** |
+| build | pg-prime 2 368.9 KB (341 files) · kit 1 780.8 KB (289) · testing 109.0 KB · create 60.9 KB |
+| package:check | 12/12 size gates · api-snapshot no drift · emit-parity · check-dts · treeshake (4/4, module goldens ok) · pack-smoke · create-smoke |
+| bench:types | green; **every** gated per-declaration and per-query check unchanged, headline +0.49 % / +0.44 % |
+| bench:compile | green, unchanged |
+| docs:check | typecheck **580 blocks / 47 pages** · examples **95** on PGlite from 26 pages · coverage **1 243 / 1 243 (100 %)**, 40/40 hazard codes, 233 links, **R22: 36 explained, 0 waived** · build 48 pages |
+| docs:examples:pg | **7** examples from 4 pages in 3.6 s; the 3 `pg-only="pgbouncer"` blocks skip with their reason |
+
+**Every skip in this run is pooler-guarded, by design.** No PgBouncer was assigned to G, so
+pg-prime's 11 tier-2 skips are `07` §5's pooler-profile and §5.1 transaction-pooling cases and the
+kit's skipped file is `test/runner/pooler.test.ts`; the kit's 6 skipped tests are the same count it
+skipped before this round. `docs:examples:pg` is green **without** a bouncer — the three blocks that
+need one skip with the R22 reason — so the integrator's run of it should differ only by those three.
+
+##### Budgets
+
+| Line | Before | Measured | New | Why |
+|---|---|---|---|---|
+| `packages/pg-prime.jsBytes` | 927 744 | **944 322** (85 files) | 945 152 | four DSL surfaces + the prose that says why; tsc keeps comments |
+| `bench/types` `packageDtsBytes` | 553 984 | **568 778** | 569 344 | `schema/extras.d.ts` 9 501 → 17 707, `schema/column.d.ts` 16 250 → 20 637, and four smaller |
+| treeshake `connect-one-select` | 73 728 | **74 084** | 74 752 | +1 101 B min+gz |
+| treeshake `full-crud-tx` | 73 728 | **74 326** | 74 752 | +1 092 B min+gz |
+| treeshake `root-import-all` | 80 896 | **82 415** | 82 944 | +2 275 B min+gz |
+
+The treeshake **module sets did not move** (62 / 62 / 72, every golden ok), and `schema/extras.js` is
+not in either `connect` fixture at all — so `exclude()` and the index builders cost a connecting
+application nothing. What it does pay for is `.generatedAlwaysAs()`, `pgTable`'s guarded pre-pass,
+`generatedKeys`, and error message TEXT, which is the one kind of prose esbuild keeps.
+
+##### R10 mutation spot-checks (each applied, measured, reverted)
+
+| # | Mutation | Measured failure |
+|---|---|---|
+| 1 | `schema/emit.ts` drops the `GENERATED ALWAYS AS (…) STORED` clause | `emit.test.ts` "writes GENERATED ALWAYS AS (…) STORED for both forms" fails. The R1 round-trip stays GREEN — which is the asymmetry that test's docblock claims: it builds B from A's IR, so a clause dropped from A is missing from both sides and `pg_dump` agrees with itself. |
+| 2 | the EXCLUDE clause loses its `WHERE (…)` | `emit.test.ts` "writes both EXCLUDE forms, in PostgreSQL's own clause order" fails |
+| 3 | `diff/ddl.ts` `createIndex` strips ` WITH (…)` from `pg_get_indexdef` | corpus **`index-options`** fails: `residual drift: ["alter index:public.docs_body_idx"]`, 1 delta |
+| 4 | `diff/ddl.ts` `columnClause` drops its `generated === 's'` branch | corpus **`generated`** fails: `residual drift: ["alter column:public.invoices.total","alter column:public.tags.slug"]`, 2 deltas |
+| 5 | `pull/parse.ts` cannot read an `EXCLUDE` | BOTH cases of `test/pull/ddl-closeout.test.ts` fail with a non-empty `x constraint` residue — including the `NOCREATEDB` one |
+| 6 | `nonConcurrentIndexes`' predicate inverted | 3 cases in `test/generate/rewrites.test.ts` fail, including row 1's original |
+| 7 | `.generatedAlwaysAs()` returns `ro: M['ro']` instead of `ro: true` | 4 `expectTypeOf` errors from `tsc -p test/schema/tsconfig.json` — the erasure and both sentinels |
+
+**The negative control still fails.** `fixtures/diff/unmodeled` is a TABLE storage parameter, which
+the extractor deliberately does not model; `test/dump-oracle.test.ts`'s blind-spot case asserts
+`oracle.status === "failed"` and `proof.status === "failed"` and is green. `fixtures/diff/index-options`
+is its mirror image and moves an INDEX's `fillfactor`, which `pg_get_indexdef` does carry.
+
+##### Files
+
+`packages/pg-prime/src/schema/{extras,column,table,objects,index}.ts`, `src/index.ts`,
+`src/query/{meta,scope}.ts`, `src/session/copy.ts`;
+`packages/pg-prime-kit/src/{schema/emit,diff/ddl,generate,index,pull/parse,pull/emit-ts}.ts`;
+`fixtures/diff/{generated,index-options}/`;
+tests — `packages/pg-prime/test/schema/g14-ddl-closeout.test.ts` (new),
+`test/schema/{columns,k4-additions}.test.ts`, `test/query/meta.test.ts`,
+`test/session/copy.test.ts`, `test/pg/session-copy.test.ts`,
+`packages/pg-prime-kit/test/pull/ddl-closeout.test.ts` (new), `test/corpus.test.ts`,
+`test/generate/rewrites.test.ts`, `test/schema-emit/{fixture,emit,roundtrip}.ts`;
+docs — `reference/{schema,kit}.mdx`, `guides/{schema,copy}.mdx`;
+shared — `src/index.ts` exports (both packages), `tools/api-snapshot/{pg-prime,pg-prime-kit}.json`
+and the two `unsupported-typescript.d.ts` stubs, `tools/budgets.json`,
+`bench/types/budget.json`, `.changeset/*`, `design/05-schema-api.md`.
+
+##### What G did NOT do
+
+- **The table-level `withOptions()` / `tablespace()` / `unlogged()` nodes.** `05` §2.4 lists them
+  and they are NOT this row: `fixtures/diff/unmodeled` is a table storage parameter and it is the
+  negative control the D10 oracle exists to demonstrate. Modelling them would delete that fixture's
+  reason to exist, and design/14 §0 requires it to keep failing.
+- **`.collate()`, `.storage()`, `.compression()`, `.oneOf()`, `.deprecated()`, `.notValid()`,
+  `partitions({ manage, unknown })`, `rls.*`, `dropColumn`, `external`, `replicaIdentity`.** Still
+  the `05` §2.3/§2.4 gaps; `pull` still records a column collation and a `NOT VALID` constraint as
+  residue, with the reasons it already had.
+- **VIRTUAL generated columns.** Decision 3, refused at the type level and at runtime.
+- **`pull` of an EXCLUDE element carrying an opclass or a collation**, and of an index key this
+  recogniser cannot split with certainty. Both keep an exact reason string; a recogniser that
+  guesses emits a schema that looks right and migrates the object away.
+- **Sibling `add`-delta ordering** (divergence 6 above) — a change to a shared sort, recorded rather
+  than made.
+- **`docs:examples:pg` with a pooler**, and the nightly PG 15/16/18 matrix. G has neither; the three
+  pgbouncer blocks skip with their reason and the chain is green without them.
+
+##### For the integrator
+
+Shared-file hunks, in the order §3 predicts them:
+
+- `packages/pg-prime/src/index.ts` — one value (`exclude`) and five types
+  (`ExcludeItem`, `ExcludePair`, `GeneratedAlwaysAsOptions`, `IndexExpression`,
+  `StorageParameters`) added to the two sorted lists; `packages/pg-prime/src/schema/index.ts` the
+  same. **Keep both** with V's column factories: different regions of the same sorted lists.
+- `packages/pg-prime-kit/src/index.ts` — one name, `nonConcurrentIndexes`.
+- `tools/api-snapshot/*.json` and the two `unsupported-typescript.d.ts` stubs — regenerate with
+  `pnpm api-snapshot` after merging, never resolve by hand.
+- `tools/budgets.json` — `packages/pg-prime.jsBytes`, the three treeshake lines, and two
+  `_overDesign` paragraphs. The SUM is what ships (design/12's round-A lesson), so re-measure on
+  the merged tree and set each line to `ceil(measured / 1024) * 1024` again.
+- `bench/types/budget.json` — `packageDtsBytes` and its `_packageDtsBytesWhy`. Same rule.
+- `docs/src/content/docs/reference/schema.mdx` is heavily edited by G and untouched by W and V;
+  `reference/kit.mdx` gains one table row. The sidebar is not touched — no new page.
+- `packages/pg-prime/test/pg/session-copy.test.ts` now declares `doubled` in the schema. If a later
+  round reverts `.generatedAlwaysAs()`, that file's `ledger` goes back to four columns.
