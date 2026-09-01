@@ -73,3 +73,7 @@ export {
 export type { PgInterval } from './builtins.js'
 
 export { Registry, createRegistry, defaultRegistry, enumCodec } from './registry.js'
+
+export { definePgType } from './define.js'
+export type { PgTypeDescriptor } from './define.js'
+export { EXTENSION_CODECS, citextCodec, vectorCodec } from './extensions.js'

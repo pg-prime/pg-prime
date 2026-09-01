@@ -114,6 +114,14 @@ export type TypeClass =
   | 'enum'
   | 'composite'
   | 'range'
+  /**
+   * A type whose DECODED value is itself a JS array — pgvector's `vector` is the one v1 ships.
+   *
+   * It exists for `arrayCodec`'s leaf rule, which is the second of the two jobs named above: an
+   * array of one of these nests one level less than `Array.isArray` alone would say. Named for
+   * the family rather than for the mechanism because `halfvec` and `sparsevec` join it unchanged.
+   */
+  | 'vector'
   | 'other'
 
 /**

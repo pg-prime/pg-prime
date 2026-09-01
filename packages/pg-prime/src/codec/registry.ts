@@ -8,6 +8,8 @@
  */
 
 import { ALTERNATE_CODECS, arrayCodec, builtinCodecs, unknownCodec } from './builtins.js'
+import { derivesArrayCodec } from './define.js'
+import { EXTENSION_CODECS } from './extensions.js'
 import { writeArrayLiteral } from './array.js'
 import { PgDecodeError, PgEncodeError } from './types.js'
 import type { AnyCodec, Codec, CodecContext, CodecRegistry, DynamicTypeRequest } from './types.js'
@@ -32,6 +34,17 @@ export class Registry implements CodecRegistry {
     // win a `forOid` lookup. It is not in `builtinCodecs()` because it has no round trip to
     // golden — decode is identity — and `r5-golden` requires one per shipped codec.
     this.#byName.set(unknownCodec.name, unknownCodec as unknown as AnyCodec)
+    /**
+     * The extension types this package ships (`citext`, `vector`), name-only for BOTH of the
+     * reasons above at once: their OID is per-database until `resolveDynamic` reads `pg_type`
+     * (§4.6), so there is no number to key `#byOid` on, and `r5-golden` cannot round-trip a type
+     * the target server may not have installed.
+     *
+     * They are registered here rather than left to the caller so that `t.citext()` and
+     * `t.vector(1536)` resolve through `codecFor`'s ordinary scalar path with no new branch —
+     * which is the whole of design/14 decision 5's "generalize, don't duplicate".
+     */
+    for (const c of EXTENSION_CODECS) this.#byName.set(c.name, c)
   }
 
   get resolved(): boolean {
@@ -301,6 +314,14 @@ export class Registry implements CodecRegistry {
       }
 
       let codec: AnyCodec
+      /**
+       * The OID of `<type>[]`, or `0` for "derive nothing".
+       *
+       * A local rather than `cat.typarray` at the use site because one branch may turn the
+       * derivation off: `definePgType({ …, arrayOf: false })` says the author models the array
+       * form themselves, and the generic `arrayCodec` would claim the name first.
+       */
+      let arrayOid = cat.typarray
       if (req.kind === 'enum') {
         const actual = labels.get(cat.oid) ?? []
         if (req.enumLabels) {
@@ -342,16 +363,45 @@ export class Registry implements CodecRegistry {
           sqlName: sqlNameOf(req),
         }
         codec = cat.typarray ? { ...derived, arrayOid: cat.typarray } : derived
+      } else if (req.kind === 'base') {
+        /**
+         * An EXTENSION type — design/01 §3 row 61, `definePgType()`'s half of the deal.
+         *
+         * The enum branch above takes the *labels* from the catalogue and everything else from
+         * the request; the domain branch takes the *base codec* from the registry. This one takes
+         * the **whole codec** from the registry and only the number from the catalogue, because
+         * that is the only thing about an extension type that is per-database: `encode`, `decode`
+         * and the `::type` spelling were all settled at `definePgType` time.
+         *
+         * Keeping the registered codec's `sqlName` (rather than recomputing it from the request,
+         * as enum and domain do) is deliberate: it makes a golden taken before the registry met
+         * the database byte-identical to one taken after, which is the property
+         * `pendingEnumCodec` in `src/query/meta.ts` documents at length for enums. Qualify the
+         * type by putting `schema` on the DESCRIPTOR, not on the request.
+         */
+        const declared = this.#byName.get(req.name)
+        if (declared === undefined) {
+          throw new Error(
+            `pg-prime: type "${qname(req)}" was requested as an extension type, but no codec is ` +
+              `registered under the name '${req.name}'. Build one with definePgType({ name: ` +
+              `'${req.name}', encode, decode }) and registry.register(it) before resolveDynamic ` +
+              `(design/01 §3 row 61).`,
+          )
+        }
+        if (!derivesArrayCodec(declared)) arrayOid = 0
+        codec = arrayOid
+          ? { ...declared, oid: cat.oid, paramOid: cat.oid, arrayOid }
+          : { ...declared, oid: cat.oid, paramOid: cat.oid }
       } else {
         throw new Error(
-          `pg-prime: dynamic resolution of '${req.kind}' types is not implemented in this spike (enum and domain are).`,
+          `pg-prime: dynamic resolution of '${req.kind}' types is not implemented in this spike (enum, domain and base are).`,
         )
       }
 
       this.register(codec, { override: true })
-      if (cat.typarray) {
+      if (arrayOid) {
         this.register(
-          arrayCodec(codec as unknown as Codec<never, unknown>, cat.typarray, {
+          arrayCodec(codec as unknown as Codec<never, unknown>, arrayOid, {
             delimiter: cat.typdelim,
             name: `${req.name}[]`,
           }) as unknown as AnyCodec,

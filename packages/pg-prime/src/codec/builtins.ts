@@ -1063,8 +1063,13 @@ export function arrayCodec<TIn, TOut, N extends string>(
    * is the document `[1,2]` — wire text `{"[1,2]"}` — whereas the structural `Array.isArray`
    * check `writeArrayLiteral` used to make alone produced `{{1,2}}`, a two-element 1-D array of
    * the numbers 1 and 2. Measured: PostgreSQL round-trips `array['[1,2]'::jsonb]` as `{"[1, 2]"}`.
+   *
+   * `'vector'`-classed elements are leaves for the identical reason and it is the identical bug:
+   * a `vector` decodes to `number[]`, so `vector[]` holding `[[1,2],[3,4]]` is two vectors —
+   * measured on pgvector 0.8.6, `array['[1,2]'::vector,'[3,4]'::vector]` is `{"[1,2]","[3,4]"}`.
    */
-  const elementIsLeaf = element.typeClass === 'json' || element.name === 'unknown'
+  const elementIsLeaf =
+    element.typeClass === 'json' || element.typeClass === 'vector' || element.name === 'unknown'
 
   const fromLiteral = (raw: string, ctx: CodecContext): (TOut | null)[] => {
     const walk = (node: readonly (string | null | readonly unknown[])[]): unknown[] =>
