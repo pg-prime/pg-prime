@@ -17,6 +17,7 @@ import { metaOf, codecFor } from '../../src/query/meta.js'
 import { kit, pgEnum, pgTable } from '../../src/schema/index.js'
 import type { AnyCol } from '../../src/schema/column.js'
 import { NoCodecError } from '../../src/sql/errors.js'
+import { sql } from '../../src/sql/index.js'
 
 const mood = pgEnum('mood', ['happy', 'sad'])
 
@@ -97,6 +98,24 @@ describe('metaOf — the mapping', () => {
     // applies a default only to a column the statement does not name, and dropping it would
     // silently discard a value a row DID supply.
     expect(m.insertableKeys).toEqual(['byDefault', 'plain', 'withDefault'])
+  })
+
+  /**
+   * design/14 G: the second kind the database computes. Before `.generatedAlwaysAs()` existed,
+   * a stored generated column could not be declared at all, so the default COPY list walked
+   * into PostgreSQL's own `42P10` ("Generated columns cannot be used in COPY") — design/13 §5's
+   * F3 record says exactly that. Now the schema knows, and the refusal is a sentence.
+   */
+  it('insertableKeys drops a stored generated column too', () => {
+    const t = pgTable('lines', (c) => ({
+      id: c.bigint().primaryKey().generatedAlways(),
+      price: c.numeric(),
+      quantity: c.integer(),
+      total: c.numeric().generatedAlwaysAs((cols) => sql`${cols.price} * ${cols.quantity}`),
+    }))
+    const m = metaOf(t, new Registry())
+    expect(m.keys).toEqual(['id', 'price', 'quantity', 'total'])
+    expect(m.insertableKeys).toEqual(['price', 'quantity'])
   })
 
   it('insertableKeys is every key when nothing is generated', () => {
@@ -207,6 +226,8 @@ describe('codecFor — failing loudly, at seam time', () => {
       notNull: true,
       default: undefined,
       identity: undefined,
+      generatedAs: undefined,
+      generatedAsFrom: undefined,
       primaryKey: false,
       unique: false,
       uniqueSpec: undefined,

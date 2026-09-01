@@ -26,6 +26,8 @@ import { pgDriver } from '../../src/driver/index.js'
 import { pgPrime } from '../../src/query/run.js'
 import type { Db } from '../../src/query/types.js'
 import { defineSchema, pgTable } from '../../src/schema/index.js'
+import { sql } from '../../src/sql/index.js'
+import { UsageError } from '../../src/errors/index.js'
 import { announce, liveTarget, makePool, requiresConcurrency } from '../live/_harness.js'
 
 const NS = 'pgprime_pg_copy'
@@ -45,12 +47,13 @@ const events = pgTable(
  * The generated-column table (design/13 §5, E's F1 — the fix round's item 2).
  *
  * `id` is `.generatedAlways()`, so it is NOT insertable and must not be in `copyFrom`'s default
- * column list. `doubled` is a stored GENERATED expression column, which the DSL cannot declare at
- * all (`design/05` §2.3's row is not built; the kit's `pull` emits a note instead) — so it is
- * simply absent from the schema here, which is how a project models one today, and the default
- * list therefore cannot name it either. COPY *refuses* a generated expression column by name
- * (`42P10`, measured), so a default list built from the database rather than from the schema would
- * break this table twice over.
+ * column list. `doubled` is a stored GENERATED **expression** column, and design/14 G is where it
+ * joined the schema: F3 had to leave it undeclared because `.generatedAlwaysAs()` did not exist,
+ * which meant the default list could not know about it and COPY's own `42P10` ("Generated columns
+ * cannot be used in COPY") was the only refusal available. Both kinds are out of the default list
+ * now, and only ONE of them may be named explicitly — an identity column may, because COPY writes
+ * the value you give it and that is what makes a restore possible; a generated expression column
+ * may not, ever, and `copyColumns` says so before the statement leaves the process.
  */
 const ledger = pgTable(
   'ledger',
@@ -58,6 +61,7 @@ const ledger = pgTable(
     id: t.bigint().primaryKey().generatedAlways(),
     label: t.text(),
     amount: t.numeric(),
+    doubled: t.numeric().generatedAlwaysAs((c) => sql`${c.amount} * 2`),
     createdAt: t.timestamptz().defaultSql('now()'),
   }),
   undefined,
@@ -223,7 +227,7 @@ describe("copyFrom's default columns are the ones an insert may name (07 §6.6)"
 
       // The server supplied both generated columns, which is the proof neither was in the list:
       // `\N` into `id` is the `23502` this fix exists to remove, and naming `doubled` at all is a
-      // `42P10`. Read with raw SQL, because `doubled` is not in the schema.
+      // `42P10`.
       const rows = await db.sql`
         select id::int as id, label, amount::text as amount, doubled::text as doubled
         from pgprime_pg_copy.ledger order by id
@@ -265,6 +269,37 @@ describe("copyFrom's default columns are the ones an insert may name (07 §6.6)"
         from pgprime_pg_copy.ledger where label = 'defaulted'
       `.execute()
       expect(fresh?.['has_default']).toBe(true)
+    },
+    120_000,
+  )
+
+  /**
+   * design/14 G: the refusal that used to come from the server now comes from the schema.
+   *
+   * The assertion is in two halves on purpose. The first is our sentence; the second runs the
+   * statement `copyColumns` refused, by hand, and shows PostgreSQL saying the same thing —
+   * because a client-side refusal is only an improvement if the claim behind it is true, and
+   * a hand-written oracle is the only way to know that it still is.
+   */
+  requiresConcurrency()(
+    'naming a generated expression column is refused here, and the server agrees',
+    async () => {
+      await clear()
+      await expect(
+        db.copyFrom(ledger, [{ label: 'x', amount: '1.00', doubled: '2.00' } as never], {
+          columns: ['doubled'],
+        }),
+      ).rejects.toThrow(UsageError)
+      await expect(
+        db.copyFrom(ledger, [{ label: 'x', amount: '1.00' } as never], { columns: ['doubled'] }),
+      ).rejects.toThrow(/42P10/)
+
+      // the oracle: the statement we declined to send, sent
+      const raw = await db.sql`copy ${sql.unsafeRaw(NS)}.ledger (doubled) from stdin`
+        .execute()
+        .then(() => null)
+        .catch((e: unknown) => e)
+      expect((raw as { code?: string } | null)?.code).toBe('42P10')
     },
     120_000,
   )

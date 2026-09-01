@@ -79,12 +79,19 @@ export interface CopyColumn {
  * Resolve `{ columns }` against the table, or default to every column the schema declares as
  * **insertable** — which is what `CopyOptions.columns`' doc comment has always promised.
  *
- * That set is `meta.insertableKeys`: declaration order, minus GENERATED ALWAYS. It is READ from
- * the metadata the insert path's types come from rather than recomputed, so the two cannot
- * disagree — the reason the default exists, and the property that was broken. Defaulting to every
- * *declared* column sent `\N` for a `generated always as identity` and PostgreSQL answered `23502`
- * (design/13 §5, E's F1). Naming such a column explicitly still works: COPY, unlike INSERT, writes
- * the value you give it, which is what makes a restore possible.
+ * That set is `meta.insertableKeys`: declaration order, minus every column the database computes
+ * — `generated always as identity` and `generated always as (…) stored`. It is READ from the
+ * metadata the insert path's types come from rather than recomputed, so the two cannot disagree —
+ * the reason the default exists, and the property that was broken. Defaulting to every *declared*
+ * column sent `\N` for a `generated always as identity` and PostgreSQL answered `23502`
+ * (design/13 §5, E's F1).
+ *
+ * Naming an identity column explicitly still works: COPY, unlike INSERT, writes the value you
+ * give it, which is what makes a restore possible. Naming a **generated expression** column does
+ * not, and that refusal is PostgreSQL's rather than ours — `42P10`, *"Generated columns cannot be
+ * used in COPY"* — so it is left to the server and not restated here. What changed with design/14
+ * G is that the DEFAULT list no longer walks into it: `.generatedAlwaysAs()` exists in the DSL
+ * now, so the schema knows, and a table with one is copyable without a `{ columns }` list.
  */
 export function copyColumns(
   meta: TableCodecMeta,
@@ -112,6 +119,22 @@ export function copyColumns(
       throw new UsageError(
         `pg-prime: copyFrom({ columns }) names "${key}", which is not a column of ` +
           `"${meta.table.name}". Known columns: ${meta.keys.join(', ')}.`,
+      )
+    }
+    // The one explicit name COPY can never honour. An identity column is writable — that is
+    // what makes a restore possible and why it is deliberately still allowed here — but a
+    // generated EXPRESSION column is refused by PostgreSQL itself, and the server's own
+    // sentence (`42P10`) arrives after the statement, the connection switch to copy-in mode
+    // and the first chunk. This is the same refusal, one round trip earlier and with the
+    // schema's name for the column in it.
+    // `columns` and `keys` are parallel by construction, so the TS key of a column named by
+    // its DB name is one index away.
+    const tsKey = byKey[key] === undefined ? meta.keys[all.indexOf(hit)] : key
+    if (tsKey !== undefined && meta.generatedKeys.includes(tsKey)) {
+      throw new UsageError(
+        `pg-prime: copyFrom({ columns }) names "${key}", which is GENERATED ALWAYS AS (…) STORED. ` +
+          `PostgreSQL refuses a generated column in COPY (42P10) — the database computes it from ` +
+          `the other columns, so drop it from the list and let it.`,
       )
     }
     out.push({ key, name: hit.name, codec: hit.codec })

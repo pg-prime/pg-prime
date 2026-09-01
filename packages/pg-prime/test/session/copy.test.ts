@@ -14,6 +14,7 @@ import { metaOf } from '../../src/query/meta.js'
 import { copyColumns, copyFromSql, encodeCopyRows } from '../../src/session/copy.js'
 import { UsageError } from '../../src/errors/index.js'
 import { pgTable } from '../../src/schema/index.js'
+import { sql } from '../../src/sql/index.js'
 
 const ledger = pgTable('ledger', (t) => ({
   id: t.bigint().primaryKey().generatedAlways(),
@@ -71,6 +72,34 @@ describe('copyFrom default columns = the insertable set (07 §6.6)', () => {
       id: t.bigint().primaryKey().generatedAlways(),
     }))
     expect(() => copyColumns(metaOf(all, new Registry()), undefined)).toThrow(/no columns to write/)
+  })
+
+  /**
+   * design/14 G. design/13 §5's F3 record says the generated EXPRESSION column was left out of
+   * the schema because the DSL had no `.generatedAlwaysAs()`, so the default list could not
+   * know about it and PostgreSQL's own `42P10` was the only refusal available. It is
+   * declarable now, so the column is out of the default list and the statement never reaches
+   * the server.
+   */
+  it('omits a stored generated column, exactly as it omits GENERATED ALWAYS AS IDENTITY', () => {
+    const lines = pgTable('lines', (t) => ({
+      id: t.bigint().primaryKey().generatedAlways(),
+      price: t.numeric(),
+      quantity: t.integer(),
+      total: t.numeric().generatedAlwaysAs((c) => sql`${c.price} * ${c.quantity}`),
+    }))
+    const m = metaOf(lines, new Registry())
+    expect(copyFromSql(m, copyColumns(m, undefined), 'text')).toBe(
+      'copy "public"."lines" ("price", "quantity") from stdin with (format text)',
+    )
+    // …and naming it explicitly is refused HERE rather than by the server. An identity
+    // column named explicitly is still honoured — COPY writes the value you give it, which
+    // is what makes a restore possible — but a generated expression column can never be
+    // written at all, so the 42P10 is moved one round trip earlier.
+    expect(() => copyColumns(m, ['total'])).toThrow(UsageError)
+    expect(() => copyColumns(m, ['total'])).toThrow(/GENERATED ALWAYS AS \(…\) STORED.*42P10/s)
+    expect(() => copyColumns(m, ['total'])).toThrow(/42P10/)
+    expect(copyColumns(m, ['id', 'price']).map((c) => c.name)).toEqual(['id', 'price'])
   })
 })
 
