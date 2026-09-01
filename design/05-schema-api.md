@@ -732,7 +732,7 @@ TS-only (`$` prefix — never in the IR, per D4):
 > | `.comment('…')` `.renamedFrom('old')` | **built**, as `ColumnDdl.comment` / `ColumnDdl.renamedFrom`. `renamedFrom` is carried, not acted on: it becomes a `RenameHint` in K2b (`11` §1.8). |
 > | `.default(sql\`…\`)` | spelled **`.defaultSql('…')`** (WS0) and unchanged: `.default()`'s parameter is `M['t']`, and widening it to `M['t'] \| Fragment` would put a conditional on the hottest signature in the package. |
 > | `.generatedAlwaysAsIdentity()` / `.generatedByDefaultAsIdentity()` | spelled **`.generatedAlways()` / `.generatedByDefault()`** (WS0). Same DDL. |
-> | `.generatedAlwaysAs(expr)` `.oneOf()` `.collate()` `.storage()` `.compression()` `.deprecated()` | **not built.** None is reachable from `ColumnDdl` yet; each is one field plus one emitter branch. |
+> | ~~`.generatedAlwaysAs(expr)`~~ `.oneOf()` `.collate()` `.storage()` `.compression()` `.deprecated()` | **not built.** None is reachable from `ColumnDdl` yet; each is one field plus one emitter branch. → `.generatedAlwaysAs()` **is built** (design/14 §G, below); the other five are not. |
 >
 > **Not one of these moved `Col<M>`.** Every addition is a `ColumnDdl` field and every new method
 > returns `Col<M>` unchanged — asserted per method by `expectTypeOf` in
@@ -768,6 +768,45 @@ TS-only (`$` prefix — never in the IR, per D4):
 >
 > Cost: zero. `raw` returns `Base<unknown, string>`, introduces no type parameter, and
 > `bench:types` moved not one per-declaration or per-query number.
+
+> **AS BUILT 2026-09-01 (design/14 §G) — `.generatedAlwaysAs()`, design/01 §3 row 51.**
+>
+> `t.numeric().generatedAlwaysAs(expr, { stored? })` emits `GENERATED ALWAYS AS (<expr>) STORED`.
+> `expr` is a fragment, or **§2.3's late-bound callback** `(cols) => sql\`…\`` — a generation
+> expression names its SIBLINGS, and inside `pgTable(name, (t) => ({ … }))` they do not exist as
+> references yet. `pgTable` resolves the callback the moment the DB names are known, against a
+> names-only pre-pass that is built **only** when some column of that table asks for one; the
+> resolved text lands in `ColumnDdl.generatedAs` and `generatedAsFrom` is cleared, so every
+> consumer reads one field. `cols` is typed `Readonly<Record<string, RefLike>>` and not the
+> table's `[REFS]` slot, because the column builder runs before the table's shape is inferred:
+> a key that does not exist is caught when the expression is rendered, not by the compiler.
+>
+> **The type level is `ro: true`,** the same slot `.generatedAlways()` sets, so the key is erased
+> from `Insert<>`/`Update<>` with no new machinery — pinned per shape by `expectTypeOf` in
+> `test/schema/g14-ddl-closeout.test.ts`. `bench:types`: instantiations/column 3.08 → 3.08,
+> /table 37 → 37, every per-query fixture and every schema-size ratio unchanged.
+>
+> Three consequences, and each is a refusal:
+>
+>  - **`.nullable()` goes first.** A stored generated column MAY be nullable, but `ro: true`
+>    closes `.nullable()` afterwards. `NullableFn`'s sentence is amended to name both spellings
+>    (`~~'.nullable() after .generatedAlways(): a generated column is always NOT NULL'~~` →
+>    `'.nullable() after .generatedAlways()/.generatedAlwaysAs(): an identity column is never
+>    null, and a generated expression column takes .nullable() BEFORE it'`).
+>  - **STORED only.** `{ stored: false }` is `OrmTypeError` in *parameter* position — design/04
+>    §4.1's sentinel, moved to the argument because that is what is wrong — plus a runtime
+>    sentence naming PG 18. §2.3's gate said "PG 18"; the real reason is that `attgenerated`
+>    cannot be altered in place in EITHER direction, so `diff/ddl.ts` refuses every generated
+>    transition and a VIRTUAL column would be declarable only for a table the same plan creates.
+>  - **The expression must be IMMUTABLE**, which is PostgreSQL's rule: `price * quantity` is,
+>    `lower(during)::date` is not (it reads the session's `TimeZone`) — measured on 17.11 while
+>    writing the emitter fixture.
+>
+> **Runtime, not just DDL.** `metaOf().insertableKeys` drops it, so `copyFrom`'s default column
+> list does too — which closes design/13 §5 F3's open edge, where the column could not be
+> declared and COPY's own `42P10` was the only refusal available. A new `generatedKeys` tells the
+> two kinds apart, because only ONE of them may be named explicitly: COPY writes an identity
+> value you give it, and can never write a generated expression.
 
 ### 2.4 Table-level nodes (the extras array)
 
@@ -831,9 +870,12 @@ TS-only (`$` prefix — never in the IR, per D4):
 > | `foreignKey` | **built**: `foreignKey({ name?, columns: [...refs], references: () => [...refs], onDelete?, onUpdate?, deferrable?, initiallyDeferred? })`. `references` is a thunk for the same reason `.references()` is one; it is also the **self-FK** and **composite-FK** spelling. Named `foreignColumns` in the design sketch — renamed to `references` to match the column method, and because the thunk is the load-bearing part. |
 > | `renamedFrom` | **built**: `renamedFrom('organisations')`. |
 >
-> **Not built:** `exclude`, `partitionBy`, `partitions`, `unlogged`, `withOptions`, `tablespace`,
-> `replicaIdentity`, `rls.*`, `dropColumn`, `external`. `EXCLUDE`, partitions and `comment`-as-a-fact
-> are K3's; the rest have no IR to land in yet.
+> **Not built:** ~~`exclude`~~, ~~`partitionBy`~~, `partitions`, `unlogged`, `withOptions`,
+> `tablespace`, `replicaIdentity`, `rls.*`, `dropColumn`, `external`. `EXCLUDE`, partitions and
+> `comment`-as-a-fact are K3's; the rest have no IR to land in yet. → `partitionBy` landed in
+> design/12 K4 and `exclude` in design/14 §G (both below); the table-level `tablespace()` and
+> `withOptions()` are still not built — the INDEX-level `.tablespace()` / `.with()` of design/14
+> §G are a different node.
 
 > **AS BUILT 2026-08-29 (design/12 K4).** Six more, every one of them a Tier-M fact the differ
 > already models — which is the bar: a fact the differ can DROP is a fact the DSL has to be able
@@ -841,7 +883,7 @@ TS-only (`$` prefix — never in the IR, per D4):
 >
 > | node | spelling as built |
 > |---|---|
-> | `index` / `uniqueIndex` | **the options are built**: `index('i', { using, where, include, nullsNotDistinct })`, and the same four as chained methods (`.using('gin')`, `.where(sql\`…\`)`, `.include(t.b, t.c)`, `.nullsNotDistinct()`). Per-column `desc` / `nulls` / `opclass` are **item objects** — `index('i').on(t.a, { column: t.b, desc: true, nulls: 'last', opclass: 'text_pattern_ops' })`. The plain-column form is unchanged and fills the options in with "not stated", so the emitted `CREATE INDEX` is byte-identical to what it was before they existed. Still not built: `.with({ … })`, `.concurrently(false)`, `.tablespace()`, and **expression** indexes — `pull` records an expression index as unsupported rather than approximating it. |
+> | `index` / `uniqueIndex` | **the options are built**: `index('i', { using, where, include, nullsNotDistinct })`, and the same four as chained methods (`.using('gin')`, `.where(sql\`…\`)`, `.include(t.b, t.c)`, `.nullsNotDistinct()`). Per-column `desc` / `nulls` / `opclass` are **item objects** — `index('i').on(t.a, { column: t.b, desc: true, nulls: 'last', opclass: 'text_pattern_ops' })`. The plain-column form is unchanged and fills the options in with "not stated", so the emitted `CREATE INDEX` is byte-identical to what it was before they existed. ~~Still not built: `.with({ … })`, `.concurrently(false)`, `.tablespace()`, and **expression** indexes — `pull` records an expression index as unsupported rather than approximating it.~~ → all four built in design/14 §G, below. |
 > | `primaryKey` | **the `{ name, columns }` object form is built.** §2.4 always listed it; K2a's "the emitter always names it `<table>_pkey`" turned out to be exactly what stops an adopted database round-tripping — AdventureWorks names all 68 of its primary keys `PK_Something`, and without a name the first generated migration renames every one of them. |
 > | `clusterOn('idx')` | **built**, beyond §2.4's list. `pg_index.indisclustered` became a Tier-M fact in design/11 K2b (the D10 witness found it missing on all 68 AdventureWorks tables); a fact that is diffed and cannot be declared is a fact that gets dropped. |
 > | `partitionBy(strategy, key)` / `partitionOf(parent, bound, { schema? })` | **built.** The parent gets `PARTITION BY RANGE (…)`; the child is emitted as a standalone `CREATE TABLE` followed by `ALTER TABLE parent ATTACH PARTITION child …`, which is `pg_dump`'s own form and the only one that round-trips on PostgreSQL 18 — `CREATE TABLE … PARTITION OF` clones the parent's constraints *including their names*, and PG 18 catalogues NOT NULL as a named `pg_constraint` row. The key travels as **text**, because `pg_get_partkeydef` is an expression (`RANGE (date_trunc('month', at))` is legal) and a column-list-only spelling would round-trip some partitioned tables and silently mangle the rest. `partitions({ manage, unknown })` is still not built. |
@@ -852,6 +894,40 @@ TS-only (`$` prefix — never in the IR, per D4):
 > methods on it would be paid for by every schema in every program, for a feature that appears in
 > a handful of index declarations. The item object costs nothing at the type level and says the
 > same thing. `bench:types`: not one per-declaration or per-query number moved.
+
+> **AS BUILT 2026-09-01 (design/14 §G) — `exclude`, and the rest of the i1–i8 sketch.**
+>
+> | node | spelling as built |
+> |---|---|
+> | `exclude` | **built**, design/01 §3 row 49: `exclude(name).using(m).where(sql\`…\`).deferrable()/.initiallyDeferred().requires(ext).on([ref \| sql, 'op'], …)`. The name is MANDATORY, for the reason `check`'s is — PostgreSQL's own default is `<table>_<first column>_excl`, which collides on the second one, and an adopted database's constraint names are data `pull` has to reproduce. An element is a column reference (rendered as a quoted identifier) or a fragment (parenthesised); the operator is checked against PostgreSQL's own operator alphabet at declaration time, so `OPERATOR(schema.&&)` is refused rather than emitted without the resolution rules that make it mean anything. |
+> | `index` / `uniqueIndex` | **the remaining four options are built**: an **expression** key (`index('i').on(sql\`lower(${'x'})\`)`, or `{ expression, desc?, nulls?, opclass? }`), `.with({ … })` (rendered sorted by key, text values quoted, merging across calls), `.fillfactor(n)` as sugar for it, `.tablespace(name)`, and `.concurrently(false)`. `IndexItem.column` widens to `string \| undefined` beside a new `expression`; `TableExtra`'s `columns` stays the COLUMN keys only, because an expression has no name and inventing one would make that list lie. |
+>
+> **`.on(...)` is terminal on `exclude`, and that diverges from §2.4's sketch**, which writes
+> `.on(...)` in the middle and `.where(...)` after it. Making that order work needs the builder
+> itself to BE the `TableExtra`, and the node's fields are exactly the method names (`using`,
+> `where`, `deferrable`, `initiallyDeferred`) — one object cannot hold both. Terminal `.on()` is
+> what `index` and `unique` already do, so the divergence buys consistency rather than costing it.
+>
+> **`.requires(ext)` is built**, which design/14 decision 2 left optional. It is checked in the
+> EMITTER against the registry's own `pgExtension(...)` declarations — the only thing that decides
+> whether `CREATE EXTENSION` runs before the table — and an unsatisfiable claim is an `error`
+> diagnostic naming the declaration to add, instead of a `42704` about an operator class three
+> steps later on the shadow. Nothing else is checked: the version, and whether the DBA installed
+> it on the cluster, are §3.10's business and not the schema's.
+>
+> **`.concurrently(false)` is NOT a catalog fact and cannot become one.** `CONCURRENTLY` is a
+> property of how an index is BUILT; `pg_get_indexdef` has nothing to say about it, so an
+> `IndexPayload` field would read `false` on the DSL side and absent on the catalog side and every
+> such index would diff for ever. It travels as `BuildOptions.noConcurrentIndexes`, filled by
+> `generate` straight off the registry — the same route `renamedFrom` takes to the rename hints.
+>
+> **`.tablespace(name)` emits and diffs, and no fixture creates a tablespace.** A tablespace is a
+> cluster-level object with a filesystem path behind it, so a schema that names one only loads
+> where that name already exists; the emitted clause is pinned by exact text in
+> `test/schema-emit/emit.test.ts` and `pull` reads one back out of `pg_get_indexdef`, but no
+> shadow-loading fixture declares one and no CI leg has one to declare.
+>
+> `bench:types`: not one per-declaration or per-query number moved.
 
 ---
 
@@ -913,7 +989,19 @@ memberRole.values;                                 // readonly ['owner','admin',
 
 > **AS BUILT 2026-08-29 (design/12 F2).** `renamedValues` is built with the spelling above —
 > `{ [newLabel]: oldLabel }` — and the keys are checked against the declared labels at declaration
-> time. `comment` on `pgEnum` is still not built. See §5.1's AS BUILT note for the emitter half.
+> time. ~~`comment` on `pgEnum` is still not built.~~ See §5.1's AS BUILT note for the emitter half.
+>
+> > **AS BUILT 2026-09-01 (design/14 §G) — design/01 §3 row 54's third target.** `comment` is built
+> > on **`pgEnum` and `pgDomain`**, as a plain option, and emits `COMMENT ON TYPE` for both:
+> > PostgreSQL resolves a domain name through the same `pg_type` lookup, and `diff/ddl.ts`'s
+> > `commentTarget` already said `TYPE` for both, so the DSL renderer and the catalog renderer can
+> > be compared statement for statement. The extractor has carried a type's `pg_description` row as
+> > a `comment` fact since design/11 K3, so nothing on the diff side moved — the gap was that the
+> > DSL could not put one there, which made a commented enum in an adopted database a
+> > `COMMENT ON TYPE … IS NULL` in the first generated migration. An enum discovered through a
+> > COLUMN is MERGED with its standalone declaration rather than replaced by it: `ColumnDdl` carries
+> > only the name, labels and schema of the enum a column uses, so which of the two the emitter saw
+> > first must not decide whether the comment is emitted.
 
 **Ordering matters and we honour it.** Adding a label in the middle emits `ALTER TYPE … ADD VALUE 'x' BEFORE 'y'`. Removing or reordering labels is impossible in PG; the generator emits the full rename → create → `ALTER COLUMN … USING` → drop dance, flags it `DS` (destructive) + `MF` (table rewrite), and requires a tombstone. `ADD VALUE` and a same-migration `UPDATE … SET col='new'` are automatically split into two migration files, because PG forbids using a new label in the transaction that added it.
 
