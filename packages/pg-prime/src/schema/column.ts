@@ -723,6 +723,71 @@ export function numeric(name?: string): Base<string, 'numeric'> {
 export function jsonb(name?: string): Base<unknown, 'jsonb'> {
   return make<unknown, 'jsonb'>('jsonb', name)
 }
+
+// ── extension types (design/01 §3 rows 44-`citext`, 61, 62) ──────────────────
+//
+// The two below are the reference users of `definePgType()`. They differ from every factory above
+// in exactly one way, and it is invisible from here: their codec has no OID until
+// `registry.resolveDynamic(conn, [{ name: 'citext' | 'vector', kind: 'base' }])` reads this
+// database's `pg_type`, because `CREATE EXTENSION` allocates the number per database (02 §4.6).
+// The DDL still needs the extension to exist — declare it with `pgExtension('citext')` /
+// `pgExtension('vector')` so `generate` emits the `CREATE EXTENSION` before the table.
+
+/**
+ * `citext` — case-insensitive text, from the `citext` extension.
+ *
+ * Reads as `string`, and the string is verbatim: the case-insensitivity lives in the type's
+ * comparison operators, not in its storage. Every text operator (`like`, `ilike`, `startsWith`,
+ * `regex`, …) already gates on it — `citext` has been in `TextPg` and in the join-comparability
+ * families since WS3, waiting for a column that could be declared with it.
+ */
+export function citext(name?: string): Base<string, 'citext'> {
+  return make<string, 'citext'>('citext', name)
+}
+
+/**
+ * pgvector's own ceiling on the `vector` type's dimension.
+ *
+ * Exported because it is the number an application validating user input needs, and because the
+ * refusal below quotes it: a `vector(20000)` column is a `CREATE TABLE` that fails at migrate
+ * time with `54000`, which is a long way from the line that declared it.
+ */
+export const VECTOR_MAX_DIMENSIONS = 16_000
+
+/**
+ * `vector(n)` — pgvector's dense float32 vector, read and written as `number[]`.
+ *
+ * The dimension is DDL, exactly as `varchar(n)`'s length is: pgvector has ONE `vector` type and
+ * `n` travels in the typmod, so it changes no codec and no decoded value — it makes the server
+ * refuse a vector of the wrong length, which is the whole reason to declare it. Omit it for an
+ * unconstrained `vector` column (legal, but not indexable by HNSW or IVFFlat).
+ *
+ * Index it with the spellings that already exist: `index('idx').using('hnsw').on({ column:
+ * embedding, opclass: 'vector_cosine_ops' })`. Order by distance with `l2` / `cosine` /
+ * `innerProduct` / `l1` (`03` §2.9's vector class).
+ */
+export function vector(dimensions?: number, name?: string): Base<number[], 'vector'> {
+  if (dimensions !== undefined) {
+    if (!Number.isInteger(dimensions) || dimensions < 1) {
+      throw new SchemaError(
+        `pg-prime: t.vector(${String(dimensions)}) — the dimension must be a positive integer, ` +
+          `or omitted for an unconstrained vector column.`,
+      )
+    }
+    if (dimensions > VECTOR_MAX_DIMENSIONS) {
+      throw new SchemaError(
+        `pg-prime: t.vector(${dimensions}) exceeds pgvector's limit of ${VECTOR_MAX_DIMENSIONS} ` +
+          `dimensions for the \`vector\` type (halfvec and sparsevec go further; neither is ` +
+          `modelled in v1 — declare one with t.raw('halfvec(4000)')).`,
+      )
+    }
+  }
+  // The runtime `pgType` carries the typmod (the kit emits that string verbatim); the TYPE-LEVEL
+  // `pg` slot is the bare `'vector'`, which is what `03` §2.9's operator gate and the codec
+  // registry both key on. `codecFor` strips a trailing `(…)` for exactly this reason.
+  const ddl = dimensions === undefined ? 'vector' : `vector(${dimensions})`
+  return new ColumnBuilder(baseDdl(ddl, name), EMPTY_TS) as unknown as Base<number[], 'vector'>
+}
 /**
  * A column of any PostgreSQL type, named as text — `t.raw('varchar(50)')`, `t.raw('xml')`,
  * `t.raw('public."Name"')`.
@@ -777,6 +842,10 @@ export interface ColumnKit {
   date: typeof date
   numeric: typeof numeric
   jsonb: typeof jsonb
+  /** `citext`, from the extension of the same name (design/01 §3 row 44). */
+  citext: typeof citext
+  /** `vector(n)`, from pgvector (design/01 §3 row 62). */
+  vector: typeof vector
   enum: typeof enumColumn
   /** Any PostgreSQL type, by name (design/05 §5.3's escape hatch, at column grain). */
   raw: typeof raw
@@ -794,6 +863,8 @@ export const kit: ColumnKit = {
   date,
   numeric,
   jsonb,
+  citext,
+  vector,
   enum: enumColumn,
   raw,
 }

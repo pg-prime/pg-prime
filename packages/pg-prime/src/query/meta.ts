@@ -196,16 +196,17 @@ export function codecFor(
   }
 
   const base = ddl.pgType.replace(/(\[\])+$/, '')
-  const element = registry.byName(base)
+  const element = registry.byName(base) ?? registry.byName(withoutTypeModifier(base))
   if (element === undefined) {
     throw new NoCodecError(
       table,
       column,
       ddl.pgType,
-      `Register one with \`registry.register(codec)\`, or declare the column with a built-in ` +
-        `builder. Names the registry knows are the PostgreSQL type names ('int8', 'timestamptz', ` +
-        `'jsonb', …) plus the named alternates ('int8:number', 'numeric:number', ` +
-        `'timestamptz:string').`,
+      `Register one with \`registry.register(codec)\` — see \`definePgType()\` for an extension ` +
+        `type — or declare the column with a built-in builder. Names the registry knows are the ` +
+        `PostgreSQL type names ('int8', 'timestamptz', 'jsonb', …), the named alternates ` +
+        `('int8:number', 'numeric:number', 'timestamptz:string') and the shipped extension types ` +
+        `('citext', 'vector').`,
     )
   }
   return ddl.arrayDim > 0 ? arrayCodecOf(element, registry) : element
@@ -213,6 +214,23 @@ export function codecFor(
 
 function arrayName(name: string, dim: number): string {
   return dim > 0 ? `${name}[]` : name
+}
+
+/**
+ * `'vector(1536)'` → `'vector'`, `'varchar(50)'` → `'varchar'`.
+ *
+ * A **typmod is not a type**. PostgreSQL has one `varchar` (OID 1043) and the length rides in
+ * `atttypmod`; pgvector has one `vector` and the dimension rides there too. So a column declared
+ * `vector(1536)` decodes through the `vector` codec, and the parenthesised part is DDL — which is
+ * why it stays on `ddl.pgType` verbatim (the kit emits that string) and is stripped only here.
+ *
+ * Tried second, never first: a type whose real name contains parentheses would otherwise lose to
+ * a same-prefixed one, and `t.raw('numeric(10,2)')` must reach `numeric` and not `numeric(10`.
+ * This is also what makes design/05 §5.3's escape hatch queryable — `t.raw('varchar(50)')` used
+ * to declare a column `metaOf` then refused to build a codec for.
+ */
+function withoutTypeModifier(pgType: string): string {
+  return pgType.replace(/\s*\([^()]*\)$/, '')
 }
 
 /**

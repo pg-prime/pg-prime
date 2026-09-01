@@ -36,8 +36,10 @@ export { fragmentDdlText } from './ddl.js'
 export type { CheckSpec, FkAction, ForeignKeyOptions, RefLike, RefSpec, UniqueSpec } from './ddl.js'
 
 export {
+  VECTOR_MAX_DIMENSIONS,
   bigint,
   boolean,
+  citext,
   date,
   enumColumn,
   integer,
@@ -51,6 +53,7 @@ export {
   timestamptz,
   uuid,
   varchar,
+  vector,
 } from './column.js'
 export type {
   AnyCol,
