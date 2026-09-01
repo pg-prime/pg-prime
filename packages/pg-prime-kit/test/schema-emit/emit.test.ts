@@ -8,7 +8,19 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { pgEnum, pgExtension, pgSchema, pgTable, sql, defineSchema, foreignKey, primaryKey } from "pg-prime";
+import {
+  pgDomain,
+  pgEnum,
+  pgExtension,
+  pgSchema,
+  pgTable,
+  sql,
+  defineSchema,
+  exclude,
+  foreignKey,
+  index,
+  primaryKey,
+} from "pg-prime";
 import { emitSchema } from "../../src/schema/emit.js";
 import { schema as corpus } from "./fixture.js";
 
@@ -171,6 +183,16 @@ describe("dependency order", () => {
     expect(index("tickets_org_label_key")).toBe(
       'CREATE UNIQUE INDEX "tickets_org_label_key" ON "public"."tickets" ("org_id", "label") NULLS NOT DISTINCT',
     );
+    // design/14 G — the four that were not built: an expression key, `WITH (…)`, and the
+    // `.fillfactor()` sugar. `WITH` sits after the key list and before `WHERE`, which is
+    // PostgreSQL's grammar and not a preference.
+    expect(index("bookings_room_label_lower_idx")).toBe(
+      'CREATE INDEX "bookings_room_label_lower_idx" ON "public"."bookings" ((lower("room_label"))) ' +
+        'WITH ("fillfactor" = 70)',
+    );
+    expect(index("bookings_open_ended_idx")).toBe(
+      'CREATE INDEX "bookings_open_ended_idx" ON "public"."bookings" ("open_ended" DESC) WITH ("fillfactor" = 90)',
+    );
     // …and the three table nodes an adopted database needs.
     expect(out).toContain('ALTER TABLE "public"."tickets" CLUSTER ON "PK_Tickets"');
     expect(out.find((s) => s.startsWith('CREATE TABLE "public"."readings" '))).toContain("PARTITION BY RANGE (at)");
@@ -221,6 +243,114 @@ describe("dependency order", () => {
     const out = emitSchema(corpus).sql;
     const at = (needle: string): number => out.findIndex((s) => s.includes(needle));
     expect(at('CREATE TABLE "public"."orgs"')).toBeLessThan(at('CREATE TABLE "audit"."events"'));
+  });
+});
+
+/**
+ * design/14 G — design/01 rows 49, 51 and 54, as exact text.
+ *
+ * The round-trip proves these are *accepted* by PostgreSQL and survive extract → re-emit;
+ * what it cannot see is a clause the emitter silently drops on BOTH sides. That is what the
+ * exact strings below are for, and it is the same argument the index-options block above
+ * makes.
+ */
+describe("EXCLUDE, generated columns and type comments", () => {
+  const bookings = (): string =>
+    emitSchema(corpus).sql.find((line) => line.startsWith('CREATE TABLE "public"."bookings"')) ?? "<no bookings>";
+
+  it("writes both EXCLUDE forms, in PostgreSQL's own clause order", () => {
+    expect(bookings()).toContain(
+      'CONSTRAINT "bookings_no_overlap" EXCLUDE USING "gist" ("during" WITH &&) WHERE (NOT "cancelled")',
+    );
+    expect(bookings()).toContain(
+      'CONSTRAINT "bookings_deferred_span" EXCLUDE USING "gist" ("during" WITH &&) DEFERRABLE INITIALLY DEFERRED',
+    );
+  });
+
+  it("writes GENERATED ALWAYS AS (…) STORED for both the fragment and the callback form", () => {
+    // the `(cols) => fragment` form, resolved by `pgTable` once the DB names exist
+    expect(bookings()).toContain(`"room_label" text GENERATED ALWAYS AS ('room-' || "room") STORED NOT NULL`);
+    // the plain-fragment form — and a generated column MAY be nullable
+    expect(bookings()).toContain('"open_ended" bool GENERATED ALWAYS AS (upper_inf(during)) STORED');
+    expect(bookings()).not.toContain('"open_ended" bool GENERATED ALWAYS AS (upper_inf(during)) STORED NOT NULL');
+  });
+
+  it("comments an enum and a domain with COMMENT ON TYPE, sorted before the tables'", () => {
+    const out = emitSchema(corpus).sql;
+    expect(out).toContain(`COMMENT ON TYPE "public"."member_role" IS 'Who a member is to their org.'`);
+    // `COMMENT ON TYPE` for a domain too, because that is what the CATALOG-side renderer
+    // says (`diff/ddl.ts` `commentTarget`) and the two must be comparable statement for
+    // statement. PostgreSQL resolves a domain through the same `pg_type` lookup.
+    expect(out).toContain(`COMMENT ON TYPE "public"."money_amount" IS 'Money, to the cent, never negative.'`);
+    const first = (p: string): number => out.findIndex((x) => x.startsWith(p));
+    expect(first("COMMENT ON TYPE")).toBeLessThan(first("COMMENT ON TABLE"));
+  });
+
+  it("refuses an exclusion whose .requires() names an extension the registry does not declare", () => {
+    const rooms = (extensions: ReturnType<typeof pgExtension>[]) => {
+      const t = pgTable(
+        "rooms",
+        (c) => ({ id: c.integer().primaryKey(), span: c.raw("tstzrange", "span") }),
+        (c) => [exclude("rooms_excl").using("gist").requires("btree_gist").on([c.id, "="], [c.span, "&&"])],
+      );
+      return emitSchema({ ...defineSchema({ t }), extensions });
+    };
+    const missing = rooms([]);
+    const note = missing.diagnostics.find((d) => d.code === "missing_required_extension");
+    expect(note?.severity).toBe("error");
+    expect(note?.message).toContain('pgExtension("btree_gist")');
+    // …and with the declaration present the constraint is emitted, after the CREATE EXTENSION.
+    const declared = rooms([pgExtension("btree_gist")]);
+    expect(declared.diagnostics).toEqual([]);
+    expect(declared.sql[0]).toBe('CREATE EXTENSION IF NOT EXISTS "btree_gist"');
+    expect(declared.sql.join("\n")).toContain(
+      'CONSTRAINT "rooms_excl" EXCLUDE USING "gist" ("id" WITH =, "span" WITH &&)',
+    );
+  });
+
+  it("sorts storage parameters and quotes a text value", () => {
+    const t = pgTable(
+      "t",
+      (c) => ({ id: c.integer().primaryKey(), tag: c.text() }),
+      (c) => [index("t_tag_idx").with({ fillfactor: 70, buffering: "auto", deduplicate_items: false }).on(c.tag)],
+    );
+    expect(emitSchema(defineSchema({ t })).sql.find((x) => x.includes("t_tag_idx"))).toBe(
+      'CREATE INDEX "t_tag_idx" ON "public"."t" ("tag") ' +
+        `WITH ("buffering" = 'auto', "deduplicate_items" = false, "fillfactor" = 70)`,
+    );
+  });
+
+  it("writes TABLESPACE after WITH and before WHERE", () => {
+    const t = pgTable(
+      "t",
+      (c) => ({ id: c.integer().primaryKey(), tag: c.text().nullable() }),
+      (c) => [
+        index("t_tag_idx")
+          .fillfactor(70)
+          .tablespace("fast_ssd")
+          .where(sql`${c.tag} IS NOT NULL`)
+          .on(c.tag),
+      ],
+    );
+    expect(emitSchema(defineSchema({ t })).sql.find((x) => x.includes("t_tag_idx"))).toBe(
+      'CREATE INDEX "t_tag_idx" ON "public"."t" ("tag") WITH ("fillfactor" = 70) ' +
+        'TABLESPACE "fast_ssd" WHERE ("tag" IS NOT NULL)',
+    );
+  });
+
+  it("comments a domain declared with no other option", () => {
+    const d = pgDomain("email", "text", { comment: "lower-cased address" });
+    const t = pgTable("t", (c) => ({ id: c.integer().primaryKey() }));
+    const out = emitSchema({ ...defineSchema({ t }), domains: [d] }).sql;
+    expect(out).toContain(`COMMENT ON TYPE "public"."email" IS 'lower-cased address'`);
+  });
+
+  it("comments an enum that only a column names, when the declaration is exported too", () => {
+    const kind = pgEnum("kind", ["a", "b"], { comment: "two kinds" });
+    const t = pgTable("t", (c) => ({ id: c.integer().primaryKey(), k: c.enum(kind) }));
+    const out = emitSchema({ ...defineSchema({ t }), enums: [kind] }).sql;
+    expect(out).toContain(`CREATE TYPE "public"."kind" AS ENUM ('a', 'b')`);
+    expect(out).toContain(`COMMENT ON TYPE "public"."kind" IS 'two kinds'`);
   });
 });
 

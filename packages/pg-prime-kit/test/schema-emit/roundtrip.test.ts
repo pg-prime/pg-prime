@@ -122,6 +122,11 @@ describe("emit → load → extract → re-emit → load (R1)", () => {
       [
         "audit.events_org_id_fkey",
         "audit.events_pkey",
+        // design/14 G: two EXCLUDE constraints, both named — PostgreSQL's own default is
+        // `<table>_<first column>_excl`, which collides on the second one.
+        "public.bookings_deferred_span",
+        "public.bookings_no_overlap",
+        "public.bookings_pkey",
         "public.memberships_org_id_fkey",
         "public.memberships_pkey",
         "public.memberships_seat_key",

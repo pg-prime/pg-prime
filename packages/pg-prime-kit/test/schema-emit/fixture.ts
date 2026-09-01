@@ -18,6 +18,7 @@ import {
   clusterOn,
   comment,
   defineSchema,
+  exclude,
   foreignKey,
   index,
   partitionBy,
@@ -36,7 +37,10 @@ import {
   type RefLike,
 } from "pg-prime";
 
-export const memberRole = pgEnum("member_role", ["owner", "admin", "member"]);
+/** design/14 G: `comment` on a TYPE is design/01 row 54's third target. */
+export const memberRole = pgEnum("member_role", ["owner", "admin", "member"], {
+  comment: "Who a member is to their org.",
+});
 
 export const audit = pgSchema("audit");
 export const eventKind = audit.enum("event_kind", ["created", "updated", "deleted"]);
@@ -173,6 +177,7 @@ export const events = audit.table(
 export const moneyAmount = pgDomain("money_amount", "numeric(12,2)", {
   default: "0",
   checks: [{ name: "money_amount_non_negative", expression: "VALUE >= (0)::numeric" }],
+  comment: "Money, to the cent, never negative.",
 });
 
 /** A standalone sequence OWNED BY a column — what a `serial` decomposes into (§3.5). */
@@ -228,6 +233,57 @@ export const tickets = pgTable(
   ],
 );
 
+/* -------------------------------------------------------------------------- */
+/* design/14 G's additions — design/01 rows 49, 50 and 51, in one table         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `EXCLUDE`, a stored generated column, and the index options that were not built.
+ *
+ * `tstzrange` + `&&` is chosen for the same reason `fixtures/diff/exclude` chooses it: GiST
+ * indexes a range type with no extension at all, so the fixture proves the EXCLUDE path
+ * rather than the extension path — and `pgExtension` is deliberately absent from this file
+ * (see the note above `tickets`).
+ *
+ * Nothing here names a schema-qualified object. That is load-bearing: a generation
+ * expression, an exclusion predicate and an index expression are all OPAQUE TEXT that the
+ * emitter does not rewrite (design/11 K2b's rule for `defaultSql`), so a qualifier in one
+ * would break `roundtrip.test.ts`'s tier-3 fingerprint assertion.
+ */
+export const bookings = pgTable(
+  "bookings",
+  (t) => ({
+    id: t.bigint().generatedAlways(),
+    room: t.integer(),
+    during: t.raw("tstzrange", "during"),
+    cancelled: t.boolean().default(false),
+    // The late-bound `(cols) => fragment` form (design/05 §2.3): `room` does not exist as a
+    // reference yet at the point this line runs, which is the whole reason it takes a callback.
+    roomLabel: t.text().generatedAlwaysAs((c) => sql`'room-' || ${c.room}`),
+    // …and the plain-fragment form, which needs no sibling. `upper_inf` rather than
+    // `lower(during)::date`: a generation expression must be IMMUTABLE, and casting a
+    // `timestamptz` to `date` reads the session's TimeZone (PostgreSQL says
+    // "generation expression is not immutable", measured).
+    openEnded: t
+      .boolean("open_ended")
+      .nullable()
+      .generatedAlwaysAs(sql`upper_inf(during)`),
+  }),
+  (t) => [
+    primaryKey(t.id),
+    exclude("bookings_no_overlap")
+      .using("gist")
+      .where(sql`NOT ${t.cancelled}`)
+      .on([t.during, "&&"]),
+    exclude("bookings_deferred_span").using("gist").initiallyDeferred().on([t.during, "&&"]),
+    index("bookings_room_label_lower_idx")
+      .with({ fillfactor: 70 })
+      .on(sql`lower(${t.roomLabel})`),
+    index("bookings_open_ended_idx").fillfactor(90).concurrently(false).on({ column: t.openEnded, desc: true }),
+    comment("One booking per room per span."),
+  ],
+);
+
 /** A RANGE-partitioned parent and one child — the shape pagila's `payment` has. */
 export const readings = pgTable(
   "readings",
@@ -255,7 +311,7 @@ export const readings2024 = pgTable(
  * them on by hand to reproduce exactly what a real project's config hands to `emitSchema`.
  */
 export const schema = {
-  ...defineSchema({ orgs, users, memberships, nodes, events, tickets, readings, readings2024 }),
+  ...defineSchema({ orgs, users, memberships, nodes, events, tickets, bookings, readings, readings2024 }),
   domains: [moneyAmount],
   sequences: [ticketsNoSeq],
   enums: [memberRole, eventKind],

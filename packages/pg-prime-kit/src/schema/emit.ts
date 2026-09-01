@@ -49,6 +49,8 @@ interface EnumDecl {
   readonly schema: string;
   readonly name: string;
   readonly values: readonly string[];
+  /** `COMMENT ON TYPE` — only a standalone `pgEnum(...)` declaration carries one. */
+  readonly comment: string | undefined;
 }
 
 interface FkDecl {
@@ -70,7 +72,8 @@ interface IndexDecl {
   readonly unique: boolean;
   readonly columns: readonly string[];
   readonly items: readonly {
-    readonly column: string;
+    readonly column: string | undefined;
+    readonly expression: string | undefined;
     readonly desc: boolean;
     readonly nulls: "first" | "last" | undefined;
     readonly opclass: string | undefined;
@@ -79,6 +82,8 @@ interface IndexDecl {
   readonly where: string | undefined;
   readonly include: readonly string[];
   readonly nullsNotDistinct: boolean;
+  readonly with: Readonly<Record<string, string | number | boolean>> | undefined;
+  readonly tablespace: string | undefined;
 }
 
 interface CommentDecl {
@@ -237,8 +242,17 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
 
   const rename = (schema: string): string | undefined => map?.get(schema);
   const sequenceNames = new Set((schema.sequences ?? []).map((s) => qualify(s.schema ?? defaultSchema, s.name)));
+  const extensionNames = new Set((schema.extensions ?? []).map((x) => x.name));
   for (const decl of tables) {
-    buildTable(decl, { defaultSchema, mapped, rename, sequences: sequenceNames, diagnostics, byKey });
+    buildTable(decl, {
+      defaultSchema,
+      mapped,
+      rename,
+      sequences: sequenceNames,
+      extensions: extensionNames,
+      diagnostics,
+      byKey,
+    });
   }
 
   /* ---- 3. emit ---- */
@@ -251,7 +265,17 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
   for (const e of schema.enums ?? []) {
     const ns = e.schema ?? defaultSchema;
     const key = qualify(ns, e.name);
-    if (!enums.has(key)) enums.set(key, { schema: ns, name: e.name, values: [...e.values] });
+    const existing = enums.get(key);
+    // A comment lives on the DECLARATION, and `ColumnDdl` carries only the name/labels/schema
+    // of the enum a column uses — so an enum discovered through a column is merged with its
+    // standalone declaration here rather than replaced by it, which would lose nothing but
+    // would make the emitted comment depend on which of the two the emitter saw first.
+    enums.set(key, {
+      schema: ns,
+      name: e.name,
+      values: existing?.values ?? [...e.values],
+      comment: e.comment,
+    });
   }
   const byQualified = <T extends { name: string; schema?: string | undefined }>(a: T, b: T): number =>
     cmp(qualify(a.schema ?? defaultSchema, a.name), qualify(b.schema ?? defaultSchema, b.name));
@@ -380,6 +404,28 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
 
   const indexes: IndexDecl[] = [];
   const comments: CommentDecl[] = [];
+  // Types first in the comment block (`0 …`), for the same reason the statements are sorted at
+  // all: two runs over one registry must produce byte-identical SQL. `COMMENT ON TYPE` covers a
+  // domain too — PostgreSQL resolves a domain name through the same `pg_type` lookup, and the
+  // catalog side (`diff/ddl.ts` `commentTarget`) says `TYPE` for both, so the two renderers can
+  // be compared statement for statement.
+  for (const e of [...enums.values()].sort((a, b) => cmp(qualify(a.schema, a.name), qualify(b.schema, b.name)))) {
+    if (e.comment === undefined) continue;
+    const target = quoteQualified(mapped(e.schema, `type ${qualify(e.schema, e.name)}`), e.name);
+    comments.push({
+      target: `0 ${qualify(e.schema, e.name)}`,
+      sql: `COMMENT ON TYPE ${target} IS ${quoteLiteral(e.comment)}`,
+    });
+  }
+  for (const d of domains) {
+    if (d.comment === undefined) continue;
+    const ns = d.schema ?? defaultSchema;
+    const target = quoteQualified(mapped(ns, `domain ${qualify(ns, d.name)}`), d.name);
+    comments.push({
+      target: `0 ${qualify(ns, d.name)}`,
+      sql: `COMMENT ON TYPE ${target} IS ${quoteLiteral(d.comment)}`,
+    });
+  }
   for (const decl of tables) collectIndexesAndComments(decl, indexes, comments, mapped);
 
   for (const ix of indexes.sort((a, b) => cmp(qualify(a.schema, a.name), qualify(b.schema, b.name)))) {
@@ -428,7 +474,11 @@ const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 function indexStatement(ix: IndexDecl, target: string): string {
   const columns = ix.items
     .map((i) => {
-      const bits = [quoteIdent(i.column)];
+      // An expression key is always parenthesised. PostgreSQL's grammar requires it for
+      // anything but a bare column, and `pg_get_indexdef` drops the parentheses again for
+      // an expression that looks like a function call — so the shadow, not this text, is
+      // what the round-trip compares.
+      const bits = [i.expression === undefined ? quoteIdent(i.column ?? "") : `(${i.expression})`];
       if (i.opclass !== undefined) bits.push(i.opclass);
       if (i.desc) bits.push("DESC");
       if (i.nulls !== undefined) bits.push(i.nulls === "first" ? "NULLS FIRST" : "NULLS LAST");
@@ -441,9 +491,31 @@ function indexStatement(ix: IndexDecl, target: string): string {
     `(${columns})`,
     ...(ix.include.length === 0 ? [] : [`INCLUDE (${ix.include.map(quoteIdent).join(", ")})`]),
     ...(ix.nullsNotDistinct ? ["NULLS NOT DISTINCT"] : []),
+    ...(ix.with === undefined ? [] : [`WITH (${storageParameters(ix.with)})`]),
+    ...(ix.tablespace === undefined ? [] : [`TABLESPACE ${quoteIdent(ix.tablespace)}`]),
     ...(ix.where === undefined ? [] : [`WHERE (${ix.where})`]),
   ];
   return parts.join(" ");
+}
+
+/**
+ * `WITH (fastupdate = false, fillfactor = 70)` — sorted by key, text values quoted.
+ *
+ * Sorted because a `Record`'s iteration order is the order the keys were WRITTEN, which makes
+ * the emitted DDL depend on how the schema file happens to be typed; quoted because a
+ * reloption's value is a string as far as the catalog is concerned (`pg_get_indexdef` prints
+ * every one of them back as `k='v'`), and an unquoted value that is not a bare number or
+ * boolean is a syntax error.
+ */
+function storageParameters(params: Readonly<Record<string, string | number | boolean>>): string {
+  return Object.keys(params)
+    .sort(cmp)
+    .map((key) => {
+      const value = params[key]!;
+      const text = typeof value === "string" ? quoteLiteral(value) : String(value);
+      return `${quoteIdent(key)} = ${text}`;
+    })
+    .join(", ");
 }
 
 function collectEnum(
@@ -458,7 +530,7 @@ function collectEnum(
   const key = qualify(schema, ddl.enumName);
   const existing = enums.get(key);
   if (existing === undefined) {
-    enums.set(key, { schema, name: ddl.enumName, values: [...ddl.enumValues] });
+    enums.set(key, { schema, name: ddl.enumName, values: [...ddl.enumValues], comment: undefined });
     return;
   }
   // Two `pgEnum` values with one name: the first wins and the disagreement is reported, because
@@ -482,6 +554,8 @@ interface BuildContext {
   readonly rename: (schema: string) => string | undefined;
   /** every declared sequence, `schema.name`, for {@link remapNextval} */
   readonly sequences: ReadonlySet<string>;
+  /** every `pgExtension(...)` the registry declares, by bare name, for `exclude().requires()` */
+  readonly extensions: ReadonlySet<string>;
   readonly diagnostics: Diagnostic[];
   readonly byKey: ReadonlyMap<string, TableDecl>;
 }
@@ -513,7 +587,22 @@ function buildTable(decl: TableDecl, ctx: BuildContext): void {
     const typeSql = columnType(ddl, ctx, decl);
     const bits: string[] = [quoteIdent(ref.dbName), typeSql];
 
-    if (ddl.identity !== undefined) {
+    if (ddl.generatedAs !== undefined) {
+      // Opaque text, exactly like `defaultSql`: the tier-3 schema map is NOT applied to it
+      // (design/11 K2b's rule), because a whole-identifier substitution cannot tell a schema
+      // qualifier from a string literal, and a generation expression can contain both.
+      bits.push(`GENERATED ALWAYS AS (${ddl.generatedAs}) STORED`);
+    } else if (ddl.generatedAsFrom !== undefined) {
+      ctx.diagnostics.push({
+        code: "unresolved_generated",
+        severity: "error",
+        message:
+          `${decl.key}.${ref.dbName}: .generatedAlwaysAs((cols) => …) was never resolved. ` +
+          `pgTable() resolves it the moment the table's column names are known, so this column ` +
+          `did not come from a pgTable(...) declaration.`,
+        subject: decl.key,
+      });
+    } else if (ddl.identity !== undefined) {
       bits.push(`GENERATED ${ddl.identity === "always" ? "ALWAYS" : "BY DEFAULT"} AS IDENTITY`);
     } else if (ddl.default !== undefined) {
       const subject = `${decl.key}.${ref.dbName}`;
@@ -626,6 +715,40 @@ function buildTable(decl: TableDecl, ctx: BuildContext): void {
           ctx,
         );
         if (fk) decl.fks.push({ ...fk, name: claim(fk.name, `foreignKey on (${extra.columns.join(", ")})`) });
+        break;
+      }
+      case "exclude": {
+        const name = claim(extra.name, `exclude ${extra.name}`);
+        if (extra.items.length === 0) {
+          ctx.diagnostics.push({
+            code: "empty_exclude",
+            severity: "error",
+            message: `${decl.key}: exclude("${extra.name}") has no elements`,
+            subject: decl.key,
+          });
+          break;
+        }
+        if (extra.requires !== undefined && !ctx.extensions.has(extra.requires)) {
+          ctx.diagnostics.push({
+            code: "missing_required_extension",
+            severity: "error",
+            message:
+              `${decl.key}: exclude("${extra.name}").requires("${extra.requires}") names an extension ` +
+              `this schema does not declare. Add pgExtension("${extra.requires}") and export it, or the ` +
+              `CREATE EXTENSION never runs and the operator class resolves to a 42704 on the shadow.`,
+            subject: decl.key,
+          });
+          break;
+        }
+        // PostgreSQL's own clause order: USING, the element list, WHERE, then deferrability.
+        const bits = [`CONSTRAINT ${quoteIdent(name)} EXCLUDE`];
+        if (extra.using !== undefined) bits.push(`USING ${quoteIdent(extra.using)}`);
+        bits.push(`(${extra.items.map((i) => `${i.element} WITH ${i.operator}`).join(", ")})`);
+        if (extra.where !== undefined) bits.push(`WHERE (${extra.where})`);
+        if (extra.deferrable) {
+          bits.push(extra.initiallyDeferred ? "DEFERRABLE INITIALLY DEFERRED" : "DEFERRABLE");
+        }
+        constraints.push({ sort: `4 ${name}`, text: bits.join(" ") });
         break;
       }
       // `index` / `uniqueIndex` / `clusterOn` are separate statements; `comment` and
@@ -853,11 +976,20 @@ function collectIndexesAndComments(
         // `{ node: 'index', … }` in a test, or an older `pg-prime` on the peer range), so
         // the plain column list is the fallback rather than a crash.
         items:
-          extra.items ?? extra.columns.map((column) => ({ column, desc: false, nulls: undefined, opclass: undefined })),
+          extra.items ??
+          extra.columns.map((column) => ({
+            column,
+            expression: undefined,
+            desc: false,
+            nulls: undefined,
+            opclass: undefined,
+          })),
         using: extra.using,
         where: extra.where,
         include: extra.include ?? [],
         nullsNotDistinct: extra.nullsNotDistinct === true,
+        with: extra.with,
+        tablespace: extra.tablespace,
       });
     } else if (extra.node === "comment") {
       comments.push({
