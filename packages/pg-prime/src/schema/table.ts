@@ -129,7 +129,16 @@ export interface TableOptions {
   readonly casing?: (key: string) => string
 }
 
-class TableImpl implements TableRuntime {
+/**
+ * The `$` of a table — and, through `ViewImpl` in `./view.ts`, of a view.
+ *
+ * Exported to that one sibling rather than duplicated there: `implements TableRuntime` plus the
+ * key→ref `Map` is the single most expensive thing in either file at the type level (measured on
+ * `bench/types`' `empty` scenario: a second copy cost 475 instantiations on TS 7.0.2, more than
+ * every other helper in `view.ts` put together). Not on the public barrel — `TableRuntime` is the
+ * type users name, and a class would be a second, wider thing to keep compatible.
+ */
+export class TableImpl implements TableRuntime {
   readonly name: string
   readonly schema: string | undefined
   readonly columns: readonly RefRuntime[]
@@ -214,6 +223,82 @@ function resolveGeneration(
 }
 
 /**
+ * A column record → the frozen `[REFS]` object and the parallel `RefRuntime` list.
+ *
+ * Shared by `pgTable` and by `pgView` / `pgMaterializedView` (`./view.ts`), which declare their
+ * columns with the identical `ColumnKit` and want the identical refusals. The reason is drift, not
+ * cost: measured on `bench/types`' `empty` scenario, deduplicating this loop was worth 23
+ * instantiations, which is nothing. Forty lines of refusals in two places that must agree is the
+ * problem it solves — `view.ts` had already lost the `(casing strategy: …)` half of the
+ * duplicate-name sentence before this was one function.
+ *
+ * Every refusal here fires on the IMPORT of the schema file, which is the cheapest place to report
+ * a mistake in a declaration.
+ */
+export function buildColumnRefs(
+  source: string,
+  schema: string | undefined,
+  record: Record<string, { $?: ColumnRuntime } | undefined>,
+  casing: (key: string) => string,
+  what: string,
+  casingLabel: string,
+  resolve?: (col: ColumnRuntime, key: string) => ColumnRuntime,
+): { refs: Record<string, unknown>; runtimes: RefRuntime[] } {
+  // `{ __proto__: text() }` sets the *prototype* — the key is not an own property, so the column
+  // would vanish silently and the table would ship one column short. A record whose prototype is
+  // not `Object.prototype` is the only way that literal can manifest, so reject it here rather
+  // than emit DDL for a table the schema file does not describe.
+  const proto: unknown = Object.getPrototypeOf(record)
+  if (proto !== Object.prototype) {
+    throw new SchemaError(
+      `pg-prime: ${what} was given a column record with a non-standard prototype. The usual ` +
+        `cause is a \`__proto__:\` key, which JavaScript applies to the prototype instead of ` +
+        `creating a column. "__proto__" is reserved, like a leading "$".`,
+    )
+  }
+
+  // Null-prototype, so a column literally keyed `['__proto__']` lands as an own property here too
+  // instead of silently retargeting the object's prototype.
+  const refs: Record<string, unknown> = Object.create(null) as Record<string, unknown>
+  const runtimes: RefRuntime[] = []
+  const dbNames = new Map<string, string>()
+
+  for (const key of Object.keys(record)) {
+    if (key.startsWith('$')) throw new Error(`pg-prime: column key "${key}" may not start with "$"`)
+    if (key === '__proto__') {
+      throw new SchemaError(`pg-prime: column key "__proto__" is reserved in ${what}.`)
+    }
+    const col = record[key]?.$
+    // `pgTable('r', { id: 'text' })` used to die at `record[key]!.$` with a bare `TypeError:
+    // Cannot read properties of undefined`. The column DSL is the whole point of the package, so
+    // handing it something that is not a column deserves a sentence naming the key.
+    if (col === undefined || typeof col.ddl !== 'object' || col.ddl === null) {
+      throw new SchemaError(
+        `pg-prime: ${what}.${key} is not a column. Write \`${key}: t.text()\` (or any ` +
+          `other column builder), not a bare value.`,
+      )
+    }
+    const dbName = col.ddl.dbName ?? casing(key)
+    checkName(dbName, `${what}.${key} column name "${dbName}"`)
+    const taken = dbNames.get(dbName)
+    if (taken !== undefined) {
+      throw new SchemaError(
+        `pg-prime: ${what} maps both "${taken}" and "${key}" to the DB column ` +
+          `"${dbName}" (casing strategy: ${casingLabel}). One of ` +
+          `the two would be unreachable — rename it, or pass an explicit name to the builder.`,
+      )
+    }
+    dbNames.set(dbName, key)
+    // The one caller-specific step: `pgTable` late-binds `.generatedAlwaysAs()` callbacks here,
+    // before anything is frozen; a view's columns have nothing to resolve and pass no hook.
+    const resolved = resolve === undefined ? col : resolve(col, key)
+    const rt: RefRuntime = Object.freeze({ table: source, schema, key, dbName, column: resolved })
+    runtimes.push(rt)
+    refs[key] = Object.freeze({ [SRC]: source, [NAME]: key, [META]: resolved, $: rt })
+  }
+  return { refs, runtimes }}
+
+/**
  * `pgTable(name, cols, extras?)` — design/05 D1 + design/04 §1.3.
  *
  * Columns may be a plain record or a `(t: ColumnKit) => record` callback; the
@@ -237,65 +322,22 @@ export function pgTable<N extends string, B extends Record<string, AnyCol>>(
     string,
     { $?: ColumnRuntime } | undefined
   >
-  // `{ __proto__: text() }` sets the *prototype* — the key is not an own property, so the column
-  // would vanish silently and the table would ship one column short. A record whose prototype is
-  // not `Object.prototype` is the only way that literal can manifest, so reject it here rather
-  // than emit DDL for a table the schema file does not describe.
-  const proto = Object.getPrototypeOf(record)
-  if (proto !== Object.prototype) {
-    throw new SchemaError(
-      `pg-prime: pgTable("${name}") was given a column record with a non-standard prototype. The ` +
-        `usual cause is a \`__proto__:\` key, which JavaScript applies to the prototype instead ` +
-        `of creating a column. "__proto__" is reserved, like a leading "$".`,
-    )
-  }
-
-  // Null-prototype, so a column literally keyed `['__proto__']` lands as an own property here too
-  // instead of silently retargeting the object's prototype.
-  const refs: Record<string, unknown> = Object.create(null) as Record<string, unknown>
-  const runtimes: RefRuntime[] = []
-  const dbNames = new Map<string, string>()
-
-  const keys = Object.keys(record)
-  const generationRefs = lateGenerationRefs(name, options?.schema, casing, record, keys)
-
-  for (const key of keys) {
-    if (key.startsWith('$')) throw new Error(`pg-prime: column key "${key}" may not start with "$"`)
-    if (key === '__proto__') {
-      throw new SchemaError(`pg-prime: column key "__proto__" is reserved in pgTable("${name}").`)
-    }
-    const col = record[key]?.$
-    // `pgTable('r', { id: 'text' })` used to die at `record[key]!.$` with a bare `TypeError:
-    // Cannot read properties of undefined`. The column DSL is the whole point of the package, so
-    // handing it something that is not a column deserves a sentence naming the key.
-    if (col === undefined || typeof col.ddl !== 'object' || col.ddl === null) {
-      throw new SchemaError(
-        `pg-prime: pgTable("${name}").${key} is not a column. Write \`${key}: t.text()\` (or any ` +
-          `other column builder), not a bare value.`,
-      )
-    }
-    const dbName = col.ddl.dbName ?? casing(key)
-    checkName(dbName, `pgTable("${name}").${key} column name "${dbName}"`)
-    const taken = dbNames.get(dbName)
-    if (taken !== undefined) {
-      throw new SchemaError(
-        `pg-prime: pgTable("${name}") maps both "${taken}" and "${key}" to the DB column ` +
-          `"${dbName}" (casing strategy: ${options?.casing ? 'custom' : 'snakeCase'}). One of ` +
-          `the two would be unreachable — rename it, or pass an explicit name to the builder.`,
-      )
-    }
-    dbNames.set(dbName, key)
-    const resolved = resolveGeneration(col, generationRefs, name, key)
-    const rt: RefRuntime = Object.freeze({
-      table: name,
-      schema: options?.schema,
-      key,
-      dbName,
-      column: resolved,
-    })
-    runtimes.push(rt)
-    refs[key] = Object.freeze({ [SRC]: name, [NAME]: key, [META]: resolved, $: rt })
-  }
+  const generationRefs = lateGenerationRefs(
+    name,
+    options?.schema,
+    casing,
+    record,
+    Object.keys(record),
+  )
+  const { refs, runtimes } = buildColumnRefs(
+    name,
+    options?.schema,
+    record,
+    casing,
+    `pgTable("${name}")`,
+    options?.casing ? 'custom' : 'snakeCase',
+    (col: ColumnRuntime, key: string): ColumnRuntime => resolveGeneration(col, generationRefs, name, key),
+  )
 
   // Frozen: a `Table` is the schema's single source of truth for DDL, the migration IR and every
   // compiled query, and all three memoise off it. A mutation after declaration would desync them

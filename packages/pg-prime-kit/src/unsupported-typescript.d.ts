@@ -32,6 +32,7 @@ export declare const BatchStalledError: Unsupported
 export declare const CATALOG_PROVENANCE: Unsupported
 export declare const CONFIG_FILENAMES: Unsupported
 export declare const ConfigError: Unsupported
+export declare const DECLARED_DIRECTIVE: Unsupported
 export declare const DUMP_SAMPLE_CAP: Unsupported
 export declare const DUMP_TIMEOUT_MS: Unsupported
 export declare const DesiredLoadError: Unsupported
@@ -71,6 +72,7 @@ export declare const UnacknowledgedHazardError: Unsupported
 export declare const UnsafeCloneNameError: Unsupported
 export declare const UnsafeDatabaseNameError: Unsupported
 export declare const UnsafePlanPathError: Unsupported
+export declare const VIEWS_DIR: Unsupported
 export declare const WriteRefusedError: Unsupported
 export declare const acceptHints: Unsupported
 export declare const acquireSessionLock: Unsupported
@@ -98,6 +100,7 @@ export declare const createRepeatablesPass: Unsupported
 export declare const currentFingerprint: Unsupported
 export declare const dataMigrationSql: Unsupported
 export declare const dataProgressSql: Unsupported
+export declare const declaredViewIdentities: Unsupported
 export declare const defaultId: Unsupported
 export declare const defaultNotNullName: Unsupported
 export declare const defineConfig: Unsupported
@@ -185,6 +188,7 @@ export declare const remapIr: Unsupported
 export declare const remapObserved: Unsupported
 export declare const renameCandidates: Unsupported
 export declare const renderSql: Unsupported
+export declare const renderViewRepeatables: Unsupported
 export declare const resolveConfig: Unsupported
 export declare const resolvePgDump: Unsupported
 export declare const runBatchStatement: Unsupported
@@ -196,6 +200,7 @@ export declare const sha256: Unsupported
 export declare const slug: Unsupported
 export declare const splitStages: Unsupported
 export declare const splitStatements: Unsupported
+export declare const syncViewRepeatables: Unsupported
 export declare const terminateConnections: Unsupported
 export declare const tokenizeDefinition: Unsupported
 export declare const unusedDirectives: Unsupported
@@ -233,6 +238,7 @@ export type DataProgressEntry = Unsupported
 export type DataStubInput = Unsupported
 export type DatabaseGenerateInput = Unsupported
 export type DatabaseGenerateResult = Unsupported
+export type DeclaredView = Unsupported
 export type DefaultPayload = Unsupported
 export type Delta = Unsupported
 export type DependencyEdge = Unsupported
@@ -321,6 +327,8 @@ export type RenameCandidate = Unsupported
 export type RenameConfidence = Unsupported
 export type RenameHint = Unsupported
 export type RenameRecord = Unsupported
+export type RenderViewsOptions = Unsupported
+export type RenderedViews = Unsupported
 export type RepeatableApplyError = Unsupported
 export type RepeatableClient = Unsupported
 export type RepeatableFile = Unsupported
@@ -356,6 +364,8 @@ export type Statement = Unsupported
 export type StatusEntry = Unsupported
 export type StatusOptions = Unsupported
 export type StatusReport = Unsupported
+export type SyncViewsOptions = Unsupported
+export type SyncedViews = Unsupported
 export type TableExtra = Unsupported
 export type TableLike = Unsupported
 export type TablePayload = Unsupported
@@ -370,4 +380,7 @@ export type Unresolved = Unsupported
 export type UnsafeCloneNameError = Unsupported
 export type UnsafeDatabaseNameError = Unsupported
 export type UnsafePlanPathError = Unsupported
+export type ViewInfo = Unsupported
+export type ViewLike = Unsupported
+export type ViewRuntime = Unsupported
 export type WriteRefusedError = Unsupported

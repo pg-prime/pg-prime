@@ -62,6 +62,7 @@
     "node_modules/pg-prime/dist/schema/relations.js",
     "node_modules/pg-prime/dist/schema/symbols.js",
     "node_modules/pg-prime/dist/schema/table.js",
+    "node_modules/pg-prime/dist/schema/view.js",
     "node_modules/pg-prime/dist/session/config.js",
     "node_modules/pg-prime/dist/session/copy.js",
     "node_modules/pg-prime/dist/session/guard.js",

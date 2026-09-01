@@ -37,8 +37,8 @@ import { checkName, kit } from './column.js'
 import type { AnyCol, ColumnKit, ColumnRuntime } from './column.js'
 import { fragmentDdlText } from './ddl.js'
 import type { RefRuntime, RefsOfCols } from './ref.js'
-import { COLS, META, NAME, READONLY, REFS, RELS, SCHEMA, SEL, SRC, TABLES } from './symbols.js'
-import { snakeCase } from './table.js'
+import { COLS, NAME, READONLY, REFS, RELS, SCHEMA, SEL, TABLES } from './symbols.js'
+import { buildColumnRefs, snakeCase, TableImpl } from './table.js'
 import type { ColsOf, TableRuntime } from './table.js'
 import type { Cols, SelectRow } from './types.js'
 
@@ -279,27 +279,17 @@ export interface MaterializedViewBody<N extends string, C extends Cols> {
 // Runtime
 // ─────────────────────────────────────────────────────────────────────────────
 
-class ViewImpl implements ViewRuntime {
-  readonly name: string
-  readonly schema: string | undefined
-  readonly columns: readonly RefRuntime[]
-  readonly extras: readonly never[]
+/** `TableImpl` plus the one slot a view adds. See {@link TableImpl} for why it is not a copy. */
+class ViewImpl extends TableImpl implements ViewRuntime {
   readonly view: ViewInfo
-  readonly #byKey: Map<string, RefRuntime>
 
   constructor(columns: readonly RefRuntime[], view: ViewInfo) {
-    this.name = view.name
-    this.schema = view.schema
-    this.columns = columns
-    this.extras = Object.freeze([])
+    super(view.name, view.schema, columns, NO_EXTRAS)
     this.view = view
-    this.#byKey = new Map(columns.map((c) => [c.key, c]))
-  }
-
-  column(key: string): ColumnRuntime | undefined {
-    return this.#byKey.get(key)?.column
   }
 }
+
+const NO_EXTRAS: readonly never[] = Object.freeze([])
 
 /** Mutable accumulator behind the two stage-2 builders. One object, patched in place. */
 interface Draft {
@@ -334,58 +324,35 @@ function qualify(dep: ViewDependency, what: string): string {
   return `${typeof schema === 'string' ? schema : 'public'}.${name}`
 }
 
-function buildRefs(
-  viewName: string,
-  schema: string | undefined,
+/**
+ * {@link buildColumnRefs} plus the one rule only a view has: it must declare at least one column.
+ *
+ * `CREATE TABLE t ()` is legal PostgreSQL and `pgTable` allows it; a view with no columns is not a
+ * view, and the declared column list IS the entity's type, so an empty one is a mistake with no
+ * useful reading.
+ */
+function viewRefs(
+  name: string,
+  draft: Draft,
   record: Record<string, { $?: ColumnRuntime } | undefined>,
   casing: (key: string) => string,
   what: string,
 ): { refs: Record<string, unknown>; runtimes: RefRuntime[] } {
-  const proto: unknown = Object.getPrototypeOf(record)
-  if (proto !== Object.prototype) {
-    throw new SchemaError(
-      `pg-prime: ${what} was given a column record with a non-standard prototype. The usual ` +
-        `cause is a \`__proto__:\` key, which JavaScript applies to the prototype instead of ` +
-        `creating a column. "__proto__" is reserved, like a leading "$".`,
-    )
-  }
-  const refs: Record<string, unknown> = Object.create(null) as Record<string, unknown>
-  const runtimes: RefRuntime[] = []
-  const dbNames = new Map<string, string>()
-  for (const key of Object.keys(record)) {
-    if (key.startsWith('$'))
-      throw new SchemaError(`pg-prime: column key "${key}" may not start with "$"`)
-    if (key === '__proto__') {
-      throw new SchemaError(`pg-prime: column key "__proto__" is reserved in ${what}.`)
-    }
-    const col = record[key]?.$
-    if (col === undefined || typeof col.ddl !== 'object' || col.ddl === null) {
-      throw new SchemaError(
-        `pg-prime: ${what}.${key} is not a column. Write \`${key}: t.text()\` (or any other ` +
-          `column builder), not a bare value.`,
-      )
-    }
-    const dbName = col.ddl.dbName ?? casing(key)
-    checkName(dbName, `${what}.${key} column name "${dbName}"`)
-    const taken = dbNames.get(dbName)
-    if (taken !== undefined) {
-      throw new SchemaError(
-        `pg-prime: ${what} maps both "${taken}" and "${key}" to the column "${dbName}". One of ` +
-          `the two would be unreachable — rename it, or pass an explicit name to the builder.`,
-      )
-    }
-    dbNames.set(dbName, key)
-    const rt: RefRuntime = Object.freeze({ table: viewName, schema, key, dbName, column: col })
-    runtimes.push(rt)
-    refs[key] = Object.freeze({ [SRC]: viewName, [NAME]: key, [META]: col, $: rt })
-  }
-  if (runtimes.length === 0) {
+  const built = buildColumnRefs(
+    name,
+    draft.schema,
+    record,
+    casing,
+    what,
+    casing === snakeCase ? 'snakeCase' : 'custom',
+  )
+  if (built.runtimes.length === 0) {
     throw new SchemaError(
       `pg-prime: ${what} declares no columns. A view's column list is its whole type — declare ` +
         `at least one, or drop the declaration and query the underlying table.`,
     )
   }
-  return { refs, runtimes }
+  return built
 }
 
 function finish(
@@ -455,130 +422,114 @@ function checkText(value: unknown, what: string): string {
 }
 
 /**
- * `pgView('org_health').columns((t) => ({ orgId: t.uuid(), status: t.text() })).as(sql`…`)`
- * — design/05 §3.6's form (b), and `.existing()` is its form (c).
+ * The stage-2 builder, **untyped**, shared by both kinds.
+ *
+ * `pgTable` does the same thing and for the same measured reason (design/04 §1.3): an
+ * implementation that annotates every method with `ViewBody<N, ColsOf<B>>` instantiates that type
+ * once per method per factory, and `bench:types` counts every one of them in the library's own
+ * baseline — the `empty` scenario, which has no schema in it at all. One cast at the public
+ * boundary costs one instantiation and says exactly as much.
+ *
+ * The methods only one kind admits are present on both objects and refuse at runtime, because the
+ * cast is the only thing keeping them apart and a cast is not a guarantee.
+ */
+function makeStage(
+  draft: Draft,
+  what: string,
+  runtimes: readonly RefRuntime[],
+  refs: Record<string, unknown>,
+): object {
+  const onlyOn = (kind: Draft['kind'], method: string): void => {
+    if (draft.kind === kind) return
+    throw new SchemaError(
+      `pg-prime: ${what}.${method} is only available on a ` +
+        `${kind === 'view' ? 'pgView' : 'pgMaterializedView'}.`,
+    )
+  }
+  const stage = {
+    with(o: ViewWithOptions): object {
+      // A matview carries none of the three reloptions; PostgreSQL rejects all of them.
+      onlyOn('view', 'with(…)')
+      if (o.securityInvoker !== undefined) draft.securityInvoker = o.securityInvoker === true
+      if (o.securityBarrier !== undefined) draft.securityBarrier = o.securityBarrier === true
+      if (o.checkOption !== undefined) {
+        if (o.checkOption !== 'local' && o.checkOption !== 'cascaded') {
+          throw new SchemaError(
+            `pg-prime: ${what}.with({ checkOption }) is ${JSON.stringify(o.checkOption)}; ` +
+              `PostgreSQL takes "local" or "cascaded".`,
+          )
+        }
+        draft.checkOption = o.checkOption
+      }
+      return stage
+    },
+    comment(text: string): object {
+      draft.comment = checkText(text, `${what}.comment(…)`)
+      return stage
+    },
+    renamedFrom(old: string): object {
+      checkName(old, `${what}.renamedFrom(…)`)
+      draft.renamedFrom = old
+      return stage
+    },
+    dependsOn(...targets: readonly ViewDependency[]): object {
+      for (const t of targets) {
+        const q = qualify(t, `${what}.dependsOn(…)`)
+        if (!draft.dependsOn.includes(q)) draft.dependsOn.push(q)
+      }
+      return stage
+    },
+    withNoData(): object {
+      onlyOn('materializedView', 'withNoData()')
+      draft.withNoData = true
+      return stage
+    },
+    refreshable(o?: RefreshableOptions): object {
+      onlyOn('materializedView', 'refreshable(…)')
+      draft.refreshConcurrently = o?.concurrently === true
+      return stage
+    },
+    as(body: AnyFragment): object {
+      return finish(draft, runtimes, refs, fragmentDdlText(body, `${what} body`))
+    },
+    existing(): object {
+      return finish(draft, runtimes, refs, undefined)
+    },
+  }
+  return stage
+}
+
+function columnRecord(columns: unknown): Record<string, { $?: ColumnRuntime } | undefined> {
+  const record =
+    typeof columns === 'function' ? (columns as (t: ColumnKit) => unknown)(kit) : columns
+  return record as Record<string, { $?: ColumnRuntime } | undefined>
+}
+
+/**
+ * `pgView('org_health').columns((t) => ({ orgId: t.uuid(), status: t.text() }))` then a body —
+ * design/05 §3.6's form (b), and `.existing()` is its form (c).
  *
  * The builder-inferred form (a) is not built; see the file header.
  */
 export function pgView<N extends string>(name: N, options?: ViewOptions): ViewBuilder<N> {
-  const what = `pgView("${name}")`
-  const draft = makeDraft('view', name, options, what)
-  const casing = options?.casing ?? snakeCase
-  return {
-    columns<B extends Record<string, AnyCol>>(
-      columns: B | ((t: ColumnKit) => B),
-    ): ViewBody<N, ColsOf<B>> {
-      const record = (typeof columns === 'function' ? columns(kit) : columns) as unknown as Record<
-        string,
-        { $?: ColumnRuntime } | undefined
-      >
-      const { refs, runtimes } = buildRefs(name, draft.schema, record, casing, what)
-      const stage: ViewBody<N, ColsOf<B>> = {
-        with(o: ViewWithOptions): ViewBody<N, ColsOf<B>> {
-          if (o.securityInvoker !== undefined) draft.securityInvoker = o.securityInvoker === true
-          if (o.securityBarrier !== undefined) draft.securityBarrier = o.securityBarrier === true
-          if (o.checkOption !== undefined) {
-            if (o.checkOption !== 'local' && o.checkOption !== 'cascaded') {
-              throw new SchemaError(
-                `pg-prime: ${what}.with({ checkOption }) is ${JSON.stringify(o.checkOption)}; ` +
-                  `PostgreSQL takes "local" or "cascaded".`,
-              )
-            }
-            draft.checkOption = o.checkOption
-          }
-          return stage
-        },
-        comment(text: string): ViewBody<N, ColsOf<B>> {
-          draft.comment = checkText(text, `${what}.comment(…)`)
-          return stage
-        },
-        renamedFrom(old: string): ViewBody<N, ColsOf<B>> {
-          checkName(old, `${what}.renamedFrom(…)`)
-          draft.renamedFrom = old
-          return stage
-        },
-        dependsOn(...targets: readonly ViewDependency[]): ViewBody<N, ColsOf<B>> {
-          for (const t of targets) {
-            const q = qualify(t, `${what}.dependsOn(…)`)
-            if (!draft.dependsOn.includes(q)) draft.dependsOn.push(q)
-          }
-          return stage
-        },
-        as(body: AnyFragment): View<N, ColsOf<B>> {
-          return finish(draft, runtimes, refs, fragmentDdlText(body, `${what} body`)) as View<
-            N,
-            ColsOf<B>
-          >
-        },
-        existing(): View<N, ColsOf<B>> {
-          return finish(draft, runtimes, refs, undefined) as View<N, ColsOf<B>>
-        },
-      }
-      return stage
-    },
-  }
+  return makeBuilder('view', name, options) as ViewBuilder<N>
 }
 
-/**
- * `pgMaterializedView('org_rollup').columns(…).refreshable({ concurrently: true }).as(sql`…`)`.
- *
- * A matview cannot carry `security_invoker`, so a matview that reads an RLS-enabled table is a
- * privilege boundary by construction — `05` §3.6's lint `SEC002`, which the kit's lint rules own.
- */
 export function pgMaterializedView<N extends string>(
   name: N,
   options?: ViewOptions,
 ): MaterializedViewBuilder<N> {
-  const what = `pgMaterializedView("${name}")`
-  const draft = makeDraft('materializedView', name, options, what)
+  return makeBuilder('materializedView', name, options) as MaterializedViewBuilder<N>
+}
+
+function makeBuilder(kind: Draft['kind'], name: string, options: ViewOptions | undefined): object {
+  const what = kind === 'view' ? `pgView("${name}")` : `pgMaterializedView("${name}")`
+  const draft = makeDraft(kind, name, options, what)
   const casing = options?.casing ?? snakeCase
   return {
-    columns<B extends Record<string, AnyCol>>(
-      columns: B | ((t: ColumnKit) => B),
-    ): MaterializedViewBody<N, ColsOf<B>> {
-      const record = (typeof columns === 'function' ? columns(kit) : columns) as unknown as Record<
-        string,
-        { $?: ColumnRuntime } | undefined
-      >
-      const { refs, runtimes } = buildRefs(name, draft.schema, record, casing, what)
-      const stage: MaterializedViewBody<N, ColsOf<B>> = {
-        comment(text: string): MaterializedViewBody<N, ColsOf<B>> {
-          draft.comment = checkText(text, `${what}.comment(…)`)
-          return stage
-        },
-        renamedFrom(old: string): MaterializedViewBody<N, ColsOf<B>> {
-          checkName(old, `${what}.renamedFrom(…)`)
-          draft.renamedFrom = old
-          return stage
-        },
-        dependsOn(...targets: readonly ViewDependency[]): MaterializedViewBody<N, ColsOf<B>> {
-          for (const t of targets) {
-            const q = qualify(t, `${what}.dependsOn(…)`)
-            if (!draft.dependsOn.includes(q)) draft.dependsOn.push(q)
-          }
-          return stage
-        },
-        withNoData(): MaterializedViewBody<N, ColsOf<B>> {
-          draft.withNoData = true
-          return stage
-        },
-        refreshable(o?: RefreshableOptions): MaterializedViewBody<N, ColsOf<B>> {
-          draft.refreshConcurrently = o?.concurrently === true
-          return stage
-        },
-        as(body: AnyFragment): MaterializedView<N, ColsOf<B>> {
-          return finish(
-            draft,
-            runtimes,
-            refs,
-            fragmentDdlText(body, `${what} body`),
-          ) as MaterializedView<N, ColsOf<B>>
-        },
-        existing(): MaterializedView<N, ColsOf<B>> {
-          return finish(draft, runtimes, refs, undefined) as MaterializedView<N, ColsOf<B>>
-        },
-      }
-      return stage
+    columns(columns: unknown): object {
+      const { refs, runtimes } = viewRefs(name, draft, columnRecord(columns), casing, what)
+      return makeStage(draft, what, runtimes, refs)
     },
   }
 }
