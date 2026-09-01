@@ -89,6 +89,26 @@ const CORPUS: readonly Case[] = [
     desired: "name-collision/desired.sql",
   },
   { name: "exclude", slug: "exc", current: "exclude/current.sql", desired: "exclude/desired.sql" },
+  // ---- design/14 G: one pair per NEW declarable kind (design/01 rows 50, 51) ----
+  // `GENERATED ALWAYS AS (…) STORED` reaches `columnClause` for the first time: added in
+  // both forms, dropped once. An in-place CONVERSION is deliberately NOT here — PostgreSQL
+  // has no DDL for it and `alterColumn` answers with an `unsupported_alter` error, which
+  // this sweep's "no error diagnostics" assertion is what keeps visible.
+  {
+    name: "generated",
+    slug: "gen",
+    current: "generated/current.sql",
+    desired: "generated/desired.sql",
+  },
+  // An index's `WITH (fillfactor)` and an expression key — both inside `pg_get_indexdef`,
+  // both previously undeclarable. The mirror image of `unmodeled`, whose TABLE storage
+  // parameter is the blind spot the oracle exists to catch.
+  {
+    name: "index-options",
+    slug: "ixo",
+    current: "index-options/current.sql",
+    desired: "index-options/desired.sql",
+  },
   { name: "domain", slug: "dom", current: "domain/current.sql", desired: "domain/desired.sql" },
   {
     name: "composite",
