@@ -176,6 +176,8 @@ interface ColumnKit {
   date: typeof date
   numeric: typeof numeric
   jsonb: typeof jsonb
+  citext: typeof citext
+  vector: typeof vector
   enum: typeof enumColumn
   raw: typeof raw
 }
@@ -296,6 +298,47 @@ function jsonb(name?: string): Col<{ t: unknown; pg: 'jsonb'; opt: false; ro: fa
 
 `jsonb`, decoded as `unknown`. Narrow it with `.$type<T>()`, which is the documented, honest cast:
 the database cannot promise the shape, so the DSL does not pretend it can.
+
+### `citext`
+
+{/* docs: signature */}
+```ts
+function citext(name?: string): Col<{ t: string; pg: 'citext'; opt: false; ro: false; pk: false }>
+```
+
+`citext`, from the extension of the same name — case-insensitive text, decoded verbatim. The
+case-insensitivity lives in the type's comparison operators, not in its storage, so `'AbC'` comes
+back `'AbC'` and `eq(t.email, 'ADA@example.com')` matches all the same. Every text operator gates on
+it. Its OID is allocated by `CREATE EXTENSION`, so it is resolved per database — see
+[`definePgType`](/pg-prime/reference/codecs/#definepgtype) and the
+[pgvector and extension types](/pg-prime/guides/pgvector/) guide.
+
+### `vector`
+
+{/* docs: signature */}
+```ts
+function vector(
+  dimensions?: number,
+  name?: string,
+): Col<{ t: number[]; pg: 'vector'; opt: false; ro: false; pk: false }>
+```
+
+pgvector's dense float32 `vector`, read and written as `number[]`. The dimension is DDL exactly as
+`varchar(n)`'s length is — pgvector has one `vector` type and `n` rides in the typmod — so it
+changes no codec and no decoded value; what it does is make the server refuse a vector of the wrong
+length, which is the reason to declare it. Omit it for an unconstrained column (legal, but not
+indexable by HNSW or IVFFlat). See the [pgvector guide](/pg-prime/guides/pgvector/).
+
+### `VECTOR_MAX_DIMENSIONS`
+
+{/* docs: signature */}
+```ts
+const VECTOR_MAX_DIMENSIONS = 16000
+```
+
+pgvector's own ceiling on the `vector` type. `vector(16001)` is refused by
+[`vector`](#vector) at the line that declared it rather than by `CREATE TABLE` with a `54000`
+several steps later.
 
 ### `raw`
 

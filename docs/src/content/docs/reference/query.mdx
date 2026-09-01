@@ -855,6 +855,28 @@ distinguishes them, which is the concrete payoff of typing operands by PostgreSQ
 | <a id="tsRank"/> `tsRank` | `ts_rank(a, q)` | Returns `float4` (`real`), not `float8` — confirmed against the server's own OIDs. |
 | <a id="tsRankCd"/> `tsRankCd` | `ts_rank_cd(a, q)` | Cover-density ranking, same result type. |
 
+### Vectors
+
+pgvector's six distance operators. All six return `float8`, and **only four take a `vector`** —
+`hamming` and `jaccard` are declared `bit`/`bit`, read off `pg_operator` on pgvector 0.8.6 rather
+than off the README, so a binary-quantized embedding is a `bit(n)` column and Hamming distance takes
+it. See the [pgvector guide](/pg-prime/guides/pgvector/) for the column, the index and the KNN
+query end to end.
+
+{/* docs: signature */}
+```ts
+function l2(a: VectorOperand, b: readonly number[] | VectorOperand): Expr<number, 'float8'>
+```
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="l2"/> `l2` | `a <-> $1` | L2 / Euclidean distance. |
+| <a id="cosine"/> `cosine` | `a <=> $1` | Cosine **distance**, i.e. `1 - cosine similarity`. |
+| <a id="innerProduct"/> `innerProduct` | `a <#> $1` | The **negative** inner product. pgvector negates it so that ascending order is still most-similar-first; the value is passed through unchanged. |
+| <a id="l1"/> `l1` | `a <+> $1` | L1 / taxicab distance (pgvector 0.7+). |
+| <a id="hamming"/> `hamming` | `a <~> $1` | Between two **`bit`** strings: the count of differing bits. |
+| <a id="jaccard"/> `jaccard` | `a <%> $1` | Between two **`bit`** strings: `1 - |a ∩ b| / |a ∪ b|`. |
+
 ## Functions, aggregates and windows
 
 SQL functions live on one namespace object, `fn`, and a window is attached to an aggregate with
@@ -1060,6 +1082,8 @@ symbol`s. The aliases below name each class.
 | <a id="NetOperand"/> `NetOperand` | `ClassOperand<string \| null, 'inet' \| 'cidr'>` | |
 | <a id="TsvectorOperand"/> `TsvectorOperand` | `ClassOperand<unknown, 'tsvector'>` | |
 | <a id="TsqueryOperand"/> `TsqueryOperand` | `ClassOperand<unknown, 'tsquery'>` | |
+| <a id="VectorOperand"/> `VectorOperand` | `ClassOperand<number[] \| null, 'vector'>` | `l2` / `cosine` / `innerProduct` / `l1`. `halfvec` and `sparsevec` carry the same operators in pgvector and are deliberately **not** members: neither has a codec here, so admitting the name would type-check a query nothing could decode. |
+| <a id="BitOperand"/> `BitOperand` | `ClassOperand<string \| null, 'bit'>` | `hamming` / `jaccard`. `varbit` is not a member — pgvector declares no `varbit` overload. |
 
 And the three class tables themselves:
 
@@ -1077,8 +1101,8 @@ type NumPg = 'int2' | 'int4' | 'int8' | 'float4' | 'float8' | 'numeric' | 'money
 type TextPg = 'text' | 'varchar' | 'citext' | 'bpchar' | 'name'
 ```
 
-`citext` has no static codec — it is an extension type — but it is listed because a column declared
-`citext` must still gate as text.
+`citext` is an extension type, so its codec has no static OID — but it is text in every way an
+operator cares about, and [`t.citext()`](/pg-prime/reference/schema/#citext) declares one.
 
 ### `RangePg`
 

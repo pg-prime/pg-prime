@@ -1,0 +1,225 @@
+---
+title: pgvector and extension types
+description: definePgType, the citext and vector column builders, the six distance operators, and the one line that resolves a per-database OID.
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+An **extension type** — `citext`, pgvector's `vector`, `hstore`, PostGIS's `geometry` — differs from
+a built-in like `text` in exactly one way, and everything on this page follows from it:
+
+> `CREATE EXTENSION` allocates the type's OID **per database**.
+
+`text` is OID 25 in every PostgreSQL that has ever shipped, so its codec bakes the number in.
+`vector` is 16389 in one database and something else in the next, so no codec may. That is the same
+fact that makes an enum's OID per-database, and pg-prime answers it with the same mechanism:
+`resolveDynamic` reads the number out of `pg_type` once per physical database, on first connect.
+
+pg-prime ships two extension types — `citext` and `vector` — and the descriptor that built them,
+[`definePgType`](/pg-prime/reference/codecs/#definepgtype), is public. A third party adds `hstore`
+or `geometry` with no fork.
+
+## The schema
+
+{/* docs: setup=vectors */}
+```ts title="vectors.ts" no-run="declares a table over two extension types; the docs gate executes against PGlite, which ships no extensions at all, and CI's postgres:17 service has neither citext nor pgvector. Every line here is executed against pgvector/pgvector:pg17 by packages/pg-prime/test/pg/vector.test.ts."
+import { pgPrime } from 'pg-prime'
+import { createRegistry } from 'pg-prime/codecs'
+import { defineSchema, index, pgExtension, pgTable } from 'pg-prime/schema'
+
+export const vectorExtension = pgExtension('vector')
+export const citextExtension = pgExtension('citext')
+
+export const documents = pgTable(
+  'documents',
+  (t) => ({
+    id: t.bigint().primaryKey().generatedAlways(),
+    title: t.citext(),
+    embedding: t.vector(1536),
+  }),
+  (t) => [
+    index('documents_embedding_hnsw')
+      .using('hnsw')
+      .on({ column: t.embedding, opclass: 'vector_cosine_ops' }),
+  ],
+)
+
+export const schema = defineSchema({ documents })
+
+/** One registry per PHYSICAL database — it will carry this database's OIDs. */
+export const registry = createRegistry()
+
+export const db = pgPrime({
+  schema,
+  registry,
+  connection: process.env['DATABASE_URL']!,
+})
+```
+
+`pgExtension('vector')` puts `CREATE EXTENSION IF NOT EXISTS vector` in the migration, before any
+table that needs it. It is declare-only: created if absent, never dropped, and the version is
+deliberately not declarable — which version is installed is a property of the cluster the DBA built,
+not of the schema in your repository.
+
+## The columns
+
+| Builder | DDL | Reads as |
+|---|---|---|
+| `t.citext()` | `citext` | `string` |
+| `t.vector(n)` | `vector(n)` | `number[]` |
+| `t.vector()` | `vector` | `number[]` |
+
+`citext` decodes **verbatim**: the case-insensitivity is a property of the type's comparison
+operators, not of its storage, so `'AbC'` comes back `'AbC'` and `eq(d.title, 'ABC')` matches it.
+Every text operator — `like`, `ilike`, `startsWith`, `regex` — accepts a `citext` operand, and a
+foreign key between a `citext` and a `text` column is allowed, because PostgreSQL declares implicit
+casts both ways.
+
+`vector`'s dimension is DDL exactly as `varchar(n)`'s length is: pgvector has one `vector` type and
+`n` rides in the typmod, so it changes no codec and no decoded value. What it changes is that the
+server refuses a vector of the wrong length — which is the whole reason to declare it, and why an
+unconstrained `t.vector()` cannot be indexed by HNSW or IVFFlat. `t.vector(16001)` is refused at the
+line that declares it, with pgvector's own limit in the sentence.
+
+The wire form is `[1,2,3]` — square brackets, no spaces — which is neither a PostgreSQL array
+literal (`{1,2,3}`) nor JSON. `NaN` and `±Infinity` are refused on encode, naming the index, because
+pgvector rejects them server-side with a `22000` a long way from the value that caused it.
+
+<Aside type="note">
+An array **of** vectors works too: `t.vector(3).array()` is a `vector(3)[]` column, and
+`[[1, 2, 3], [4, 5, 6]]` is two vectors rather than a six-element two-dimensional array. That
+distinction is invisible in the type system — both are `number[][]` — so it is carried by the
+codec's `typeClass: 'vector'`, which tells the array codec that its element is a leaf.
+</Aside>
+
+## Resolving the OID
+
+Nothing resolves itself. `resolveDynamic` is one call, on the connection you are about to use, and
+it is the same call an enum needs:
+
+{/* docs: use=vectors */}
+```ts title="resolve.ts" no-run="needs a server with citext and pgvector installed; the docs gate runs against PGlite, which ships no extensions. Executed against pgvector/pgvector:pg17 in packages/pg-prime/test/pg/vector.test.ts."
+import type { PgConnection } from 'pg-prime/driver'
+import { registry } from './vectors.js'
+
+/** A connection to this database, from your driver or your pool. */
+declare const conn: PgConnection
+
+await registry.resolveDynamic(conn, [
+  { name: 'citext', kind: 'base' },
+  { name: 'vector', kind: 'base' },
+])
+```
+
+`kind: 'base'` means "this is a base type in `pg_type`; take the codec already registered under this
+name and stamp this database's OID onto it". Until it runs, the codec is in its **pending window**:
+it encodes and decodes correctly, and `Parse` sends `0` for the parameter so PostgreSQL infers the
+type from context. What it cannot do is be found by OID — so a `select` of a `vector` column before
+resolution hands back the raw text `'[1,2,3]'` rather than an array.
+
+<Aside type="caution">
+One registry per **physical** database. A registry carries that database's user-type OIDs, and dev,
+prod and the shadow database do not agree on them. Use `createRegistry()` (or
+`defaultRegistry().clone()`) per database and hand it to `pgPrime`.
+</Aside>
+
+## Searching
+
+{/* docs: use=vectors */}
+```ts title="search.ts" no-run="the query needs a pgvector server; the docs gate runs against PGlite. The same order-by, over an HNSW index, is asserted end to end in packages/pg-prime/test/pg/vector.test.ts."
+import { asc, cosine } from 'pg-prime'
+import { db, schema } from './vectors.js'
+
+/** Your embedding model, whatever it is. */
+declare function embed(text: string): Promise<number[]>
+
+const query = await embed('a red bicycle')
+
+const nearest = await db
+  .from(schema.h.documents)
+  .select(({ documents: d }) => ({ id: d.id, title: d.title }))
+  .orderBy(({ documents: d }) => asc(cosine(d.embedding, query)))
+  .limit(10)
+  .execute()
+
+console.log(nearest)
+```
+
+`nearest` is `{ id: bigint; title: string }[]` — no generic supplied, and `title` is a `string`
+because `citext` says so.
+
+## The six distance operators
+
+| Function | SQL | Operands | Meaning |
+|---|---|---|---|
+| `l2` | `a <-> b` | `vector`, `vector` | L2 / Euclidean distance |
+| `cosine` | `a <=> b` | `vector`, `vector` | cosine **distance**, `1 - similarity` |
+| `innerProduct` | `a <#> b` | `vector`, `vector` | the **negative** inner product |
+| `l1` | `a <+> b` | `vector`, `vector` | L1 / taxicab distance |
+| `hamming` | `a <~> b` | `bit`, `bit` | count of differing bits |
+| `jaccard` | `a <%> b` | `bit`, `bit` | Jaccard distance |
+
+All six return `float8`, confirmed against the server's own `RowDescription` rather than asserted.
+Two rows there are easy to get wrong, which is why this is a table:
+
+- **`hamming` and `jaccard` take `bit`, not `vector`.** They are declared `bit`/`bit` in pgvector
+  0.8, so a binary-quantized embedding is a `bit(n)` column. Handing one a `vector` is a compile
+  error here rather than a `42883` at run time.
+- **`innerProduct` is negated.** pgvector returns `-(a · b)` so that ascending order is still
+  most-similar-first. The value is passed through unchanged; negate it yourself for the dot product.
+
+Smaller is closer for every one of them, which is why KNN is always `orderBy(asc(<distance>))`.
+
+## The index
+
+The spellings pgvector needs already exist in the schema DSL — `using('hnsw')` for the access method
+and a per-column `opclass` — and they are the two lines in `vectors.ts` above. The opclass must match
+the operator you order by, or the planner will not use the index: `vector_cosine_ops` answers `<=>`,
+`vector_l2_ops` answers `<->`, `vector_ip_ops` answers `<#>`.
+
+## Teaching pg-prime a type it has never heard of
+
+`definePgType` is the whole extension API. Six fields, four of them optional:
+
+```ts title="halfvec.ts" no-run="defines pgvector's halfvec, which needs a server with the extension installed; the docs gate runs against PGlite. This exact descriptor is exercised against pgvector/pgvector:pg17 in packages/pg-prime/test/pg/vector.test.ts as row 61's zero-forks proof."
+import { createRegistry, definePgType } from 'pg-prime/codecs'
+import type { PgConnection } from 'pg-prime/driver'
+
+declare const conn: PgConnection
+
+const halfvec = definePgType({
+  name: 'halfvec',
+  typeClass: 'vector',
+  arrayOf: false,
+  encode: (v: readonly number[]) => `[${v.join(',')}]`,
+  decode: (raw): number[] => raw.slice(1, -1).split(',').map(Number),
+})
+
+const registry = createRegistry()
+registry.register(halfvec)
+await registry.resolveDynamic(conn, [{ name: 'halfvec', kind: 'base' }])
+```
+
+Everything a codec needs and the descriptor does not carry is **derived**, because asking for it
+would be asking for a measurement the author cannot make:
+
+- `oid` and `paramOid` are `undefined` until resolution — the pending window above;
+- `jsonEncode` is `'text'`, so the compiler emits `::text` inside `json_build_object`. Every type
+  with an output function has a `::text` cast, so the value five relations deep is *by construction*
+  the same string `decode` reads at the top level. No per-type measurement, and no bet on how
+  `to_json` renders a type this package has never seen;
+- `sqlName` is the quoted spelling of `name`, qualified when you give a `schema`. It survives
+  resolution verbatim, so a query compiled before the registry met the database is byte-identical to
+  one compiled after.
+
+`typeClass: 'vector'` says the decoded value is itself an array — set it for anything array-shaped,
+or an array **of** your type nests one level too deep. `arrayOf: false` says you model the array form
+yourself, and stops the registry claiming `halfvec[]` with the generic array codec.
+
+## What is not here
+
+`halfvec` and `sparsevec` have no shipped codec and are not members of the distance operators'
+operand types: declare the column with `t.raw('halfvec(1024)')` and give the type a codec with
+`definePgType`, as above. IVFFlat's `lists` and HNSW's `m` / `ef_construction` are index **storage
+parameters**; declare an index that needs them through the repeatable `sql/` lane if the schema DSL
+does not yet carry the spelling you want.

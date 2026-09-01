@@ -417,13 +417,130 @@ interface DynamicTypeRequest {
 
 What `resolveDynamic` is asked to resolve. Omit `schema` and the type resolves the way PostgreSQL
 would on this session's `search_path`; qualify it and it matches on `(nspname, typname)` and nothing
-else. `enum` and `domain` are implemented; the other kinds are refused with a sentence.
+else. `enum`, `domain` and `base` are implemented; the other kinds are refused with a sentence.
+
+`base` is the extension-type path: it takes the codec already registered under that name — the one
+[`definePgType`](#definepgtype) built — and stamps this database's OID onto it. Nothing registered
+under the name is an error naming `definePgType`, because there is nothing to stamp.
 
 Domains are widened to `paramOid` 705 (`unknown`) so PostgreSQL applies the domain's own cast and
 constraints. Note a measured asymmetry: PostgreSQL reports a *scalar* domain column in the
 `RowDescription` under its **base** type's OID, so the domain codec earns its keep on the parameter
 side and in the schema DSL — but a `domain[]` column *is* reported under its own OID, which is why
 the derived array codec matters.
+
+## Extension types
+
+An extension type — `citext`, pgvector's `vector`, `hstore`, PostGIS's `geometry` — differs from a
+built-in in exactly one way: **`CREATE EXTENSION` allocates its OID per database**, so no codec may
+bake the number in. That is the same fact that makes an enum's OID per-database, and it takes the
+same mechanism: `resolveDynamic` reads it from `pg_type` once per physical database.
+
+`definePgType` is the descriptor a third party writes; `resolveDynamic` with `kind: 'base'` is the
+one line that finishes the job. See the [pgvector guide](/pg-prime/guides/pgvector/) for the whole
+path, extension declaration included.
+
+### `definePgType`
+
+{/* docs: signature */}
+```ts
+function definePgType<TIn, TOut, N extends string>(
+  descriptor: PgTypeDescriptor<TIn, TOut, N>,
+): Codec<TIn, TOut, N>
+```
+
+Builds a codec from a descriptor. The result has **no OID** and is registered by name only until
+`resolveDynamic` reads this database's `pg_type` — the same *pending window* an enum column is in
+between `defineSchema` and connect: it encodes and decodes correctly, and `Parse` sends `0` for the
+parameter so PostgreSQL infers the type from context.
+
+```ts title="define-pg-type.ts" no-run="needs a server with the hstore extension installed; the docs gate runs against PGlite, which has no extensions at all. The equivalent for citext and vector runs in packages/pg-prime/test/pg/vector.test.ts."
+import { createRegistry, definePgType } from 'pg-prime/codecs'
+import type { PgConnection } from 'pg-prime/driver'
+
+/** Your parser for hstore's `"k"=>"v", …` wire form. */
+declare function parsePairs(raw: string): [string, string][]
+declare const connection: PgConnection
+
+const hstore = definePgType({
+  name: 'hstore',
+  encode: (v: Record<string, string>) =>
+    Object.entries(v)
+      .map(([k, x]) => `"${k}"=>"${x}"`)
+      .join(','),
+  decode: (raw): Record<string, string> => Object.fromEntries(parsePairs(raw)),
+})
+
+const registry = createRegistry()
+registry.register(hstore)
+// …then, once per physical database, on the connection you are about to use:
+await registry.resolveDynamic(connection, [{ name: 'hstore', kind: 'base' }])
+```
+
+### `PgTypeDescriptor`
+
+{/* docs: signature */}
+```ts
+interface PgTypeDescriptor<TIn, TOut, N extends string = string> {
+  readonly name: N
+  readonly schema?: string
+  encode(value: TIn): PgParam
+  decode(raw: string, ctx: CodecContext): TOut
+  readonly typeClass?: TypeClass
+  readonly arrayOf?: boolean
+}
+```
+
+Six fields, four optional. `name` is `pg_type.typname`, and it is also the registry key, the string
+a column's declared type must match, and the operand class the operator gate reads — one name, three
+jobs, because `metaOf` resolves a column's codec by that name. `schema` only qualifies the `::type`
+cast the compiler splices, for an extension that is not on `search_path`. `typeClass` defaults to
+`'other'`; use [`'vector'`](#typeclass) when the decoded value is itself an array. `arrayOf` defaults
+to `true` and means "derive `<name>[]` from the catalogue's `typarray`" — set it `false` for a type
+whose array form you model yourself.
+
+Everything a `Codec` needs and the descriptor does not carry is **derived**, because asking for it
+would be asking for a measurement the author cannot make. `oid` and `paramOid` are `undefined` until
+resolution. `jsonEncode` is `'text'`, so the compiler emits `::text` inside `json_build_object` and
+the depth-3 payload is by construction the same string `decode` reads at depth 0 — which makes
+`decodeJson` exact for any type at all, rather than a bet on how `to_json` renders one this package
+has never seen.
+
+### `citextCodec`
+
+{/* docs: signature */}
+```ts
+const citextCodec: Codec<string, string, 'citext'>
+```
+
+`citext`, from the extension of the same name. Decode is the identity, exactly like `text`: the
+case-insensitivity is a property of the type's comparison operators, not of its representation. Pair
+it with the [`citext`](/pg-prime/reference/schema/#citext) column builder.
+
+### `vectorCodec`
+
+{/* docs: signature */}
+```ts
+const vectorCodec: Codec<readonly number[], number[], 'vector'>
+```
+
+pgvector's dense float32 `vector`, as `number[]`. The wire form is `[1,2,3]` — square brackets, no
+spaces — which is neither a PostgreSQL array literal (`{1,2,3}`) nor JSON. `NaN` and `±Infinity` are
+`PgEncodeError`s naming the offending index, because pgvector rejects them server-side with a
+`22000` several layers away from the value that caused it. Pair it with the
+[`vector`](/pg-prime/reference/schema/#vector) column builder.
+
+### `EXTENSION_CODECS`
+
+{/* docs: signature */}
+```ts
+const EXTENSION_CODECS: readonly Codec<never, unknown, string>[]
+```
+
+The extension codecs this package ships — `citext` and `vector` — which every `Registry` registers
+**by name only**, like the [alternates](#alternate_codecs) and `unknown`. Name-only for two reasons
+at once: there is no OID to key `forOid` on until `resolveDynamic` runs, and a codec that could win
+a `forOid` lookup before it had met the database would decode another type's column.
 
 ## Two codecs that are not what their names suggest
 
@@ -566,13 +683,18 @@ type TypeClass =
   | 'enum'
   | 'composite'
   | 'range'
+  | 'vector'
   | 'other'
 ```
 
 The PostgreSQL type family a codec belongs to. It does **not** drive operator dispatch — that gate is
 a type-level one over `Codec['name']` literals — so nothing reads it at runtime to choose a method.
 It exists for the two places that need a family rather than a name: `arrayCodec`, where a
-`json`-classed element is a leaf, and anything that groups codecs for display.
+`json`- or `vector`-classed element is a **leaf**, and anything that groups codecs for display.
+
+`'vector'` means "the decoded value is itself a JavaScript array". That is the whole of the leaf
+rule: an array of `vector` holding `[[1, 2], [3, 4]]` is *two vectors* (`{"[1,2]","[3,4]"}`), not
+the two-dimensional array of four numbers a structural `Array.isArray` check would write.
 
 ### `JsonEncode`
 

@@ -1396,12 +1396,12 @@ type Ref<C extends Codec> = BaseOps<C> & OpsByClass<C>[TypeClassOf<C>]
 | **net (inet / cidr)** | `containsNet` | `a >> $n` | bool |
 |  | `containedByNet` | `a << $n` | bool |
 |  | `overlapsNet` | `a && $n` | bool |
-| **vector (pgvector)** | ~~`l2`~~ | `a <-> $n` | float8 |
-|  | ~~`cosine`~~ | `a <=> $n` | float8 |
-|  | ~~`innerProduct`~~ | `a <#> $n` | float8 |
-|  | ~~`l1`~~ | `a <+> $n` | float8 |
-|  | ~~`hamming`~~ | `a <~> $n` | float8 |
-|  | ~~`jaccard`~~ | `a <%> $n` | float8 |
+| **vector (pgvector)** | `l2` | `a <-> $n` | float8 |
+|  | `cosine` | `a <=> $n` | float8 |
+|  | `innerProduct` | `a <#> $n` | float8 |
+|  | `l1` | `a <+> $n` | float8 |
+|  | `hamming` | `a <~> $n` | float8 |
+|  | `jaccard` | `a <%> $n` | float8 |
 | **boolean / ordering** | `and` | `(a and b and …)  ·  () ⇒ true` | bool |
 |  | `or` | `(a or b or …)  ·  () ⇒ false` | bool |
 |  | `not` | `not a` | bool |
@@ -1428,9 +1428,35 @@ type Ref<C extends Codec> = BaseOps<C> & OpsByClass<C>[TypeClassOf<C>]
 Struck-through rows are declared but have no live differential yet:
 
 - `fn.rank` — WS4 — `rank()` is legal only inside OVER (…), which the emitter does not build yet.
-- `l2`, `cosine`, `innerProduct`, `l1`, `hamming`, `jaccard` — WS5 — `vector` is a pgvector EXTENSION type: per-database OID, resolveDynamic path, and not present in PGlite, so neither a codec nor a live differential exists yet.
 
 <!-- ops-table:end -->
+
+> **AS BUILT (design/14 V, 2026-09-01) — the six vector rows are no longer struck.** The table
+> above is generated from `src/query/ops.manifest.ts`, so the strikes and the reason line went with
+> the manifest rows; this note is the layered record of what changed, because a regenerated table
+> cannot carry its own history.
+>
+> - ~~`l2`, `cosine`, `innerProduct`, `l1`, `hamming`, `jaccard` — WS5 — `vector` is a pgvector
+>   EXTENSION type: per-database OID, resolveDynamic path, and not present in PGlite, so neither a
+>   codec nor a live differential exists yet.~~ → **built.** `definePgType()` (design/01 §3 row 61)
+>   gives `vector` a codec on the `resolveDynamic` path — `{ name: 'vector', kind: 'base' }`, the
+>   enum path generalized — and the differential runs against a pgvector 0.8.6 container. All six
+>   report `dataTypeID` **701** (`float8`).
+>
+> Two corrections to the table's own reading, both measured against `pg_operator` rather than read
+> off pgvector's README:
+>
+> - **`hamming` and `jaccard` take `bit`, not `vector`.** `<~>` and `<%>` are declared `bit`/`bit`
+>   in pgvector 0.8; only `<->`, `<=>`, `<#>` and `<+>` are `vector`/`vector` (and `halfvec` /
+>   `sparsevec`, neither of which has a codec here). The *class* is shared, the operands are not,
+>   which is why `VectorOperand` and `BitOperand` are two gates.
+> - **`innerProduct` returns the NEGATED inner product.** `a <#> b` is `-(a · b)`, pgvector's own
+>   convention so that ascending order stays most-similar-first. The value is passed through.
+>
+> PGlite still ships no pgvector, and neither do the `postgres:N` images CI and the nightly matrix
+> use, so the tier-1 differential guards on the extension and announces what is unverified when it
+> skips; the tier-2 suite (`test/pg/vector.test.ts`) guards on `PG_PRIME_TEST_VECTOR_URL` **and** on
+> `pg_available_extensions`. `fn.rank` is now the only struck row.
 
 ```ts
 .where(({ users: u, posts: p }) => and(
