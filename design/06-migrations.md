@@ -1602,7 +1602,7 @@ and `db seed` are still under "Not in this release" with K4 named beside them.
 | `apply` | all of §6.2's, plus K1's `--applied-from` and `--heartbeat` | — |
 | `status` | `--verify-fingerprint` `--stale-lock-after` | — |
 | `check` | `--shadow` `--strict-unmodeled` `--no-schema` | — |
-| `verify` | `--to` `--shadow <url>` `--keep` `--against schema\|target` | `--from-checkpoint` — **refused with a sentence**, not ignored: `migrate checkpoint` does not exist, so there is no checkpoint to replay from and a flag that silently dropped its argument would report a partial replay as a full one |
+| `verify` | `--to` `--shadow <url>` `--keep` `--against schema\|target` | ~~`--from-checkpoint` — **refused with a sentence**~~ → **built in `12` K4** (see the AS BUILT note below this table): the refusal this row records was K2b's, and it lasted exactly as long as `migrate checkpoint` did not exist |
 | `lint` | `[<file>…]` `--fail-on error\|warn\|off` `--rules` `--format text\|json` `--style` `--all` | `--format sarif` — refused with a sentence. §8 puts SARIF in v1.1; emitting JSON under the `sarif` name would break the GitHub code-scanning upload it exists for, at the point where nobody is looking |
 | `baseline` | `--at` `--force` `--by` | — |
 | `push` | `--dev` `--allow-data-loss` `--prod-pattern` `--dry-run` `--shadow` | — |
