@@ -147,6 +147,7 @@ export declare const mentionsVolatileFunction: Unsupported
 export declare const migrationId: Unsupported
 export declare const migrationStatus: Unsupported
 export declare const migrationStatusOn: Unsupported
+export declare const nonConcurrentIndexes: Unsupported
 export declare const normalizeDump: Unsupported
 export declare const observationDiagnostics: Unsupported
 export declare const observedCounts: Unsupported

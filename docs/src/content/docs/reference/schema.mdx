@@ -342,6 +342,10 @@ interface Col<M extends ColMeta> {
   defaultSql(expr: string): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
   generatedAlways(): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: true; pk: M['pk'] }>
   generatedByDefault(): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  generatedAlwaysAs(
+    expression: AnyFragment | ((cols: Readonly<Record<string, RefLike>>) => AnyFragment),
+    options?: GeneratedAlwaysAsOptions,
+  ): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: true; pk: M['pk'] }>
   primaryKey(): Col<{ t: M['t']; pg: M['pg']; opt: M['opt']; ro: M['ro']; pk: true }>
   unique(name?: string, options?: { readonly nullsNotDistinct?: boolean }): Col<M>
   references(target: () => RefLike, options?: ForeignKeyOptions): Col<M>
@@ -378,7 +382,7 @@ in full:
 type NullableFn<M extends ColMeta> = M['pk'] extends true
   ? OrmTypeError<'.nullable() after .primaryKey(): a primary key column is NOT NULL by definition'>
   : M['ro'] extends true
-    ? OrmTypeError<'.nullable() after .generatedAlways(): a generated column is always NOT NULL'>
+    ? OrmTypeError<'.nullable() after .generatedAlways()/.generatedAlwaysAs(): an identity column is never null, and a generated expression column takes .nullable() BEFORE it'>
     : () => Col<{ t: M['t'] | null; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
 ```
 
@@ -414,6 +418,32 @@ Four modifiers worth reading twice:
 - **`.check(expression)`** takes a `sql` fragment whose bind parameters are refused; see
   [`fragmentDdlText`](#fragmentddltext). Two `.check()` calls are two constraints, not one
   overwriting the other.
+- **`.generatedAlwaysAs(expression, options?)`** emits `GENERATED ALWAYS AS (…) STORED` and sets
+  `ro: true`, so the key is **erased** from [`Insert`](#insert) and [`Update`](#update) exactly as
+  `.generatedAlways()` erases an identity column's. The expression is a fragment, or a
+  `(cols) => fragment` callback for the usual case — an expression over this table's *other*
+  columns, which do not exist as references yet inside `pgTable(name, (t) => ({ … }))`. Put
+  `.nullable()` **before** it: a stored generated column may be nullable, but `ro: true` closes
+  `.nullable()` for the same reason it closes `.default()`. PostgreSQL 18's `VIRTUAL` is refused —
+  see [`GeneratedAlwaysAsOptions`](#generatedalwaysasoptions).
+
+### `GeneratedAlwaysAsOptions`
+
+{/* docs: signature */}
+```ts
+interface GeneratedAlwaysAsOptions {
+  readonly stored?:
+    | true
+    | OrmTypeError<'{ stored: false } means VIRTUAL, which is PostgreSQL 18+ and is not emitted: a generated column cannot be converted in place, so only STORED is declarable'>
+}
+```
+
+`STORED` is the only generation kind pg-prime emits, and `{ stored: false }` is refused at the type
+level with the sentence in the diagnostic — design/04 §4.1's sentinel, in parameter position rather
+than return position because the refusal is about an argument. The reason is not the PostgreSQL
+version: `attgenerated` cannot be altered in place in either direction, so the migration layer
+refuses every generated transition, and a `VIRTUAL` column the DSL could declare would be declarable
+only for a table the same plan creates.
 
 ### `ColMeta`
 
@@ -465,6 +495,9 @@ type TableExtra =
       readonly where: string | undefined
       readonly include: readonly string[]
       readonly nullsNotDistinct: boolean
+      readonly with: Readonly<Record<string, string | number | boolean>> | undefined
+      readonly tablespace: string | undefined
+      readonly concurrently: boolean
     }
   | { readonly node: 'comment'; readonly text: string }
   | {
@@ -483,6 +516,16 @@ type TableExtra =
       readonly onUpdate: FkAction | undefined
       readonly deferrable: boolean
       readonly initiallyDeferred: boolean
+    }
+  | {
+      readonly node: 'exclude'
+      readonly name: string
+      readonly using: string | undefined
+      readonly items: readonly ExcludeItem[]
+      readonly where: string | undefined
+      readonly deferrable: boolean
+      readonly initiallyDeferred: boolean
+      readonly requires: string | undefined
     }
   | { readonly node: 'renamedFrom'; readonly from: string }
   | { readonly node: 'clusterOn'; readonly index: string }
@@ -503,7 +546,8 @@ One heterogeneous array of tagged nodes, so an extension pack can add a node kin
 change. Every node is plain frozen data apart from `foreignKey`'s one thunk, and every column name
 in it is the resolved *database* name, not the TypeScript key. An index node carries its columns
 twice: `columns` is the bare names in order — the shape the first release shipped — and `items` is
-the same list with each column's own options beside it.
+the same list with each key's own options beside it. An **expression** key contributes nothing to
+`columns`: it has no column name, and inventing one would make that list lie about what it is.
 
 ### `primaryKey`
 
@@ -560,6 +604,10 @@ interface IndexBuilder {
   where(expression: AnyFragment): IndexBuilder
   include(...refs: AnyRef[]): IndexBuilder
   nullsNotDistinct(): IndexBuilder
+  with(parameters: StorageParameters): IndexBuilder
+  fillfactor(percent: number): IndexBuilder
+  tablespace(name: string): IndexBuilder
+  concurrently(on?: boolean): IndexBuilder
   on(...columns: IndexColumnLike[]): TableExtra
 }
 
@@ -577,6 +625,19 @@ Per-column options are item objects rather than methods on the column reference 
 the design document: `Ref` is the hottest type in the package, and three more methods on it would be
 paid for by every column of every table in every program, to serve a handful of index declarations.
 
+A key may also be an **expression** — a bare fragment, `index('i').on(sql`lower(…)`)`, or an item
+object `{ expression: sql`…`, desc: true }` when it needs the per-key options too. `.with({ … })` writes
+`WITH (…)` — rendered sorted by key, with text values quoted — and `.fillfactor(n)` is sugar for
+`.with({ fillfactor: n })`. `.tablespace(name)` names one of the tablespaces the DBA created; a
+migration never creates or drops one, because a tablespace is a cluster object with a filesystem
+path behind it.
+
+`.concurrently(false)` opts this index out of the lock-safe rewrite: `migrate generate` normally
+turns a `CREATE INDEX` on an existing table into `DROP INDEX CONCURRENTLY IF EXISTS` +
+`CREATE INDEX CONCURRENTLY` in a second, `txmode none` file. The opt-out leaves the literal
+statement in the transactional file — and the hazard it carries, `LK101`, is then reported rather
+than suppressed.
+
 ### `uniqueIndex`
 
 Declared beside `index` above, and identical to it but for `unique: true` on the emitted node. See
@@ -591,13 +652,81 @@ interface IndexOptions {
   readonly where?: AnyFragment
   readonly include?: readonly AnyRef[]
   readonly nullsNotDistinct?: boolean
+  readonly with?: StorageParameters
+  readonly tablespace?: string
+  readonly concurrently?: boolean
 }
 ```
 
 `using` is the access method (`gin`, `gist`, `hnsw`; `undefined` is PostgreSQL's default b-tree) and
 is not validated against a list, because extensions add methods. `where` makes the index partial and
 refuses bind parameters like every other DDL expression. `include` is the covering payload —
-columns stored in the index but not part of its key.
+columns stored in the index but not part of its key. `with`, `tablespace` and `concurrently` are the
+option forms of the three methods above.
+
+### `exclude`
+
+{/* docs: signature */}
+```ts
+interface ExcludeBuilder {
+  using(method: string): ExcludeBuilder
+  where(expression: AnyFragment): ExcludeBuilder
+  deferrable(): ExcludeBuilder
+  initiallyDeferred(): ExcludeBuilder
+  requires(extension: PgExtension | string): ExcludeBuilder
+  on(...pairs: ExcludePair[]): TableExtra
+}
+
+function exclude(name: string): ExcludeBuilder
+```
+
+An `EXCLUDE` constraint — the generalisation of `UNIQUE` to any operator, and the only way to say
+"no two bookings may overlap" in the schema rather than in application code:
+
+```ts title="bookings.ts" no-run="a schema fragment: one table declaration, with no handle to run it against"
+import { exclude, pgTable } from 'pg-prime/schema'
+import { sql } from 'pg-prime/sql'
+
+export const bookings = pgTable(
+  'bookings',
+  (t) => ({
+    id: t.bigint().generatedAlways().primaryKey(),
+    room: t.integer(),
+    during: t.raw('tstzrange', 'during'),
+    cancelled: t.boolean().default(false),
+  }),
+  (t) => [
+    exclude('bookings_no_overlap')
+      .using('gist')
+      .where(sql`NOT ${t.cancelled}`)
+      .on([t.during, '&&']),
+  ],
+)
+```
+
+Adding `[t.room, '=']` to that `.on(…)` — "no two bookings **for the same room**" — needs
+`btree_gist`, because GiST has no `=` operator class for `integer` on its own. Say so with
+`.requires('btree_gist')` and export a `pgExtension('btree_gist')` beside the table.
+
+The name is mandatory, for the reason [`check`](#check)'s is: PostgreSQL's own default is
+`<table>_<first column>_excl`, which collides the moment a table declares two on the same leading
+column — and an adopted database's constraint names are data that `pg-prime pull` has to reproduce.
+
+`.on(...)` is **terminal**, as it is for [`index`](#index) and [`unique`](#unique), so `.where(…)`
+and the deferral methods come before it. The design sketch chains them after `.on(…)`; making that
+work would need the builder itself to *be* the `TableExtra`, and the node's fields (`using`, `where`,
+`deferrable`, `initiallyDeferred`) are exactly the method names.
+
+`.initiallyDeferred()` implies `.deferrable()`, as PostgreSQL's own grammar does. `.requires(ext)`
+names the extension the operator class comes from — `btree_gist` for an `=` on a scalar — and is
+checked against the registry's own [`pgExtension`](#pgextension) declarations: a claim the schema
+cannot satisfy is an error at generate time, naming the declaration to add, rather than a `42704`
+about an operator class three steps later.
+
+An element is a column reference or a fragment, and the operator is written in PostgreSQL's own
+operator alphabet: `'&&'`, `'='`, `'<>'`. An identifier is refused at declaration time, because
+`OPERATOR(schema.&&)` needs the resolution rules to come with it and the DSL has no way to say
+which schema.
 
 ### `check`
 
@@ -771,6 +900,7 @@ interface PgEnum<N extends string, V extends readonly string[]> {
   readonly schema: string | undefined
   readonly renamedFrom: string | undefined
   readonly renamedValues: Readonly<Record<string, string>> | undefined
+  readonly comment: string | undefined
 }
 ```
 
@@ -786,8 +916,12 @@ interface PgEnumOptions<V extends readonly string[] = readonly string[]> {
   readonly schema?: string
   readonly renamedFrom?: string
   readonly renamedValues?: { readonly [K in V[number]]?: string }
+  readonly comment?: string
 }
 ```
+
+`comment` emits `COMMENT ON TYPE`. It is its own fact, keyed by what it annotates, so re-wording one
+is a catalog write with no lock and never an `ALTER TYPE`.
 
 `renamedValues` is design/05 §3.2's label rename: **`{ [newLabel]: oldLabel }`**, keys first because
 the key is the label that exists now and the value is the history. The keys are the declared labels,
@@ -896,6 +1030,7 @@ interface PgDomain {
   readonly collation: string | undefined
   readonly checks: readonly { readonly name: string; readonly expression: string }[]
   readonly renamedFrom: string | undefined
+  readonly comment: string | undefined
 }
 ```
 
@@ -913,8 +1048,13 @@ interface PgDomainOptions {
   readonly collation?: string
   readonly checks?: readonly { readonly name: string; readonly expression: string }[]
   readonly renamedFrom?: string
+  readonly comment?: string
 }
 ```
+
+`comment` emits `COMMENT ON TYPE` — PostgreSQL resolves a domain name through the same `pg_type`
+lookup, and the migration engine's own renderer says `TYPE` for both, so the two agree statement for
+statement.
 
 The checks are DDL **text**, not `sql` fragments, on purpose: a domain's `CHECK` talks about `VALUE`,
 which is not a column and has no reference to interpolate, so the fragment tag would buy nothing and
@@ -1372,10 +1512,14 @@ which is the rule that keeps the type budget flat as the DSL grows.
 | <a id="RefLike"/>`RefLike` | `RefSpec.target()` | The structural minimum a reference target must be: `{ $: { table, schema, dbName } }`. Declared structurally rather than as `AnyRef` so the DDL module need not import the reference module that imports it. |
 | <a id="CheckSpec"/>`CheckSpec` | `ColumnDdl.checks` | `name` and `expression`, the latter as opaque DDL text — the shadow database normalises it. |
 | <a id="UniqueSpec"/>`UniqueSpec` | `ColumnDdl.uniqueSpec` | `name` and `nullsNotDistinct`, present exactly when the column is unique. |
-| <a id="IndexItem"/>`IndexItem` | the `index` node's `items` | One index column with its options resolved to database names: `column`, `desc`, `nulls`, `opclass`. |
+| <a id="IndexItem"/>`IndexItem` | the `index` node's `items` | One index key with its options resolved to database names: `column`, `expression`, `desc`, `nulls`, `opclass`. Exactly one of `column` and `expression` is set. |
 | <a id="IndexColumn"/>`IndexColumn` | `index().on(...)` | The per-column *input*: `{ column, desc?, nulls?, opclass? }`. |
-| <a id="IndexColumnLike"/>`IndexColumnLike` | `index().on(...)` | `AnyRef \| IndexColumn` — a bare reference or an item object. |
+| <a id="IndexExpression"/>`IndexExpression` | `index().on(...)` | The per-expression input: `{ expression, desc?, nulls?, opclass? }`. A bare `sql\`…\`` is the same thing with every option left at its default. |
+| <a id="IndexColumnLike"/>`IndexColumnLike` | `index().on(...)` | `AnyRef \| IndexColumn \| IndexExpression \| AnyFragment` — a bare reference, a bare fragment, or an item object. |
 | <a id="IndexNulls"/>`IndexNulls` | `IndexColumn.nulls` | `'first' \| 'last'`. |
+| <a id="StorageParameters"/>`StorageParameters` | `index().with(...)` | `Readonly<Record<string, string \| number \| boolean>>` — `WITH (…)`, rendered sorted by key with text values quoted. |
+| <a id="ExcludeItem"/>`ExcludeItem` | the `exclude` node's `items` | One `(<element> WITH <operator>)` pair, resolved to DDL text: `{ element, operator }`. |
+| <a id="ExcludePair"/>`ExcludePair` | `exclude().on(...)` | The input form: `readonly [AnyRef \| AnyFragment, string]`. |
 | <a id="RelNode"/>`RelNode` | `defineRelations`' output | The runtime relation the query compiler reads: `kind`, `opt`, `to`, `config`. |
 | <a id="ResolvedRelations"/>`ResolvedRelations` | `resolveRelations` | Table key to relation name to [`ResolvedRelation`](#resolvedrelation). Frozen. |
 | <a id="ResolvedThrough"/>`ResolvedThrough` | `ResolvedRelation.through` | The many-to-many hop: the junction `table`, and the `from`/`to` column keys on each side of it. |

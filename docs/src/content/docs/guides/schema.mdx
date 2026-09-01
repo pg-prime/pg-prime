@@ -288,6 +288,43 @@ const byDefault = bigint().primaryKey().generatedByDefault() // optional on inse
 default afterwards is dead code, and `.default()`, `.defaultSql()` and `.$default()` all refuse it —
 at the type level in the forward order, at declaration time in the reverse one.
 
+### `.generatedAlwaysAs()` — a column the database computes
+
+A *generated* column is not an identity column: instead of a sequence, its value is an expression
+over the row's other columns, recomputed by PostgreSQL on every insert and update.
+
+```ts title="invoices.ts" no-run="a schema fragment: one table declaration, with no handle to run it against"
+import { pgTable } from 'pg-prime/schema'
+import { sql } from 'pg-prime/sql'
+
+export const invoices = pgTable('invoices', (t) => ({
+  id: t.bigint().primaryKey().generatedAlways(),
+  price: t.numeric(),
+  quantity: t.integer(),
+  // the callback form: `price` and `quantity` are not references yet on this line
+  total: t.numeric().generatedAlwaysAs((c) => sql`${c.price} * ${c.quantity}`),
+  // the fragment form, for an expression that needs no sibling
+  label: t.text().nullable().generatedAlwaysAs(sql`upper(id::text)`),
+}))
+```
+
+Three things follow from `GENERATED ALWAYS`, and all three are enforced:
+
+- **the key is erased.** `Insertable<typeof invoices>` and `Updateable<typeof invoices>` have no
+  `total` and no `label` at all — the same erasure `.generatedAlways()` performs, for the same
+  reason. `metaOf().insertableKeys` is the runtime half, which is why `copyFrom` leaves them out of
+  its default column list too. See [COPY](/pg-prime/guides/copy/).
+- **`.nullable()` goes first.** A stored generated column *may* be nullable, but the erasure closes
+  `.nullable()` afterwards for the same reason it closes `.default()`.
+- **`STORED` only.** `{ stored: false }` — PostgreSQL 18's `VIRTUAL` — is a compile error with the
+  reason in it. `attgenerated` cannot be altered in place in either direction, so the migration
+  engine refuses every generated transition and a `VIRTUAL` column would be declarable only for a
+  table the same plan creates.
+
+The expression must be `IMMUTABLE`, which is PostgreSQL's rule and not ours: `price * quantity` is,
+and `lower(during)::date` is not, because casting a `timestamptz` to a `date` reads the session's
+`TimeZone`.
+
 ### `.references()`, and the two circularity notes
 
 A single-column foreign key is declared on the column, and the target is a **thunk**:
@@ -448,6 +485,7 @@ import {
   check,
   clusterOn,
   comment,
+  exclude,
   foreignKey,
   index,
   pgTable,
@@ -467,6 +505,7 @@ const invoices = pgTable(
     seq: t.integer(),
     total: t.integer(),
     createdAt: t.timestamptz(),
+    period: t.raw('tstzrange', 'period'),
   }),
   (t) => [
     primaryKey({ name: 'PK_Invoices', columns: [t.orgId, t.seq] }),
@@ -479,6 +518,7 @@ const invoices = pgTable(
       onDelete: 'restrict',
       deferrable: true,
     }),
+    exclude('invoices_no_overlap').using('gist').on([t.period, '&&']),
     index('invoices_created_idx').on(t.createdAt),
     uniqueIndex('invoices_seq_idx').on(t.seq),
     clusterOn('invoices_created_idx'),
@@ -509,6 +549,42 @@ is declared.
 is a thunk returning an array, paired positionally with `columns`, for the same reason
 `.references()` takes one. It is named `references` and not the design sketch's `foreignColumns`
 because the thunk is the load-bearing part.
+
+`exclude(name)` is `UNIQUE` generalised to any operator, and the only way to say "no two bookings
+may overlap" in the schema rather than in application code. The name is mandatory for the same
+reason `check`'s is — PostgreSQL's own default is `<table>_<first column>_excl`, which collides on
+the second one — and `.on(...)` is terminal, so `.using()`, `.where()` and the deferral methods come
+before it:
+
+```ts title="bookings.ts" no-run="a schema fragment: one table declaration, with no handle to run it against"
+import { exclude, pgExtension, pgTable } from 'pg-prime/schema'
+import { sql } from 'pg-prime/sql'
+
+export const btreeGist = pgExtension('btree_gist')
+
+export const bookings = pgTable(
+  'bookings',
+  (t) => ({
+    id: t.bigint().generatedAlways().primaryKey(),
+    room: t.integer(),
+    during: t.raw('tstzrange', 'during'),
+    cancelled: t.boolean().default(false),
+  }),
+  (t) => [
+    exclude('bookings_no_overlap')
+      .using('gist')
+      .requires(btreeGist)
+      .where(sql`NOT ${t.cancelled}`)
+      .on([t.room, '='], [t.during, '&&']),
+  ],
+)
+```
+
+`.requires(ext)` is the one part that is about your *repository* rather than about the constraint:
+GiST has no `=` operator class for `integer` without `btree_gist`, and naming the extension makes
+`migrate generate` refuse a schema that does not declare it — with the declaration to add — instead
+of failing on the shadow with a `42704` about an operator class. `.initiallyDeferred()` implies
+`.deferrable()`, as PostgreSQL's own grammar does.
 
 ### Indexes
 
@@ -553,6 +629,16 @@ const docs = pgTable(
     }),
 
     index('docs_vec_idx').using('hnsw').on({ column: t.vec, opclass: 'vector_cosine_ops' }),
+
+    // an EXPRESSION key — bare, or as an item object when it needs the per-key options
+    index('docs_body_lower_idx').on(sql`lower(${t.body})`),
+    index('docs_body_lower_desc_idx').on({ expression: sql`lower(${t.body})`, desc: true }),
+
+    // storage parameters, a tablespace, and the lock-safe-rewrite opt-out
+    index('docs_tag_ff_idx').fillfactor(70).on(t.tag),
+    index('docs_body_ff_idx').with({ fillfactor: 90, deduplicate_items: false }).on(t.body),
+    index('docs_id_fast_idx').tablespace('fast_ssd').on(t.id),
+    index('docs_id_inline_idx').concurrently(false).on(t.id),
   ],
 )
 ```
@@ -570,14 +656,28 @@ three more methods on it would be paid for by every schema in every program, for
 appears in a handful of index declarations. The item object costs nothing at the type level and says
 exactly the same thing.
 
-Not built, and worth naming so the gap is a row rather than an absence: `.with({ … })` storage
-parameters, `.concurrently(false)`, `.tablespace()`, and **expression** indexes. `pg-prime pull`
-records an expression index as unsupported rather than approximating it.
+`.with({ … })` writes `WITH (…)`, rendered sorted by key so two runs over one schema produce
+byte-identical DDL, with text values quoted. `.fillfactor(n)` is sugar for
+`.with({ fillfactor: n })`. `.tablespace(name)` names one of the tablespaces the DBA created — a
+migration never creates or drops one, because a tablespace is a cluster-level object with a
+filesystem path behind it, so a schema that names one only loads where that name exists.
+
+`.concurrently(false)` opts one index out of the lock-safe rewrite. By default `migrate generate`
+turns a `CREATE INDEX` on an existing table into `DROP INDEX CONCURRENTLY IF EXISTS` +
+`CREATE INDEX CONCURRENTLY` in a second, `txmode none` file, because the plain form takes a lock
+that blocks writes for the whole build. The opt-out is for the index you would rather have built
+inside the migration's transaction — a small table, or a build that must not leave an `INVALID`
+index behind if it is killed — and the hazard it carries, `LK101`, is then *reported* rather than
+suppressed. It is a property of how the index is BUILT rather than of the index, so it never
+appears in the catalog and never diffs.
 
 ### Table options and metadata
 
 `comment('…')` emits `COMMENT ON TABLE` and `renamedFrom('old')` is the table-level rename
-annotation. `clusterOn('idx')` emits `ALTER TABLE … CLUSTER ON`, and it is here because
+annotation. The same word is a `comment` option on [`pgEnum`](#pgenum) and `pgDomain`, which emits
+`COMMENT ON TYPE`, and a `.comment()` method on a column, which emits `COMMENT ON COLUMN` — three
+targets, one fact kind, and re-wording any of them is a catalog write with no lock rather than an
+`ALTER`. `clusterOn('idx')` emits `ALTER TABLE … CLUSTER ON`, and it is here because
 `pg_index.indisclustered` is a fact the differ models: a fact that is diffed and cannot be declared
 is a fact that gets dropped, and all 68 of AdventureWorks' tables carry one.
 

@@ -124,6 +124,7 @@
         "migrationId",
         "migrationStatus",
         "migrationStatusOn",
+        "nonConcurrentIndexes",
         "normalizeDump",
         "observationDiagnostics",
         "observedCounts",

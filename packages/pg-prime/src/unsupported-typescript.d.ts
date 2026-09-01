@@ -175,6 +175,7 @@ export declare const div: Unsupported
 export declare const enumCodec: Unsupported
 export declare const enumColumn: Unsupported
 export declare const eq: Unsupported
+export declare const exclude: Unsupported
 export declare const exists: Unsupported
 export declare const float4Codec: Unsupported
 export declare const float8Codec: Unsupported
@@ -425,6 +426,8 @@ export type Duration = Unsupported
 export type DynamicTypeRequest = Unsupported
 export type ErrorContext = Unsupported
 export type ErrorOptions = Unsupported
+export type ExcludeItem = Unsupported
+export type ExcludePair = Unsupported
 export type ExclusionViolationError = Unsupported
 export type ExecOptions = Unsupported
 export type Executor = Unsupported
@@ -443,6 +446,7 @@ export type Fragment<T0 = any> = Unsupported
 export type FrameOpts = Unsupported
 export type FromRawOpts<T0 = any> = Unsupported
 export type FromValuesOpts = Unsupported
+export type GeneratedAlwaysAsOptions = Unsupported
 export type GroupedQuery<T0 = any, T1 = any, T2 = any, T3 = any> = Unsupported
 export type Grouping = Unsupported
 export type Handle<T0 = any, T1 = any> = Unsupported
@@ -454,6 +458,7 @@ export type InFailedTransactionError = Unsupported
 export type IndeterminateCommitError = Unsupported
 export type IndexColumn = Unsupported
 export type IndexColumnLike = Unsupported
+export type IndexExpression = Unsupported
 export type IndexItem = Unsupported
 export type IndexNulls = Unsupported
 export type IndexOptions = Unsupported
@@ -651,6 +656,7 @@ export type SqlSyntaxError = Unsupported
 export type SqlTag = Unsupported
 export type StatementMode = Unsupported
 export type StatementStats = Unsupported
+export type StorageParameters = Unsupported
 export type StreamCallOptions = Unsupported
 export type StreamOptions = Unsupported
 export type StringDataRightTruncationError = Unsupported

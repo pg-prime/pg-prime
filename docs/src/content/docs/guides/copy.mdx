@@ -66,7 +66,7 @@ than an insert.
 | Option | Default | What it does |
 |---|---|---|
 | `format` | `'text'` | `'csv'` is the other. Binary COPY is not offered — pg-prime's codecs are text. |
-| `columns` | every **insertable** column, in declaration order | The columns to write, in order — by default the same set an insert may name, read from the same schema metadata, so the two paths cannot disagree. `.generatedAlways()` columns are not in it; name one explicitly and `COPY` will write your value, which is what makes a restore possible. Your rows must have a key for every column in the list: one they do not have goes out as `\N`, **not** as the column's database default. Narrow the list to let a default apply. |
+| `columns` | every **insertable** column, in declaration order | The columns to write, in order — by default the same set an insert may name, read from the same schema metadata, so the two paths cannot disagree. Neither kind the database computes is in it: `.generatedAlways()` (identity) or `.generatedAlwaysAs(…)` (a stored expression). Name an **identity** column explicitly and `COPY` will write your value, which is what makes a restore possible; name a **generated expression** column and pg-prime refuses it before the statement leaves the process, because PostgreSQL refuses it too (`42P10`, *"Generated columns cannot be used in COPY"*) and the database is going to compute it either way. Your rows must have a key for every column in the list: one they do not have goes out as `\N`, **not** as the column's database default. Narrow the list to let a default apply. |
 | `highWaterMark` | 65 536 | Bytes buffered before backpressure is applied to your source. |
 | `signal` | — | Aborts the load; see [cancellation](/pg-prime/guides/cancellation/). |
 
