@@ -719,3 +719,46 @@ independence ratios (1.000) are **unchanged to the digit**. The account is in
   `## Database helpers`), and the new `guides/views.mdx`.
 - `.changeset/olive-views-arrive.md` (`pg-prime`, minor) and `.changeset/quiet-lanes-render.md`
   (`@pg-prime/kit`, minor).
+
+---
+
+### Integration — 2026-09-01
+
+Order G → V → W onto `integ-14` (branched from main `faf2f01`, which already carried the
+signature-drift gate — built during the round, `b8650cb`). 24 agent commits cherry-picked; the
+conflicts and their resolutions:
+
+- **Generated files** (both bench reports, `tools/api-snapshot/pg-prime.json`, the types@<5.9
+  stub): taken from the incoming side during the picks, then **regenerated on the merged tree** —
+  the handovers' own instruction. Never hand-merged.
+- **`design/14` and the docs sidebar**: `git merge-file --union` (the RESULT sections and the two
+  Guides lines are append-only; the union kept G then V then W in order).
+- **`src/schema/table.ts`**, the one real code conflict: G wired `.generatedAlwaysAs()` resolution
+  into `pgTable`'s inline column loop; W extracted that loop into the shared `buildColumnRefs`.
+  Merged by keeping G's `lateGenerationRefs`/`resolveGeneration` and giving `buildColumnRefs` an
+  optional `resolve?: (col, key) => ColumnRuntime` hook that only `pgTable` passes — a view's
+  columns have nothing to late-bind and pass none, so W's drift argument for the shared loop
+  stands.
+- **The two budget files**: a JSON-aware three-way (G-vs-base and V-vs-base applied onto the
+  W-flavored survivor, narratives concatenated), then every colliding number **re-measured on the
+  merged tree**, where the three branches sum for the first time: treeshake 75 410/75 651/84 927 B
+  min+gz (budgets 75 776/75 776/84 992), jsBytes 958.7 KB → 982 016, largestDtsBytes 76.6 KB →
+  78 848, packageDtsBytes 604 404 → 605 184. Ceil rule as always; every branch's account kept.
+
+**The signature-drift gate met the round's own pages** and caught exactly one paraphrase among the
+33 new signature blocks: `l2`'s second operand was shown as `readonly number[] | VectorOperand`
+where the unexported `VectorArg` truthfully expands to `Operand<readonly number[]> |
+VectorOperand`. Fixed on the page; 400 declarations across 392 blocks green.
+
+**Full chain on the merged tree, all twelve gates exit 0** (pgprime-s :54334 + PgBouncer :56434 +
+`PG_PRIME_TEST_VECTOR_URL` :54337): tier 0 pg-prime **1 086** + create 35 + testing 23; tier 1
+pg-prime **1 882** (12 skipped, PGlite-guarded) + testing 28; tier 2 pg-prime **1 977**/12 skipped,
+kit **455/0 skipped**, testing 36, create 42; sizes 958.7 KB js / 76.6 KB dts both ok;
+bench:types headline 82 777 (5.9.3) / 135 107 (7.0.2) vs 200 000; docs **1 325/1 325 names**,
+R22 43 explained, signatures 400 checked / 1 opted out; docs:examples:pg 10 examples / 5 pages.
+The one formatting red on the first pass was the integrator's `json.dump` on the budget files —
+`pnpm format`, re-run, green.
+
+design/01 §3 rows 49, 50, 51, 54, 58, 61, 62: **each built to its acceptance sentence** — see the
+three RESULTs above for the row-by-row accounting and the recorded not-dones (each with its
+deferring row).
