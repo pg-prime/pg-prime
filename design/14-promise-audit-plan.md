@@ -514,3 +514,208 @@ tree, the numbers will move again); `docs/astro.config.mjs` (one sidebar line un
 `.changeset/hip-cars-argue.md`. The ops-manifest self-gates that moved:
 `test/query/ops.test.ts`'s golden-vs-manifest comparison no longer filters the vector class (so all
 101 rows need a golden) and its "deferred with a reason" row is inverted; `CONFIRMABLE` is 98.
+#### W — RESULT (2026-09-01)
+
+Branch `worktree-agent-adb9776629526bbc1`, five commits off `9d3f01d`, not pushed. design/01 §3
+row 58 is built to its acceptance sentence: `pgView` / `pgMaterializedView` yield a queryable entity
+with no insert/update/delete, and `insertInto(view)` is a compile error.
+
+**Commits, oldest first**
+
+| SHA | What |
+|---|---|
+| `0c72793` | `feat(schema)`: the DSL, the typed read-only entity, the query seam, `refreshMaterializedView` |
+| `7019c05` | `feat(kit)`: declared views into the `sql/` lane, the census |
+| `0ef87cc` | `chore(budgets)`: 1 471 instantiations recovered, then four numbers re-baselined |
+| `b3bd62b` | `docs(views)`: the guide, 36 reference entries, two changesets |
+| `3956ee0` | `chore(bench)`: the two reports regenerated on the final tree |
+
+**1 — the DSL** (`packages/pg-prime/src/schema/view.ts`, new)
+
+`pgView(name, options?).columns((t) => ({…}))` then `.as(sql`…`)` or `.existing()`; `05` §3.6's
+forms (b) and (c). Options `.with({ securityInvoker, securityBarrier, checkOption })` with
+**`securityInvoker: true` as the default** (D14), `.comment()`, `.renamedFrom()`, `.dependsOn(…)`.
+Matviews add `.withNoData()` and `.refreshable({ concurrently })` and have no `.with(…)` — a matview
+carries none of the three reloptions, so a method that could only throw is worse than its absence.
+The body is rendered to DDL text at declaration time through `fragmentDdlText`, so a bind parameter
+in a position the catalog cannot hold fails on the import of the schema file.
+
+**Divergence, deliberate: a view is its own handle and is NOT a `defineSchema` entry.** It carries
+a one-entry `[SCHEMA]` — the `CteSchema` trick — so `db.from(activeUsers)` takes the value directly
+and every join, operator and projection works with zero query-layer changes; unlike a CTE handle it
+carries real `Cols`, so the PG type class per column survives. A view is not an `AnyTable` (no
+`[INS]`, no `[UPD]`), so `defineSchema({ activeUsers })` is a compile error — a view has no
+relations for the registry to add and no insert shape to offer, and the honest spelling is the
+direct one. The kit finds views on the module's exports, next to `pgDomain`.
+
+**2 — read-only, twice.** Type level: a new exported `READONLY` slot, read in **return** position by
+`insertInto` / `update` / `deleteFrom` on both `Executor` and `CteExecutor`, resolving to
+`OrmTypeError<WriteToViewMsg<…>>`. Parameter position was rejected on `types.ts`'s own recorded
+measurement (an argument-position check prints the argument type twice: 926 chars on 5.9.3, 1 319 on
+7.0.2, against D9's 300). Golden `tools/type-errors/__golden__/insert-into-view.*.txt`: **1 line,
+261 chars, byte-identical on 5.9.3 and 7.0.2**, and no other golden moved. Runtime: `sourceOf`
+answers `kind: 'view'` off `$.view` — structurally, because `src/schema` may not import `src/query`
+(design/08 §2.1), so a nominal `registerView` would have had nobody allowed to call it — and the
+three write builders already refused a non-table `kind`; they now say what to do instead.
+`PgPrimeTypeError` is the design docs' name; the tree spells it `OrmTypeError`.
+
+**3 — the `sql/` lane.** `migrate generate` renders each declared view into
+`<repeatablesDir>/020_views/NNN_<schema>__<name>.sql` **before** `loadDesired` loads the lane, so the
+shadow holds the current definitions and the proof covers them. From there it is an ordinary
+repeatable and every downstream command is unchanged.
+
+**Divergence, and the reason: a file, not `ScanOptions.extra`.** The in-memory route was the
+smaller diff and it is wrong. `apply`, `status` and `doctor` do not load the TypeScript schema —
+`apply` must work in a deploy image that ships migrations and nothing else — so a view contributed
+only in memory reads as an orphan to `doctor` (`planRepeatables` computes orphans as recorded-minus-
+on-disk) and never re-applies at deploy time. Writing is gated on `outDir`, so `migrate check`
+writes nothing and reports `declared_views_stale` instead; and the write happens at the top of
+`generate` rather than beside the plan files because a view-only change produces an **empty
+structural diff** and returns `up_to_date` long before the writing block — which is exactly the
+change the lane exists to carry. `.dependsOn` is a topological sort whose rank is in the filename
+(the pass has no dependency graph; scan order is one lexicographic walk); reordering renames files
+and the stale ones are pruned, and pruning only ever deletes a file carrying `-- pg-prime:declared
+view`, so a hand-written view or one `pull` wrote is never touched. A cycle is a diagnostic.
+
+Census: `generate` subtracts the declared views **by name**, via one small `presentDeclaredViews`
+query against the target. By count would lie in both directions — with four declarations, three
+plain views in the database and one of them undeclared, count arithmetic silences the undeclared
+one, which is the failure this was measured hitting. `extractCatalog` is untouched (it is also G's
+neighbourhood this round), so `doctor` still reports the raw catalog count; recorded below.
+
+**4 — `refreshMaterializedView`.** **Divergence: on `Queryable`, not on `Db`.** `REFRESH MATERIALIZED
+VIEW CONCURRENTLY` inside `BEGIN … COMMIT` was measured working on PG 17.11 before the seam was
+chosen, so the common shape is a refresh in the transaction that also writes the audit row, and a
+`Db`-only helper would force that out of the transaction. It is installed exactly where `copyFrom`
+is. It goes through `runner.runRaw`, not `runner.use`, so it earns `07` §7.1's events, §4's mapping
+and §6.2's timeout — the tier-2 test asserts the exact statement text in the log, which is the point:
+a `REFRESH` that silently dropped `CONCURRENTLY` passes every functional assertion.
+
+**Numbers**
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` · `format:check` · `typecheck` | 0 |
+| `pnpm test` (tier 0) | 1 040 pg-prime + 23 testing + create/kit's own; **4.28 s → 4.43 s** wall |
+| `pnpm test:live` on PGlite | 86 files, 1 830 passed, 6 skipped |
+| `pnpm test:live` on PG 17.11 | 86 files, **1 836 passed, 0 skipped** |
+| `pnpm test:pg` | pg-prime 96/1 902 (11 skipped), kit 57/435 (6 skipped), create 42, testing 36 |
+| `pnpm build` · `package:check` | 0 |
+| `pnpm bench:types` | headline 82 339 / 134 339 against 200 000; worst fixture **+3.49 %** (`empty`) |
+| `pnpm bench:compile` | 0 |
+| `pnpm docs:check` · `docs:examples` | 0; 100 examples / 27 pages; coverage **100 % on all four packages** |
+| `pnpm docs:examples:pg` | 7 examples / 4 pages, 3 PgBouncer blocks skipped loudly |
+
+**The 11 + 3 skips are the PgBouncer ones.** No pooler was assigned to this worktree, so
+`test/pg/session-pooler.test.ts`, four cases in `test/pg/session.test.ts` and the three
+`pg-only="pgbouncer"` docs blocks skip with their own printed reason (`PG_PRIME_TEST_PGBOUNCER_URL is
+unset … UNVERIFIED in this run`). Everything else in tier 2 ran against `pgorm-spike-sql`
+(PostgreSQL 17.11 on :54331). The 6 tier-1 skips on PGlite are the `requiresConcurrency()` set.
+
+**Budgets moved, each with the measurement in the same commit** — and only after two rounds of
+recovering the cost first:
+
+- the stage-2 builder is untyped internally and cast once at the public boundary, the way `pgTable`
+  already was: **−989 instantiations**;
+- `ViewImpl extends TableImpl` instead of a second `implements ViewRuntime` class with its own
+  key→ref `Map`: **−459**. `TableImpl` is exported to that one sibling for it;
+- `buildColumnRefs` shared by `pgTable` and both view factories: −23, so that one is about drift and
+  not cost (`view.ts` had already lost the `(casing strategy: …)` half of the duplicate-name
+  sentence while it was a copy).
+
+| Budget | From | To | Measured |
+|---|---|---|---|
+| `packages/pg-prime.jsBytes` | 927 744 | 944 128 | 943 606 B in 87 files |
+| `packages/pg-prime.largestDtsBytes` | 76 358 | 78 393 | set AT the measurement |
+| `bench/types packageDtsBytes` | 553 984 | 575 488 | 574 856 B |
+| `treeshake.connect-one-select` | 73 728 | 74 752 | 73 850 (+867) |
+| `treeshake.full-crud-tx` | 73 728 | 74 752 | 74 111 (+877) |
+| `treeshake.root-import-all` | 80 896 | 82 944 | 82 330 (+2 190) |
+
+`fixtures/treeshake/root-import-all/expected-modules.json` gains `dist/schema/view.js` and nothing
+else; the two connect fixtures do not include the module at all, so their delta is the read-only
+guard and the REFRESH helper, which `07` §1.3 puts on every handle.
+
+**The one number over the plan's band, stated plainly.** design/14 §1.8 says ≤ +2 % per
+`bench:types` fixture. `empty` is **+3.49 %** (10 026 → 10 376 on TS 7) and four other
+declaration-only fixtures are between +2.1 % and +2.9 % on TS 5.9.3. `empty` has no schema and no
+query in it: it measures "what does one more source file in the library cost", the delta is a
+**constant 350** that does not scale with schema size or query count, and it is 350 after 1 471 were
+taken back. Everything the band exists to protect is unmoved: every real query fixture ≤ +0.95 %,
+headline +0.26 %, and per column (3.0), per table (36), per declared relation (37.5), marginal per
+usage (40), all five per-query figures (94 / 177 / 252 / 8 744.8 / 942) and all three schema-size
+independence ratios (1.000) are **unchanged to the digit**. The account is in
+`bench/types/budget.json`'s `_packageDtsBytesWhy`.
+
+**Not built, with the row that defers each**
+
+1. **The builder-inferred form** — `pgView('v').as((q) => q.from(users)…)`, `05` §3.6's form (a).
+   `src/schema` may not depend on `src/query` (design/08 §2.1), and the feature's diff story is
+   **row 63** (v1.x). Declared columns are the v1 spelling and they are strictly more honest: the
+   inferred form would have to re-derive a PG type per projected expression.
+2. **Structured diffing of a view definition** — **row 63**, v1.x, and design/14 decision 1's scope
+   guard names it. `05` §3.6's normalized-definition strategy is not built; the body is a hashed
+   repeatable, which is `01` §3's lane decision.
+3. **`.indexes(…)`, `.using('heap')`, `.tablespace(…)` on a matview** — `05` §3.6's sketch, not in
+   row 58. It does not drop out naturally: the index renderer is a private function in the kit's
+   `src/schema/emit.ts` (G's file this round), and a matview's repeatable is DROP + CREATE, so a
+   declared index needs a recreation story that does not exist yet. The unique index `CONCURRENTLY`
+   needs therefore lives in the user's own `sql/` lane, the generated file says so in its header,
+   and the guide has an aside about it.
+4. **Lint `SEC002`** (a matview reading an RLS-enabled table) and **`concurrently: true` without a
+   unique index as a lint error** — both `05` §3.6, both the kit's lint rules. The second cannot be
+   a lint in v1 *because* of (3): pg-prime cannot see an index it cannot declare. It is the server's
+   `55000`, mapped and rethrown, and the tier-2 test pins that it is never a silent downgrade.
+5. **The census subtraction is `generate`-side only.** `doctor` has no schema loaded and reports the
+   raw catalog count. Making it schema-aware means `doctor` importing the user's TypeScript, which
+   is a change to what that command is; recorded rather than done.
+6. **`pull` still writes views to `sql/020_views/` unmarked.** Promoting a pulled view to a TS
+   declaration leaves the pulled file behind and nothing detects the duplicate. One diagnostic
+   comparing `-- pg-prime:object view <identity>` against the declared set would close it; `pull` is
+   G's directory this round.
+7. **The declared column types are not verified against the view's actual output types.** The shadow
+   knows both after `loadDesired`; a query comparing `pg_attribute` for the created view against the
+   declaration would turn a wrong `t.text()` into an author-time diagnostic instead of a decode
+   surprise. Worth doing, out of this round.
+
+**Shared-file hunks the integrator must know**
+
+- `packages/pg-prime/src/index.ts` — 4 values (`isView`, `pgMaterializedView`, `pgView`, `READONLY`)
+  and 19 types across the schema value block, the schema type block and the phantom-symbol block;
+  `RefreshMaterializedViewOptions` added to the `./query/run.js` type re-export.
+- `packages/pg-prime/src/schema/index.ts` — `READONLY` in the symbol block, one `export`/`export type`
+  pair for `./view.js`.
+- `packages/pg-prime/src/schema/table.ts` — three hunks: `TableRuntime.view?: ViewInfo`, `TableImpl`
+  exported, and `pgTable`'s column loop replaced by the extracted `buildColumnRefs`. **G owns
+  `column.ts` / `extras.ts` / `ddl.ts` / `objects.ts`, not this file**, but a reviewer should know
+  `pgTable`'s body moved.
+- `packages/pg-prime/src/query/types.ts` — the six write entry points on `Executor` and
+  `CteExecutor`, `Queryable.refreshMaterializedView`, three imports.
+- `packages/pg-prime/src/query/scope.ts` — `SourceRuntime['kind']` gains `'view'`, one line in
+  `sourceOf`, and the new `writeTargetMessage`; one line each in `insert.ts` / `update.ts` /
+  `delete.ts`.
+- `packages/pg-prime/src/session/handles.ts` — `refreshSql`, `RefreshMaterializedViewOptions`, one
+  `install()` in `installQueryable`; `src/query/run.ts` adds the name to the `compileOnly` refusal
+  list and re-exports the option type.
+- `packages/pg-prime/test/schema/fixture.ts` — two new exports (`activeUsers`, `userStats`) consumed
+  by `tools/type-errors/cases/insert-into-view.ts` and `test/query/types/view.probe.ts`.
+- `tools/api-snapshot/{pg-prime,pg-prime-kit}.json` and both `src/unsupported-typescript.d.ts`
+  stubs — all four are `node tools/api-snapshot.mjs` output, never hand-edited. `pg-prime` `.`
+  311v/365t → 315v/384t, `./schema` 51v/80t → 55v/98t; `@pg-prime/kit` +5 values, +8 types.
+- `tools/budgets.json` — two numbers in `packages/pg-prime`, three in `treeshake`, a new
+  `_measuredBeforeViews` block, and an appended paragraph in each of the four `_overDesign` entries.
+- `bench/types/budget.json` — `packageDtsBytes` and a prepended paragraph in `_packageDtsBytesWhy`.
+- `fixtures/treeshake/root-import-all/expected-modules.json` — one line.
+- **Kit, and the file G is most likely to collide on:** `src/generate.ts` gains an import block, a
+  view-sync block at the top of `generate()`, and `extractorDiagnostics` becoming two `censusWithout`
+  calls. `src/config/load.ts` (`declarationOf` + `isTableLike` + the `views` bucket),
+  `src/schema/types.ts` (`ViewLike`, `SchemaLike.views`), `src/index.ts` (one export block), and the
+  new `src/schema/views.ts`. **`src/schema/emit.ts`, `src/diff/*` and `src/pull/*` are untouched.**
+- Docs: `astro.config.mjs` sidebar (one line, after `guides/copy`), `reference/schema.mdx` (a new
+  `## Views and materialized views` section between Enums and Schemas/domains, plus one row in the
+  phantom-slot table and "Fourteen" → "Fifteen"), `reference/pg-prime.mdx` (`Queryable`'s signature
+  block and a new `## Refreshing a materialized view` before `## Pooling`), `reference/kit.mdx`
+  (three rows in the "Loading the desired state" table and a new `## Declared views` before
+  `## Database helpers`), and the new `guides/views.mdx`.
+- `.changeset/olive-views-arrive.md` (`pg-prime`, minor) and `.changeset/quiet-lanes-render.md`
+  (`@pg-prime/kit`, minor).
