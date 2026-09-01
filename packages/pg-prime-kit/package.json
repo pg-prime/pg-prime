@@ -1,6 +1,6 @@
 {
   "name": "@pg-prime/kit",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Migration engine for pg-prime: catalog diffing, plan generation, prove-on-shadow-clone, apply. Pre-alpha — `pg-prime migrate apply|status|baseline|unlock` plus the programmatic API.",
   "license": "MPL-2.0",
   "repository": {

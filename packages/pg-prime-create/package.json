@@ -1,6 +1,6 @@
 {
   "name": "@pg-prime/create",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "`npm create @pg-prime` — scaffold a pg-prime project: schema, config, migrations, a first query and a PGlite test fixture. Pre-alpha; the scaffold IS the getting-started guide.",
   "license": "MPL-2.0",
   "repository": {

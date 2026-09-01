@@ -1,6 +1,6 @@
 {
   "name": "pg-prime",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "PostgreSQL-only, type-safe TypeScript ORM. Zero dependencies, ESM-only. Pre-alpha — the API will change.",
   "keywords": [
     "migrations",
