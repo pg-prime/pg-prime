@@ -77,6 +77,7 @@ import {
   sourceOf,
   toExprList,
   toExprNode,
+  writeTargetMessage,
 } from './scope.js'
 
 /** `rows × columns` above which `auto` switches to `unnest` (03 §2.6). */
@@ -835,9 +836,7 @@ export function makeInsert(
 ): InsertBuilder {
   const source = sourceOf(h)
   if (source.kind !== 'table') {
-    throw new BuilderError(
-      'pg-prime: insertInto() takes a table handle, not a CTE or derived table.',
-    )
+    throw new BuilderError(writeTargetMessage('insertInto', source))
   }
   const name = alias ?? source.name
   const meta = metaOf(h as never, ctx.registry)

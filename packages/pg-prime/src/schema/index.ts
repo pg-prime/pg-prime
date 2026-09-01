@@ -7,6 +7,7 @@ export {
   META,
   NAME,
   OUT,
+  READONLY,
   REFS,
   RELS,
   SCHEMA,
@@ -127,6 +128,28 @@ export type {
   Update,
   Updateable,
 } from './table.js'
+
+export { isView, pgMaterializedView, pgView } from './view.js'
+export type {
+  AnyMaterializedView,
+  AnyView,
+  MaterializedView,
+  MaterializedViewBody,
+  MaterializedViewBuilder,
+  MaterializedViewRuntime,
+  RefreshableOptions,
+  View,
+  ViewBody,
+  ViewBuilder,
+  ViewDependency,
+  ViewInfo,
+  ViewOptions,
+  ViewRow,
+  ViewRuntime,
+  ViewSchema,
+  ViewTable,
+  ViewWithOptions,
+} from './view.js'
 
 export { defineRelations, defineSchema, resolveRelations } from './relations.js'
 export type {

@@ -8,10 +8,13 @@ import {
   defineSchema,
   index,
   pgEnum,
+  pgMaterializedView,
   pgTable,
+  pgView,
   REFS,
   uniqueIndex,
 } from '../../src/schema/index.js'
+import { sql } from '../../src/sql/index.js'
 
 export const memberRole = pgEnum('member_role', ['owner', 'admin', 'member'])
 
@@ -110,3 +113,20 @@ export const schema = defineSchema(tables, relations)
 export type UsersH = (typeof schema.h)['users']
 export type PostsH = (typeof schema.h)['posts']
 export type CommentsH = (typeof schema.h)['comments']
+
+/**
+ * A declared view and a declared materialized view (design/01 §3 row 58).
+ *
+ * They are NOT in `defineSchema(...)`: a view carries its own one-entry registry, so it is a
+ * handle on its own and `db.from(activeUsers)` needs no `.h`. Their reason for living in the
+ * shared fixture is `tools/type-errors/cases/insert-into-view.ts` and the `expect-type` probes,
+ * both of which need one view whose columns are exactly known.
+ */
+export const activeUsers = pgView('active_users')
+  .columns((t) => ({ id: t.uuid().$type<UserId>(), email: t.text() }))
+  .as(sql`select "id", "email" from "users" where "active"`)
+
+export const userStats = pgMaterializedView('user_stats')
+  .columns((t) => ({ userId: t.uuid().$type<UserId>(), posts: t.bigint() }))
+  .refreshable({ concurrently: true })
+  .as(sql`select "author_id" as "user_id", count(*) as "posts" from "posts" group by 1`)

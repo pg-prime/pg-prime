@@ -35,6 +35,12 @@ export const SRC = Symbol.for('pg-prime.SRC')
 /** Sentinel-error message carrier (design/04 §4.1). */
 export const ERR = Symbol.for('pg-prime.ERR')
 /**
+ * "This FROM source has no write surface" — present only on a `pgView` / `pgMaterializedView`
+ * handle (design/01 §3 row 58). `insertInto` / `update` / `deleteFrom` read it in return position
+ * and resolve to design/04 §4.1's branded sentence instead of building a statement.
+ */
+export const READONLY = Symbol.for('pg-prime.READONLY')
+/**
  * Reserved. Was the brand key of the schema layer's own `DateString`; `DateString` is now an alias
  * of the codec layer's `PgDateString` (one brand, `src/schema/types.ts`), so nothing reads this.
  * Kept exported because removing a `Symbol.for` key from the public surface is a breaking change

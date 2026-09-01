@@ -53,7 +53,14 @@ import { metaOf } from './meta.js'
 import type { TableCodecMeta } from './meta.js'
 import type { RefScope } from './ref.js'
 import { registerBuilder } from './nominal.js'
-import { allOf, compileProjection, NO_LEFT_JOINS, sourceOf, toExprNode } from './scope.js'
+import {
+  allOf,
+  compileProjection,
+  NO_LEFT_JOINS,
+  sourceOf,
+  toExprNode,
+  writeTargetMessage,
+} from './scope.js'
 import { checkAlias, derivedRuntime, rebuildScope } from './select.js'
 import { oneOf } from './window.js'
 import { NAME } from '../schema/index.js'
@@ -361,7 +368,7 @@ export function makeUpdate(
 ): UpdateBuilder {
   const source = sourceOf(h)
   if (source.kind !== 'table') {
-    throw new BuilderError('pg-prime: update() takes a table handle, not a CTE or derived table.')
+    throw new BuilderError(writeTargetMessage('update', source))
   }
   const name = checkAlias(alias ?? source.name)
   const meta = metaOf(h as never, ctx.registry)

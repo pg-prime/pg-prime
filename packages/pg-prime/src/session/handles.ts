@@ -50,6 +50,8 @@ import {
   encodeCopyRows,
 } from './copy.js'
 import { assertPayloadSize } from './listen.js'
+import { quoteIdentPart } from '../sql/ident.js'
+import type { AnyMaterializedView } from '../schema/index.js'
 import { ASYNC_DISPOSE, ensureGuardStore, withFrame, withoutFrames } from './guard.js'
 import { ConnRunner, PoolRunner, acquire, release } from './runner.js'
 import type { SessionState, StatementOptions, TxRuntime } from './runner.js'
@@ -176,6 +178,35 @@ function installQueryable(
   // the common shape is a load inside the transaction that also writes the audit row.
   install(handle, 'copyFrom', makeCopyFrom(state, runner))
   install(handle, 'copyTo', makeCopyTo(state, runner))
+
+  // REFRESH MATERIALIZED VIEW, for the same reason (design/01 §3 row 58).
+  install(
+    handle,
+    'refreshMaterializedView',
+    async (view: AnyMaterializedView, opts?: RefreshMaterializedViewOptions): Promise<void> => {
+      const text = refreshSql(view, opts)
+      // `runRaw`, not `use`: a refresh is a statement, so it earns `07` §7.1's start/end/error
+      // events, §7.3's slow-query record, §4's error mapping and §6.2's per-statement timeout —
+      // exactly like `db.sql`…``. Going straight to `conn.execute` would have made the one
+      // statement in the API that people most want to see in a log the one they cannot.
+      await runner.runRaw<never>({
+        sql: text,
+        paramCount: 0,
+        paramTypes: EMPTY_OIDS,
+        operation: 'other',
+        tables: [view.$.view.name],
+        paramValues: () => EMPTY_PARAMS,
+        async perform(conn, _env, o) {
+          const r = await conn.execute({
+            text,
+            params: [],
+            ...(o.signal === undefined ? {} : { signal: o.signal }),
+          })
+          return { rows: [], rowCount: r.rowCount ?? 0 }
+        },
+      })
+    },
+  )
 
   // Installed here only for the ROOT handle, whose scoped clone is a plain `Queryable`. A `Tx` and
   // a `Session` re-install their own, because their scoped clone must still be a `Tx` / a `Session`
@@ -788,6 +819,49 @@ async function setLocalOn(
       params: setConfigParams(settings) as string[],
     })
   })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REFRESH MATERIALIZED VIEW, installed on every handle (design/01 §3 row 58)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const EMPTY_OIDS: readonly number[] = Object.freeze([])
+const EMPTY_PARAMS: readonly unknown[] = Object.freeze([])
+
+export interface RefreshMaterializedViewOptions {
+  /**
+   * Override the view's own `.refreshable({ concurrently })` declaration.
+   *
+   * `true` needs a unique index on the matview; PostgreSQL answers `55000` without one and that
+   * error is mapped and rethrown rather than swallowed.
+   */
+  readonly concurrently?: boolean
+}
+
+/**
+ * `REFRESH MATERIALIZED VIEW [CONCURRENTLY] "schema"."name"`.
+ *
+ * Not parameterisable — an object name is an identifier, so it is quoted, never bound — and the
+ * identifier comes from the declaration rather than from a caller-supplied string, so there is no
+ * splicing surface here at all.
+ */
+export function refreshSql(
+  view: AnyMaterializedView,
+  opts?: RefreshMaterializedViewOptions,
+): string {
+  const info = view.$.view as { kind?: unknown; name?: unknown; schema?: unknown } | undefined
+  if (info === undefined || info.kind !== 'materializedView' || typeof info.name !== 'string') {
+    throw new UsageError(
+      'pg-prime: refreshMaterializedView() takes a pgMaterializedView(...) declaration. A plain ' +
+        'view has no stored rows to refresh, and a table is refreshed by writing to it.',
+    )
+  }
+  const concurrently = opts?.concurrently ?? view.$.view.refreshConcurrently === true
+  const qualified =
+    typeof info.schema === 'string'
+      ? `${quoteIdentPart(info.schema)}.${quoteIdentPart(info.name)}`
+      : quoteIdentPart(info.name)
+  return `refresh materialized view ${concurrently ? 'concurrently ' : ''}${qualified}`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

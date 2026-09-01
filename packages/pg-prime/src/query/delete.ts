@@ -26,7 +26,14 @@ import { explainWith, runnerOf, takeFirst, toSQLOf, withRunOption } from './term
 import { metaOf } from './meta.js'
 import type { RefScope } from './ref.js'
 import { registerBuilder } from './nominal.js'
-import { allOf, compileProjection, NO_LEFT_JOINS, sourceOf, toExprNode } from './scope.js'
+import {
+  allOf,
+  compileProjection,
+  NO_LEFT_JOINS,
+  sourceOf,
+  toExprNode,
+  writeTargetMessage,
+} from './scope.js'
 import { checkAlias, rebuildScope } from './select.js'
 
 type Lambda<R> = (t: never) => R
@@ -183,9 +190,7 @@ export function makeDelete(
 ): DeleteBuilder {
   const source = sourceOf(h)
   if (source.kind !== 'table') {
-    throw new BuilderError(
-      'pg-prime: deleteFrom() takes a table handle, not a CTE or derived table.',
-    )
+    throw new BuilderError(writeTargetMessage('deleteFrom', source))
   }
   const name = checkAlias(alias ?? source.name)
   const meta = metaOf(h as never, ctx.registry)

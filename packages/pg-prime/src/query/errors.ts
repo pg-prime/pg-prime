@@ -80,6 +80,24 @@ export type GroupByNeedsParentKeyMsg<
 > = `relation projection on "${A}" needs its primary key in groupBy(): add t.${A}.${K}, or move the relation into a subquery`
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Views (design/01 §3 row 58)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `insertInto(view)` / `update(view)` / `deleteFrom(view)`.
+ *
+ * Row 58's acceptance sentence is "a queryable entity with no insert/update/delete method;
+ * `insertInto(view)` is a compile error", and this is that error. It is a *return*-position
+ * sentinel, not a constraint on the parameter: `./types.ts`'s note above `SetResult` records that
+ * a parameter-position check prints the argument type twice — 926 chars on 5.9.3, 1 319 on 7.0.2
+ * — against D9's 300-char budget, while this prints one line.
+ */
+export type WriteToViewMsg<
+  V extends string,
+  N extends string,
+> = `${V}() takes a table: "${N}" is a view and is read-only — write to the table it selects from, or add an INSTEAD OF trigger through the sql/ lane`
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CTEs (design/03 §2.7)
 // ─────────────────────────────────────────────────────────────────────────────
 

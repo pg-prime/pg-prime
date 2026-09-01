@@ -34,6 +34,7 @@ import type {
   META,
   NAME,
   OUT,
+  READONLY,
   REFS,
   RELS,
   SCHEMA,
@@ -43,7 +44,7 @@ import type {
 } from '../schema/index.js'
 import type { DeleteNode, InsertNode, SelectNode, SetOpNode, UpdateNode } from '../compile/ast.js'
 import type { Compiled } from '../compile/contract.js'
-import type { AnyTable, Handle } from '../schema/index.js'
+import type { AnyMaterializedView, AnyTable, Handle } from '../schema/index.js'
 import type { WindowFn, WindowLiteral, WindowSpec } from './window.js'
 import type {
   AnyHandle,
@@ -82,6 +83,7 @@ import type {
   SetOpMissingColumnMsg,
   SetOpNeedsProjectionMsg,
   SetOpNeedsSelectMsg,
+  WriteToViewMsg,
 } from './errors.js'
 import type { AnyFragment } from '../sql/index.js'
 import type { INV, PRJ, ROW } from './symbols.js'
@@ -116,7 +118,7 @@ import type {
   Subscription,
   TxOptions,
 } from '../session/types.js'
-import type { CopyFromApi, CopyToApi } from '../session/handles.js'
+import type { CopyFromApi, CopyToApi, RefreshMaterializedViewOptions } from '../session/handles.js'
 import type { PoolStats } from '../errors/index.js'
 import type { QueryHooks } from '../observe/index.js'
 import type { DbDiagnosis, DiagnosePoolerOptions, PoolerDiagnosis } from '../pooler/index.js'
@@ -1084,9 +1086,26 @@ export interface Executor {
     opts?: FromRawOpts<A>,
   ): Query<Record<A, CteHandle<A, RawShape<C>>>, unknown>
 
-  insertInto<H extends AnyHandle>(t: H): InsertQuery<H, never, {}>
-  update<H extends AnyHandle>(t: H): UpdateQuery<H, never, never>
-  deleteFrom<H extends AnyHandle>(t: H): DeleteQuery<H, never>
+  /**
+   * `03` §2.5's insert. A `pgView` / `pgMaterializedView` handle resolves to design/04 §4.1's
+   * branded sentence instead of an `InsertQuery` — design/01 §3 row 58's acceptance criterion,
+   * spelled in return position so the diagnostic is one line (`./errors.ts`, `WriteToViewMsg`).
+   */
+  insertInto<H extends AnyHandle>(
+    t: H,
+  ): [H] extends [{ readonly [READONLY]: true }]
+    ? OrmTypeError<WriteToViewMsg<'insertInto', H[typeof NAME] & string>>
+    : InsertQuery<H, never, {}>
+  update<H extends AnyHandle>(
+    t: H,
+  ): [H] extends [{ readonly [READONLY]: true }]
+    ? OrmTypeError<WriteToViewMsg<'update', H[typeof NAME] & string>>
+    : UpdateQuery<H, never, never>
+  deleteFrom<H extends AnyHandle>(
+    t: H,
+  ): [H] extends [{ readonly [READONLY]: true }]
+    ? OrmTypeError<WriteToViewMsg<'deleteFrom', H[typeof NAME] & string>>
+    : DeleteQuery<H, never>
 
   /**
    * The fragment-only statement (`03` §1.4c) — the one path whose result OIDs only the server
@@ -1148,6 +1167,23 @@ export interface Queryable<Sc extends AnySchema> extends Executor {
 
   /** `07` §1.5 layer 3's per-call opt-out from the dev guard, for a deliberate out-of-band query. */
   outsideTransaction(): Queryable<Sc>
+
+  /**
+   * `REFRESH MATERIALIZED VIEW [CONCURRENTLY] <mv>` — design/01 §3 row 58's `REFRESH` helper.
+   *
+   * On {@link Queryable} rather than on `Db` alone, and for `copyFrom`'s reason: the statement is
+   * transaction-safe (measured on PG 17 — `CONCURRENTLY` included), so the common shape is a
+   * refresh inside the transaction that also writes the audit row, and a helper only the root
+   * handle had would force that out of the transaction.
+   *
+   * `concurrently` defaults to the view's own `.refreshable({ concurrently })` declaration.
+   * PostgreSQL requires a unique index for it; without one the server answers `55000` and the
+   * mapped error is rethrown — this never silently degrades to a blocking refresh.
+   */
+  refreshMaterializedView(
+    view: AnyMaterializedView,
+    opts?: RefreshMaterializedViewOptions,
+  ): Promise<void>
 
   copyFrom: CopyFromApi
   copyTo: CopyToApi
@@ -1282,9 +1318,21 @@ export interface CteExecutor<C extends Sources> {
     ? OrmTypeError<CteNameTakenMsg<N>>
     : CteExecutor<C & Record<N, CteHandle<N, O2>>>
 
-  insertInto<H extends AnyHandle>(t: H): InsertQuery<H, never, C>
-  update<H extends AnyHandle>(t: H): UpdateQuery<H, never, never>
-  deleteFrom<H extends AnyHandle>(t: H): DeleteQuery<H, never>
+  insertInto<H extends AnyHandle>(
+    t: H,
+  ): [H] extends [{ readonly [READONLY]: true }]
+    ? OrmTypeError<WriteToViewMsg<'insertInto', H[typeof NAME] & string>>
+    : InsertQuery<H, never, C>
+  update<H extends AnyHandle>(
+    t: H,
+  ): [H] extends [{ readonly [READONLY]: true }]
+    ? OrmTypeError<WriteToViewMsg<'update', H[typeof NAME] & string>>
+    : UpdateQuery<H, never, never>
+  deleteFrom<H extends AnyHandle>(
+    t: H,
+  ): [H] extends [{ readonly [READONLY]: true }]
+    ? OrmTypeError<WriteToViewMsg<'deleteFrom', H[typeof NAME] & string>>
+    : DeleteQuery<H, never>
 
   from<H extends AnyHandle, A extends string>(t: H, alias: A): Query<Record<A, H>, unknown>
   from<H extends AnyHandle>(t: H): Query<Record<H[typeof NAME] & string, H>, unknown>

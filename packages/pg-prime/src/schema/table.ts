@@ -6,6 +6,7 @@ import { fragmentDdlText } from './ddl.js'
 import type { RefLike } from './ddl.js'
 import type { TableExtra } from './extras.js'
 import type { RefRuntime, RefsOfCols } from './ref.js'
+import type { ViewInfo } from './view.js'
 import type { Cols, InsertRow, Rels, SelectRow, UpdateRow } from './types.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -25,6 +26,14 @@ export interface TableRuntime {
   readonly schema: string | undefined
   readonly columns: readonly RefRuntime[]
   readonly extras: readonly TableExtra[]
+  /**
+   * Present iff this runtime belongs to a `pgView` / `pgMaterializedView` (design/01 §3 row 58).
+   *
+   * One optional field rather than a `kind` discriminant on every table: `sourceOf`, the session
+   * layer's `REFRESH` helper and the kit's schema walk each need to answer "is this a view?", and
+   * a table pays one absent property for it. `undefined` is the whole answer for a table.
+   */
+  readonly view?: ViewInfo
   column(key: string): ColumnRuntime | undefined
 }
 

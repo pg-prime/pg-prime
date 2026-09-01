@@ -51,7 +51,12 @@ import {
   runSession,
   runTransaction,
 } from '../session/handles.js'
-import type { CopyFromApi, CopyToApi, TxDeps } from '../session/handles.js'
+import type {
+  CopyFromApi,
+  CopyToApi,
+  RefreshMaterializedViewOptions,
+  TxDeps,
+} from '../session/handles.js'
 import { ASYNC_DISPOSE } from '../session/guard.js'
 import { ListenHub, listenUnsupported } from '../session/listen.js'
 import { buildPool } from '../session/pg-lazy.js'
@@ -641,6 +646,7 @@ export function compileOnly<Sc extends AnySchema>(
     'notify',
     'copyFrom',
     'copyTo',
+    'refreshMaterializedView',
   ]) {
     install(executor, name, noExecutor)
   }
@@ -657,4 +663,4 @@ function noExecutor(): never {
 }
 
 /** Re-exported so `pg-prime`'s barrel needs one import for the constructor and its config. */
-export type { CopyFromApi, CopyToApi, DbConfig }
+export type { CopyFromApi, CopyToApi, DbConfig, RefreshMaterializedViewOptions }

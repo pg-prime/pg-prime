@@ -1,0 +1,1 @@
+insert-into-view.ts(5,28): error TS2339: Property 'values' does not exist on type 'OrmTypeError<"insertInto() takes a table: \"active_users\" is a view and is read-only — write to the table it selects from, or add an INSTEAD OF trigger through the sql/ lane">'.

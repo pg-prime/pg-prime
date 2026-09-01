@@ -44,7 +44,13 @@ import { mergeAccessors } from './relations.js'
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface SourceRuntime {
-  readonly kind: 'table' | 'cte' | 'derived'
+  /**
+   * `'view'` is a `pgView` / `pgMaterializedView` handle (design/01 §3 row 58): a FROM item that
+   * emits exactly like a table and is refused by the three write builders. It is read structurally,
+   * off `$.view`, and not from a nominal registry — `src/schema` may not import `src/query`
+   * (design/08 §2.1), so a `registerView` here would have nobody allowed to call it.
+   */
+  readonly kind: 'table' | 'view' | 'cte' | 'derived'
   /** The default alias — the schema key for a table handle, the declared name for a CTE. */
   readonly name: string
   fromItem(alias: string, lateral: boolean): FromItem
@@ -198,7 +204,7 @@ export function sourceOf(h: unknown): SourceRuntime {
       // `post_tags`, and the alias the type layer promises is the key.
       const key = typeof like[NAME] === 'string' ? (like[NAME] as string) : like.$.name
       const built: SourceRuntime = {
-        kind: 'table',
+        kind: like.$.view === undefined ? 'table' : 'view',
         name: key,
         fromItem: (alias) => tableFrom(metaOf(like).table, alias),
         refs: (alias, registry) => refsOf(like, alias, registry),
@@ -208,9 +214,26 @@ export function sourceOf(h: unknown): SourceRuntime {
     }
   }
   throw new BuilderError(
-    'pg-prime: not a query source. Pass a table handle from `defineSchema(...).h`, a CTE from ' +
-      '`db.with(...).cte`, or a derived table from `.as(name)`.',
+    'pg-prime: not a query source. Pass a table handle from `defineSchema(...).h`, a view from ' +
+      '`pgView(...)`, a CTE from `db.with(...).cte`, or a derived table from `.as(name)`.',
   )
+}
+
+/**
+ * The sentence `insertInto` / `update` / `deleteFrom` throw when their target is not a table.
+ *
+ * The runtime twin of the type-level sentinel in `./types.ts`: the type layer refuses a view
+ * before the program runs, and this refuses it when the handle arrived through an `any` or a
+ * `Handle`-typed helper. A view says what to do instead; a CTE keeps the sentence it always had.
+ */
+export function writeTargetMessage(verb: string, source: SourceRuntime): string {
+  if (source.kind === 'view') {
+    return (
+      `pg-prime: ${verb}() takes a table handle — "${source.name}" is a view, which is read-only. ` +
+      `Write to the table it selects from, or add an INSTEAD OF trigger through the sql/ lane.`
+    )
+  }
+  return `pg-prime: ${verb}() takes a table handle, not a CTE or derived table.`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
