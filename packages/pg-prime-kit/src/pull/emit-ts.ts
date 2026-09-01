@@ -315,7 +315,11 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       .sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0))
       .map((c) => lit(idName(c.id)));
     const schema = (f.id as { schema: string }).schema;
-    const opts = schema === "public" ? "" : `, { schema: ${lit(schema)} }`;
+    const enumOpts: string[] = [];
+    if (schema !== "public") enumOpts.push(`schema: ${lit(schema)}`);
+    const enumComment = comments.get(encodeId(f.id));
+    if (enumComment !== undefined) enumOpts.push(`comment: ${lit(enumComment)}`);
+    const opts = enumOpts.length === 0 ? "" : `, { ${enumOpts.join(", ")} }`;
     body.push(
       `export const ${enumConst.get(qualified(f.id))!} = pgEnum(${lit(idName(f.id))}, [${labels.join(", ")}]${opts})`,
     );
@@ -332,6 +336,8 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
     if (p.notNull === true) opts.push("notNull: true");
     if (p.default !== null) opts.push(`default: ${lit(p.default)}`);
     if (p.collation !== null) opts.push(`collation: ${lit(p.collation)}`);
+    const domainComment = comments.get(encodeId(f.id));
+    if (domainComment !== undefined) opts.push(`comment: ${lit(domainComment)}`);
     // `TypePayload.checks` holds `<name> <pg_get_constraintdef>` pairs, and the
     // constraintdef is the whole `CHECK ((VALUE > 0))`. The DSL takes the EXPRESSION and
     // writes the `CHECK (…)` itself, so the wrapper is unwrapped here — with the same
@@ -542,11 +548,19 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       chain.push(`.defaultSql(${lit(payload<DefaultPayload>(def).expression)})`);
     }
 
-    if (p.generated !== null) {
+    if (p.generated === "s" && p.generationExpr !== null) {
+      // After `.nullable()`, because `ro: true` closes `.nullable()` at the type level — a
+      // stored generated column MAY be nullable, and the DSL's order is the one that says so.
+      needsSql = true;
+      chain.push(`.generatedAlwaysAs(sql.unsafeRaw(${lit(p.generationExpr)}))`);
+    } else if (p.generated !== null) {
       drop(
         "generated column",
         `${ctx.schema}.${ctx.name}.${dbName}`,
-        "the DSL has no `.generatedAlwaysAs()` (design/05 §2.3 row is not built)",
+        p.generated === "v"
+          ? "attgenerated = 'v' (PG 18 VIRTUAL) — pg-prime emits STORED only, because a generated " +
+              "column cannot be converted in place in either direction"
+          : `attgenerated = '${p.generated}' with no generation expression in pg_attrdef`,
       );
     }
     if (p.collation !== null) {
@@ -578,6 +592,7 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
     const pk: string[] = [];
     const uniques: string[] = [];
     const checks: string[] = [];
+    const excludes: string[] = [];
     const fks: string[] = [];
 
     for (const c of ir
@@ -616,6 +631,29 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
           needs.add("check");
           needsSql = true;
           checks.push(`check(${lit(name)}, sql.unsafeRaw(${lit(parsed.expression)}))`);
+          break;
+        }
+        case "exclude": {
+          needs.add("exclude");
+          const chain: string[] = [];
+          if (parsed.using !== null) chain.push(`.using(${lit(parsed.using)})`);
+          if (parsed.where !== null) {
+            needsSql = true;
+            chain.push(`.where(sql.unsafeRaw(${lit(parsed.where)}))`);
+          }
+          if (parsed.initiallyDeferred) chain.push(".initiallyDeferred()");
+          else if (parsed.deferrable) chain.push(".deferrable()");
+          const pairs = parsed.items.map((i) => {
+            if (i.expression === null) return `[${ref(i.column ?? "")}, ${lit(i.operator)}]`;
+            needsSql = true;
+            return `[sql.unsafeRaw(${lit(i.expression)}), ${lit(i.operator)}]`;
+          });
+          // `.requires()` is deliberately NOT emitted: it is a claim about the schema file's
+          // own `pgExtension` declarations, and `pull` already emits every extension the
+          // database has — re-stating the dependency here would be inventing a fact the
+          // catalog does not record (`pg_depend` ties the constraint to the operator class,
+          // not to the extension the user would name).
+          excludes.push(`exclude(${lit(name)})${chain.join("")}.on(${pairs.join(", ")})`);
           break;
         }
         case "foreignKey": {
@@ -685,20 +723,24 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
         );
         continue;
       }
-      if (parsed.expression !== null) {
-        drop(
-          "expression index",
-          `${ctx.schema}.${idName(f.id)}`,
-          `the DSL has no expression-index spelling: ${parsed.expression}`,
-        );
-        continue;
-      }
       needs.add(p.unique ? "uniqueIndex" : "index");
+      if (parsed.items.some((i) => i.expression !== null)) needsSql = true;
       const items = parsed.items.map((i) => renderIndexItem(i, ref)).join(", ");
       const chain: string[] = [];
       if (parsed.using !== null && parsed.using !== "btree") chain.push(`.using(${lit(parsed.using)})`);
       if (parsed.include.length > 0) chain.push(`.include(${parsed.include.map(ref).join(", ")})`);
       if (parsed.nullsNotDistinct) chain.push(".nullsNotDistinct()");
+      if (parsed.with !== null) {
+        // Every reloption comes out of `pg_get_indexdef` as a STRING, and it goes back in as
+        // one: `.with({ fillfactor: '70' })` and `.with({ fillfactor: 70 })` produce the same
+        // catalog row, and re-typing the value here would be a guess about which options are
+        // numeric that goes stale on the next access method.
+        const entries = Object.keys(parsed.with)
+          .sort(cmp)
+          .map((k) => `${JSON.stringify(k)}: ${lit(parsed.with![k]!)}`);
+        chain.push(`.with({ ${entries.join(", ")} })`);
+      }
+      if (parsed.tablespace !== null) chain.push(`.tablespace(${lit(parsed.tablespace)})`);
       if (parsed.where !== null) {
         needsSql = true;
         chain.push(`.where(sql.unsafeRaw(${lit(parsed.where)}))`);
@@ -706,12 +748,16 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       indexes.push(`${p.unique ? "uniqueIndex" : "index"}(${lit(idName(f.id))})${chain.join("")}.on(${items})`);
     }
 
-    return [...pk, ...uniques, ...checks, ...fks, ...indexes];
+    return [...pk, ...uniques, ...checks, ...excludes, ...fks, ...indexes];
   }
 
   function renderIndexItem(item: IndexItemSpec, ref: (c: string) => string): string {
-    if (!item.desc && item.nulls === null && item.opclass === null) return ref(item.column);
-    const bits = [`column: ${ref(item.column)}`];
+    // An expression key goes back out as the text PostgreSQL printed, through
+    // `sql.unsafeRaw`: the shadow re-parses and re-prints it, so the round-trip is settled by
+    // the server rather than by this string being spelled the way a human would have.
+    const key = item.expression === null ? ref(item.column ?? "") : `sql.unsafeRaw(${lit(item.expression)})`;
+    if (!item.desc && item.nulls === null && item.opclass === null) return key;
+    const bits = [`${item.expression === null ? "column" : "expression"}: ${key}`];
     if (item.desc) bits.push("desc: true");
     if (item.nulls !== null) bits.push(`nulls: ${lit(item.nulls)}`);
     if (item.opclass !== null) bits.push(`opclass: ${lit(item.opclass)}`);

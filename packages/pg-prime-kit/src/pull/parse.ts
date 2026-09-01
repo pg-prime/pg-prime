@@ -136,10 +136,25 @@ function qualifiedName(text: string, fallbackSchema: string): { schema: string; 
 
 /* ---------------------------- constraints -------------------------------- */
 
+/** One `<element> WITH <operator>` pair of an `EXCLUDE`. Exactly one of the two names is set. */
+export interface ExcludeItemSpec {
+  readonly column: string | null;
+  readonly expression: string | null;
+  readonly operator: string;
+}
+
 export type ParsedConstraint =
   | { readonly kind: "primaryKey"; readonly columns: readonly string[] }
   | { readonly kind: "unique"; readonly columns: readonly string[]; readonly nullsNotDistinct: boolean }
   | { readonly kind: "check"; readonly expression: string }
+  | {
+      readonly kind: "exclude";
+      readonly using: string | null;
+      readonly items: readonly ExcludeItemSpec[];
+      readonly where: string | null;
+      readonly deferrable: boolean;
+      readonly initiallyDeferred: boolean;
+    }
   | {
       readonly kind: "foreignKey";
       readonly columns: readonly string[];
@@ -191,6 +206,7 @@ export function parseConstraintDef(contype: string, definition: string): ParsedC
     if (def.slice(list.end).trim() !== "") return null;
     return { kind: "check", expression: list.inner };
   }
+  if (contype === "x") return parseExcludeDef(def);
   if (contype === "f") {
     const head = /^FOREIGN KEY\s*/.exec(def);
     if (head === null) return null;
@@ -260,10 +276,97 @@ export function parseConstraintDef(contype: string, definition: string): ParsedC
   return null;
 }
 
+/**
+ * `EXCLUDE USING gist (during WITH &&) WHERE (NOT cancelled) DEFERRABLE INITIALLY DEFERRED`.
+ *
+ * An EXCLUDE element is an INDEX element, so PostgreSQL may print an opclass, a collation or a
+ * direction before the `WITH`. The DSL's `exclude(...).on([ref|sql, op])` carries an element and
+ * an operator and nothing else, so an element with any of those is residue with the text in the
+ * reason — the recogniser's rule, not a shrug: an exclusion whose opclass was silently dropped
+ * is a different constraint.
+ */
+function parseExcludeDef(def: string): ParsedConstraint | null {
+  const head = /^EXCLUDE\s*(?:USING\s+([A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")*")\s*)?/.exec(def);
+  if (head === null) return null;
+  const rawUsing = head[1];
+  const using =
+    rawUsing === undefined ? null : rawUsing.startsWith('"') ? rawUsing.slice(1, -1).replace(/""/g, '"') : rawUsing;
+  const list = balanced(def, head[0].length);
+  if (list === null) return null;
+
+  const items: ExcludeItemSpec[] = [];
+  for (const entry of splitIdentifierListPreservingQuotes(list.inner)) {
+    // ` WITH ` at depth 0 is the split point; an operator is never an identifier, so the
+    // rightmost one cannot be part of the element.
+    const at = topLevelWith(entry);
+    if (at === -1) return null;
+    const element = entry.slice(0, at).trim();
+    const operator = entry.slice(at + " WITH ".length).trim();
+    if (operator === "" || /[A-Za-z_"\s]/.test(operator)) return null;
+    if (element.startsWith("(")) {
+      const inner = balanced(element, 0);
+      if (inner === null || inner.end !== element.length) return null;
+      items.push({ column: null, expression: inner.inner, operator });
+      continue;
+    }
+    const name = qualifiedName(element, "");
+    if (name === null || name.schema !== "" || element.slice(name.end).trim() !== "") return null;
+    items.push({ column: name.name, expression: null, operator });
+  }
+  if (items.length === 0) return null;
+
+  let tail = def.slice(list.end).trim();
+  let where: string | null = null;
+  const whereMatch = /^WHERE\s*/.exec(tail);
+  if (whereMatch !== null) {
+    const pred = balanced(tail, whereMatch[0].length);
+    if (pred === null) return null;
+    where = pred.inner;
+    tail = tail.slice(pred.end).trim();
+  }
+  let deferrable = false;
+  let initiallyDeferred = false;
+  const def2 = /^DEFERRABLE(\s+INITIALLY\s+DEFERRED)?\b/i.exec(tail);
+  if (def2 !== null) {
+    deferrable = true;
+    initiallyDeferred = def2[1] !== undefined;
+    tail = tail.slice(def2[0].length).trim();
+  }
+  if (tail !== "") return null;
+  return { kind: "exclude", using, items, where, deferrable, initiallyDeferred };
+}
+
+/** The index of the ` WITH ` that separates an EXCLUDE element from its operator, or -1. */
+function topLevelWith(text: string): number {
+  let depth = 0;
+  let inQuotes = false;
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inQuotes) {
+      if (ch === '"') inQuotes = text[i + 1] === '"' ? (i++, true) : false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "'") inString = text[i + 1] === "'" ? (i++, true) : false;
+      continue;
+    }
+    if (ch === '"') inQuotes = true;
+    else if (ch === "'") inString = true;
+    else if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+    else if (depth === 0 && text.startsWith(" WITH ", i)) return i;
+  }
+  return -1;
+}
+
 /* ------------------------------- indexes ---------------------------------- */
 
 export interface IndexItemSpec {
-  readonly column: string;
+  /** The column's name, or `null` when this key is an {@link IndexItemSpec.expression}. */
+  readonly column: string | null;
+  /** The expression's text, verbatim, or `null` for a column key. Exactly one of the two is set. */
+  readonly expression: string | null;
   readonly desc: boolean;
   readonly nulls: "first" | "last" | null;
   readonly opclass: string | null;
@@ -278,17 +381,24 @@ export interface ParsedIndex {
   readonly include: readonly string[];
   readonly nullsNotDistinct: boolean;
   readonly where: string | null;
-  /** non-null when a key item is an expression rather than a bare column */
-  readonly expression: string | null;
+  /** `WITH (…)` storage parameters, already split into `{ key: value }`; `null` when absent. */
+  readonly with: Readonly<Record<string, string>> | null;
+  readonly tablespace: string | null;
 }
 
 /**
- * `CREATE [UNIQUE] INDEX %ID% ON s.t USING m (cols) [INCLUDE (…)] [NULLS NOT DISTINCT] [WHERE …]`
+ * `CREATE [UNIQUE] INDEX %ID% ON s.t USING m (keys) [INCLUDE (…)] [NULLS NOT DISTINCT]
+ *  [WITH (…)] [TABLESPACE ts] [WHERE …]`
  *
  * `%ID%` is the extractor's identity-free placeholder for the index's own name (I1), so the
- * caller supplies the real one. `WITH (…)` and `TABLESPACE` make the result `null`: the DSL
- * cannot say either, and an index whose `fillfactor` was silently dropped is a different
- * index.
+ * caller supplies the real one.
+ *
+ * An **expression** key is recognised rather than refused (design/14 G, design/01 row 50): it
+ * comes back as the text `pg_get_indexdef` printed and goes back out through
+ * `sql.unsafeRaw(...)`, which the shadow re-normalises — the same treatment every other
+ * definition text gets. What still returns `null` is a key this recogniser cannot split into
+ * "expression" and "modifiers" with certainty (a trailing `COLLATE`, say), because a key whose
+ * collation was silently dropped is a different index.
  */
 export function parseIndexDef(definition: string, _name: string): ParsedIndex | null {
   const m = /^CREATE (UNIQUE )?INDEX %ID% ON /.exec(definition);
@@ -310,15 +420,12 @@ export function parseIndexDef(definition: string, _name: string): ParsedIndex | 
   tail = tail.slice(keys.end).trim();
 
   const items: IndexItemSpec[] = [];
-  let expression: string | null = null;
   for (const raw of splitIdentifierListPreservingQuotes(keys.inner)) {
-    const item = parseIndexItem(raw);
-    if (item === null) {
-      expression = raw;
-      break;
-    }
+    const item = parseIndexItem(raw) ?? parseIndexExpressionItem(raw);
+    if (item === null) return null;
     items.push(item);
   }
+  if (items.length === 0) return null;
 
   let include: string[] = [];
   const includeMatch = /^INCLUDE\s*/.exec(tail);
@@ -336,8 +443,39 @@ export function parseIndexDef(definition: string, _name: string): ParsedIndex | 
     tail = tail.slice(nnd[0].length).trim();
   }
 
-  // Anything before the WHERE that is not INCLUDE / NULLS NOT DISTINCT (WITH, TABLESPACE)
-  // is a property the DSL cannot carry.
+  let withParams: Record<string, string> | null = null;
+  const withMatch = /^WITH\s*/.exec(tail);
+  if (withMatch !== null) {
+    const list = balanced(tail, withMatch[0].length);
+    if (list === null) return null;
+    withParams = {};
+    for (const entry of splitIdentifierList(list.inner)) {
+      // `pg_get_indexdef` prints every reloption as `k='v'`, quotes and all, whatever the
+      // CREATE INDEX wrote. The value goes back out as the string it is: `.with()` quotes a
+      // string and leaves a number bare, and PostgreSQL accepts both spellings for the
+      // numeric ones — so the round-trip is through the catalog, not through the text.
+      const eq = entry.indexOf("=");
+      if (eq === -1) return null;
+      const key = entry.slice(0, eq).trim();
+      const raw = entry.slice(eq + 1).trim();
+      // A reloption value CAN contain a comma inside its quotes, which `splitIdentifierList`
+      // does not track — so the key is re-checked as an identifier and a mis-split becomes
+      // residue instead of a storage parameter named `'7`.
+      if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(key)) return null;
+      withParams[key] = raw.startsWith("'") && raw.endsWith("'") ? raw.slice(1, -1).replace(/''/g, "'") : raw;
+    }
+    tail = tail.slice(list.end).trim();
+  }
+
+  let tablespace: string | null = null;
+  const tsMatch = /^TABLESPACE\s+([A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")*")\s*/.exec(tail);
+  if (tsMatch !== null) {
+    const raw = tsMatch[1]!;
+    tablespace = raw.startsWith('"') ? raw.slice(1, -1).replace(/""/g, '"') : raw;
+    tail = tail.slice(tsMatch[0].length).trim();
+  }
+
+  // Anything left before the WHERE is a property the DSL cannot carry.
   let where: string | null = null;
   const whereMatch = /^WHERE\s+/.exec(tail);
   if (whereMatch !== null) {
@@ -355,7 +493,8 @@ export function parseIndexDef(definition: string, _name: string): ParsedIndex | 
     include,
     nullsNotDistinct,
     where,
-    expression,
+    with: withParams === null || Object.keys(withParams).length === 0 ? null : withParams,
+    tablespace,
   };
 }
 
@@ -427,5 +566,40 @@ function parseIndexItem(text: string): IndexItemSpec | null {
   }
 
   if (tail !== "") return null;
-  return { column: name.name, desc, nulls, opclass };
+  return { column: name.name, expression: null, desc, nulls, opclass };
+}
+
+/**
+ * An **expression** key: `lower((email)::text)`, `((a || ' ') || b) DESC NULLS LAST`.
+ *
+ * Peeled from the RIGHT, because that is the only end whose grammar is fixed: `ruleutils.c`
+ * appends `[opclass] [ASC|DESC] [NULLS FIRST|LAST]` after the expression and prints the
+ * expression itself either bare (when it "looks like a function") or wrapped in parentheses.
+ * Both of those end in `)`, which is the anchor this uses — a remainder that does not is a key
+ * shape the recogniser will not guess at, and `pull` records it as residue.
+ */
+function parseIndexExpressionItem(text: string): IndexItemSpec | null {
+  let rest = text.trim();
+  let nulls: "first" | "last" | null = null;
+  const nullsMatch = /\s+NULLS\s+(FIRST|LAST)$/i.exec(rest);
+  if (nullsMatch !== null) {
+    nulls = nullsMatch[1]!.toUpperCase() === "FIRST" ? "first" : "last";
+    rest = rest.slice(0, nullsMatch.index).trimEnd();
+  }
+  let desc = false;
+  const dirMatch = /\s+(ASC|DESC)$/i.exec(rest);
+  if (dirMatch !== null) {
+    desc = dirMatch[1]!.toUpperCase() === "DESC";
+    rest = rest.slice(0, dirMatch.index).trimEnd();
+  }
+  let opclass: string | null = null;
+  const opclassMatch = /\s+([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)$/.exec(rest);
+  if (opclassMatch !== null && !/^(ASC|DESC|NULLS|COLLATE)$/i.test(opclassMatch[1]!)) {
+    opclass = opclassMatch[1]!;
+    rest = rest.slice(0, opclassMatch.index).trimEnd();
+  }
+  // The anchor: once the modifiers are peeled, the expression is either parenthesised or a
+  // function call, and both end in `)`. Anything else is a shape this will not guess at.
+  if (!rest.endsWith(")")) return null;
+  return { column: null, expression: rest, desc, nulls, opclass };
 }
