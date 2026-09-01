@@ -83,8 +83,8 @@ export type OrderBy = OrderArg | readonly OrderArg[]
 // The classes
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** `citext` has no static codec (it is an extension type — 09 §3.2 deviation 3); it is listed
- *  because a column *declared* `citext` must still gate as text once WS5 lands it. */
+/** `citext` is an EXTENSION type, so its codec has no static OID (design/01 §3 rows 44/61) — but
+ *  it is text in every way an operator cares about, and `t.citext()` declares one. */
 export type TextPg = 'text' | 'varchar' | 'citext' | 'bpchar' | 'name'
 export type NumPg = 'int2' | 'int4' | 'int8' | 'float4' | 'float8' | 'numeric' | 'money'
 export type JsonPg = 'json' | 'jsonb'
@@ -109,6 +109,27 @@ export type JsonbOperand = ClassOperand<unknown, 'jsonb'>
 export type NetOperand = ClassOperand<string | null, NetPg>
 export type TsvectorOperand = ClassOperand<unknown, 'tsvector'>
 export type TsqueryOperand = ClassOperand<unknown, 'tsquery'>
+
+/**
+ * pgvector's `vector` — the operand of `l2` / `cosine` / `innerProduct` / `l1` (design/01 §3
+ * row 62, `03` §2.9's vector class).
+ *
+ * `halfvec` and `sparsevec` carry the same four operators in pgvector 0.8 and are deliberately
+ * NOT members: neither has a codec here, so admitting the name would type-check a query no codec
+ * could decode. `t.raw('halfvec(1024)')` declares the column; the operator gate is v1.x.
+ */
+export type VectorOperand = ClassOperand<number[] | null, 'vector'>
+
+/**
+ * `bit` — the operand of `hamming` and `jaccard`.
+ *
+ * MEASURED against pgvector 0.8.6, not assumed: `<~>` and `<%>` are declared `bit`/`bit`, while
+ * the other four are `vector`/`vector` (and `halfvec`/`sparsevec`). `03` §2.9 files all six under
+ * one "vector" row, which is true of the *class* and not of the operands — so a binary-quantized
+ * embedding is a `bit(n)` column and Hamming distance takes it, not a `vector`. `varbit` is not a
+ * member for the same reason `halfvec` is not: pgvector declares no `varbit` overload.
+ */
+export type BitOperand = ClassOperand<string | null, 'bit'>
 export type RangeOperand<P extends RangePg = RangePg> = ClassOperand<string | null, P>
 
 /**

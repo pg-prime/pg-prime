@@ -264,21 +264,21 @@ export const OPS: readonly OpSpec[] = [
 
   // ── vector (pgvector) ──────────────────────────────────────────────────────
   //
-  // Deferred wholesale, and for exactly the reason `citext` is (09 §3.2 deviation 3): `vector` is
-  // an EXTENSION type, so its OID is per-database and it belongs on the `resolveDynamic` path
-  // rather than in `builtinCodecs()`. PGlite does not ship pgvector, so there is also no target to
-  // run the differential against. Shipping the six operators with no codec and no live test would
-  // be four rows of `03` §2.9 that look covered and are not.
-  ...(['l2', 'cosine', 'innerProduct', 'l1', 'hamming', 'jaccard'] as const).map((name, i) => ({
-    name,
-    class: 'vector' as const,
-    sql: (['a <-> $n', 'a <=> $n', 'a <#> $n', 'a <+> $n', 'a <~> $n', 'a <%> $n'] as const)[i]!,
-    result: 'float8',
-    kind: 'expr' as const,
-    deferred:
-      'WS5 — `vector` is a pgvector EXTENSION type: per-database OID, resolveDynamic path, and ' +
-      'not present in PGlite, so neither a codec nor a live differential exists yet',
-  })),
+  // Deferred until design/14 V, and the deferral's own reason names what unblocked it: `vector`
+  // is an EXTENSION type, so its OID is per-database and it belongs on the `resolveDynamic` path
+  // rather than in `builtinCodecs()` — which is now exactly where it is, via `definePgType()`
+  // (design/01 §3 rows 61/62). PGlite still ships no pgvector, so tier 1 guards the six rows on
+  // the extension being present and announces the skip; the differential these rows promise is
+  // run against a pgvector container (design/14 decision 6) and recorded in that file's V RESULT.
+  //
+  // `hamming` and `jaccard` are `bit`/`bit`, not `vector`/`vector` — read off `pg_operator` on
+  // pgvector 0.8.6. The class is shared because `03` §2.9's table shares it; the operands are not.
+  { name: 'l2', class: 'vector', sql: 'a <-> $n', result: 'float8', kind: 'expr' },
+  { name: 'cosine', class: 'vector', sql: 'a <=> $n', result: 'float8', kind: 'expr' },
+  { name: 'innerProduct', class: 'vector', sql: 'a <#> $n', result: 'float8', kind: 'expr' },
+  { name: 'l1', class: 'vector', sql: 'a <+> $n', result: 'float8', kind: 'expr' },
+  { name: 'hamming', class: 'vector', sql: 'a <~> $n', result: 'float8', kind: 'expr' },
+  { name: 'jaccard', class: 'vector', sql: 'a <%> $n', result: 'float8', kind: 'expr' },
 ]
 
 /** Rows whose result codec a live server can confirm today. */

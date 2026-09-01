@@ -344,6 +344,13 @@ export type BinaryOp =
   | '<<'
   | '>>'
   | '-|-'
+  // vector (pgvector) — l2 · cosine · innerProduct · l1 · hamming · jaccard
+  | '<->'
+  | '<=>'
+  | '<#>'
+  | '<+>'
+  | '<~>'
+  | '<%>'
 
 /** [spike] Exactly two operands. `and`/`or` are `BoolNode` instead — see below. */
 export interface BinaryNode {

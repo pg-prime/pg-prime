@@ -1641,6 +1641,7 @@ export * from './fn.js'
 export type {
   AnyOperand,
   ArrayOperand,
+  BitOperand,
   BoolOperand,
   ClassOperand,
   Order,
@@ -1658,6 +1659,7 @@ export type {
   TextPg,
   TsqueryOperand,
   TsvectorOperand,
+  VectorOperand,
 } from './ops.types.js'
 export { OPS, CONFIRMABLE } from './ops.manifest.js'
 export type { OpClass, OpSpec } from './ops.manifest.js'

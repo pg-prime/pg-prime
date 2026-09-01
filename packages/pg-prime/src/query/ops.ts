@@ -27,9 +27,11 @@ import type { AnyCodec } from '../codec/index.js'
 import type { CodecIn, CodecOut } from '../codec/index.js'
 import {
   arrayCodecOf,
+  bitCodec,
   boolCodec,
   dateCodec,
   float4Codec,
+  float8Codec,
   int4Codec,
   int8Codec,
   jsonCodecJson,
@@ -41,6 +43,7 @@ import {
   timestamptzCodec,
   tsqueryCodec,
   unknownCodec,
+  vectorCodec,
 } from '../codec/index.js'
 import type { BinaryOp, Expr as Node, SelectNode, SetOpNode } from '../compile/ast.js'
 import {
@@ -65,6 +68,7 @@ import type { META, OUT } from '../schema/index.js'
 import type {
   AnyOperand,
   ArrayOperand,
+  BitOperand,
   BoolOperand,
   JsonOperand,
   JsonbOperand,
@@ -79,6 +83,7 @@ import type {
   TextOperand,
   TsqueryOperand,
   TsvectorOperand,
+  VectorOperand,
 } from './ops.types.js'
 import type { Expr, ExprOf, Operand } from './types.js'
 
@@ -740,4 +745,55 @@ export function containedByNet(a: NetOperand, b: Operand<string>): Expr<boolean,
 }
 export function overlapsNet(a: NetOperand, b: Operand<string>): Expr<boolean, 'bool'> {
   return pred('&&', a, b) as unknown as Expr<boolean, 'bool'>
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// vector — pgvector's six distance operators (03 §2.9 row "vector", design/01 §3 row 62)
+//
+// These were `ops.manifest.ts`'s WS5 deferral for one reason: `vector` is an EXTENSION type, so
+// there was no codec to gate on and nothing to run a live differential against. Both are gone —
+// `vectorCodec` is a `definePgType` descriptor (`src/codec/extensions.ts`) and the differential
+// runs against a pgvector container (design/14 §0 row V, decision 6). PGlite still has no
+// pgvector, so the tier-1 differential guards on the extension and says so when it skips.
+//
+// **All six return `float8`, and only four take a `vector`.** `<~>` (Hamming) and `<%>` (Jaccard)
+// are declared `bit`/`bit` in pgvector 0.8.6 — read off `pg_operator`, not off the README — which
+// is why they take a `BitOperand`. `03` §2.9's table files all six under one class; the class is
+// shared, the operands are not.
+//
+// A smaller distance is a closer match for every one of them EXCEPT `innerProduct`, which
+// pgvector returns NEGATED (`<#>` is `-(a · b)`) so that `order by` ascending still means "most
+// similar". That is pgvector's convention, not ours, and the result is passed through unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The right-hand operand of a distance operator: a JS array, or any `vector`-typed expression. */
+type VectorArg = Operand<readonly number[]> | VectorOperand
+
+function distance(op: BinaryOp, a: unknown, b: unknown, rhs: AnyCodec): Expr<number, 'float8'> {
+  return binary(op, a, b, rhs, float8Codec) as unknown as Expr<number, 'float8'>
+}
+
+/** `a <-> b` — **L2 / Euclidean** distance. */
+export function l2(a: VectorOperand, b: VectorArg): Expr<number, 'float8'> {
+  return distance('<->', a, b, vectorCodec as unknown as AnyCodec)
+}
+/** `a <=> b` — **cosine** distance, i.e. `1 - cosine similarity`. */
+export function cosine(a: VectorOperand, b: VectorArg): Expr<number, 'float8'> {
+  return distance('<=>', a, b, vectorCodec as unknown as AnyCodec)
+}
+/** `a <#> b` — the **negative** inner product, so that ascending order is most-similar-first. */
+export function innerProduct(a: VectorOperand, b: VectorArg): Expr<number, 'float8'> {
+  return distance('<#>', a, b, vectorCodec as unknown as AnyCodec)
+}
+/** `a <+> b` — **L1 / taxicab** distance (pgvector 0.7+). */
+export function l1(a: VectorOperand, b: VectorArg): Expr<number, 'float8'> {
+  return distance('<+>', a, b, vectorCodec as unknown as AnyCodec)
+}
+/** `a <~> b` — **Hamming** distance between two `bit` strings, i.e. the count of differing bits. */
+export function hamming(a: BitOperand, b: Operand<string>): Expr<number, 'float8'> {
+  return distance('<~>', a, b, bitCodec as unknown as AnyCodec)
+}
+/** `a <%> b` — **Jaccard** distance between two `bit` strings, `1 - |a ∩ b| / |a ∪ b|`. */
+export function jaccard(a: BitOperand, b: Operand<string>): Expr<number, 'float8'> {
+  return distance('<%>', a, b, bitCodec as unknown as AnyCodec)
 }

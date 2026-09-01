@@ -30,9 +30,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export {
+  VECTOR_MAX_DIMENSIONS,
   bigint,
   boolean,
   check,
+  citext,
   clusterOn,
   comment,
   date,
@@ -68,6 +70,7 @@ export {
   uniqueIndex,
   uuid,
   varchar,
+  vector,
 } from './schema/index.js'
 
 export type {
@@ -218,6 +221,7 @@ export type { IdentRejectReason, PgPrimeErrorCode } from './sql/index.js'
 
 export {
   ALTERNATE_CODECS,
+  EXTENSION_CODECS,
   PgDecodeError,
   PgEncodeError,
   Registry,
@@ -230,10 +234,12 @@ export {
   byteaCodec,
   charCodec,
   cidrCodec,
+  citextCodec,
   createRegistry,
   dateCodec,
   daterangeCodec,
   defaultRegistry,
+  definePgType,
   enumCodec,
   float4Codec,
   float8Codec,
@@ -273,6 +279,7 @@ export {
   uuidCodec,
   varbitCodec,
   varcharCodec,
+  vectorCodec,
   writeArrayLiteral,
   xmlCodec,
 } from './codec/index.js'
@@ -293,6 +300,7 @@ export type {
   PgDateString,
   PgInterval,
   PgTimestampString,
+  PgTypeDescriptor,
   TypeClass,
 } from './codec/index.js'
 
@@ -558,10 +566,12 @@ export {
   concat,
   containedByNet,
   containsNet,
+  cosine,
   div,
   eq,
   gt,
   gte,
+  hamming,
   has,
   hasAll,
   hasAllKeys,
@@ -570,6 +580,7 @@ export {
   ilike,
   inList,
   inQuery,
+  innerProduct,
   iregex,
   isDistinctFrom,
   isFalse,
@@ -579,6 +590,7 @@ export {
   isNotTrue,
   isNull,
   isTrue,
+  jaccard,
   jsonConcat,
   jsonContainedBy,
   jsonContains,
@@ -590,6 +602,8 @@ export {
   jsonPathExists,
   jsonPathMatch,
   jsonPathText,
+  l1,
+  l2,
   like,
   lt,
   lte,
@@ -631,6 +645,7 @@ export type { Bound, FrameOpts, WindowFn, WindowLiteral, WindowSpec } from './qu
 export type {
   AnyOperand,
   ArrayOperand,
+  BitOperand,
   BoolOperand,
   ClassOperand,
   JsonOperand,
@@ -648,6 +663,7 @@ export type {
   TextPg,
   TsqueryOperand,
   TsvectorOperand,
+  VectorOperand,
 } from './query/types.js'
 
 export { SELECT_SOURCE } from './query/types.js'
