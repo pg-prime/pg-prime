@@ -206,6 +206,7 @@ export function renderCodecMismatch(m: CodecMismatch): string {
  * check exists to prevent.
  */
 export class CodecMismatchError extends PgPrimeError {
+  declare readonly code: 'CODEC_MISMATCH'
   readonly mismatch: CodecMismatch
   constructor(mismatch: CodecMismatch) {
     super('CODEC_MISMATCH', renderCodecMismatch(mismatch))

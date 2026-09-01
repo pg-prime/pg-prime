@@ -141,7 +141,9 @@ export class IntegrityConstraintError extends QueryError {
 
 export class NotNullViolationError extends IntegrityConstraintError {}
 export class ForeignKeyViolationError extends IntegrityConstraintError {}
-export class UniqueViolationError extends IntegrityConstraintError {}
+export class UniqueViolationError extends IntegrityConstraintError {
+  declare readonly code: '23505'
+}
 export class CheckViolationError extends IntegrityConstraintError {}
 export class ExclusionViolationError extends IntegrityConstraintError {}
 export class RestrictViolationError extends IntegrityConstraintError {}
@@ -169,6 +171,7 @@ export class DeadlockDetectedError extends TransactionError {}
  * way to continue, and the hint says so.
  */
 export class InFailedTransactionError extends TransactionError {
+  declare readonly code: '25P02'
   /** The earlier error that aborted this transaction, when the `Tx` was the one that saw it. */
   readonly poisonedBy?: PgPrimeError
 
@@ -231,7 +234,9 @@ export class LockNotAvailableError extends QueryError {}
  * different class entirely — {@link QueryTimeoutError} — because there the server may still be
  * burning CPU.
  */
-export class QueryCanceledError extends QueryError {}
+export class QueryCanceledError extends QueryError {
+  declare readonly code: '57014'
+}
 
 // ── class 53 · resources ─────────────────────────────────────────────────────
 
@@ -309,6 +314,7 @@ export class PoolTimeoutError extends ConnectionError {
  * nothing in this library will ever re-run the callback that produced one.
  */
 export class IndeterminateCommitError extends PgPrimeError {
+  declare readonly code: 'INDETERMINATE_COMMIT'
   declare readonly context: ErrorContext
   constructor(message: string, init: ErrorInit & { readonly context: ErrorContext }) {
     super('INDETERMINATE_COMMIT', message, init)
