@@ -50,6 +50,15 @@ import type { DumpOracleMode, PgDumpLauncher } from "./prove/pg-dump.js";
 import { loadRepeatables, type RepeatableFile } from "./repeatables/index.js";
 import { loadDesired } from "./schema/load.js";
 import type { SchemaLike } from "./schema/types.js";
+import {
+  censusWithout,
+  declaredViewIdentities,
+  NO_VIEWS,
+  presentDeclaredViews,
+  renderedViewCensus,
+  syncViewRepeatables,
+  type ViewCensus,
+} from "./schema/views.js";
 import { provisionShadow, type Shadow, type ShadowStrategy } from "./shadow/ladder.js";
 
 /* -------------------------------------------------------------------------- */
@@ -165,6 +174,26 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
   const schemas = [...new Set(input.schemas ?? ["public"])].sort();
   const admin = adminFor(input.target, input.admin);
 
+  /*
+   * Tier R, declared half (design/01 §3 row 58): every `pgView` / `pgMaterializedView` is
+   * rendered into `<repeatablesDir>/020_views/` BEFORE the shadow loads the lane, so the shadow
+   * gets the current definitions, the proof covers them and `apply` finds ordinary repeatable
+   * files later. Writing is gated on `outDir` — `migrate check` writes nothing and reports a
+   * stale lane instead — and it happens up here rather than beside the plan files because a
+   * view-only change produces an EMPTY structural diff and returns `up_to_date` long before the
+   * writing block, which is exactly the change the lane exists to carry.
+   */
+  const declaredViews = declaredViewIdentities(input.schema, schemas[0] ?? "public");
+  const viewSync =
+    input.repeatablesDir === undefined
+      ? { files: [], diagnostics: [] as readonly Diagnostic[] }
+      : await syncViewRepeatables(input.schema, input.repeatablesDir, {
+          defaultSchema: schemas[0] ?? "public",
+          write: input.outDir !== undefined,
+        });
+  /** What the shadow will hold once the lane is loaded: exactly the emitted declarations. */
+  const desiredViews: ViewCensus = renderedViewCensus(viewSync);
+
   const shadow = await provisionShadow(admin, input.target, {
     schemas,
     ...(input.shadow === undefined ? {} : { shadow: input.shadow }),
@@ -191,12 +220,20 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
 
     /* ---- IR(current) ---- */
     const current = await withClient(input.target, (c) => extractCatalog(c, { schemas, observe: true }));
+    // Which of the declared views the TARGET already has, by name. See `presentDeclaredViews`.
+    const currentViews: ViewCensus =
+      declaredViews.length === 0
+        ? NO_VIEWS
+        : await withClient(input.target, (c) => presentDeclaredViews(c, schemas, declaredViews));
 
     /* ---- renames: annotation first, then the hints file, then candidates ---- */
     const annotations = annotationHints(input.schema, schemas[0] ?? "public");
     const hints = acceptHints([...annotations, ...(input.hints ?? [])], current.ir, desired.ir);
 
-    const extractorDiagnostics = [...current.diagnostics, ...desired.diagnostics];
+    const extractorDiagnostics = [
+      ...censusWithout(current.diagnostics, currentViews),
+      ...censusWithout(desired.diagnostics, desiredViews),
+    ];
     const diff = diffIR(current.ir, desired.ir, {
       renameHints: hints,
       ...(input.strictUnmodeled === undefined ? {} : { strictUnmodeled: input.strictUnmodeled }),
@@ -241,8 +278,8 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
     }
 
     const diagnostics: Diagnostic[] = [
-      ...current.diagnostics,
-      ...desired.diagnostics,
+      ...extractorDiagnostics,
+      ...viewSync.diagnostics,
       ...built.diagnostics,
       ...staged.diagnostics,
       ...declineNotes,

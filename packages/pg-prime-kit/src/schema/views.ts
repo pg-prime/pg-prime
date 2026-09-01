@@ -1,0 +1,386 @@
+/**
+ * Declared views into the `sql/` repeatables lane — design/01 §3 row 58, design/14 §0's W row.
+ *
+ * ## Why a file and not an in-memory contribution
+ *
+ * A repeatable is a file on disk (`src/repeatables/scan.ts`), and that is load-bearing rather than
+ * incidental: `apply`, `status` and `doctor` read `pgprime.repeatables` against a *directory*, and
+ * none of them loads the TypeScript schema — `apply` in particular must work in a deploy image
+ * that ships migrations and nothing else. Contributing declared views only in memory would make
+ * them look like orphans to `doctor` and would never re-apply them at deploy time. So `generate`
+ * renders each declared view into `<repeatablesDir>/020_views/NNN_<schema>__<name>.sql` and every
+ * downstream command sees an ordinary repeatable: hashed, drift-detected, re-applied when the hash
+ * changes, and — because it is a file — a positive line in the pull request that changed it.
+ *
+ * ## Ordering
+ *
+ * `.dependsOn(…)` is a topological sort over the declared views, and the rank is baked into the
+ * filename, because scan order is one lexicographic walk (`scan.ts`'s numeric-prefix convention)
+ * and there is no dependency graph in the repeatables pass. A reordered graph renames files; the
+ * stale ones are pruned by their `-- pg-prime:declared` marker, so it is self-healing. Views that
+ * depend on something outside the declared set order by the directory rank alone — `010_functions`
+ * before `020_views` — exactly as a hand-written lane does.
+ *
+ * ## What a matview costs
+ *
+ * PostgreSQL has no `CREATE OR REPLACE MATERIALIZED VIEW`, so a changed body is `DROP` + `CREATE`.
+ * The `DROP` is deliberately **not** `CASCADE`: a dependent object should stop the apply and be
+ * read by a human, not disappear. It does mean an index on the matview — which this round cannot
+ * declare (`05` §3.6's `.indexes(…)` is not built; see design/14's W RESULT) — must be recreated
+ * afterwards, and until it is, `refreshMaterializedView(mv, { concurrently: true })` answers the
+ * server's `55000` rather than degrading silently. That is stated in the generated file's header
+ * so the person reading the diff learns it there.
+ */
+
+import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { CatalogClient, Diagnostic } from "../catalog/extract.js";
+import { quoteIdent, quoteLiteral } from "../sql/ident.js";
+import type { SchemaLike, ViewLike } from "./types.js";
+
+/** The directory declared views are rendered into, relative to the repeatables root. */
+export const VIEWS_DIR = "020_views";
+
+/**
+ * The directive that says "pg-prime generated this file from a TypeScript declaration".
+ *
+ * Pruning only ever deletes a file carrying it, so a hand-written view in the same directory is
+ * never touched — and `pull`'s output, which carries `-- pg-prime:object` but not this, is safe.
+ */
+export const DECLARED_DIRECTIVE = "-- pg-prime:declared view";
+
+export interface DeclaredView {
+  readonly kind: "view" | "materializedView";
+  /** `schema.name`, the catalog identity. */
+  readonly identity: string;
+  /** POSIX, relative to the repeatables root: `020_views/010_public__active_users.sql`. */
+  readonly path: string;
+  /** The whole file, header directives included. */
+  readonly sql: string;
+}
+
+export interface RenderViewsOptions {
+  /** The schema an undeclared `schema` falls back to. `emitSchema`'s `defaultSchema`. */
+  readonly defaultSchema?: string;
+}
+
+export interface RenderedViews {
+  readonly files: readonly DeclaredView[];
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+/* ------------------------------- rendering -------------------------------- */
+
+const qualify = (schema: string, name: string): string => `${schema}.${name}`;
+const target = (schema: string, name: string): string => `${quoteIdent(schema)}.${quoteIdent(name)}`;
+/** `public` → `public`, `my schema` → `my_schema`: a filename, not an identifier. */
+const slug = (s: string): string => s.replace(/[^A-Za-z0-9]+/g, "_").toLowerCase();
+
+function withOptions(view: ViewLike["$"]["view"]): string {
+  const parts: string[] = [];
+  if (view.securityInvoker !== undefined) parts.push(`security_invoker = ${String(view.securityInvoker)}`);
+  if (view.securityBarrier !== undefined) parts.push(`security_barrier = ${String(view.securityBarrier)}`);
+  if (view.checkOption !== undefined) parts.push(`check_option = ${view.checkOption}`);
+  return parts.length === 0 ? "" : ` WITH (${parts.join(", ")})`;
+}
+
+function bodySql(view: ViewLike, defaultSchema: string, rank: number): string {
+  const info = view.$.view;
+  const schema = info.schema ?? defaultSchema;
+  const to = target(schema, info.name);
+  const columns = view.$.columns.map((c) => quoteIdent(c.dbName)).join(", ");
+  const identity = qualify(schema, info.name);
+  const header = [
+    `${DECLARED_DIRECTIVE} ${identity}`,
+    `-- pg-prime:tier R`,
+    `-- pg-prime:rank ${String(rank)}`,
+    `--`,
+    `-- GENERATED by \`pg-prime migrate generate\` from the ${
+      info.kind === "view" ? "pgView" : "pgMaterializedView"
+    }('${info.name}') declaration.`,
+    `-- Edit the TypeScript, not this file: the next generate overwrites it, and deleting the`,
+    `-- declaration deletes the file.`,
+  ];
+  const statements: string[] = [];
+  if (info.kind === "view") {
+    statements.push(`CREATE OR REPLACE VIEW ${to} (${columns})${withOptions(info)} AS\n${info.body!}`);
+  } else {
+    header.push(
+      `--`,
+      `-- PostgreSQL has no CREATE OR REPLACE for a materialized view, so a changed body is a`,
+      `-- DROP + CREATE and the stored rows are rebuilt. The DROP is not CASCADE on purpose: a`,
+      `-- dependent object stops the apply instead of vanishing. Any index on this matview lives`,
+      `-- in your own sql/ lane and has to be recreated after a body change.`,
+    );
+    statements.push(`DROP MATERIALIZED VIEW IF EXISTS ${to}`);
+    statements.push(
+      `CREATE MATERIALIZED VIEW ${to} (${columns}) AS\n${info.body!}\nWITH ${info.withNoData ? "NO DATA" : "DATA"}`,
+    );
+  }
+  if (info.comment !== undefined) {
+    const on = info.kind === "view" ? "VIEW" : "MATERIALIZED VIEW";
+    statements.push(`COMMENT ON ${on} ${to} IS ${quoteLiteral(info.comment)}`);
+  }
+  return `${header.join("\n")}\n\n${statements.map((s) => `${s};`).join("\n\n")}\n`;
+}
+
+/**
+ * Topological order over `.dependsOn`, ties broken by identity so the result is deterministic.
+ *
+ * A cycle is reported and the remaining views are appended in identity order: a cycle among view
+ * bodies is a real schema mistake, and refusing to emit anything would hide the other N-1 views
+ * behind it.
+ */
+function order(views: readonly { identity: string; deps: readonly string[] }[]): {
+  order: readonly string[];
+  cycle: readonly string[];
+} {
+  const byId = new Map(views.map((v) => [v.identity, v]));
+  const state = new Map<string, "open" | "done">();
+  const out: string[] = [];
+  const cycle: string[] = [];
+  const visit = (id: string): void => {
+    const s = state.get(id);
+    if (s === "done") return;
+    if (s === "open") {
+      if (!cycle.includes(id)) cycle.push(id);
+      return;
+    }
+    state.set(id, "open");
+    // Only edges INTO the declared set matter: a dependency on a table or a `sql/` function is
+    // handled by the directory rank, and pretending to order it here would be a lie.
+    for (const dep of [...(byId.get(id)?.deps ?? [])].sort()) if (byId.has(dep)) visit(dep);
+    state.set(id, "done");
+    out.push(id);
+  };
+  for (const v of [...views].sort((a, b) => (a.identity < b.identity ? -1 : 1))) visit(v.identity);
+  return { order: out, cycle };
+}
+
+/** Every declared view in the schema, as the repeatable files they render to. */
+export function renderViewRepeatables(schema: SchemaLike, options: RenderViewsOptions = {}): RenderedViews {
+  const defaultSchema = options.defaultSchema ?? "public";
+  const diagnostics: Diagnostic[] = [];
+  const managed: { view: ViewLike; identity: string; deps: readonly string[] }[] = [];
+  const seen = new Map<string, ViewLike>();
+
+  for (const view of schema.views ?? []) {
+    const info = view.$.view;
+    const identity = qualify(info.schema ?? defaultSchema, info.name);
+    const first = seen.get(identity);
+    if (first !== undefined) {
+      diagnostics.push({
+        code: "view_conflict",
+        severity: "error",
+        message: `two view declarations are both called ${identity}`,
+        subject: identity,
+      });
+      continue;
+    }
+    seen.set(identity, view);
+    // `.existing()` is design/06 §2.2's `external` provenance: declared and typed, never emitted
+    // and never dropped. It still silences the census — that is the whole point of declaring it.
+    if (info.existing) continue;
+    managed.push({ view, identity, deps: info.dependsOn });
+  }
+
+  const sorted = order(managed);
+  if (sorted.cycle.length > 0) {
+    diagnostics.push({
+      code: "view_dependency_cycle",
+      severity: "error",
+      message: `dependsOn() forms a cycle among declared views: ${sorted.cycle.join(", ")}`,
+      subject: sorted.cycle[0] ?? "",
+      count: sorted.cycle.length,
+    });
+  }
+  const byId = new Map(managed.map((m) => [m.identity, m]));
+  const files: DeclaredView[] = [];
+  let rank = 0;
+  for (const identity of sorted.order) {
+    const entry = byId.get(identity);
+    if (entry === undefined) continue;
+    rank += 10;
+    const info = entry.view.$.view;
+    const schemaName = info.schema ?? defaultSchema;
+    files.push({
+      kind: info.kind,
+      identity,
+      path: `${VIEWS_DIR}/${String(rank).padStart(3, "0")}_${slug(schemaName)}__${slug(info.name)}.sql`,
+      sql: bodySql(entry.view, defaultSchema, rank),
+    });
+  }
+  return { files, diagnostics };
+}
+
+/** Every declared view's `schema.name`, `.existing()` ones included. What silences the census. */
+export function declaredViewIdentities(schema: SchemaLike, defaultSchema = "public"): readonly string[] {
+  return (schema.views ?? []).map((v) => qualify(v.$.view.schema ?? defaultSchema, v.$.view.name));
+}
+
+/** Per-kind counts — the shape the Tier-U census subtracts. */
+export interface ViewCensus {
+  readonly view: number;
+  readonly materializedView: number;
+}
+
+export const NO_VIEWS: ViewCensus = Object.freeze({ view: 0, materializedView: 0 });
+
+/**
+ * How many of `declared` actually exist in `client`, split by kind.
+ *
+ * By NAME and not by count: subtracting "the number of declarations" from "the number of views in
+ * the catalog" is arithmetic that lies in both directions — a declaration that has not been
+ * applied yet over-subtracts and hides a genuinely unmodelled view, which is exactly the silence
+ * design/06 §2.2 forbids. One small query is the price of a census that is right.
+ *
+ * A separate query rather than a predicate inside `extractCatalog`'s `Q_UNMODELED`: five commands
+ * share that reader and only the two that load the TypeScript schema can know what is declared.
+ */
+export async function presentDeclaredViews(
+  client: CatalogClient,
+  schemas: readonly string[],
+  declared: readonly string[],
+): Promise<ViewCensus> {
+  if (declared.length === 0) return NO_VIEWS;
+  const r = await client.query(
+    `SELECT c.relkind::text AS kind
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relkind IN ('v', 'm') AND n.nspname = ANY($1) AND n.nspname || '.' || c.relname = ANY($2)`,
+    [[...schemas], [...declared]],
+  );
+  let view = 0;
+  let materializedView = 0;
+  for (const row of r.rows as { kind: string }[]) {
+    if (row.kind === "v") view += 1;
+    else materializedView += 1;
+  }
+  return { view, materializedView };
+}
+
+/** The views this schema emits, by kind — what the shadow holds once `generate` loads the lane. */
+export function renderedViewCensus(rendered: RenderedViews): ViewCensus {
+  let view = 0;
+  let materializedView = 0;
+  for (const f of rendered.files) {
+    if (f.kind === "view") view += 1;
+    else materializedView += 1;
+  }
+  return { view, materializedView };
+}
+
+/**
+ * Drop the declared views out of one extractor's Tier-U census.
+ *
+ * A kind whose remainder is zero disappears from the census entirely — "N view(s) present and not
+ * diffed" about views the schema *does* model is the false alarm this removes — and a kind with
+ * something left keeps its message with the smaller number.
+ */
+export function censusWithout(diagnostics: readonly Diagnostic[], declared: ViewCensus): readonly Diagnostic[] {
+  if (declared.view === 0 && declared.materializedView === 0) return diagnostics;
+  const out: Diagnostic[] = [];
+  for (const d of diagnostics) {
+    const kind = d.subject === "view" || d.subject === "materializedView" ? d.subject : null;
+    if (d.code !== "unmodeled_kind" || kind === null) {
+      out.push(d);
+      continue;
+    }
+    const n = Math.max(0, (d.count ?? 0) - declared[kind]);
+    if (n === 0) continue;
+    out.push({ ...d, message: `${String(n)} ${kind} object(s) present and not diffed (Tier R)`, count: n });
+  }
+  return out;
+}
+
+/* -------------------------------- the sync -------------------------------- */
+
+export interface SyncViewsOptions extends RenderViewsOptions {
+  /**
+   * Write and prune, or only compare?
+   *
+   * `migrate generate` writes; `migrate check` does not write anything at all, so it compares and
+   * reports a stale lane instead — which is the answer its user wants ("you changed a view and did
+   * not run generate") rather than a silent repair.
+   */
+  readonly write: boolean;
+}
+
+export interface SyncedViews extends RenderedViews {
+  /** Paths written, relative to the repeatables root. Empty when `write` is false. */
+  readonly written: readonly string[];
+  /** Paths deleted because their declaration is gone or its rank moved. */
+  readonly pruned: readonly string[];
+}
+
+async function existingDeclaredFiles(dir: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  let names: string[];
+  try {
+    names = await readdir(join(dir, VIEWS_DIR));
+  } catch {
+    return out;
+  }
+  for (const name of names.sort()) {
+    if (!name.toLowerCase().endsWith(".sql")) continue;
+    const rel = `${VIEWS_DIR}/${name}`;
+    let text: string;
+    try {
+      text = await readFile(join(dir, VIEWS_DIR, name), "utf8");
+    } catch {
+      continue;
+    }
+    if (text.startsWith(DECLARED_DIRECTIVE)) out.set(rel, text);
+  }
+  return out;
+}
+
+/**
+ * Bring `<dir>/020_views/` into line with the declarations — or, with `write: false`, say how far
+ * out of line it is.
+ */
+export async function syncViewRepeatables(
+  schema: SchemaLike,
+  dir: string,
+  options: SyncViewsOptions,
+): Promise<SyncedViews> {
+  const rendered = renderViewRepeatables(schema, options);
+  const diagnostics = [...rendered.diagnostics];
+  const onDisk = await existingDeclaredFiles(dir);
+  const wanted = new Map(rendered.files.map((f) => [f.path, f.sql]));
+
+  const written: string[] = [];
+  const pruned: string[] = [];
+  const stale: string[] = [];
+
+  for (const [path, sql] of wanted) {
+    if (onDisk.get(path) === sql) continue;
+    if (options.write) {
+      await mkdir(join(dir, VIEWS_DIR), { recursive: true });
+      await writeFile(join(dir, VIEWS_DIR, path.slice(VIEWS_DIR.length + 1)), sql, "utf8");
+      written.push(path);
+    } else {
+      stale.push(path);
+    }
+  }
+  for (const path of onDisk.keys()) {
+    if (wanted.has(path)) continue;
+    if (options.write) {
+      await unlink(join(dir, VIEWS_DIR, path.slice(VIEWS_DIR.length + 1))).catch(() => {});
+      pruned.push(path);
+    } else {
+      stale.push(path);
+    }
+  }
+  if (stale.length > 0) {
+    diagnostics.push({
+      code: "declared_views_stale",
+      severity: "warning",
+      message:
+        `${String(stale.length)} declared view file(s) in ${VIEWS_DIR}/ do not match the schema ` +
+        `(${stale.sort().join(", ")}); run \`pg-prime migrate generate\` to rewrite the lane`,
+      subject: VIEWS_DIR,
+      count: stale.length,
+    });
+  }
+  return { files: rendered.files, diagnostics, written, pruned };
+}

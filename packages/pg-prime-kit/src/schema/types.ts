@@ -21,13 +21,38 @@ import type {
   RefRuntime,
   TableExtra,
   TableRuntime,
+  ViewInfo,
+  ViewRuntime,
 } from "pg-prime";
 
-export type { ColumnDdl, PgDomain, PgEnum, PgExtension, PgSchema, PgSequence, RefRuntime, TableExtra, TableRuntime };
+export type {
+  ColumnDdl,
+  PgDomain,
+  PgEnum,
+  PgExtension,
+  PgSchema,
+  PgSequence,
+  RefRuntime,
+  TableExtra,
+  TableRuntime,
+  ViewInfo,
+  ViewRuntime,
+};
 
 /** One table, as `defineSchema(...)`'s registry holds it. */
 export interface TableLike {
   readonly $: TableRuntime;
+}
+
+/**
+ * One `pgView(...)` / `pgMaterializedView(...)` declaration (design/01 §3 row 58).
+ *
+ * A view is table-shaped down here — same `$.columns`, same `RefRuntime`s — and the one thing that
+ * distinguishes it is the populated `$.view`. That is also what keeps `loadSchema`'s table sweep
+ * from mistaking one for a table and emitting a `CREATE TABLE` for it.
+ */
+export interface ViewLike {
+  readonly $: ViewRuntime;
 }
 
 /**
@@ -55,4 +80,14 @@ export interface SchemaLike {
   readonly sequences?: readonly PgSequence[];
   readonly extensions?: readonly PgExtension[];
   readonly schemas?: readonly PgSchema[];
+  /**
+   * `pgView(...)` / `pgMaterializedView(...)` declarations (design/01 §3 row 58).
+   *
+   * They do **not** go through `emitSchema`: a view's body is a hashed repeatable in v1, not a
+   * diffed object (`01` §3's lane decision, row 63 for the structured version), so
+   * `src/schema/views.ts` renders them into the `sql/` lane instead. They are here so that one
+   * `SchemaLike` still describes the whole declared surface — the census reads this list to know
+   * which views are modelled.
+   */
+  readonly views?: readonly ViewLike[];
 }

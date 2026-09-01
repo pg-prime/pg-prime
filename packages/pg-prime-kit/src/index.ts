@@ -259,7 +259,29 @@ export type { ProveStage } from "./prove/prove.js";
 export { emitSchema, EmitError, type EmitOptions, type EmitResult } from "./schema/emit.js";
 export { desiredSql, loadDesired, DesiredLoadError, type LoadDesiredOptions } from "./schema/load.js";
 export { makeRemapper, remapDiagnostics, remapIr, remapObserved, type Remapper } from "./schema/remap.js";
-export type { ColumnDdl, RefRuntime, SchemaLike, TableExtra, TableLike, TableRuntime } from "./schema/types.js";
+export type {
+  ColumnDdl,
+  RefRuntime,
+  SchemaLike,
+  TableExtra,
+  TableLike,
+  TableRuntime,
+  ViewInfo,
+  ViewLike,
+  ViewRuntime,
+} from "./schema/types.js";
+export {
+  declaredViewIdentities,
+  DECLARED_DIRECTIVE,
+  renderViewRepeatables,
+  syncViewRepeatables,
+  VIEWS_DIR,
+  type DeclaredView,
+  type RenderedViews,
+  type RenderViewsOptions,
+  type SyncedViews,
+  type SyncViewsOptions,
+} from "./schema/views.js";
 export {
   parseShadowUrl,
   provisionShadow,

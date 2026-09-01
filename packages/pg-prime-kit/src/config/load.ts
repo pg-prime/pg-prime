@@ -261,22 +261,30 @@ export interface LoadedSchema {
     readonly sequences: readonly unknown[];
     readonly extensions: readonly unknown[];
     readonly schemas: readonly unknown[];
+    /** `pgView` / `pgMaterializedView`, both kinds in one list (design/01 §3 row 58). */
+    readonly views: readonly unknown[];
   };
   readonly files: readonly string[];
 }
 
 /**
- * A standalone declaration — `pgEnum`, `pgDomain`, `pgSequence`, `pgExtension`, `pgSchema`.
+ * A standalone declaration — `pgEnum`, `pgDomain`, `pgSequence`, `pgExtension`, `pgSchema`,
+ * `pgView`, `pgMaterializedView`.
  *
  * Each is a frozen plain object carrying a `kind` discriminant and a `name`, so one
- * structural test covers all five and a sixth costs one string. Discovered off the
+ * structural test covers all of them and the next one costs one string. Discovered off the
  * module's exports for the same reason tables are: `defineSchema(...)` is the query
- * layer's registry and these objects are author-time only.
+ * layer's registry and these objects are author-time only — and a view is not even eligible
+ * for it, because it has no relations and no insert shape.
+ *
+ * The two view kinds collapse into one bucket: `$.view.kind` is where the distinction lives,
+ * and every consumer wants "the declared views" as one list.
  */
 const declarationOf = (v: unknown): string | null => {
   if (typeof v !== "object" || v === null) return null;
   const r = v as { kind?: unknown; name?: unknown };
   if (typeof r.name !== "string") return null;
+  if (r.kind === "view" || r.kind === "materializedView") return "view";
   return r.kind === "enum" ||
     r.kind === "domain" ||
     r.kind === "sequence" ||
@@ -289,7 +297,10 @@ const declarationOf = (v: unknown): string | null => {
 const isTableLike = (v: unknown): v is { $: { name: string; schema?: string; columns: unknown; extras: unknown } } => {
   const runtime = (v as { $?: unknown } | null)?.$;
   if (typeof runtime !== "object" || runtime === null) return false;
-  const r = runtime as { name?: unknown; columns?: unknown; extras?: unknown };
+  const r = runtime as { name?: unknown; columns?: unknown; extras?: unknown; view?: unknown };
+  // A view is table-shaped here — same `$.columns`, same `$.extras` — and would otherwise be
+  // swept up and emitted as a `CREATE TABLE`. `$.view` is the one thing only a view has.
+  if (r.view !== undefined) return false;
   return typeof r.name === "string" && Array.isArray(r.columns) && Array.isArray(r.extras);
 };
 
@@ -309,6 +320,7 @@ export async function loadSchema(paths: string | readonly string[], base: string
     sequence: new Map(),
     extension: new Map(),
     schema: new Map(),
+    view: new Map(),
   };
   for (const file of list) {
     if (!(await exists(file))) throw new ConfigError(`no schema module at ${file}`);
@@ -334,14 +346,21 @@ export async function loadSchema(paths: string | readonly string[], base: string
     // `defineSchema(...)` takes tables and relations only, so a `pgDomain` can be reached
     // in exactly one way — the export that names it. Keyed by `schema.name` for the same
     // reason tables are: one object exported twice under two names is one object.
+    let declarations = 0;
     for (const [key, value] of Object.entries(mod)) {
       if (key === "default") continue;
       const kind = declarationOf(value);
       if (kind === null) continue;
       const decl = value as { name: string; schema?: string };
-      declared[kind]!.set(kind === "schema" ? decl.name : `${decl.schema ?? "public"}.${decl.name}`, value);
+      const runtime = (value as { $?: { schema?: string } }).$;
+      const ns = (kind === "view" ? runtime?.schema : decl.schema) ?? "public";
+      declared[kind]!.set(kind === "schema" ? decl.name : `${ns}.${decl.name}`, value);
+      declarations += 1;
     }
-    if (found === 0) {
+    // A file of nothing but views (or domains, or enums) is a real way to organize a schema, and
+    // `schema: ['./tables.ts', './views.ts']` is how it reaches the kit. Only a module that
+    // declares NOTHING is a mistake worth a sentence.
+    if (found === 0 && declarations === 0) {
       throw new ConfigError(
         `${file} exports no tables: expected \`export default defineSchema({ … })\`, an export with a ` +
           `\`tables\` property, or one or more \`pgTable(...)\` exports.`,
@@ -356,6 +375,7 @@ export async function loadSchema(paths: string | readonly string[], base: string
       sequences: [...declared["sequence"]!.values()],
       extensions: [...declared["extension"]!.values()],
       schemas: [...declared["schema"]!.values()],
+      views: [...declared["view"]!.values()],
     },
     files: list,
   };
