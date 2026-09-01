@@ -98,6 +98,8 @@ function derivedColumn(): ColumnRuntime {
       notNull: false,
       default: undefined,
       identity: undefined,
+      generatedAs: undefined,
+      generatedAsFrom: undefined,
       primaryKey: false,
       unique: false,
       uniqueSpec: undefined,

@@ -2,6 +2,8 @@ import { SchemaError } from '../sql/errors.js'
 import { COLS, INS, META, NAME, REFS, RELS, SEL, SRC, UPD } from './symbols.js'
 import { checkName, kit, pgEnum } from './column.js'
 import type { AnyCol, ColumnKit, ColumnRuntime, PgEnum } from './column.js'
+import { fragmentDdlText } from './ddl.js'
+import type { RefLike } from './ddl.js'
 import type { TableExtra } from './extras.js'
 import type { RefRuntime, RefsOfCols } from './ref.js'
 import type { Cols, InsertRow, Rels, SelectRow, UpdateRow } from './types.js'
@@ -144,6 +146,65 @@ class TableImpl implements TableRuntime {
 }
 
 /**
+ * The `{ [tsKey]: ref }` record a `.generatedAlwaysAs((c) => …)` callback is handed.
+ *
+ * Built only when some column actually declares one — the check is a scan of the record's
+ * own values, which every table already pays for once — because the whole point of design/11
+ * §3 K2a's rule is that a DDL modifier nobody uses costs nothing. What the callback needs is
+ * `$.dbName` and nothing else (`fragmentDdlText` renders a column reference as its quoted DB
+ * name), so this is a *names-only* pre-pass rather than a second construction of the refs:
+ * the real ones do not exist yet, which is the reason the callback exists at all.
+ */
+function lateGenerationRefs(
+  table: string,
+  schema: string | undefined,
+  casing: (key: string) => string,
+  record: Readonly<Record<string, { $?: ColumnRuntime } | undefined>>,
+  keys: readonly string[],
+): Readonly<Record<string, RefLike>> | undefined {
+  let needed = false
+  for (const key of keys) {
+    if (record[key]?.$?.ddl.generatedAsFrom !== undefined) {
+      needed = true
+      break
+    }
+  }
+  if (!needed) return undefined
+  const out: Record<string, RefLike> = Object.create(null) as Record<string, RefLike>
+  for (const key of keys) {
+    const ddl = record[key]?.$?.ddl
+    if (ddl === undefined) continue
+    out[key] = Object.freeze({
+      $: Object.freeze({ table, schema, dbName: ddl.dbName ?? casing(key) }),
+    })
+  }
+  return Object.freeze(out)
+}
+
+/**
+ * Turn `.generatedAlwaysAs((c) => …)` into DDL text, now that the DB names are known.
+ *
+ * The result is a plain `ColumnRuntime` rather than the builder, and it replaces the builder
+ * on BOTH the `RefRuntime` and the ref's `[META]` slot, so nothing in the package can read a
+ * half-resolved column: `metaOf`, the emitter and every query path go through one of those
+ * two. A column with no late-bound expression is returned untouched, which is every column
+ * in every schema that does not use the feature.
+ */
+function resolveGeneration(
+  col: ColumnRuntime,
+  refs: Readonly<Record<string, RefLike>> | undefined,
+  table: string,
+  key: string,
+): ColumnRuntime {
+  const late = col.ddl.generatedAsFrom
+  if (late === undefined) return col
+  const what = `pgTable("${table}").${key}.generatedAlwaysAs()`
+  const text = fragmentDdlText(late(refs ?? {}), what)
+  if (text.trim() === '') throw new SchemaError(`pg-prime: ${what} produced an empty expression.`)
+  return { ddl: { ...col.ddl, generatedAs: text, generatedAsFrom: undefined }, ts: col.ts }
+}
+
+/**
  * `pgTable(name, cols, extras?)` — design/05 D1 + design/04 §1.3.
  *
  * Columns may be a plain record or a `(t: ColumnKit) => record` callback; the
@@ -186,7 +247,10 @@ export function pgTable<N extends string, B extends Record<string, AnyCol>>(
   const runtimes: RefRuntime[] = []
   const dbNames = new Map<string, string>()
 
-  for (const key of Object.keys(record)) {
+  const keys = Object.keys(record)
+  const generationRefs = lateGenerationRefs(name, options?.schema, casing, record, keys)
+
+  for (const key of keys) {
     if (key.startsWith('$')) throw new Error(`pg-prime: column key "${key}" may not start with "$"`)
     if (key === '__proto__') {
       throw new SchemaError(`pg-prime: column key "__proto__" is reserved in pgTable("${name}").`)
@@ -212,15 +276,16 @@ export function pgTable<N extends string, B extends Record<string, AnyCol>>(
       )
     }
     dbNames.set(dbName, key)
+    const resolved = resolveGeneration(col, generationRefs, name, key)
     const rt: RefRuntime = Object.freeze({
       table: name,
       schema: options?.schema,
       key,
       dbName,
-      column: col,
+      column: resolved,
     })
     runtimes.push(rt)
-    refs[key] = Object.freeze({ [SRC]: name, [NAME]: key, [META]: col, $: rt })
+    refs[key] = Object.freeze({ [SRC]: name, [NAME]: key, [META]: resolved, $: rt })
   }
 
   // Frozen: a `Table` is the schema's single source of truth for DDL, the migration IR and every

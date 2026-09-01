@@ -42,13 +42,16 @@ describe('index options (design/05 §2.4, built by design/12 K4)', () => {
       unique: false,
       columns: ['id', 'tag'],
       items: [
-        { column: 'id', desc: false, nulls: undefined, opclass: undefined },
-        { column: 'tag', desc: false, nulls: undefined, opclass: undefined },
+        { column: 'id', expression: undefined, desc: false, nulls: undefined, opclass: undefined },
+        { column: 'tag', expression: undefined, desc: false, nulls: undefined, opclass: undefined },
       ],
       using: undefined,
       where: undefined,
       include: [],
       nullsNotDistinct: false,
+      with: undefined,
+      tablespace: undefined,
+      concurrently: true,
     })
   })
 

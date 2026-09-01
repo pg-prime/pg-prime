@@ -61,6 +61,7 @@ export type {
   ColumnRuntime,
   ColumnTsMeta,
   DefaultSpec,
+  GeneratedAlwaysAsOptions,
   Infer,
   PgEnum,
   PgEnumOptions,
@@ -70,6 +71,7 @@ export {
   check,
   clusterOn,
   comment,
+  exclude,
   foreignKey,
   index,
   partitionBy,
@@ -80,14 +82,18 @@ export {
   uniqueIndex,
 } from './extras.js'
 export type {
+  ExcludeItem,
+  ExcludePair,
   ForeignKeyExtraInput,
   IndexColumn,
   IndexColumnLike,
+  IndexExpression,
   IndexItem,
   IndexNulls,
   IndexOptions,
   PartitionOfOptions,
   PrimaryKeyInput,
+  StorageParameters,
   TableExtra,
 } from './extras.js'
 

@@ -29,6 +29,27 @@ export interface ColumnDdl {
   readonly notNull: boolean
   readonly default: DefaultSpec | undefined
   readonly identity: 'always' | 'byDefault' | undefined
+  /**
+   * `.generatedAlwaysAs(expr)` — the generation expression as DDL text, for
+   * `GENERATED ALWAYS AS (<expr>) STORED` (design/05 §2.3, design/01 row 51).
+   *
+   * `STORED` is the only kind carried, and that is a decision rather than an omission:
+   * PostgreSQL 18's `VIRTUAL` has no in-place conversion in either direction, so the diff
+   * layer refuses `attgenerated` transitions outright (`diff/ddl.ts`) and a DSL that could
+   * declare one would only be able to declare it for a table it also creates.
+   */
+  readonly generatedAs: string | undefined
+  /**
+   * The `(cols) => sql`…`` form of the same thing, held until `pgTable` can supply the
+   * table's own column references (design/05 §2.3's late-bound spelling).
+   *
+   * A generation expression names its SIBLINGS, and inside `(t) => ({ … })` they do not
+   * exist yet — the same problem `.references()` solves with a thunk, one level earlier.
+   * `pgTable` calls this the moment the DB names are known and writes the result into
+   * {@link ColumnDdl.generatedAs}, so every consumer reads one field and a table built
+   * through `pgTable` never sees this one set.
+   */
+  readonly generatedAsFrom: ((cols: Readonly<Record<string, RefLike>>) => AnyFragment) | undefined
   readonly primaryKey: boolean
   readonly unique: boolean
   /** `.unique(name?, { nullsNotDistinct? })` — present iff {@link ColumnDdl.unique} is true. */
@@ -104,8 +125,26 @@ type NullPart<T> = Extract<T, null>
 type NullableFn<M extends ColMeta> = M['pk'] extends true
   ? OrmTypeError<'.nullable() after .primaryKey(): a primary key column is NOT NULL by definition'>
   : M['ro'] extends true
-    ? OrmTypeError<'.nullable() after .generatedAlways(): a generated column is always NOT NULL'>
+    ? OrmTypeError<'.nullable() after .generatedAlways()/.generatedAlwaysAs(): an identity column is never null, and a generated expression column takes .nullable() BEFORE it'>
     : () => Col<{ t: M['t'] | null; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+
+/**
+ * `.generatedAlwaysAs(expr, { stored: true })` — and `stored` has exactly one legal value.
+ *
+ * `VIRTUAL` (PostgreSQL 18) is refused at the TYPE level with the sentence in the
+ * diagnostic: `{ stored: false }` reports *Type 'false' is not assignable to type 'true |
+ * OrmTypeError<"…">'*, and the `OrmTypeError` carries the reason — design/04 §4.1's
+ * sentinel, in parameter position rather than return position because the refusal is about
+ * an argument. The reason is not squeamishness about a new PostgreSQL version:
+ * `attgenerated` cannot be altered in place in either direction, so `diff/ddl.ts` refuses
+ * every generated transition, and a VIRTUAL column the DSL could declare would be
+ * declarable only for a table the same plan creates.
+ */
+export interface GeneratedAlwaysAsOptions {
+  readonly stored?:
+    | true
+    | OrmTypeError<'{ stored: false } means VIRTUAL, which is PostgreSQL 18+ and is not emitted: a generated column cannot be converted in place, so only STORED is declarable'>
+}
 
 /** A default after `GENERATED ALWAYS` is dead code: the database always supplies the value. */
 type DefaultableFn<M extends ColMeta, F> = M['ro'] extends true
@@ -132,6 +171,34 @@ export interface Col<M extends ColMeta> {
   /** GENERATED ALWAYS: absent from insert *and* update, present in select. */
   generatedAlways(): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: true; pk: M['pk'] }>
   generatedByDefault(): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  /**
+   * `GENERATED ALWAYS AS (<expr>) STORED` (design/05 §2.3, design/01 row 51).
+   *
+   * `ro: true`, exactly as `.generatedAlways()` sets it, so the key is **erased** from
+   * `Insertable<T>` and `Updateable<T>` — the database computes the value and PostgreSQL
+   * rejects any attempt to supply one. The runtime half is `metaOf().insertableKeys`,
+   * which is what `copyFrom`'s default column list reads.
+   *
+   * The expression is either a fragment or a `(cols) => fragment` callback. The callback
+   * exists because a generation expression names this table's OTHER columns, and inside
+   * `pgTable(name, (t) => ({ … }))` they do not exist yet:
+   *
+   * ```ts
+   * total: t.numeric().generatedAlwaysAs((c) => sql`${c.price} * ${c.quantity}`),
+   * ```
+   *
+   * `cols` is keyed by TS key and is deliberately NOT the table's typed `[REFS]` slot: the
+   * column builder runs before the table's shape is inferred, so there is no type to give
+   * it. A key that does not exist is caught when the expression is rendered, not by the
+   * compiler.
+   *
+   * `.nullable()` goes **before** this call: a stored generated column may be nullable,
+   * but `ro: true` closes `.nullable()` for the same reason it closes `.default()`.
+   */
+  generatedAlwaysAs(
+    expression: AnyFragment | ((cols: Readonly<Record<string, RefLike>>) => AnyFragment),
+    options?: GeneratedAlwaysAsOptions,
+  ): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: true; pk: M['pk'] }>
   /** Marks the column `pk: true` so design/03 §2.3's `GROUP BY` guard can see it (04 §1.1). */
   primaryKey(): Col<{ t: M['t']; pg: M['pg']; opt: M['opt']; ro: M['ro']; pk: true }>
   /**
@@ -272,8 +339,17 @@ class ColumnBuilder implements ColumnRuntime, Bodies {
     if (this.ddl.identity === 'always') {
       this.#reject(`${what} after .generatedAlways()`, 'the database always supplies the value')
     }
+    if (this.ddl.generatedAs !== undefined || this.ddl.generatedAsFrom !== undefined) {
+      this.#reject(`${what} after .generatedAlwaysAs()`, 'the database always supplies the value')
+    }
   }
   generatedAlways(): ColumnBuilder {
+    if (this.ddl.generatedAs !== undefined || this.ddl.generatedAsFrom !== undefined) {
+      this.#reject(
+        '.generatedAlways() after .generatedAlwaysAs()',
+        'a column is an identity column or a generated one, never both',
+      )
+    }
     if (!this.ddl.notNull) {
       this.#reject('.generatedAlways() after .nullable()', 'a generated column is always NOT NULL')
     }
@@ -284,6 +360,39 @@ class ColumnBuilder implements ColumnRuntime, Bodies {
   }
   generatedByDefault(): ColumnBuilder {
     return this.#next({ identity: 'byDefault' })
+  }
+  generatedAlwaysAs(
+    expression: AnyFragment | ((cols: Readonly<Record<string, RefLike>>) => AnyFragment),
+    options?: { readonly stored?: unknown },
+  ): ColumnBuilder {
+    // Not a type test that happens to be true: `stored` is `true | OrmTypeError<…>` at the
+    // type level, so this only ever fires for JavaScript and for a cast.
+    if (options?.stored !== undefined && options.stored !== true) {
+      throw new SchemaError(
+        `pg-prime: .generatedAlwaysAs(…, { stored: ${JSON.stringify(options.stored)} }) — STORED ` +
+          `is the only generation kind pg-prime emits. VIRTUAL is PostgreSQL 18+ and a generated ` +
+          `column cannot be converted in place in either direction, so the migration layer ` +
+          `refuses the transition and a VIRTUAL column would be declarable only for a table the ` +
+          `same plan creates.`,
+      )
+    }
+    if (this.ddl.identity !== undefined) {
+      this.#reject(
+        '.generatedAlwaysAs() after .generatedAlways()/.generatedByDefault()',
+        'a column is an identity column or a generated one, never both',
+      )
+    }
+    if (this.ddl.default !== undefined || this.ts.defaultFn !== undefined) {
+      this.#reject('.generatedAlwaysAs() after a default', 'the database always supplies the value')
+    }
+    if (typeof expression === 'function') {
+      return this.#next({ generatedAs: undefined, generatedAsFrom: expression })
+    }
+    const text = fragmentDdlText(expression, '.generatedAlwaysAs()')
+    if (text.trim() === '') {
+      throw new SchemaError('pg-prime: .generatedAlwaysAs() was given an empty expression.')
+    }
+    return this.#next({ generatedAs: text, generatedAsFrom: undefined })
   }
   primaryKey(): ColumnBuilder {
     if (!this.ddl.notNull) {
@@ -364,6 +473,8 @@ function baseDdl(pgType: string, dbName: string | undefined): ColumnDdl {
     notNull: true, // NOT NULL by default — design/00 sign-off #4, design/04 D4
     default: undefined,
     identity: undefined,
+    generatedAs: undefined,
+    generatedAsFrom: undefined,
     primaryKey: false,
     unique: false,
     uniqueSpec: undefined,
@@ -415,6 +526,8 @@ export interface PgEnum<N extends string, V extends readonly string[]> {
    * refuses, or at best as a drop-and-recreate of the type and every column that uses it.
    */
   readonly renamedValues: Readonly<Record<string, string>> | undefined
+  /** `COMMENT ON TYPE` (design/01 row 54: comments round-trip for tables, columns AND types). */
+  readonly comment: string | undefined
 }
 
 /** `pgEnum(name, values, options?)` — design/05 §3.2. */
@@ -435,6 +548,13 @@ export interface PgEnumOptions<V extends readonly string[] = readonly string[]> 
    * in the live type and the new one does not, which makes it safe to leave in the source.
    */
   readonly renamedValues?: { readonly [K in V[number]]?: string }
+  /**
+   * `COMMENT ON TYPE member_role IS '…'` — design/01 row 54's third target.
+   *
+   * A comment is its own fact (`05` §7.2), keyed by what it annotates, so re-wording one is
+   * a catalog write with no lock and never an `ALTER TYPE`.
+   */
+  readonly comment?: string
 }
 
 export type AnyPgEnum = PgEnum<string, readonly string[]>
@@ -483,6 +603,11 @@ export function pgEnum<N extends string, const V extends readonly [string, ...st
     }
     seen.add(label)
   }
+  if (options?.comment !== undefined && typeof options.comment !== 'string') {
+    throw new SchemaError(
+      `pg-prime: pgEnum("${name}", { comment }) expects a string; received ${typeof options.comment}.`,
+    )
+  }
   const renamedValues = checkRenamedValues(name, values, options?.renamedValues)
   return {
     kind: 'enum',
@@ -491,6 +616,7 @@ export function pgEnum<N extends string, const V extends readonly [string, ...st
     schema: options?.schema,
     renamedFrom: options?.renamedFrom,
     renamedValues,
+    comment: options?.comment,
   }
 }
 

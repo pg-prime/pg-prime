@@ -39,6 +39,13 @@ export interface PgDomainOptions {
   readonly checks?: readonly { readonly name: string; readonly expression: string }[]
   /** design/05 §5.1's annotation. A carrier; `generate` decides whether it fires. */
   readonly renamedFrom?: string
+  /**
+   * `COMMENT ON DOMAIN email IS '…'` — design/01 row 54's third target.
+   *
+   * A comment is its own fact (`05` §7.2), keyed by what it annotates, so re-wording one is
+   * a catalog write with no lock and never an `ALTER DOMAIN`.
+   */
+  readonly comment?: string
 }
 
 export interface PgDomain {
@@ -52,6 +59,7 @@ export interface PgDomain {
   readonly collation: string | undefined
   readonly checks: readonly { readonly name: string; readonly expression: string }[]
   readonly renamedFrom: string | undefined
+  readonly comment: string | undefined
 }
 
 export function pgDomain(name: string, baseType: string, options?: PgDomainOptions): PgDomain {
@@ -66,6 +74,11 @@ export function pgDomain(name: string, baseType: string, options?: PgDomainOptio
     checkName(options.renamedFrom, `pgDomain("${name}", { renamedFrom })`)
   for (const c of options?.checks ?? [])
     checkName(c.name, `pgDomain("${name}") check name "${c.name}"`)
+  if (options?.comment !== undefined && typeof options.comment !== 'string') {
+    throw new SchemaError(
+      `pg-prime: pgDomain("${name}", { comment }) expects a string; received ${typeof options.comment}.`,
+    )
+  }
   return Object.freeze({
     kind: 'domain' as const,
     name,
@@ -76,6 +89,7 @@ export function pgDomain(name: string, baseType: string, options?: PgDomainOptio
     collation: options?.collation,
     checks: Object.freeze([...(options?.checks ?? [])]),
     renamedFrom: options?.renamedFrom,
+    comment: options?.comment,
   })
 }
 
