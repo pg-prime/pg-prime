@@ -1000,6 +1000,337 @@ type Infer<E extends AnyPgEnum> = E['values'][number]
 `Infer<typeof postStatus>` is `'draft' | 'review' | 'published'` — the union, for a function
 signature or a form validator that has to name it without importing a column.
 
+## Views and materialized views
+
+A view is a **typed read-only entity**: a FROM source with exact column types, and a compile error
+in `insertInto`, `update` and `deleteFrom`. Its body is not diffed — it is a hashed repeatable in
+the `sql/` lane, rendered there by `pg-prime migrate generate` and re-applied whenever the hash
+changes. [Views and materialized views](/pg-prime/guides/views/) is the guide.
+
+Two authoring forms: declared columns plus a `sql` body, and `.existing()` for a view the database
+already has and you do not manage. The builder-inferred form — `pgView('v').as((q) => q.from(…))`,
+columns inferred from a query — is not built: it would make the declaration layer depend on the
+query builder, and the diff story it implies is structured view diffing, which is v1.x.
+
+### `pgView`
+
+{/* docs: signature */}
+```ts
+function pgView<N extends string>(name: N, options?: ViewOptions): ViewBuilder<N>
+```
+
+`pgView('org_health').columns((t) => ({ orgId: t.uuid(), status: t.text() })).as(sql`…`)`. The
+declared columns are the entity's type: the keys become the emitted column-alias list *and* the
+row's keys, and each column's codec decodes it, so a view is as exactly typed and as fully decoded
+as a table. A view with no columns is refused.
+
+The value it returns **is** a query handle — `db.from(activeUsers)` takes it directly, with no
+`.h`. It is not a `Table`, so it cannot go into `defineSchema(...)`: a view has no relations for the
+registry to add and no insert shape to offer. The migration kit finds it on the schema module's
+exports, exactly as it finds a [`pgDomain`](#pgDomain).
+
+### `pgMaterializedView`
+
+{/* docs: signature */}
+```ts
+function pgMaterializedView<N extends string>(
+  name: N,
+  options?: ViewOptions,
+): MaterializedViewBuilder<N>
+```
+
+The same, plus `.withNoData()` and `.refreshable({ concurrently })`, and minus `.with(…)` — a
+matview carries none of `security_invoker`, `security_barrier` or `check_option`, so a matview
+reading an RLS-enabled table is a privilege boundary by construction. `db.refreshMaterializedView`
+is [in the runtime reference](/pg-prime/reference/pg-prime/#refreshing-a-materialized-view).
+
+PostgreSQL has no `CREATE OR REPLACE` for a materialized view, so a changed body is emitted as
+`DROP` + `CREATE` — not `CASCADE`, so a dependent object stops the apply rather than vanishing.
+
+### `ViewOptions`
+
+{/* docs: signature */}
+```ts
+interface ViewOptions {
+  readonly schema?: string
+  readonly casing?: (key: string) => string
+}
+```
+
+The same two as [`TableOptions`](#TableOptions), and they mean the same things.
+
+### `ViewBuilder`
+
+{/* docs: signature */}
+```ts
+interface ViewBuilder<N extends string> {
+  columns<B extends Record<string, AnyCol>>(
+    columns: B | ((t: ColumnKit) => B),
+  ): ViewBody<N, ColsOf<B>>
+}
+```
+
+Stage one: the name is fixed, the columns are not. Same `ColumnKit` as `pgTable`.
+
+### `ViewBody`
+
+{/* docs: signature */}
+```ts
+interface ViewBody<N extends string, C extends Cols> {
+  with(options: ViewWithOptions): ViewBody<N, C>
+  comment(text: string): ViewBody<N, C>
+  renamedFrom(name: string): ViewBody<N, C>
+  dependsOn(...targets: readonly ViewDependency[]): ViewBody<N, C>
+  as(body: AnyFragment): View<N, C>
+  existing(): View<N, C>
+}
+```
+
+Stage two: the options, then a body or `.existing()`. `as(sql`…`)` renders the fragment to DDL text
+at declaration time, so a bind parameter in a position the catalog cannot hold — a view definition
+is stored parsed, and has no `$1` — fails on the import of the schema file rather than three steps
+later in a shadow database.
+
+### `MaterializedViewBuilder`
+
+{/* docs: signature */}
+```ts
+interface MaterializedViewBuilder<N extends string> {
+  columns<B extends Record<string, AnyCol>>(
+    columns: B | ((t: ColumnKit) => B),
+  ): MaterializedViewBody<N, ColsOf<B>>
+}
+```
+
+### `MaterializedViewBody`
+
+{/* docs: signature */}
+```ts
+interface MaterializedViewBody<N extends string, C extends Cols> {
+  comment(text: string): MaterializedViewBody<N, C>
+  renamedFrom(name: string): MaterializedViewBody<N, C>
+  dependsOn(...targets: readonly ViewDependency[]): MaterializedViewBody<N, C>
+  withNoData(): MaterializedViewBody<N, C>
+  refreshable(options?: RefreshableOptions): MaterializedViewBody<N, C>
+  as(body: AnyFragment): MaterializedView<N, C>
+  existing(): MaterializedView<N, C>
+}
+```
+
+`.indexes(…)`, `.using(…)` and `.tablespace(…)` are not built in v1: an index on a matview lives in
+your own `sql/` lane, because the matview's own repeatable drops and recreates it.
+
+### `ViewWithOptions`
+
+{/* docs: signature */}
+```ts
+interface ViewWithOptions {
+  readonly securityInvoker?: boolean
+  readonly securityBarrier?: boolean
+  readonly checkOption?: 'local' | 'cascaded'
+}
+```
+
+**`securityInvoker` is `true` by default.** The view's rows are read with the caller's privileges
+and RLS policies unless the declaration deliberately turns it off. PostgreSQL 15 is the floor, so
+this is safe, and silently bypassing RLS through a view is a security bug rather than a default.
+
+### `RefreshableOptions`
+
+{/* docs: signature */}
+```ts
+interface RefreshableOptions {
+  readonly concurrently?: boolean
+}
+```
+
+What `db.refreshMaterializedView(mv)` should do by default. It is documentation the helper reads,
+never a claim that the unique index `CONCURRENTLY` requires exists — a missing one is the server's
+own `55000`, mapped and rethrown.
+
+### `ViewDependency`
+
+{/* docs: signature */}
+```ts
+type ViewDependency =
+  | string
+  | { readonly $: { readonly name: string; readonly schema: string | undefined } }
+```
+
+What `.dependsOn(…)` accepts: a table, another view, or a qualified name for something the DSL
+cannot name. A bare string is read as `public.<name>`. It orders the declared views against each
+other in the repeatables lane, which is what a view built on another view needs when the SQL body
+is opaque to the kit.
+
+### `View`
+
+{/* docs: signature */}
+```ts
+interface View<N extends string, C extends Cols> {
+  readonly [SCHEMA]: ViewSchema<N, C>
+  readonly [NAME]: N
+  readonly [READONLY]: true
+  readonly [COLS]: C
+  readonly [REFS]: RefsOfCols<N, C>
+  readonly cols: RefsOfCols<N, C>
+  readonly [SEL]: SelectRow<C>
+  readonly kind: 'view'
+  readonly $: ViewRuntime
+}
+```
+
+The declared entity. It carries its own one-entry `[SCHEMA]`, which is what lets a FROM source with
+no registry behind it light up the whole query layer with no new machinery — the same trick a CTE
+handle uses, except that a view carries real [`Cols`](#mapped-types-and-supertypes), so each
+column's PostgreSQL type class survives and the operator gates stay exact.
+
+[`READONLY`](#READONLY) is the slot `insertInto` / `update` / `deleteFrom` read.
+
+### `MaterializedView`
+
+{/* docs: signature */}
+```ts
+interface MaterializedView<N extends string, C extends Cols> {
+  readonly [SCHEMA]: ViewSchema<N, C>
+  readonly [NAME]: N
+  readonly [READONLY]: true
+  readonly [COLS]: C
+  readonly [REFS]: RefsOfCols<N, C>
+  readonly cols: RefsOfCols<N, C>
+  readonly [SEL]: SelectRow<C>
+  readonly kind: 'materializedView'
+  readonly $: MaterializedViewRuntime
+}
+```
+
+### `AnyView`
+
+{/* docs: signature */}
+```ts
+interface AnyView {
+  readonly [SCHEMA]: any
+  readonly [NAME]: any
+  readonly [READONLY]: true
+  readonly [COLS]: any
+  readonly [REFS]: any
+  readonly cols: any
+  readonly [SEL]: any
+  readonly kind: 'view' | 'materializedView'
+  readonly $: ViewRuntime
+}
+```
+
+The minimal supertype, members `any`, for the same O(1) reason as [`AnyTable`](#AnyTable).
+
+### `AnyMaterializedView`
+
+{/* docs: signature */}
+```ts
+interface AnyMaterializedView extends AnyView {
+  readonly kind: 'materializedView'
+  readonly $: MaterializedViewRuntime
+}
+```
+
+What [`refreshMaterializedView`](/pg-prime/reference/pg-prime/#refreshing-a-materialized-view) takes. A
+plain view fails on the `kind` literal.
+
+### `ViewRow`
+
+{/* docs: signature */}
+```ts
+type ViewRow<V extends AnyView> = V[typeof SEL]
+```
+
+The row a view yields — [`Row<T>`](#Row)'s spelling for something that has no insert shape.
+
+### `ViewTable`
+
+{/* docs: signature */}
+```ts
+interface ViewTable<N extends string, C extends Cols> {
+  readonly [NAME]: N
+  readonly [COLS]: C
+  readonly [REFS]: RefsOfCols<N, C>
+  readonly [SEL]: SelectRow<C>
+  readonly [RELS]: {}
+  readonly $: ViewRuntime
+}
+```
+
+The `Table`-shaped entry inside a [`ViewSchema`](#ViewSchema). No `[INS]` and no `[UPD]`, because a
+view has neither.
+
+### `ViewSchema`
+
+{/* docs: signature */}
+```ts
+interface ViewSchema<N extends string, C extends Cols> {
+  readonly [TABLES]: { readonly [K in N]: ViewTable<N, C> }
+  readonly [RELS]: { readonly [K in N]: {} }
+}
+```
+
+The one-table registry a view handle points at, so that `TableAt<H>` is the same two indexed
+accesses it is for a table.
+
+### `ViewInfo`
+
+{/* docs: signature */}
+```ts
+interface ViewInfo {
+  readonly kind: 'view' | 'materializedView'
+  readonly name: string
+  readonly schema: string | undefined
+  readonly body: string | undefined
+  readonly existing: boolean
+  readonly securityInvoker: boolean | undefined
+  readonly securityBarrier: boolean | undefined
+  readonly checkOption: 'local' | 'cascaded' | undefined
+  readonly comment: string | undefined
+  readonly renamedFrom: string | undefined
+  readonly dependsOn: readonly string[]
+  readonly withNoData: boolean
+  readonly refreshConcurrently: boolean | undefined
+}
+```
+
+The whole contract between the DSL and the migration kit: plain data, no type parameters, so adding
+a field costs zero type instantiations. `body` is `undefined` exactly when `existing` is true;
+`securityInvoker` is `undefined` on a materialized view, which cannot carry the reloption.
+
+### `ViewRuntime`
+
+{/* docs: signature */}
+```ts
+interface ViewRuntime extends TableRuntime {
+  readonly view: ViewInfo
+}
+```
+
+A [`TableRuntime`](#TableRuntime) whose optional `view` slot is populated. That slot is how
+`db.from(...)` tells a view from a table at runtime, and how the kit's schema walk keeps a view out
+of the table registry.
+
+### `MaterializedViewRuntime`
+
+{/* docs: signature */}
+```ts
+interface MaterializedViewRuntime extends ViewRuntime {
+  readonly view: ViewInfo & { readonly kind: 'materializedView' }
+}
+```
+
+### `isView`
+
+{/* docs: signature */}
+```ts
+function isView(value: unknown): value is AnyView
+```
+
+True for both view kinds and false for a table — the runtime half of the same question `$.view`
+answers.
+
 ## Schemas, domains, sequences and extensions
 
 These four exist because the differ models them as facts it owns, and a fact it owns is a fact it
@@ -1475,7 +1806,7 @@ in a diagnostic, not in their own code.
 
 ### The phantom slots
 
-Fourteen `unique symbol`s, all of them keys of type-level slots that do not exist at runtime. They
+Fifteen `unique symbol`s, all of them keys of type-level slots that do not exist at runtime. They
 **must** be exported: a downstream build with `declaration: true` fails with TS2527 ("references an
 inaccessible unique symbol") if any one of them is not. They are `Symbol.for(...)`, not `Symbol()`,
 so two copies of the package in one dependency tree still agree.
@@ -1494,6 +1825,7 @@ so two copies of the package in one dependency tree still agree.
 | <a id="SCHEMA"/>`SCHEMA` | `Handle` | The schema a handle belongs to — the back-reference that makes relations reachable from a query. |
 | <a id="OUT"/>`OUT` | anything projectable | The output type of a projectable value. |
 | <a id="SRC"/>`SRC` | `Ref`, `TypedFragment` | The source alias a reference belongs to. |
+| <a id="READONLY"/>`READONLY` | `View`, `MaterializedView` | "This FROM source has no write surface." Present only on a view, and read in return position by `insertInto` / `update` / `deleteFrom`. |
 | <a id="ERR"/>`ERR` | [`OrmTypeError`](#the-type-layer) | The sentence a refused call reports. |
 | <a id="DATE_BRAND"/>`DATE_BRAND` | nothing | Reserved. It was the brand key of the schema layer's own `DateString`; that type is now an alias of the codec layer's brand, so nothing reads this. Kept exported because removing a `Symbol.for` key is a breaking change for anyone who wrote it into a structural type, and it costs one interned symbol. |
 

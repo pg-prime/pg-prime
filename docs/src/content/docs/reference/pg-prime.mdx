@@ -192,6 +192,10 @@ interface Queryable<Sc extends AnySchema> extends Executor {
   notify(channel: string, payload?: string): Promise<void>
   withOptions(opts: CallOptions): Queryable<Sc>
   outsideTransaction(): Queryable<Sc>
+  refreshMaterializedView(
+    view: AnyMaterializedView,
+    opts?: RefreshMaterializedViewOptions,
+  ): Promise<void>
   copyFrom: CopyFromApi
   copyTo: CopyToApi
   // …
@@ -854,6 +858,55 @@ interface CopyResult {
 ```
 
 What the server reported, not what you sent.
+
+## Refreshing a materialized view
+
+`refreshMaterializedView` is on every handle, next to `copyFrom` and for the same reason: `REFRESH
+MATERIALIZED VIEW` is transaction-safe — `CONCURRENTLY` included, measured on PostgreSQL 17 — so
+the common shape is a refresh inside the transaction that also writes the audit row, and a helper
+only the root handle carried would force that out of the transaction.
+
+It takes a [`pgMaterializedView(...)`](/pg-prime/reference/schema/#pgMaterializedView) declaration.
+A plain view is a compile error, because a view has no stored rows to refresh.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="refresh-a-matview.ts"
+import { pgMaterializedView, sql } from 'pg-prime'
+
+const postsPerAuthor = pgMaterializedView('posts_per_author')
+  .columns((t) => ({ authorId: t.bigint(), posts: t.bigint() }))
+  .refreshable({ concurrently: true })
+  .as(sql`select author_id, count(*) from posts group by 1`)
+
+await db.sql`create materialized view posts_per_author ("author_id","posts") as
+             select author_id, count(*) from posts group by 1`.execute()
+await db.sql`create unique index posts_per_author_pk on posts_per_author (author_id)`.execute()
+
+// The declaration asked for CONCURRENTLY, so this is what reaches the server:
+//   refresh materialized view concurrently "posts_per_author"
+await db.refreshMaterializedView(postsPerAuthor)
+
+// …and the call can override it either way.
+await db.refreshMaterializedView(postsPerAuthor, { concurrently: false })
+
+console.log((await db.from(postsPerAuthor).selectAll('posts_per_author').execute()).length > 0)
+// true
+```
+
+`CONCURRENTLY` needs a unique index on the matview. Without one PostgreSQL answers `55000` and that
+error is mapped and rethrown — it never degrades quietly to a blocking refresh, which would take an
+ACCESS EXCLUSIVE lock and turn a slow query into an outage.
+
+### `RefreshMaterializedViewOptions`
+
+{/* docs: signature */}
+```ts
+interface RefreshMaterializedViewOptions {
+  readonly concurrently?: boolean
+}
+```
+
+Overrides the view's own `.refreshable({ concurrently })` declaration for this call.
 
 ## Pooling, pooler profiles and diagnosis
 

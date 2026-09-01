@@ -179,8 +179,11 @@ explaining why it cannot exist; see [the shadow ladder](/pg-prime/concepts/shado
 | <a id="EmitOptions"/> `EmitOptions` | `{ schemaMap?: ReadonlyMap<string, string>; defaultSchema?: string }` | The rename map and where an unqualified table lands (`public`). |
 | <a id="EmitResult"/> `EmitResult` | `{ sql: readonly string[]; diagnostics; schemas }` | Statements in execution order, plus the schemas they touch in the caller's names. |
 | <a id="LoadDesiredOptions"/> `LoadDesiredOptions` | `{ defaultSchema?; statementTimeout?; afterLoad?: (client) => Promise<void> }` | `afterLoad` runs on the shadow's own connection, after the DDL and before the extract. |
-| <a id="SchemaLike"/> `SchemaLike` | `{ tables; enums?; domains?; sequences?; extensions?; schemas? }` | A schema registry. `Schema<T, R>` from `pg-prime` is assignable to it, and so is a bare `{ tables }` literal. |
+| <a id="SchemaLike"/> `SchemaLike` | `{ tables; enums?; domains?; sequences?; extensions?; schemas?; views? }` | A schema registry. `Schema<T, R>` from `pg-prime` is assignable to it, and so is a bare `{ tables }` literal. The optional lists are the standalone declarations `loadSchema` collects off the module's exports. |
 | <a id="TableLike"/> `TableLike` | `{ $: TableRuntime }` | One table as the registry holds it. |
+| <a id="ViewLike"/> `ViewLike` | `{ $: ViewRuntime }` | One `pgView` / `pgMaterializedView` declaration. A view is table-shaped down here, and the populated `$.view` is the only thing that distinguishes it — which is also what keeps `loadSchema`'s table sweep from emitting a `CREATE TABLE` for one. |
+| <a id="ViewRuntime"/> `ViewRuntime` | `TableRuntime & { view: ViewInfo }` | The runtime metadata behind a view's `$`. |
+| <a id="ViewInfo"/> `ViewInfo` | `{ kind; name; schema; body; existing; securityInvoker; securityBarrier; checkOption; comment; renamedFrom; dependsOn; withNoData; refreshConcurrently }` | The whole contract between the DSL and the kit. `body` is `undefined` exactly when `existing` is true. |
 | <a id="TableRuntime"/> `TableRuntime` | `{ name; schema; columns; extras; column(key) }` | The runtime metadata behind a table's `$`. Non-generic, so it costs nothing per instantiation. |
 | <a id="RefRuntime"/> `RefRuntime` | `{ table; schema; key; dbName; column }` | A column reference's runtime metadata. Carries the schema so a cross-schema foreign key target is never guessed by table name. |
 | <a id="ColumnDdl"/> `ColumnDdl` | `{ pgType; dbName; notNull; default; identity; primaryKey; unique; enumName; arrayDim; references; checks; comment; renamedFrom }` | Everything a column contributes to DDL. No `$`-prefixed builder method ever writes into it. |
@@ -842,6 +845,31 @@ Tier R: `sql/` files re-applied whenever their bytes change, recorded in `pgprim
 | <a id="checkIdempotence"/> `checkIdempotence` | `(statements: readonly string[]) => IdempotenceResult` | TX201, syntactically. It lexes rather than greps, so a leading `-- CREATE OR REPLACE` comment cannot launder a bare `CREATE` and a `DROP TABLE` inside a `$$…$$` body belongs to the body. An unrecognised leading verb passes. |
 | <a id="IdempotenceResult"/> `IdempotenceResult` | `{ ok: boolean; violations: readonly IdempotenceViolation[] }` | `ok` is false as soon as one statement is not safely re-runnable. |
 | <a id="IdempotenceViolation"/> `IdempotenceViolation` | `{ index; sql; reason }` | The index into the list that was checked, the statement, and why it was rejected. |
+
+## Declared views
+
+Tier R, the half that comes from TypeScript rather than from a file you wrote. `migrate generate`
+renders every `pgView` / `pgMaterializedView` in the schema into `<repeatablesDir>/020_views/` —
+before the shadow loads the lane, so the shadow gets the current definitions and the proof covers
+them — and from that point on they are ordinary repeatables: hashed, drift-detected, re-applied on
+change, and visible in the pull request that changed them.
+
+A file rather than an in-memory contribution because `apply`, `status` and `doctor` do not load the
+TypeScript schema, and `apply` in particular has to work in a deploy image that ships migrations and
+nothing else. See [views and materialized views](/pg-prime/guides/views/).
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="renderViewRepeatables"/> `renderViewRepeatables` | `(schema: SchemaLike, options?: RenderViewsOptions) => RenderedViews` | Pure. Topologically ordered by `.dependsOn`, the rank baked into the filename because the repeatables pass has no dependency graph and scan order is one lexicographic walk. A cycle is a diagnostic and the other views are still emitted. |
+| <a id="syncViewRepeatables"/> `syncViewRepeatables` | `(schema: SchemaLike, dir: string, options: SyncViewsOptions) => Promise<SyncedViews>` | Writes and prunes with `write: true`, and with `write: false` reports `declared_views_stale` instead — which is what `migrate check`, a command that writes nothing, should say. |
+| <a id="declaredViewIdentities"/> `declaredViewIdentities` | `(schema: SchemaLike, defaultSchema?: string) => readonly string[]` | Every declared view's `schema.name`, `.existing()` ones included. What silences the Tier-U census. |
+| <a id="DeclaredView"/> `DeclaredView` | `{ kind; identity; path; sql }` | One rendered file. `path` is POSIX and relative to the repeatables root. |
+| <a id="RenderedViews"/> `RenderedViews` | `{ files: readonly DeclaredView[]; diagnostics }` | |
+| <a id="RenderViewsOptions"/> `RenderViewsOptions` | `{ defaultSchema?: string }` | Where an undeclared schema lands, the same default `emitSchema` uses. |
+| <a id="SyncViewsOptions"/> `SyncViewsOptions` | `RenderViewsOptions & { write: boolean }` | |
+| <a id="SyncedViews"/> `SyncedViews` | `RenderedViews & { written; pruned }` | Both lists are paths relative to the repeatables root. |
+| <a id="VIEWS_DIR"/> `VIEWS_DIR` | `'020_views'` | The directory declared views are rendered into, ranked between `010_functions` and `030_matviews` by the same convention a hand-written lane uses. |
+| <a id="DECLARED_DIRECTIVE"/> `DECLARED_DIRECTIVE` | `'-- pg-prime:declared view'` | The marker that says pg-prime generated this file. Pruning only ever deletes a file carrying it, so a hand-written view in the same directory — or one `pull` wrote, which carries `-- pg-prime:object` and not this — is never touched. |
 
 ## Database helpers
 

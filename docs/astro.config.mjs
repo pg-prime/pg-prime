@@ -66,6 +66,7 @@ export default defineConfig({
             { label: 'LISTEN / NOTIFY', slug: 'guides/listen-notify' },
             { label: 'COPY and bulk loading', slug: 'guides/copy' },
             { label: 'pgvector and extension types', slug: 'guides/pgvector' },
+            { label: 'Views and materialized views', slug: 'guides/views' },
             { label: 'Observability', slug: 'guides/observability' },
             { label: 'Testing', slug: 'guides/testing' },
             { label: 'Migrations end to end', slug: 'guides/migrations' },

@@ -1,0 +1,304 @@
+---
+title: Views and materialized views
+description: Declaring a view as a typed read-only entity, querying it, the sql/ lane its body rides, REFRESH, and the view you do not manage.
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+A view in pg-prime is a **typed read-only entity**. You declare its columns, you get a FROM source
+with exact column types — the same operator gates, the same codecs, the same projected row shape as
+a table — and `insertInto`, `update` and `deleteFrom` refuse it at compile time with a sentence.
+
+Its body is not diffed. It is a hashed repeatable in the `sql/` lane: `pg-prime migrate generate`
+renders the `CREATE OR REPLACE VIEW` into `sql/020_views/`, and `pg-prime migrate apply` re-runs it
+whenever the hash changes. That is the v1 mechanism for every object whose body is a program rather
+than a shape — views, functions, triggers, policies — and it is the reason pg-prime has no phantom
+view diffs. Structured diffing of view definitions is a v1.x feature; the lane is what ships now.
+
+## Declaring one
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="declare-a-view.ts"
+import { pgView, sql } from 'pg-prime'
+
+const publishedPosts = pgView('published_posts')
+  .columns((t) => ({
+    id: t.bigint(),
+    authorId: t.bigint(),
+    title: t.text(),
+  }))
+  .comment('every post a reader can see')
+  .as(sql`select id, author_id, title from posts where published`)
+
+// The kit renders exactly this into sql/020_views/; here it is by hand so the example can run.
+await db.sql`
+  create or replace view published_posts ("id", "author_id", "title")
+  with (security_invoker = true)
+  as select id, author_id, title from posts where published
+`.execute()
+
+await db.insertInto(db.h.users).values({ email: 'ada@example.com', name: 'Ada' }).execute()
+const [ada] = await db.from(db.h.users).select((u) => ({ id: u.users.id })).execute()
+await db
+  .insertInto(db.h.posts)
+  .values({ authorId: ada!.id, title: 'Hello', body: '…', published: true })
+  .execute()
+
+const rows = await db
+  .from(publishedPosts)
+  .select((t) => ({ id: t.published_posts.id, title: t.published_posts.title }))
+  .execute()
+
+console.log(rows) // [ { id: 1n, title: 'Hello' } ]
+console.log(typeof rows[0]!.id) // bigint
+```
+
+Three things in that block are the whole design.
+
+**The declared columns are the type.** `id: t.bigint()` is why `rows[0].id` is a `bigint` and not a
+string: the column's codec decodes it, exactly as it would on a table. A subquery or a CTE cannot do
+this — it has no declared PostgreSQL type per column, so the operator gates go dark and the decode
+is by whatever OID happens to arrive.
+
+**The value is a handle.** `db.from(publishedPosts)` takes the view directly; there is no
+`db.h.publishedPosts`, and a view does not go into `defineSchema(...)`. A view has no relations for
+the registry to add, so the registry would add nothing.
+
+**`security_invoker` is on.** It is the default for every `pgView`, and it means the view reads with
+the *caller's* privileges and RLS policies. PostgreSQL 15 is pg-prime's floor, so this is safe;
+silently bypassing row-level security through a view is a security bug, not a convenience.
+
+<Aside type="caution" title="Turning security_invoker off is a decision">
+`.with({ securityInvoker: false })` makes the view a privilege-crossing boundary: it reads with its
+*owner's* rights, so a caller who cannot select from the underlying table can select through the
+view. That is sometimes exactly what you want — a redacted projection is the classic case — and it
+should be a line somebody wrote on purpose.
+</Aside>
+
+## No write surface
+
+{/* docs: use=blog-schema */}
+```ts title="views-are-read-only.ts" no-run="the point of the block is the two compile errors, and a compile error does not run"
+import { pgPrime, pgView, sql } from 'pg-prime'
+import type { Db } from 'pg-prime'
+
+const publishedPosts = pgView('published_posts')
+  .columns((t) => ({ id: t.bigint(), title: t.text() }))
+  .as(sql`select id, title from posts where published`)
+
+declare const db: Db
+
+// @ts-expect-error — insertInto() takes a table: "published_posts" is a view and is read-only
+db.insertInto(publishedPosts).values({ title: 'x' })
+
+// @ts-expect-error — the same for update() and deleteFrom()
+db.update(publishedPosts).set(() => ({ title: 'x' }))
+
+void pgPrime
+```
+
+The diagnostic is one line and it names the view:
+
+```
+error TS2339: Property 'values' does not exist on type
+  'OrmTypeError<"insertInto() takes a table: \"published_posts\" is a view and is read-only —
+   write to the table it selects from, or add an INSTEAD OF trigger through the sql/ lane">'.
+```
+
+An `INSTEAD OF` trigger really does make a view writable in PostgreSQL, and pg-prime will not stop
+you writing one in the `sql/` lane. What it will not do is *pretend*: the type says read-only
+because the DSL cannot see your trigger, and a false claim in the other direction is worse.
+
+The same refusal exists at runtime, for the case where the handle arrived through an `any`.
+
+## What lands in `sql/`
+
+`pg-prime migrate generate` writes one file per declared view, before it loads the lane into the
+shadow database — so the shadow holds the current definitions, the proof covers them, and a view
+that selects a column the migration is about to drop fails at author time.
+
+```sh
+$ pg-prime migrate generate --name add_published_posts
+$ tree sql
+sql
+└── 020_views
+    └── 010_public__published_posts.sql
+```
+
+```sql
+-- pg-prime:declared view public.published_posts
+-- pg-prime:tier R
+-- pg-prime:rank 10
+--
+-- GENERATED by `pg-prime migrate generate` from the pgView('published_posts') declaration.
+-- Edit the TypeScript, not this file: the next generate overwrites it, and deleting the
+-- declaration deletes the file.
+
+CREATE OR REPLACE VIEW "public"."published_posts" ("id", "author_id", "title") WITH (security_invoker = true) AS
+select id, author_id, title from posts where published;
+
+COMMENT ON VIEW "public"."published_posts" IS 'every post a reader can see';
+```
+
+It is a file, and that is deliberate. `migrate apply`, `migrate status` and `migrate doctor` do not
+load your TypeScript — `apply` in particular has to work in a deploy image that ships migrations and
+nothing else — so a view contributed only in memory would look like an orphan to `doctor` and would
+never re-apply at deploy time. As a file it is an ordinary repeatable: hashed, drift-detected,
+re-applied when the hash changes, and a positive line in the pull request that changed it.
+
+`migrate check` writes nothing. If the lane and the declarations disagree it says so
+(`declared_views_stale`), which is the answer its user wants.
+
+### Ordering
+
+`.dependsOn(…)` orders declared views against each other, and the rank goes into the filename
+because the repeatables pass walks the directory in one lexicographic sort and has no dependency
+graph of its own.
+
+{/* docs: use=blog-schema */}
+```ts title="view-on-a-view.ts" no-run="a schema fragment: two declarations, with no handle to run them against"
+import { pgView, sql } from 'pg-prime'
+
+export const publishedPosts = pgView('published_posts')
+  .columns((t) => ({ id: t.bigint(), authorId: t.bigint(), title: t.text() }))
+  .as(sql`select id, author_id, title from posts where published`)
+
+export const publishedTitles = pgView('published_titles')
+  .columns((t) => ({ title: t.text() }))
+  .dependsOn(publishedPosts)
+  .as(sql`select title from published_posts`)
+```
+
+→ `010_public__published_posts.sql`, then `020_public__published_titles.sql`. Reordering the graph
+renames files; the stale ones are pruned on the next `generate`, and only files carrying the
+`-- pg-prime:declared` marker are ever deleted, so a hand-written view in the same directory is
+safe. A cycle is reported rather than silently ordered.
+
+For a dependency the DSL cannot name — a function, a foreign table — pass the qualified name:
+`.dependsOn('public.slugify')`. Ordering against a *file* in the lane is the numeric directory
+prefix's job, exactly as in a hand-written `sql/`: `010_functions` runs before `020_views`.
+
+## Materialized views
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="materialized-view.ts"
+import { pgMaterializedView, sql } from 'pg-prime'
+
+const postsPerAuthor = pgMaterializedView('posts_per_author')
+  .columns((t) => ({ authorId: t.bigint(), posts: t.bigint() }))
+  .refreshable({ concurrently: true })
+  .as(sql`select author_id, count(*) from posts group by 1`)
+
+await db.insertInto(db.h.users).values({ email: 'ada@example.com', name: 'Ada' }).execute()
+const [ada] = await db.from(db.h.users).select((u) => ({ id: u.users.id })).execute()
+await db.insertInto(db.h.posts).values({ authorId: ada!.id, title: 'a', body: '…' }).execute()
+
+// What the kit renders into sql/030-ish; by hand here, plus the unique index CONCURRENTLY needs.
+await db.sql`
+  create materialized view posts_per_author ("author_id", "posts")
+  as select author_id, count(*) from posts group by 1
+`.execute()
+await db.sql`create unique index posts_per_author_pk on posts_per_author (author_id)`.execute()
+
+const total = async (): Promise<bigint> => {
+  const rows = await db.from(postsPerAuthor).select((t) => ({ n: t.posts_per_author.posts })).execute()
+  return rows.reduce((a, r) => a + r.n, 0n)
+}
+
+console.log(await total()) // 1n
+
+await db.insertInto(db.h.posts).values({ authorId: ada!.id, title: 'b', body: '…' }).execute()
+console.log(await total()) // 1n — a matview is a snapshot, and this is the half people forget
+
+await db.refreshMaterializedView(postsPerAuthor)
+console.log(await total()) // 2n
+```
+
+`refreshMaterializedView` is on **every** handle, not only on `db`: `REFRESH MATERIALIZED VIEW` is
+transaction-safe (`CONCURRENTLY` included — measured on PostgreSQL 17), so the common shape is a
+refresh inside the transaction that also writes the audit row.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="refresh-in-a-transaction.ts"
+import { pgMaterializedView, sql } from 'pg-prime'
+
+const postsPerAuthor = pgMaterializedView('posts_per_author')
+  .columns((t) => ({ authorId: t.bigint(), posts: t.bigint() }))
+  .as(sql`select author_id, count(*) from posts group by 1`)
+
+await db.sql`
+  create materialized view posts_per_author ("author_id", "posts")
+  as select author_id, count(*) from posts group by 1
+`.execute()
+
+await db.transaction(async (db) => {
+  await db.insertInto(db.h.users).values({ email: 'ada@example.com', name: 'Ada' }).execute()
+  await db.refreshMaterializedView(postsPerAuthor)
+})
+
+console.log('refreshed inside the transaction')
+```
+
+The declaration's `.refreshable({ concurrently })` is what the helper reads by default, and a call
+can override it either way. `CONCURRENTLY` needs a unique index on the matview; without one
+PostgreSQL answers `55000` and pg-prime rethrows the mapped error. It never degrades quietly to a
+blocking refresh — that would swap a slow query for an `ACCESS EXCLUSIVE` lock, which is an outage.
+
+<Aside type="note" title="An index on a matview lives in your sql/ lane">
+PostgreSQL has no `CREATE OR REPLACE MATERIALIZED VIEW`, so a changed body is emitted as `DROP` +
+`CREATE` (never `CASCADE` — a dependent object should stop the apply and be read by a human). The
+DSL cannot declare an index on a matview in v1, so the unique index `CONCURRENTLY` needs is a
+statement in your own `sql/` lane, and a body change means recreating it. Until it is back,
+`refreshMaterializedView(mv, { concurrently: true })` fails loudly with `55000`.
+</Aside>
+
+## The view you do not manage
+
+`.existing()` is the third form: declared, typed, queryable — and never emitted, never dropped, and
+silenced in the kit's Tier-U census.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="existing-view.ts"
+import { pgView } from 'pg-prime'
+
+// Somebody else's view. pg-prime will not create it and will not drop it.
+await db.sql`create view legacy_report as select id, title from posts`.execute()
+
+const legacyReport = pgView('legacy_report')
+  .columns((t) => ({ id: t.bigint(), title: t.text() }))
+  .existing()
+
+const rows = await db.from(legacyReport).selectAll('legacy_report').execute()
+console.log(Array.isArray(rows)) // true
+```
+
+This is the answer to the census line `migrate doctor` prints for a database you adopted:
+
+```
+3 view object(s) present and not diffed (Tier R)
+```
+
+Declaring a view — either form — takes it out of that count. A view you have not declared stays in
+it, which is the point: the census is a list of things pg-prime knows about and does not manage, and
+silence is never an option. See [adopting an existing database](/pg-prime/guides/adopting/).
+
+## What is not built
+
+- **`pgView('v').as((q) => q.from(users)…)`** — columns and TypeScript types inferred from a
+  builder query. The declaration layer may not depend on the query builder, and the feature's diff
+  story is structured view diffing, which is v1.x. Declare the columns.
+- **Structured diffing of a view definition.** A view body is a hashed repeatable in v1. This is a
+  deliberate lane decision, not an omission: normalized definition diffing is the long tail that
+  produced phantom migrations in three competing tools, and it arrives once `migrate verify` has
+  been green on real schemas for a release cycle.
+- **`.indexes(…)`, `.using(…)`, `.tablespace(…)` on a materialized view.** The matview's own
+  repeatable drops and recreates it, so an index declared on it would need recreating in the same
+  breath; until that is designed, the index is a statement in your `sql/` lane.
+
+## Reference
+
+[`pgView`](/pg-prime/reference/schema/#pgView) ·
+[`pgMaterializedView`](/pg-prime/reference/schema/#pgMaterializedView) ·
+[`ViewWithOptions`](/pg-prime/reference/schema/#ViewWithOptions) ·
+[refreshing a materialized view](/pg-prime/reference/pg-prime/#refreshing-a-materialized-view) ·
+[the kit's declared-view lane](/pg-prime/reference/kit/#renderViewRepeatables)
