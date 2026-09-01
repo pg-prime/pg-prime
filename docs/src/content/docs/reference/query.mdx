@@ -865,7 +865,7 @@ query end to end.
 
 {/* docs: signature */}
 ```ts
-function l2(a: VectorOperand, b: readonly number[] | VectorOperand): Expr<number, 'float8'>
+function l2(a: VectorOperand, b: Operand<readonly number[]> | VectorOperand): Expr<number, 'float8'>
 ```
 
 | Function | SQL | Notes |

@@ -296,7 +296,8 @@ export function buildColumnRefs(
     runtimes.push(rt)
     refs[key] = Object.freeze({ [SRC]: source, [NAME]: key, [META]: resolved, $: rt })
   }
-  return { refs, runtimes }}
+  return { refs, runtimes }
+}
 
 /**
  * `pgTable(name, cols, extras?)` — design/05 D1 + design/04 §1.3.
@@ -336,7 +337,8 @@ export function pgTable<N extends string, B extends Record<string, AnyCol>>(
     casing,
     `pgTable("${name}")`,
     options?.casing ? 'custom' : 'snakeCase',
-    (col: ColumnRuntime, key: string): ColumnRuntime => resolveGeneration(col, generationRefs, name, key),
+    (col: ColumnRuntime, key: string): ColumnRuntime =>
+      resolveGeneration(col, generationRefs, name, key),
   )
 
   // Frozen: a `Table` is the schema's single source of truth for DDL, the migration IR and every

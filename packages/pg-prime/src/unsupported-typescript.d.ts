@@ -51,6 +51,7 @@ export declare const DivisionByZeroError: Unsupported
 export declare const DuplicateStatementError: Unsupported
 export declare const DuplicateTableError: Unsupported
 export declare const ERR: Unsupported
+export declare const EXTENSION_CODECS: Unsupported
 export declare const ExclusionViolationError: Unsupported
 export declare const ForeignKeyViolationError: Unsupported
 export declare const HandleMisuseError: Unsupported
@@ -128,6 +129,7 @@ export declare const UnsafeLiteralError: Unsupported
 export declare const UnsupportedInPoolerModeError: Unsupported
 export declare const UnsupportedNodeError: Unsupported
 export declare const UsageError: Unsupported
+export declare const VECTOR_MAX_DIMENSIONS: Unsupported
 export declare const abs: Unsupported
 export declare const add: Unsupported
 export declare const adjacent: Unsupported
@@ -154,6 +156,8 @@ export declare const cast: Unsupported
 export declare const charCodec: Unsupported
 export declare const check: Unsupported
 export declare const cidrCodec: Unsupported
+export declare const citext: Unsupported
+export declare const citextCodec: Unsupported
 export declare const classForSqlState: Unsupported
 export declare const clearDescribeCache: Unsupported
 export declare const clusterOn: Unsupported
@@ -163,11 +167,13 @@ export declare const compileOnly: Unsupported
 export declare const concat: Unsupported
 export declare const containedByNet: Unsupported
 export declare const containsNet: Unsupported
+export declare const cosine: Unsupported
 export declare const createRegistry: Unsupported
 export declare const date: Unsupported
 export declare const dateCodec: Unsupported
 export declare const daterangeCodec: Unsupported
 export declare const defaultRegistry: Unsupported
+export declare const definePgType: Unsupported
 export declare const defineRelations: Unsupported
 export declare const defineSchema: Unsupported
 export declare const desc: Unsupported
@@ -176,6 +182,7 @@ export declare const div: Unsupported
 export declare const enumCodec: Unsupported
 export declare const enumColumn: Unsupported
 export declare const eq: Unsupported
+export declare const exclude: Unsupported
 export declare const exists: Unsupported
 export declare const float4Codec: Unsupported
 export declare const float8Codec: Unsupported
@@ -184,6 +191,7 @@ export declare const foreignKey: Unsupported
 export declare const fragmentDdlText: Unsupported
 export declare const gt: Unsupported
 export declare const gte: Unsupported
+export declare const hamming: Unsupported
 export declare const has: Unsupported
 export declare const hasAll: Unsupported
 export declare const hasAllKeys: Unsupported
@@ -196,6 +204,7 @@ export declare const inList: Unsupported
 export declare const inQuery: Unsupported
 export declare const index: Unsupported
 export declare const inetCodec: Unsupported
+export declare const innerProduct: Unsupported
 export declare const int2Codec: Unsupported
 export declare const int4Codec: Unsupported
 export declare const int4rangeCodec: Unsupported
@@ -222,6 +231,7 @@ export declare const isTrue: Unsupported
 export declare const isUniqueViolation: Unsupported
 export declare const isValidIdentPart: Unsupported
 export declare const isView: Unsupported
+export declare const jaccard: Unsupported
 export declare const jsonCodecJson: Unsupported
 export declare const jsonConcat: Unsupported
 export declare const jsonContainedBy: Unsupported
@@ -238,6 +248,8 @@ export declare const jsonb: Unsupported
 export declare const jsonbCodec: Unsupported
 export declare const jsonpathCodec: Unsupported
 export declare const kit: Unsupported
+export declare const l1: Unsupported
+export declare const l2: Unsupported
 export declare const like: Unsupported
 export declare const lt: Unsupported
 export declare const lte: Unsupported
@@ -340,6 +352,8 @@ export declare const val: Unsupported
 export declare const varbitCodec: Unsupported
 export declare const varchar: Unsupported
 export declare const varcharCodec: Unsupported
+export declare const vector: Unsupported
+export declare const vectorCodec: Unsupported
 export declare const writeArrayLiteral: Unsupported
 export declare const xmlCodec: Unsupported
 
@@ -365,6 +379,7 @@ export type ArrayOperand<T0 = any> = Unsupported
 export type AsyncDisposable_ = Unsupported
 export type AsyncDisposeKey = Unsupported
 export type AuthenticationError = Unsupported
+export type BitOperand = Unsupported
 export type BoolOperand = Unsupported
 export type Bound = Unsupported
 export type BuilderError = Unsupported
@@ -431,6 +446,8 @@ export type Duration = Unsupported
 export type DynamicTypeRequest = Unsupported
 export type ErrorContext = Unsupported
 export type ErrorOptions = Unsupported
+export type ExcludeItem = Unsupported
+export type ExcludePair = Unsupported
 export type ExclusionViolationError = Unsupported
 export type ExecOptions = Unsupported
 export type Executor = Unsupported
@@ -449,6 +466,7 @@ export type Fragment<T0 = any> = Unsupported
 export type FrameOpts = Unsupported
 export type FromRawOpts<T0 = any> = Unsupported
 export type FromValuesOpts = Unsupported
+export type GeneratedAlwaysAsOptions = Unsupported
 export type GroupedQuery<T0 = any, T1 = any, T2 = any, T3 = any> = Unsupported
 export type Grouping = Unsupported
 export type Handle<T0 = any, T1 = any> = Unsupported
@@ -460,6 +478,7 @@ export type InFailedTransactionError = Unsupported
 export type IndeterminateCommitError = Unsupported
 export type IndexColumn = Unsupported
 export type IndexColumnLike = Unsupported
+export type IndexExpression = Unsupported
 export type IndexItem = Unsupported
 export type IndexNulls = Unsupported
 export type IndexOptions = Unsupported
@@ -563,6 +582,7 @@ export type PgSequence = Unsupported
 export type PgSequenceOptions = Unsupported
 export type PgServerErrorData = Unsupported
 export type PgTimestampString = Unsupported
+export type PgTypeDescriptor<T0 = any, T1 = any, T2 = any> = Unsupported
 export type PkOf<T0 = any> = Unsupported
 export type PlaceholderRef = Unsupported
 export type PoolEvent = Unsupported
@@ -663,6 +683,7 @@ export type SqlSyntaxError = Unsupported
 export type SqlTag = Unsupported
 export type StatementMode = Unsupported
 export type StatementStats = Unsupported
+export type StorageParameters = Unsupported
 export type StreamCallOptions = Unsupported
 export type StreamOptions = Unsupported
 export type StringDataRightTruncationError = Unsupported
@@ -712,6 +733,7 @@ export type UpdateRow<T0 = any> = Unsupported
 export type Updateable<T0 = any> = Unsupported
 export type UsageError = Unsupported
 export type ValueRefs<T0 = any> = Unsupported
+export type VectorOperand = Unsupported
 export type View<T0 = any, T1 = any> = Unsupported
 export type ViewBody<T0 = any, T1 = any> = Unsupported
 export type ViewBuilder<T0 = any> = Unsupported
