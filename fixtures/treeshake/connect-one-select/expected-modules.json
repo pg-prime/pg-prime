@@ -5,6 +5,8 @@
     "connect-one-select/entry.ts",
     "node_modules/pg-prime/dist/codec/array.js",
     "node_modules/pg-prime/dist/codec/builtins.js",
+    "node_modules/pg-prime/dist/codec/define.js",
+    "node_modules/pg-prime/dist/codec/extensions.js",
     "node_modules/pg-prime/dist/codec/registry.js",
     "node_modules/pg-prime/dist/codec/types.js",
     "node_modules/pg-prime/dist/compile/compiler.js",
