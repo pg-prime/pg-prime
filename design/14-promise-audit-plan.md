@@ -329,3 +329,188 @@ Shared-file hunks, in the order §3 predicts them:
   `reference/kit.mdx` gains one table row. The sidebar is not touched — no new page.
 - `packages/pg-prime/test/pg/session-copy.test.ts` now declares `doubled` in the schema. If a later
   round reverts `.generatedAlwaysAs()`, that file's `ledger` goes back to four columns.
+#### V — RESULT (2026-09-01)
+
+Branch `worktree-agent-a73fb94e383fd28b2`, six commits off `9d3f01d`, oldest first:
+
+| SHA | What |
+|---|---|
+| `01e20ba` | `feat(codec)`: `definePgType()`, `resolveDynamic`'s `base` branch, the `citext`/`vector` codecs, `TypeClass: 'vector'` |
+| `117e766` | `feat(schema)`: `t.citext()` / `t.vector(n)` / `VECTOR_MAX_DIMENSIONS`, and `codecFor`'s typmod strip |
+| `1212a3a` | `feat(query)`: the six distance operators, their two operand classes, the manifest rows, the six `BinaryOp` tokens, the api-snapshot golden |
+| `89aff3c` | `test`: tier 0 / tier 1 / tier 2 and the two-question guard |
+| `86ca6b6` | `docs`: the pgvector guide, sixteen reference entries, `03` §2.9's layered note, the changeset |
+| `10b67d7` | `chore(size)`: five budgets re-baselined with their accounts |
+
+**Deliverable 1 — `definePgType()` (row 61).** `{ name, schema?, encode, decode, typeClass?, arrayOf? }`
+→ a `Codec` with **no OID**, registered by name only until
+`resolveDynamic(conn, [{ name, kind: 'base' }])`. The generalization is one branch beside `enum`
+and `domain` and **no new mechanism**: the enum branch takes the *labels* from the catalogue and
+everything else from the request, the domain branch takes the *base codec* from the registry, and
+`base` takes the *whole codec* from the registry and only the number from the catalogue — which is
+the only per-database thing about an extension type. There is no descriptor map and no new registry
+method; `registry.register(codec)` is the registration, which is what makes a third party's
+`hstore` three lines. Nothing registered under the name is an error naming `definePgType`.
+
+The `base` branch keeps the registered codec's own `sqlName` rather than recomputing it from the
+request the way `enum`/`domain` do. That is deliberate, and it is the pending-codec window's real
+contract: a statement compiled before the registry met the database is **byte-identical** to one
+compiled after (asserted in tier 2). Qualify an off-`search_path` extension by putting `schema` on
+the *descriptor*, not on the request.
+
+Four derivations, each because asking would be asking for a measurement the descriptor's author
+cannot make: `oid`/`paramOid` `undefined`; `jsonEncode: 'text'`, so the compiler emits `::text`
+inside `json_build_object` and the depth-3 payload is *by construction* the string `decode` reads
+at depth 0 — R5 total for any type, with no per-type `to_json` measurement; `decodeJson` derived
+from `decode`; `sqlName` quoted (and qualified) once.
+
+**Deliverable 2 — `citext` and `vector(n)` (rows 44, 62).** Verified first, as asked: the API
+snapshot's `vector` hits were `tsvectorCodec`, and `citext` appeared only as a *string* in `TextPg`
+and in `relations.ts`'s comparability families — zero builders, zero codecs. Both now ship in the
+core package as reference users of `definePgType` (row 61 says one package). `citext` reads
+`string` verbatim; `vector` reads `number[]` and encodes `[1,2,3]`, with `NaN`/`±Infinity` refused
+by index client-side. `citext[]` and `vector[]` both work.
+
+**Divergences, with reasons:**
+
+1. **`t.vector(n)` needed a seam that did not exist.** `ddl.pgType` is both the DDL text and the
+   registry key, so `vector(1536)` resolved to nothing. `codecFor` now strips a trailing `(…)` on
+   a miss — tried second, never first. A typmod is not a type: PostgreSQL has one `varchar` (1043)
+   and one `vector`, and the modifier rides in `atttypmod`. Side effect, and a real fix:
+   `t.raw('varchar(50)')` and `t.raw('numeric(10,2)')` — design/05 §5.3's escape hatch — used to
+   declare columns `metaOf` refused to build a codec for at all.
+2. **`TypeClass` gained a member, `'vector'`.** Not decoration: `arrayCodec`'s leaf rule is
+   per-element-codec and only `json`-classed elements were leaves, so a `vector[]` holding
+   `[[1,2],[3,4]]` would have been written `{{1,2},{3,4}}`. Measured on pgvector 0.8.6:
+   `array['[1,2]'::vector,'[3,4]'::vector]` is `{"[1,2]","[3,4]"}`. The alternative — refusing to
+   derive `vector[]` at all — is a capability hole where a one-word family closes it, and the
+   `TypeClass` docblock already names the leaf rule as one of its two jobs.
+3. **`arrayOf` is a boolean.** The contract lists the field; its useful meaning is "derive
+   `<name>[]` from the catalogue's `typarray`", default `true`, `false` for a type whose array form
+   the author models. Carried on a module-private `WeakSet`, not a public `Codec` field, because it
+   is a fact about the *registration* and would otherwise have to be documented on fifty built-ins.
+   Exercised in tier 2 by `halfvec`.
+4. **`EXTENSION_CODECS` had to be exported from the root**, not just `./codecs` — `api-snapshot`
+   invariant 1 (a subpath may not name what the root does not).
+
+**Deliverable 3 — the six operators, with the live differential.** Operand types read off
+`pg_operator` on the container, not off the README, and the table produced two corrections to how
+`03` §2.9's single "vector" row reads:
+
+- `<->`, `<=>`, `<#>`, `<+>` are `vector`/`vector` (also `halfvec`/`sparsevec`, neither modelled);
+- **`<~>` and `<%>` are `bit`/`bit`** — hence two gates, `VectorOperand` and `BitOperand`;
+- **`<#>` is the NEGATED inner product**, pgvector's convention so ascending order stays
+  most-similar-first. Passed through unchanged.
+
+Manifest: `OPS` stays 101 rows, `CONFIRMABLE` **92 → 98**, deferred **7 → 1** (`fn.rank` alone).
+`test/query/ops.test.ts` loses its `o.class !== 'vector'` filter and its
+`deferred.toMatch(/pgvector EXTENSION type/)` row, which is replaced by the opposite assertion plus
+an exact list of what may still be deferred. `test/live-query/ops.test.ts`'s two count assertions
+were already derived and self-adjusted; nothing was loosened.
+
+**The six differential readings** — `select <expr>`'s own `RowDescription.dataTypeID`, against
+`pgprime-vec` (pgvector 0.8.6 on PostgreSQL 17.11), printed by the tier-2 suite:
+
+```
+l2=701 · cosine=701 · innerProduct=701 · l1=701 · hamming=701 · jaccard=701
+```
+
+701 is `float8`, and the expected value is not hand-written — it is read off each expression's own
+result codec, so the assertion is "the codec this operator claims is the type PostgreSQL produces".
+The semantic differential runs beside it with per-row operands (`('[' || u.id || ',1,0]')::vector`,
+`(u.id::int4)::bit(3)`) and six thresholds chosen so **no two operators select the same ids**:
+`<->` {2,3,4}, `<=>` {3,4,5,6}, `<#>` {4,5,6}, `<+>` {3}, `<~>` {2,4,6}, `<%>` {2,3,4,5,6}. A
+transposed token changes the answer — the only property a differential over six `float8`-returning
+operators can have.
+
+**Deliverable 4 — the guards.** Two questions, both printed:
+
+| Where | Question | Mechanism | Measured |
+|---|---|---|---|
+| tier 1, `live-query/ops.test.ts` | is pgvector installed on `PG_PRIME_TEST_URL`? | `beforeAll` probe → `announce` once + `ctx.skip(reason)` per case | PGlite: 12 cases skipped with the sentence; pgvector container: all 12 run |
+| tier 2, `pg/vector.test.ts` | is `PG_PRIME_TEST_VECTOR_URL` set? | collection-time `TestDecl` guard (house style) | unset: 17 skipped, sentence + `docker run` recipe printed |
+| tier 2, same file | does `pg_available_extensions` have `vector` **and** `citext`? | `beforeAll` → `announce` + `ctx.skip` | stock `postgres:17` (`:54334`): 17 skipped naming the missing extension |
+
+Two mechanisms because there are two questions and only one is answerable without a round trip.
+Both write to `process.stderr` via `announce`, because vitest drops `console.*` from the collection
+phase — the finding `_harness.ts` already records.
+
+**Numbers.** Full chain green, exit 0 on every gate, in this order:
+`lint · format:check · typecheck · test · test:live · test:pg · build · package:check · bench:types
+· bench:compile · docs:check`, plus plain `docs:examples` and — not required of me, run anyway
+against the same container — `docs:examples:pg`.
+
+- tier 0 — pg-prime **50 files / 1046 tests**, +17 (`test/query/extension-types.test.ts`) and +6
+  goldens; whole monorepo green.
+- tier 1 — against `pgprime-vec`: **85 files / 1846 tests, 0 skipped**. Against PGlite:
+  1828 passed / **18 skipped** (12 of them the vector class, with the sentence).
+- tier 2 — pg-prime **95 files / 1924 passed / 11 skipped**; kit 424/6; testing 36; create 42. The
+  11 skips are all PgBouncer: `pgprime-vec` is a plain PostgreSQL, no pooler was started and
+  `PG_PRIME_TEST_PGBOUNCER_URL` was unset, so `07` §5/§5.1 is unverified in my runs **by design**
+  and untouched by this workstream. The integrator's pooler run covers it.
+- api-snapshot regenerated by the tool: **+16 names** (13 values, 3 types) — `definePgType`,
+  `PgTypeDescriptor`, `citext`, `vector`, `VECTOR_MAX_DIMENSIONS`, `citextCodec`, `vectorCodec`,
+  `EXTENSION_CODECS`, `l2`, `cosine`, `innerProduct`, `l1`, `hamming`, `jaccard`, `VectorOperand`,
+  `BitOperand`.
+- docs — coverage **1253/1253 (100 %)** on all eight entries, 241 internal links, R22 on 38 `no-run`
+  blocks (5 new, every one naming `test/pg/vector.test.ts`); `docs:typecheck` 589 blocks OK;
+  `docs:examples` 95 examples OK; `docs:examples:pg` 7 OK.
+- budgets, each re-baselined **in the same commit** with the account in `_overDesign`:
+
+| Budget | Was | Measured | Now | Rule |
+|---|---|---|---|---|
+| `pg-prime.jsBytes` | 927 744 | 947 588 | 948 224 | ceil-to-1 KB |
+| `pg-prime.largestDtsBytes` | 76 358 | 76 385 | 76 385 | at the measurement (as its two prior re-baselines) |
+| `treeshake.connect-one-select` | 73 728 | 74 311 | 74 752 | ceil-to-1 KB |
+| `treeshake.full-crud-tx` | 73 728 | 74 564 | 74 752 | ceil-to-1 KB |
+| `treeshake.root-import-all` | 80 896 | 81 902 | 81 920 | ceil-to-1 KB (still 33 % below design) |
+| `bench/types packageDtsBytes` | 553 984 | 567 988 | 568 320 | ceil-to-1 KB |
+
+The three treeshake module goldens gained **exactly two entries each** — `codec/define.js` and
+`codec/extensions.js` — regenerated with `--update`, and that is not a missed shake: `Registry`'s
+constructor registers the two shipped extension codecs by name so `t.citext()`/`t.vector(n)`
+resolve through `codecFor`'s ordinary scalar path, and `connect + one select` builds a `Registry`.
+
+**bench:types — the ≤ +2 % rule.** Every gated line passes. Per-fixture instantiations moved
++0.05 % … +0.8 % on TS 5.9.3; every 300t/25t ratio is still **1.000**; headline 82 073 → 82 145
+(+0.09 %) on 5.9.3 and 133 996 → 134 344 (+0.26 %) on 7.0.2. **One figure is above 2 %** and is
+recorded rather than waved past: the `empty` fixture on TS 7 is +3.47 % (10 026 → 10 374). It is a
+*fixed* import cost of two new declaration files — **every** TS-7 fixture moved by the same +348,
+which is exactly why the percentage shrinks as the fixture grows and why no ratio moved at all. It
+is not a per-table or per-query cost, so the band the rule is about is untouched.
+
+**What I did NOT do.**
+
+- **No kit-side work.** `emitSchema` / diff / `pull` were not touched and no `fixtures/diff`
+  fixture covers a `vector(n)` column or an HNSW index with an opclass. The kit's shadow database
+  has no pgvector, so a strict `pg_dump` witness for one needs a pgvector image in the kit's
+  harness — outside V's ownership (`§3` gives me `src/codec/*`, the factories, `ops.manifest` +
+  wiring, the tier-2 suite and the docs page) and worth a line in a later round's scope.
+- **No index DSL work.** `.with({ m, ef_construction })` is G's (`§1` decision 4). The guide says
+  the storage parameters exist and points at the `sql/` lane rather than promising a spelling that
+  is not on my branch; if G lands `.with()`, that paragraph is worth one sentence at integration.
+  `using('hnsw')` + per-column `opclass` already existed and needed nothing.
+- **`halfvec` and `sparsevec` are not modelled.** They carry four of the six operators in pgvector
+  0.8 and are deliberately *not* members of `VectorOperand`: admitting the name would type-check a
+  query no codec could decode. `t.raw('halfvec(1024)')` + `definePgType` is the documented path,
+  and tier 2 proves it works by doing it.
+- **No auto-resolution at connect.** Nothing in `src/` calls `resolveDynamic` — already true for
+  enums and domains — so an application calls it once per physical database. Making `pgPrime` do it
+  from the schema is a real improvement and a separate decision (it needs the schema's type set and
+  a connect hook); the guide documents the explicit call.
+- **`PG_PRIME_TEST_PGBOUNCER_URL` was never set**, so every pooler-guarded case skipped in my runs.
+  Nothing here touches that path.
+- `bench/runtime/report.json` is deliberately **not** committed: `bench:compile` rewrites it on
+  every run and none of its gates moved.
+
+**For the integrator.** Shared-file hunks: `src/index.ts` (16 names in four blocks — the schema
+values, the codec values + `PgTypeDescriptor`, the ops values, the ops types);
+`src/query/types.ts` (two type re-exports); `tools/api-snapshot/pg-prime.json` (regenerate with
+`pnpm api-snapshot` after merging, never merge by hand); `tools/budgets.json` (two numbers under
+`packages/pg-prime`, three under `treeshake`, one new `_measuredBeforeExtensionTypes` block, three
+`_overDesign` paragraphs); `bench/types/budget.json` (`packageDtsBytes` + its `_why`);
+`fixtures/treeshake/*/expected-modules.json` (two lines each — re-run `--update` on the merged
+tree, the numbers will move again); `docs/astro.config.mjs` (one sidebar line under Guides);
+`.changeset/hip-cars-argue.md`. The ops-manifest self-gates that moved:
+`test/query/ops.test.ts`'s golden-vs-manifest comparison no longer filters the vector class (so all
+101 rows need a golden) and its "deferred with a reason" row is inverted; `CONFIRMABLE` is 98.
