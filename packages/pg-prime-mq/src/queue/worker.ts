@@ -77,7 +77,7 @@ export function startWorker<T, R>(
   const expireScanMs = opts.expireScanMs ?? 15_000
   const maintenanceMs = opts.maintenanceMs ?? 5000
   const ctl = opts.controlDb ?? core.db
-  const consumer = `${process.pid}:${globalThis.crypto.randomUUID().slice(0, 8)}`
+  const consumer = Math.random().toString(36).slice(2, 10)
   const local = limiter(opts.localRate)
   const stop = new AbortController()
   const held = new Map<bigint, Entry>()

@@ -8,8 +8,8 @@ export interface PayloadOptions<T> {
   codec?: { encode(v: T): unknown; decode(v: unknown): T }
 }
 
-export const MAX_PAYLOAD = 1024 * 1024
-export const MAX_PROGRESS = 64 * 1024
+export const MAX_PAYLOAD: number = 1024 * 1024
+export const MAX_PROGRESS: number = 64 * 1024
 
 /** Validates and encodes a payload, then serializes it. */
 export async function encodePayload<T>(opts: PayloadOptions<T>, value: T): Promise<string> {
