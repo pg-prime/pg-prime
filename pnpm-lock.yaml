@@ -78,6 +78,10 @@ importers:
         specifier: ^8.23.0
         version: 8.23.0
 
+  bench/events: {}
+
+  bench/outbox: {}
+
   bench/runtime:
     devDependencies:
       pg:

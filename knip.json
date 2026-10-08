@@ -35,12 +35,11 @@
     "packages/pg-prime-cron": {
       "entry": ["src/index.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
       "project": ["src/**/*.ts", "test/**/*.ts"],
-      "ignoreDependencies": ["croner", "@pg-prime/mq", "@pg-prime/testing", "pg-prime"]
+      "ignoreDependencies": ["@pg-prime/mq"]
     },
     "packages/pg-prime-events": {
       "entry": ["src/index.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
-      "project": ["src/**/*.ts", "test/**/*.ts"],
-      "ignoreDependencies": ["@pg-prime/testing", "fast-check", "pg-prime"]
+      "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "packages/pg-prime-mq": {
       "entry": ["src/index.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
@@ -49,8 +48,7 @@
     },
     "packages/pg-prime-outbox": {
       "entry": ["src/index.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
-      "project": ["src/**/*.ts", "test/**/*.ts"],
-      "ignoreDependencies": ["@pg-prime/testing", "pg-prime"]
+      "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "bench/runtime": {
       "entry": ["run.mjs", "profile.mjs", "statement.mjs"],

@@ -9,6 +9,33 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime-create/src/prompts.md — interactive questions, defaults and ProjectPlan resolution for create-pg-prime — read when changing prompts, defaults or non-TTY behaviour.
 - docs/packages/pg-prime-create/src/scaffold.md — template rendering, testing blocks, package.json merge, non-empty refusal — read when editing scaffold templates or the generated project's files.
 - docs/packages/pg-prime-create/src/types.md — @pg-prime/create public types: options, results, versions, package managers — read when changing scaffolder option or result shapes.
+- docs/packages/pg-prime-cron/src/cron.md — pgCron instance: start-up, claim loop, maintenance cadence, admin methods — read when changing cron start/close, the loop or admin calls.
+- docs/packages/pg-prime-cron/src/define.md — defineSchedule validation, schedule columns, spec hash — read when a ScheduleError field or code-schedule sync looks wrong.
+- docs/packages/pg-prime-cron/src/index.md — @pg-prime/cron exports, errors and public types — read when finding which cron export to use.
+- docs/packages/pg-prime-cron/src/migrations.md — pgprime_cron migration v1 tables, indexes, runs_tick — read when changing the cron schema.
+- docs/packages/pg-prime-cron/src/planner.md — misfire planner: grace, once/skip, endAt, limit — read when a late or missed tick fires wrongly.
+- docs/packages/pg-prime-cron/src/runner.md — handler runs: lease, heartbeat, timeout, retry, cancel, drain — read when a run stays running, cancelling or times out wrongly.
+- docs/packages/pg-prime-cron/src/sql/claim.md — Q1, K1 claim, T1 trigger, T2 pickup; exactly-once argument — read when a tick runs twice or never.
+- docs/packages/pg-prime-cron/src/sql/maintenance.md — lease expiry, counter reconcile, retention, maintenance gate — read when running counters drift or history grows.
+- docs/packages/pg-prime-cron/src/sql/runs.md — heartbeat, F1 finish, X1 cancel statements — read when finishing or cancelling a run misbehaves.
+- docs/packages/pg-prime-cron/src/sql/schedules.md — schedule upsert/sync, admin statements, row decoders — read when sync or admin calls write the wrong row.
+- docs/packages/pg-prime-cron/src/target/queue.md — queue-target seam for the mq target (C4) — read when implementing or calling the cron queue target.
+- docs/packages/pg-prime-cron/src/ticks.md — next-tick module: croner patterns, every grid, at, DST — read when a pattern, time zone or DST tick is wrong.
+- docs/packages/pg-prime-cron/src/wake.md — LISTEN-or-poll sleep for the cron loop — read when cron reacts slowly to triggers or behind PgBouncer.
+- docs/packages/pg-prime-events/src/channel.md — typed LISTEN/NOTIFY channels and the engineChannel/engineChannelSql name scheme — read when changing channel encoding, listen errors or engine channel names.
+- docs/packages/pg-prime-events/src/define.md — defineChannel/defineTopic/defineSubscription declarations, defaults and PayloadOf — read when adding a declaration option or changing defaults.
+- docs/packages/pg-prime-events/src/errors.md — EventsLeaseLostError, PayloadError, SchemaVersionError, NotStartedError codes — read when an events error code or message changes.
+- docs/packages/pg-prime-events/src/events.md — pgEvents registries, schema ensure, declaration upserts, start/migrate/close — read when changing start-up, autoMigrate or NotStartedError behaviour.
+- docs/packages/pg-prime-events/src/hooks.md — EventsHooks bus, InternalKind values, hook-failed isolation — read when adding a hook or an onInternal kind.
+- docs/packages/pg-prime-events/src/index.md — @pg-prime/events entry exports and the building blocks mq uses — read when adding or renaming an events export.
+- docs/packages/pg-prime-events/src/log/cursor.md — exact (position + pending) cursor, advance/advanceTo, seeding, correctness argument — read when changing cursor logic or delivery is lost or duplicated.
+- docs/packages/pg-prime-events/src/log/migrations.md — events schema v1: topics, entries, subscriptions, parked — read when changing the events schema or adding a migration.
+- docs/packages/pg-prime-events/src/log/sql.md — every log statement: publish, lease, read, marker, commit, park, retention — read when editing events SQL or a guarded write returns 0 rows.
+- docs/packages/pg-prime-events/src/log/subscription.md — leased reader, retry, isolation, parking, ctx.commit, subscription admin — read when a reader stalls, redelivers, or never parks an entry.
+- docs/packages/pg-prime-events/src/log/topic.md — publish in the caller's transaction, tails, admin browse — read when changing publish or tail behaviour.
+- docs/packages/pg-prime-events/src/payload.md — Standard Schema validation, codec, NUL and size checks — read when a payload is refused or schema validation misbehaves.
+- docs/packages/pg-prime-events/src/util.md — sleep, ASYNC_DISPOSE and backoffMs fixed-vector copy — read when retry delays differ from the family vectors.
+- docs/packages/pg-prime-events/src/waker.md — NOTIFY/gap/poll wake-up loop with pooler fallback — read when wake-ups are late or LISTEN is unavailable.
 - docs/packages/pg-prime-kit/src/catalog/extract.md — pg_catalog extraction into SchemaIR, Tier-O observation, census diagnostics — read when changing what the extractor reads, excludes or diagnoses.
 - docs/packages/pg-prime-kit/src/catalog/payloads.md — Tier-M fact payload shapes, GENERATED_NAME, ObservedObject — read when adding or changing a payload field.
 - docs/packages/pg-prime-kit/src/checkpoint/checkpoint.md — checkpoint build/write/list, IR read-back, naming drifted objects — read when touching `migrate checkpoint` or fingerprint-mismatch drift messages.
@@ -74,6 +101,15 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime-kit/src/seed/run.md — `db seed` scan, sets, production refusal, per-file transactions — read when seeds run in the wrong order, refuse, or fail.
 - docs/packages/pg-prime-kit/src/shadow/ladder.md — shadow tiers 1–3 provisioning, strategy parsing, tier-4 refusal — read when generate picks the wrong shadow tier or leaves shadow objects.
 - docs/packages/pg-prime-kit/src/sql.md — identifier/literal quoting, PostgreSQL auto-naming, SQL lexer and statement splitter — read when quoting rejects a name or SQL splitting/canonicalization misbehaves.
+- docs/packages/pg-prime-outbox/src/index.md — @pg-prime/outbox entry: defineOutbox, public types, error classes — read when changing the outbox's exported surface.
+- docs/packages/pg-prime-outbox/src/outbox.md — pgOutbox: schema start-up, topic handles, start rules, lazy admin calls — read when changing start(), write gating or topic handles.
+- docs/packages/pg-prime-outbox/src/relay/deliver.md — R1 read, waves, D1/F1/K1 settles under the partition lock, retention sweep — read when changing delivery, failure or retention SQL.
+- docs/packages/pg-prime-outbox/src/relay/lease.md — partition leases: heartbeat, L1 fair share, release, why leases give per-key order — read when changing leasing or rebalance.
+- docs/packages/pg-prime-outbox/src/relay/relay.md — relay loop, waker, backoffMs, close/grace — read when changing relay scheduling, wake-ups or shutdown.
+- docs/packages/pg-prime-outbox/src/schema.md — outbox migration v1 tables and indexes, migrationSql vendoring — read when changing the outbox schema.
+- docs/packages/pg-prime-outbox/src/sinks.md — functionSink and webhookSink: headers, HMAC, retryable statuses — read when changing sinks or the webhook contract.
+- docs/packages/pg-prime-outbox/src/sql/admin.md — topic create, parked list, replay, discard, pause, stats statements — read when changing operator calls.
+- docs/packages/pg-prime-outbox/src/sql/write.md — W1 write: key locks, idempotent insert, NOTIFY, why id order is commit order — read when changing the write path.
 - docs/packages/pg-prime-testing/src/expect-sql.md — expectSql golden SQL assertion, whitespace normalisation, bind comparison, diffs — read when a SQL golden fails or binds compare unexpectedly.
 - docs/packages/pg-prime-testing/src/guards.md — runner-agnostic skip guards keyed on PG_PRIME_TEST_URL — read when a test needs a real server or second session.
 - docs/packages/pg-prime-testing/src/index.md — @pg-prime/testing entry point exports and peer-dependency layout — read when finding which testing helper to import.
