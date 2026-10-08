@@ -95,7 +95,8 @@ await db.end()
 
 ## Groups and limits
 
-`group` makes messages FIFO within the group, and workers serve groups round-robin. A worker's
+`group` makes messages FIFO within the group, and workers and manual `claim()` serve groups
+round-robin. A worker's
 `group: { concurrency, rate }` sets the default per group; `setGroupLimits(key, …)` overrides one
 group, and `pauseGroup` stops one. A queue's `concurrency` and `rate` are global across every
 worker and apply to grouped messages too.

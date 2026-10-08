@@ -267,11 +267,8 @@ export function startWorker<T, R>(
       if (grouped) {
         const scan = opts.group?.scan ?? 4 * n
         const g = { scan, concurrency: opts.group?.concurrency, rate: opts.group?.rate }
-        let r = await claimGroups(ctl, t, claimOptions(n), { ...g, after: cursor })
-        if (r.rows.length === 0 && r.scanned < scan && cursor !== '') {
-          r = await claimGroups(ctl, t, claimOptions(n), { ...g, after: '' })
-        }
-        cursor = r.rows.length > 0 || r.scanned >= scan ? r.cursor : ''
+        const r = await claimGroups(ctl, t, claimOptions(n), { ...g, after: cursor })
+        cursor = r.cursor
         rows = r.rows
         dry.grouped = r.scanned === 0
       } else {

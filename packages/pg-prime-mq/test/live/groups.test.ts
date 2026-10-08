@@ -52,6 +52,20 @@ describe('groups (S5)', () => {
     expect(served[4]).toBe('g02')
   })
 
+  it('manual claims serve groups round-robin and move past paused ones', async () => {
+    const { q } = setup()
+    await sendGroups(q, 8, 2)
+    for (let i = 1; i <= 4; i++) await q.pauseGroup(pad(i))
+    const served: string[][] = []
+    for (let i = 0; i < 7; i++) {
+      const ms = await q.claim()
+      for (const m of ms) await q.complete(m, undefined)
+      served.push(ms.map((m) => m.payload.g))
+    }
+    // A call that probes only paused groups comes back empty; the next one goes on after them.
+    expect(served).toStrictEqual([[], ['g05'], ['g06'], ['g07'], ['g08'], [], ['g05']])
+  })
+
   it('a group concurrency of 1 runs one message of a group at a time', async () => {
     const { q } = setup()
     await sendGroups(q, 3, 4)

@@ -172,19 +172,28 @@ export async function claim(q: Q, t: Tables, o: ClaimOptions): Promise<MsgRow[]>
   return sortRows(rows.map(msgRow))
 }
 
+/**
+ * S5 from the round-robin cursor `g.after`; an empty partial scan retries once from the first
+ * group. `cursor` is where the next call starts.
+ */
 export async function claimGroups(
   q: Q,
   t: Tables,
   o: ClaimOptions,
   g: GroupOptions,
 ): Promise<{ rows: MsgRow[]; cursor: string; scanned: number }> {
-  const rows = await run(q, 'claim-groups', claimGroupsSql(t, o, g))
-  const head = rows[0] ?? {}
-  return {
-    rows: sortRows(rows.filter((r) => r['id'] !== null).map(msgRow)),
-    cursor: (head['cursor'] as string | null) ?? '',
-    scanned: (head['scanned'] as number | undefined) ?? 0,
+  const once = async (after: string) => {
+    const rows = await run(q, 'claim-groups', claimGroupsSql(t, o, { ...g, after }))
+    const head = rows[0] ?? {}
+    return {
+      rows: sortRows(rows.filter((r) => r['id'] !== null).map(msgRow)),
+      cursor: (head['cursor'] as string | null) ?? '',
+      scanned: (head['scanned'] as number | undefined) ?? 0,
+    }
   }
+  let r = await once(g.after)
+  if (r.rows.length === 0 && r.scanned < g.scan && g.after !== '') r = await once('')
+  return { ...r, cursor: r.rows.length > 0 || r.scanned >= g.scan ? r.cursor : '' }
 }
 
 // RETURNING order is unspecified.

@@ -42,7 +42,11 @@ export interface QueueHandle<T, R> {
     opts?: { tx?: Queryable<any> },
   ): Promise<MessageRef[]>
   work(handler: Handler<T, R>, opts?: WorkerOptions): Worker
-  /** Manual consumption: settle each with `complete`, `fail` or `extend` before its lease ends. */
+  /**
+   * Manual consumption: settle each with `complete`, `fail` or `extend` before its lease ends.
+   * Groups are served round-robin, probing at most `4 × limit` per call: an empty result can
+   * mean only paused or full groups were probed, and the next call goes on after them.
+   */
   claim(opts?: { token?: string; leaseMs?: number; limit?: number }): Promise<Message<T>[]>
   complete(m: Message<T>, result: R, opts?: { tx?: Queryable<any> }): Promise<void>
   fail(m: Message<T>, err: unknown, opts?: { tx?: Queryable<any>; final?: boolean }): Promise<void>
@@ -104,6 +108,8 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
     return { ...r, token: token(m) }
   }
   const ready = (): Promise<void> => core.ready(def)
+  // Manual claims' round-robin position over groups, as a worker keeps its own.
+  let cursor = ''
 
   const sendMany: QueueHandle<T, R>['sendMany'] = async (items, opts = {}) => {
     const { tx } = opts
@@ -187,18 +193,10 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
       }
       const rows = await claim(core.db, t, o)
       if (rows.length < o.n) {
-        const g = await claimGroups(
-          core.db,
-          t,
-          { ...o, n: o.n - rows.length },
-          {
-            after: '',
-            scan: 4 * o.n,
-            concurrency: undefined,
-            rate: undefined,
-          },
-        )
-        rows.push(...g.rows)
+        const g = { after: cursor, scan: 4 * o.n, concurrency: undefined, rate: undefined }
+        const r = await claimGroups(core.db, t, { ...o, n: o.n - rows.length }, g)
+        cursor = r.cursor
+        rows.push(...r.rows)
       }
       const out: Message<T>[] = []
       for (const r of rows) {

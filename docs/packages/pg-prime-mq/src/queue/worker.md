@@ -12,7 +12,7 @@ for expired leases, runs maintenance, and settles each message once.
 1. The loop opens `waker` on `engineChannel(schema, 'q', queue)` (packages/pg-prime-mq/src/queue/worker.ts:339).
 2. Each turn: promote when woken or due, expiry scan and maintenance when due, then a claim round.
 3. A claim round alternates S3/S4 and S5; a path that came back empty is skipped until an outside wake or a promotion (packages/pg-prime-mq/src/queue/worker.ts:258).
-4. S5's cursor moves to the last group served, past a scan of busy groups, or back to `''` (packages/pg-prime-mq/src/queue/worker.ts:274).
+4. S5 goes on from the worker's cursor; `claimGroups` moves it (packages/pg-prime-mq/src/sql/claim.ts:179).
 5. Full: wait for a freed slot (or a timer); else wait on the waker for at most `pollMs`, the next due time or a rate window.
 6. `runOne` decodes, calls the handler, then completes, moves (deferral), or fails/retries (packages/pg-prime-mq/src/queue/worker.ts:175).
 7. After `ctx.complete({ tx })`, `afterTx` re-reads: completed or gone ⇒ done; still ours ⇒ the transaction rolled back, so a failed attempt (`indeterminate-commit`) (packages/pg-prime-mq/src/queue/worker.ts:160).
