@@ -3,4 +3,66 @@ title: "Events in production"
 description: Retention, lag and PgBouncer for @pg-prime/events.
 ---
 
-`@pg-prime/events` is being built; this page is written with it. The design is [plan 15](https://github.com/pg-prime/pg-prime/blob/main/design/15-events.md).
+## Schema and start-up
+
+The log lives in its own schema, `pgprime_events` by default (`schema:` changes it), with its
+version ledger in `pgprime_events.migrations`. `await events.start()` at boot applies missing
+versions under a transaction-scoped advisory lock, so several instances starting at once are safe.
+With `autoMigrate: false` it only checks the version and throws `SchemaVersionError` when the
+schema is behind, and `events.migrate()` from a deploy step applies it. Uninstalling is `drop schema pgprime_events cascade`.
+
+## Retention
+
+`defineTopic(name, { keepMs })` deletes entries older than `keepMs`. Readers run it, at most once
+a minute per topic across all instances, in batches of 1 000. Parked entries are kept until you
+`discard` them.
+
+- `keepUntilConsumed: true` also keeps an aged entry until every subscription of the topic has
+  read it.
+- Without it, retention can pass a slow subscription. The reader reports
+  `onInternal({ kind: 'subscription-behind-retention' })` and continues from the oldest surviving
+  entry.
+- A topic nobody reads is never trimmed; publish-only topics need a reader or your own `delete`.
+
+## Lag and health
+
+{/* docs: use=blog */}
+```ts title="lag.ts"
+import { defineSubscription, defineTopic, pgEvents } from '@pg-prime/events'
+
+const orders = defineTopic<{ id: string }>('orders')
+const billing = defineSubscription(orders, 'billing', { from: 'beginning' })
+const events = pgEvents({
+  db,
+  define: { subscriptions: { billing } },
+  hooks: { onInternal: (e) => console.warn(e.kind, e.message) },
+})
+await events.start()
+await events.topic(orders).publish({ id: 'o-1' })
+console.log((await events.subscriptions.billing.lag()).entries)
+// 1
+await db.end()
+```
+
+`lag()` counts entries the subscription has still to deliver (honouring `types`) and the time of
+the oldest. Hooks report the rest: `onDeliver` (count, duration), `onRetry`, `onPark`, and
+`onInternal` for `listen-unavailable`, `heartbeat-failed`, `subscription-behind-retention`,
+`reader-failed` and `hook-failed`.
+
+## Leases
+
+A reader holds its subscription's lease for `leaseMs` (default 30 s) and renews it every third of
+that. A standby instance retries every half lease; a closed reader releases at once, a dead one
+after `leaseMs`. A reader that finds its lease taken stops with `EventsLeaseLostError` on its next
+commit and its handler's `ctx.signal` aborts; nothing it did after losing the lease is committed.
+
+## Poolers
+
+| Concern | Direct / session pooler | PgBouncer transaction mode |
+|---|---|---|
+| publish, read, commit, migrate | ✓ | ✓ |
+| `channel.notify` | ✓ | ✓ |
+| `channel.listen` | ✓ | only with `directConnection`, otherwise `UnsupportedInPoolerModeError` |
+| subscription and tail wake-ups | NOTIFY, `pollMs` fallback | polling every `pollMs` unless `directConnection` |
+
+Wake-ups are a latency optimisation only: a lost notification costs at most `pollMs`.

@@ -1,7 +1,226 @@
 ---
 title: "@pg-prime/events"
-description: Every export of @pg-prime/events.
-apiEntry: "@pg-prime/events#."
+description: Every export of @pg-prime/events — declarations, the instance, handles, building blocks and errors.
+apiEntry:
+  - "@pg-prime/events#."
+  - "pg-prime#."
 ---
 
-`@pg-prime/events` is being built; this page is written with it. The design is [plan 15](https://github.com/pg-prime/pg-prime/blob/main/design/15-events.md).
+Typed LISTEN/NOTIFY channels, a durable event log with subscriptions, and tails.
+[Channels](/pg-prime/guides/channels/) and [Event log](/pg-prime/guides/event-log/) are the
+guides; [The event cursor](/pg-prime/concepts/event-cursor/) explains why a subscription never
+skips a committed entry.
+
+```sh
+pnpm add @pg-prime/events
+```
+
+No runtime dependencies; `pg-prime` is the one peer.
+
+## Declarations
+
+### `defineChannel`
+
+{/* docs: signature */}
+```ts
+function defineChannel<T>(name: string, opts?: PayloadOptions<T>): ChannelDef<T>
+```
+
+`name` is the literal NOTIFY channel, 1–63 UTF-8 bytes; anything else is a `UsageError`.
+
+### `defineTopic`
+
+{/* docs: signature */}
+```ts
+function defineTopic<T>(name: string, opts?: PayloadOptions<T> & {
+  keepMs?: number | null
+  keepUntilConsumed?: boolean
+}): TopicDef<T>
+```
+
+`keepMs` (default `null`, forever) is the retention age; `keepUntilConsumed` also keeps an aged
+entry until every subscription of the topic has read it.
+
+### `defineSubscription`
+
+{/* docs: signature */}
+```ts
+function defineSubscription<T>(topic: TopicDef<T>, name: string, opts?: {
+  types?: readonly string[]
+  from?: 'beginning' | 'now'
+  retry?: RetryOptions
+}): SubscriptionDef<T>
+```
+
+`from` (default `'now'`) applies when the subscription row is first created. `retry` defaults to
+`{ maxAttempts: 3, baseDelayMs: 1000, maxDelayMs: 60_000, jitter: 'full' }`.
+
+| Type | What it is |
+|---|---|
+| <a id="ChannelDef"></a>`ChannelDef<T>` | `{ kind: 'channel', name, payload }` |
+| <a id="TopicDef"></a>`TopicDef<T>` | `{ kind: 'topic', name, payload, keepMs, keepUntilConsumed }` |
+| <a id="SubscriptionDef"></a>`SubscriptionDef<T>` | `{ kind: 'subscription', topic, name, types, from, retry }` |
+| <a id="RetryOptions"></a>`RetryOptions` | `{ maxAttempts?, baseDelayMs?, maxDelayMs?, jitter? }` |
+| <a id="PayloadOptions"></a>`PayloadOptions<T>` | `{ schema?: StandardSchemaV1<unknown, T>, codec?: { encode(v: T): unknown; decode(v: unknown): T } }` |
+| <a id="StandardSchemaV1"></a>`StandardSchemaV1<I, O>` | the [Standard Schema](https://standardschema.dev) interface, copied as a type |
+| <a id="EventsDefinitions"></a>`EventsDefinitions` | `{ channels?, topics?, subscriptions? }`, records of declarations |
+| <a id="PayloadOf"></a>`PayloadOf<D>` | the payload type a declaration carries |
+
+A payload is validated by `schema` before it is encoded and after it is decoded, then mapped by
+`codec`, then stored as JSON. A topic payload is limited to 1 MiB, a channel payload to
+PostgreSQL's 8000 bytes; a NUL character anywhere is refused with its path.
+
+## The instance
+
+### `pgEvents`
+
+{/* docs: signature */}
+```ts
+function pgEvents<const D extends EventsDefinitions = {}>(config: EventsConfig<D>): Events<D>
+```
+
+### `EventsConfig`
+
+| Field | Default | |
+|---|---|---|
+| `db` | — | the pg-prime `Db` |
+| `schema` | `'pgprime_events'` | the schema the log lives in |
+| `autoMigrate` | `true` | `false` only checks the schema version and throws `SchemaVersionError` |
+| `define` | `{}` | declared channels, topics and subscriptions |
+| `hooks` | — | an initial `EventsHooks` observer |
+
+### `Events`
+
+| Member | |
+|---|---|
+| `channels`, `topics`, `subscriptions` | typed handles for every declaration in `define` |
+| `channel(def)`, `topic(def)`, `subscription(def)` | a handle for an undeclared definition |
+| `start()` | migrates and upserts declared topics and subscriptions; required before any `{ tx }` call |
+| `migrate()` | applies missing schema versions whatever `autoMigrate` says |
+| `observe(hooks)` | adds an observer, returns the unsubscribe function |
+| `close()`, `[Symbol.asyncDispose]()` | stops every reader and tail this instance started; `db` stays open |
+
+Channels never need `start()`: a channels-only application never touches a table.
+
+## Channels
+
+### `ChannelHandle`
+
+| Method | |
+|---|---|
+| `notify(payload, { tx? })` | encodes and sends through `db.notify` or `tx.notify`; works behind every pooler |
+| `listen(handler, { signal?, onGap? })` | `db.listen` plus decoding; an invalid payload goes to the subscription's `error` event, never to the handler |
+
+## Topics
+
+### `TopicHandle`
+
+| Method | |
+|---|---|
+| `publish(payload, opts?)` | one entry; `opts` is a `PublishOptions` |
+| `publishMany(items, { tx? })` | one statement for every item, one wake-up |
+| `tail(handler, { from?, signal?, pollMs? })` | an in-memory cursor from `'now'` or `{ after: Entry.cursor }`; returns a pg-prime `Subscription` whose only event is `error` |
+| `read({ afterId?, limit? })` | browse by id for admin tools; not a resume handle |
+
+### `PublishOptions`
+
+`{ tx?, type?, key?, headers? }`. With `tx` the entry is written in your transaction and exists
+only if it commits.
+
+### `Entry`
+
+`{ id, topic, type, key, payload, headers, at, cursor }`. `cursor` is the opaque cursor state
+right after this entry, the only valid resume handle.
+
+## Subscriptions
+
+### `SubscriptionHandle`
+
+| Method | |
+|---|---|
+| `run(handler, opts?)` | starts a `Reader`; `opts` is a `RunOptions` |
+| `reset(to)` | `'beginning'`, `'now'` or `{ after: Entry.cursor }`; also drops the current lease |
+| `lag()` | `{ entries, oldestAt }` still to be delivered |
+| `parked({ limit? })` | parked entries with their attempts and last error |
+| `discard(ids)` | removes parked rows, returns how many |
+| `remove()` | deletes the subscription and its parked rows |
+
+### `RunOptions`
+
+`{ batchSize?: 100, leaseMs?: 30_000, pollMs?: 5_000, signal? }`.
+
+### `EntryHandler`
+
+`(e, ctx) => Promise<void>`: entries one at a time, in order. Resolving acknowledges.
+
+### `BatchHandler`
+
+`{ batch: (es, ctx) => Promise<void> }`: the whole read at once, acknowledged or retried as a unit.
+
+### `ReadContext`
+
+`{ signal, attempt, commit({ tx }) }`. `commit` writes the offset inside your transaction, which
+makes a same-database sink exactly-once. `signal` aborts when the reader stops or loses its lease.
+
+### `Reader`
+
+`{ active, close(), [Symbol.asyncDispose]() }`. `active` is true while this reader holds the lease.
+
+## Building blocks
+
+Exported for sibling packages; `@pg-prime/mq` uses all three.
+
+### `waker`
+
+{/* docs: signature */}
+```ts
+function waker(db: Db, channel: string, opts: WakerOptions): Waker
+```
+
+Wakes on a NOTIFY, a LISTEN `gap` or `pollMs` of silence. LISTEN starts at the call, and the first
+reason once it is up is `'gap'`. Behind a transaction pooler without `directConnection` it polls
+and reports `listen-unavailable` once.
+
+| Type | |
+|---|---|
+| <a id="Waker"></a>`Waker` | a single-use `AsyncIterable<WakeReason>` plus `wait(ms?)` and `close()` |
+| <a id="WakerOptions"></a>`WakerOptions` | `{ pollMs, signal?, onInternal? }` |
+| <a id="WakeReason"></a>`WakeReason` | `'notify' \| 'gap' \| 'poll'` |
+
+### `engineChannel`
+
+{/* docs: signature */}
+```ts
+function engineChannel(schema: string, kind: string, name: string): string
+```
+
+`ev_` plus 24 hex characters of `sha256(schema/kind/name)`. Topics use kind `'t'`.
+
+### `engineChannelSql`
+
+{/* docs: signature */}
+```ts
+function engineChannelSql(schema: string, kind: string, name: Fragment<unknown>): Fragment<unknown>
+```
+
+The same name computed in SQL, for a statement that only knows `name` as a column.
+
+## Hooks
+
+### `EventsHooks`
+
+`onPublish`, `onDeliver`, `onRetry`, `onPark` and `onInternal`. A throwing hook is reported as
+`hook-failed` and never reaches your code.
+
+### `InternalKind`
+
+`'listen-unavailable' | 'heartbeat-failed' | 'subscription-behind-retention' | 'reader-failed' | 'hook-failed'`.
+
+## Errors
+
+| Class | `code` | Thrown when |
+|---|---|---|
+| <a id="EventsLeaseLostError"></a>`EventsLeaseLostError` | `EVENTS_LEASE_LOST` | a guarded commit found another reader holding the subscription |
+| <a id="PayloadError"></a>`PayloadError` | `EVENTS_PAYLOAD` | schema, codec, size or NUL check failed; `path` locates it |
+| <a id="SchemaVersionError"></a>`SchemaVersionError` | `EVENTS_SCHEMA_VERSION` | the schema is behind with `autoMigrate: false`, or newer than the client |
+| <a id="NotStartedError"></a>`NotStartedError` | `EVENTS_NOT_STARTED` | a `{ tx }` call came before `start()` resolved; a `UsageError` |
