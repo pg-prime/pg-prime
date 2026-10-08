@@ -14,7 +14,10 @@ const direct = process.env['PG_PRIME_TEST_URL'] ?? ''
 const pgbouncer = process.env['PG_PRIME_TEST_PGBOUNCER_URL']
 const targets = [{ name: 'direct', url: direct, pooled: false }]
 if (pgbouncer) targets.push({ name: 'pgbouncer transaction mode', url: pgbouncer, pooled: true })
-else if (direct) process.stderr.write('[pg] skip: PG_PRIME_TEST_PGBOUNCER_URL is unset, so the cron suite runs direct only\n')
+else if (direct)
+  process.stderr.write(
+    '[pg] skip: PG_PRIME_TEST_PGBOUNCER_URL is unset, so the cron suite runs direct only\n',
+  )
 
 const test = requiresConcurrency(it)
 let admin: Db
@@ -25,7 +28,8 @@ const q = (text: string) => rows(admin, text.replaceAll('$S', S))
 const runsOf = (name: string) =>
   q(`select id, state::text as state, tick_at, started_at, manual, missed, error, instance
      from $S.runs where schedule = '${name}' order by tick_at nulls last, id`)
-const sched = async (name: string) => (await q(`select * from $S.schedules where name = '${name}'`))[0]!
+const sched = async (name: string) =>
+  (await q(`select * from $S.schedules where name = '${name}'`))[0]!
 
 beforeAll(async () => {
   if (direct) admin = open(direct, 2)
@@ -64,7 +68,9 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
     return c
   }
   const fleet = async (n: number, schedules: (i: number) => ScheduleDef<any>[]) => {
-    const all = Array.from({ length: n }, (_, i) => instance({ schedules: schedules(i), instance: `i${i}` }))
+    const all = Array.from({ length: n }, (_, i) =>
+      instance({ schedules: schedules(i), instance: `i${i}` }),
+    )
     await Promise.all(all.map((c) => c.start()))
     return all
   }
@@ -135,14 +141,22 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
     const killedAt = Date.now()
     const ran: Date[] = []
     await instance({
-      schedules: [defineSchedule('victim', { everyMs: 2000 }, { handler: async (r) => void ran.push(r.tickAt!) })],
+      schedules: [
+        defineSchedule(
+          'victim',
+          { everyMs: 2000 },
+          { handler: async (r) => void ran.push(r.tickAt!) },
+        ),
+      ],
     }).start()
     await until(async () => (await runsOf('victim'))[0]?.['state'] === 'failed')
     expect(Date.now() - killedAt).toBeLessThan(1500 + 500 + 1500)
     expect((await runsOf('victim'))[0]).toMatchObject({ error: 'lease-expired' })
     await until(async () => (await runsOf('victim')).some((r) => r['state'] === 'succeeded'))
     const next = (await runsOf('victim')).find((r) => r['state'] === 'succeeded')!
-    expect((next['started_at'] as Date).getTime() - (next['tick_at'] as Date).getTime()).toBeLessThan(1000)
+    expect(
+      (next['started_at'] as Date).getTime() - (next['tick_at'] as Date).getTime(),
+    ).toBeLessThan(1000)
     await Promise.all(crons.map((c) => c.close()))
     expect((await sched('victim'))['running']).toBe(0)
   }, 60_000)
@@ -150,9 +164,16 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
   test('a manual run is picked only by an instance that registered the handler', async () => {
     await fresh()
     const where: string[] = []
-    const s = defineSchedule('s', { cron: '0 0 1 1 *' }, { handler: async () => void where.push('a') })
+    const s = defineSchedule(
+      's',
+      { cron: '0 0 1 1 *' },
+      { handler: async () => void where.push('a') },
+    )
     await instance({ schedules: [s], instance: 'a' }).start()
-    const b = instance({ schedules: [defineSchedule('other', { cron: '0 0 1 1 *' }, { handler: async () => {} })], instance: 'b' })
+    const b = instance({
+      schedules: [defineSchedule('other', { cron: '0 0 1 1 *' }, { handler: async () => {} })],
+      instance: 'b',
+    })
     await b.start()
     const { runId, state } = await b.trigger('s')
     expect(state).toBe('pending')
@@ -164,7 +185,9 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
   test('a manual trigger is picked by exactly one of 3 owners', async () => {
     await fresh()
     let calls = 0
-    const all = await fleet(3, () => [defineSchedule('s', { cron: '0 0 1 1 *' }, { handler: async () => void calls++ })])
+    const all = await fleet(3, () => [
+      defineSchedule('s', { cron: '0 0 1 1 *' }, { handler: async () => void calls++ }),
+    ])
     await all[1]!.trigger('s')
     await until(async () => (await runsOf('s'))[0]?.['state'] === 'succeeded')
     await sleep(1000)
@@ -188,10 +211,14 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
     await until(async () => (await runsOf('s')).some((r) => r['state'] === 'running'))
     const first = (await runsOf('s')).find((r) => r['state'] === 'running')!
     expect(await all[0]!.cancel(first['id'] as bigint)).toBe(true)
-    await until(async () => (await runsOf('s')).find((r) => r['id'] === first['id'])!['state'] === 'cancelled')
+    await until(
+      async () =>
+        (await runsOf('s')).find((r) => r['id'] === first['id'])!['state'] === 'cancelled',
+    )
     const runs = await runsOf('s')
     const later = runs.filter((r) => r['state'] !== 'skipped' && r['id'] !== first['id'])
-    for (const r of later) expect((r['started_at'] as Date).getTime()).toBeGreaterThanOrEqual(stoppedAt - 50)
+    for (const r of later)
+      expect((r['started_at'] as Date).getTime()).toBeGreaterThanOrEqual(stoppedAt - 50)
     expect(peak).toBe(1)
     await Promise.all(crons.map((c) => c.close()))
     expect((await sched('s'))['running']).toBe(0)
@@ -199,11 +226,15 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
 
   test("misfire 'once' after 10 ticks of downtime: one run, missed = 9, next tick in the future", async () => {
     await fresh()
-    const s = () => [defineSchedule('s', { everyMs: 2000 }, { handler: async () => {} }, { misfireGraceMs: 1000 })]
+    const s = () => [
+      defineSchedule('s', { everyMs: 2000 }, { handler: async () => {} }, { misfireGraceMs: 1000 }),
+    ]
     const first = instance({ schedules: s() })
     await first.start()
     await first.close()
-    await q(`update $S.schedules set next_at = next_at - interval '20 seconds', anchor_at = anchor_at - interval '20 seconds'`)
+    await q(
+      `update $S.schedules set next_at = next_at - interval '20 seconds', anchor_at = anchor_at - interval '20 seconds'`,
+    )
     const before = (await sched('s'))['next_at'] as Date
     await fleet(3, s)
     await until(async () => (await runsOf('s'))[0]?.['state'] === 'succeeded')
@@ -216,19 +247,31 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
   test('misfire past endAt: the fired tick is at or before endAt and the schedule ends', async () => {
     for (const misfire of ['once', 'skip'] as const) {
       await fresh()
-      const [{ now }] = (await q(`select date_trunc('hour', now()) - interval '3 hours' as now`)) as [{ now: Date }]
+      const [{ now }] = (await q(
+        `select date_trunc('hour', now()) - interval '3 hours' as now`,
+      )) as [{ now: Date }]
       const endAt = now
       let calls = 0
-      const def = defineSchedule('s', { cron: '0 * * * *' }, { handler: async () => void calls++ }, { endAt, misfire })
+      const def = defineSchedule(
+        's',
+        { cron: '0 * * * *' },
+        { handler: async () => void calls++ },
+        { endAt, misfire },
+      )
       const c = instance()
       await c.create(def)
-      await q(`update $S.schedules set next_at = '${new Date(endAt.getTime() - 3_600_000).toISOString()}'`)
+      await q(
+        `update $S.schedules set next_at = '${new Date(endAt.getTime() - 3_600_000).toISOString()}'`,
+      )
       await fleet(3, () => [def])
       await until(async () => (await sched('s'))['next_at'] === null)
       const runs = await runsOf('s')
       expect(runs.length).toBe(1)
       expect((runs[0]!['tick_at'] as Date).getTime()).toBe(endAt.getTime())
-      expect(runs[0]).toMatchObject({ missed: 1, state: misfire === 'skip' ? 'missed' : 'succeeded' })
+      expect(runs[0]).toMatchObject({
+        missed: 1,
+        state: misfire === 'skip' ? 'missed' : 'succeeded',
+      })
       await until(() => calls === (misfire === 'once' ? 1 : 0))
       await Promise.all(crons.splice(0).map((x) => x.close()))
     }
@@ -249,7 +292,9 @@ function victim(): Promise<string> {
       format: 'esm',
       alias: { 'pg-prime': resolve(import.meta.dirname, '../../../pg-prime/src/index.ts') },
       external: ['pg-native'],
-      banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
+      banner: {
+        js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
+      },
       logLevel: 'error',
     })
     return outfile

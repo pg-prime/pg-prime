@@ -5,7 +5,16 @@ import { SchemaVersionError } from './errors.js'
 import { migrations } from './migrations.js'
 import { plan } from './planner.js'
 import { runner, type Emit, type StartRun } from './runner.js'
-import { advance, claim, due, pickup, trigger, wakeIn, type DueRow, type StartedRow } from './sql/claim.js'
+import {
+  advance,
+  claim,
+  due,
+  pickup,
+  trigger,
+  wakeIn,
+  type DueRow,
+  type StartedRow,
+} from './sql/claim.js'
 import { expire, gate, reconcile, retain, unclaimed } from './sql/maintenance.js'
 import { cancel } from './sql/runs.js'
 import * as S from './sql/schedules.js'
@@ -87,7 +96,8 @@ export function pgCron(config: CronConfig): Cron {
   const w = waker(db, channel, emit)
   const runs = runner(db, t, leaseMs, emit, () => w.wake())
   const queues = config.enqueuer && { db, t, enqueuer: config.enqueuer, instance }
-  const names = (f: (d: ScheduleDef<any>) => boolean) => [...defs.values()].filter(f).map((d) => d.name)
+  const names = (f: (d: ScheduleDef<any>) => boolean) =>
+    [...defs.values()].filter(f).map((d) => d.name)
   const mine = () => names((d) => !isQueue(d) || queues !== undefined)
 
   let ready: Promise<void> | undefined
@@ -158,7 +168,13 @@ export function pgCron(config: CronConfig): Cron {
         const n = p.decided === 'missed' ? p.missed + 1 : p.missed
         emit('onMisfire', { schedule: row.name, policy: row.misfire, missed: n })
       }
-      emit('onTick', { schedule: row.name, tickAt: fire, decision, missed: p.missed, lateMs: p.lateMs })
+      emit('onTick', {
+        schedule: row.name,
+        tickAt: fire,
+        decision,
+        missed: p.missed,
+        lateMs: p.lateMs,
+      })
     }
     if (queues !== undefined && isQueue(def)) {
       const r = await queueTick(queues, def, row, p, payload)
@@ -200,13 +216,18 @@ export function pgCron(config: CronConfig): Cron {
       for (const row of (await due(db, t, executable).execute()) as unknown as DueRow[]) {
         if (closing) return 0
         if (row.target === 'handler' && runs.size >= maxConcurrent) full = true
-        else await tick(row)
+        else await tick(row).catch(failed)
       }
     }
     const room = Math.min(100, maxConcurrent - runs.size)
     const handlers = names((d) => !isQueue(d))
     if (handlers.length > 0 && room > 0 && !closing) {
-      const picked = await pickup(db, t, { mine: handlers, limit: room, leaseMs, instance }).execute()
+      const picked = await pickup(db, t, {
+        mine: handlers,
+        limit: room,
+        leaseMs,
+        instance,
+      }).execute()
       for (const r of picked as unknown as StartedRow[]) {
         const def = defs.get(r.schedule)
         if (def === undefined) continue
@@ -247,13 +268,16 @@ export function pgCron(config: CronConfig): Cron {
     }
   }
 
+  const failed = (e: unknown) =>
+    emit('onInternal', { kind: 'loop-failed', message: 'cron: loop iteration failed', cause: e })
+
   async function run() {
     while (closing === undefined) {
       let wait = pollMs
       try {
         wait = await iterate()
       } catch (e) {
-        emit('onInternal', { kind: 'loop-failed', message: 'cron: loop iteration failed', cause: e })
+        failed(e)
       }
       if (closing !== undefined) return
       await w.sleep(wait)
@@ -290,7 +314,8 @@ export function pgCron(config: CronConfig): Cron {
 
   const cron = {
     start(): Promise<void> {
-      if (closing !== undefined) return Promise.reject(new UsageError('cron: start() after close()'))
+      if (closing !== undefined)
+        return Promise.reject(new UsageError('cron: start() after close()'))
       return (started ??= (async () => {
         await ensure()
         if (queues !== undefined) await startQueues(queues, [...defs.values()].filter(isQueue))
@@ -323,7 +348,8 @@ export function pgCron(config: CronConfig): Cron {
             overlap: info.overlap,
             misfire: info.misfire,
             misfireGraceMs: info.misfireGraceMs,
-            payload: typeof local?.options.payload === 'function' ? local.options.payload : info.payload,
+            payload:
+              typeof local?.options.payload === 'function' ? local.options.payload : info.payload,
             timeoutMs: info.timeoutMs,
             retry: row['retry'],
             history: { keep: row['keep_runs'], ageMs: row['keep_runs_ms'] },
@@ -333,13 +359,22 @@ export function pgCron(config: CronConfig): Cron {
         const def: ScheduleDef<any> = {
           name,
           when: when ?? info.when,
-          target: local?.target ?? (info.queue !== null ? { queue: { name: info.queue } } : { handler: async () => {} }),
+          target:
+            local?.target ??
+            (info.queue !== null ? { queue: { name: info.queue } } : { handler: async () => {} }),
           options: { ...stored, ...options },
         }
         const cols = colsOf(def)
         const now = row['db_now'] as Date
         const next = first(await spec(cols, now), cols.at, now)
-        const u = { name, cols, hash: fnv(JSON.stringify(cols)), source: info.source, next, anchor: now }
+        const u = {
+          name,
+          cols,
+          hash: fnv(JSON.stringify(cols)),
+          source: info.source,
+          next,
+          anchor: now,
+        }
         await S.upsert(tx, t, u, true).execute()
         if (local !== undefined) defs.set(name, def)
       }),
@@ -376,14 +411,19 @@ export function pgCron(config: CronConfig): Cron {
       await ensure()
       const def = defs.get(name)
       if (def !== undefined && isQueue(def)) {
-        if (queues === undefined) throw new UsageError(`cron: '${name}' has a queue target and this instance has no enqueuer`)
+        if (queues === undefined)
+          throw new UsageError(
+            `cron: '${name}' has a queue target and this instance has no enqueuer`,
+          )
         return queueTrigger(queues, def, opts?.payload ?? payloadOf(def, undefined, null))
       }
       const payload = opts?.payload !== undefined ? opts.payload : payloadOf(def, undefined, null)
       const [r] = await trigger(db, t, { name, instance, payload, channel }).execute()
       if (r === undefined) {
         if ((await S.select(db, t, name).execute()).length === 0) throw missing(name)
-        throw new UsageError(`cron: '${name}' has a queue target; trigger it on an instance that declared its queue`)
+        throw new UsageError(
+          `cron: '${name}' has a queue target; trigger it on an instance that declared its queue`,
+        )
       }
       if (r['state'] === 'pending' && def !== undefined) w.wake()
       return { runId: r['id'] as bigint, state: r['state'] as 'pending' | 'skipped' }
@@ -407,15 +447,22 @@ export function pgCron(config: CronConfig): Cron {
 
     async runs(name: string, opts?: { limit?: number; before?: bigint }) {
       await ensure()
-      return (await S.history(db, t, name, opts?.limit ?? 50, opts?.before ?? null).execute()).map(S.toRun)
+      return (await S.history(db, t, name, opts?.limit ?? 50, opts?.before ?? null).execute()).map(
+        S.toRun,
+      )
     },
 
     async preview(when: ScheduleWhen, opts?: { count?: number; from?: Date }) {
-      const cols = colsOf({ name: 'preview', when, target: { handler: async () => {} }, options: {} })
+      const cols = colsOf({
+        name: 'preview',
+        when,
+        target: { handler: async () => {} },
+        options: {},
+      })
       const from = opts?.from ?? (await clock())
       const tk = await spec(cols, from)
       const out: Date[] = []
-      for (let x = first(tk, cols.at, from); x !== null && out.length < (opts?.count ?? 5); x = tk.next(x)) {
+      for (let x = tk.next(from); x !== null && out.length < (opts?.count ?? 5); x = tk.next(x)) {
         out.push(x)
       }
       return out

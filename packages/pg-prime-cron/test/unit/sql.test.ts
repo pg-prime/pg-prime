@@ -14,7 +14,17 @@ const db = pgPrime({ pool: createMockPool(), schema: defineSchema({}) })
 const t = tables('pgprime_cron')
 const at = new Date('2026-01-01T00:00:00Z')
 const k1 = (decided: 'missed' | 'enqueued' | null) =>
-  claim(db, t, { name: 'a', expect: at, fire: at, decided, missed: 0, next: at, leaseMs: 1, instance: 'i', payload: null })
+  claim(db, t, {
+    name: 'a',
+    expect: at,
+    fire: at,
+    decided,
+    missed: 0,
+    next: at,
+    leaseMs: 1,
+    instance: 'i',
+    payload: null,
+  })
 const cols = colsOf(defineSchedule('a', { everyMs: 1000 }, { handler: async () => {} }))
 const upsert = { name: 'a', cols, hash: 'h', source: 'code' as const, next: at, anchor: at }
 
@@ -28,7 +38,14 @@ const statements: Record<string, RawQuery> = {
   T1: trigger(db, t, { name: 'a', instance: 'i', payload: null, channel: 'c' }),
   T2: pickup(db, t, { mine: ['a'], limit: 1, leaseMs: 1, instance: 'i' }),
   heartbeat: heartbeat(db, t, [{ id: 1n, token: 'x' }], 1),
-  F1: finish(db, t, { id: 1n, token: 'x', state: 'succeeded', error: null, result: null, attempts: 1 }),
+  F1: finish(db, t, {
+    id: 1n,
+    token: 'x',
+    state: 'succeeded',
+    error: null,
+    result: null,
+    attempts: 1,
+  }),
   markCancelling: markCancelling(db, t, 1n, 'x'),
   'maintenance gate': gate(db, t, 1),
   'maintenance expire': expire(db, t),
@@ -49,7 +66,9 @@ describe('statement goldens', () => {
 describe('no statement modifies one table twice', () => {
   for (const [name, q] of Object.entries(statements)) {
     it(name, () => {
-      const targets = [...q.sql.matchAll(/\b(?:insert into|update|delete from)\s+("[^"]+"\."[^"]+")/gi)].map((m) => m[1])
+      const targets = [
+        ...q.sql.matchAll(/\b(?:insert into|update|delete from)\s+("[^"]+"\."[^"]+")/gi),
+      ].map((m) => m[1])
       expect(new Set(targets).size).toBe(targets.length)
     })
   }

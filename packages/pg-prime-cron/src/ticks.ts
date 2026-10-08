@@ -37,7 +37,8 @@ export async function ticker(s: Spec): Promise<Ticker> {
     }
     next = (from) => c.nextRun(new Date(from))?.getTime() ?? null
     // previousRuns is strictly before a whole-second reference; ticks are whole seconds.
-    last = (upTo) => c.previousRuns(1, new Date(Math.floor(upTo / 1000) * 1000 + 1000))[0]?.getTime() ?? null
+    last = (upTo) =>
+      c.previousRuns(1, new Date(Math.floor(upTo / 1000) * 1000 + 1000))[0]?.getTime() ?? null
   } else if (s.everyMs !== null) {
     const every = s.everyMs
     const anchor = s.startAt?.getTime() ?? s.anchorAt.getTime()

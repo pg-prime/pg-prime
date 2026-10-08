@@ -39,8 +39,13 @@ function loop(t: Ticker, p: PlanInput) {
 describe('inside grace', () => {
   it('a loop 5 periods late fires every tick in order, none dropped', async () => {
     const t = await every(1000)
-    const r = loop(t, input({ nextAt: D('2026-01-01T00:00:01Z'), dbNow: D('2026-01-01T00:00:05.200Z') }))
-    expect(r.fired.map((f) => f.fire)).toEqual([1, 2, 3, 4, 5].map((s) => `2026-01-01T00:00:0${s}.000Z`))
+    const r = loop(
+      t,
+      input({ nextAt: D('2026-01-01T00:00:01Z'), dbNow: D('2026-01-01T00:00:05.200Z') }),
+    )
+    expect(r.fired.map((f) => f.fire)).toEqual(
+      [1, 2, 3, 4, 5].map((s) => `2026-01-01T00:00:0${s}.000Z`),
+    )
     expect(r.fired.every((f) => f.missed === 0 && f.decided === null)).toBe(true)
     expect(iso(r.next)).toBe('2026-01-01T00:00:06.000Z')
   })
@@ -65,7 +70,10 @@ describe('misfire beyond grace', () => {
   })
 
   it('caps the count at 10 000 and still fires the latest tick', async () => {
-    const r = plan(input({ nextAt: D('2026-01-01T00:00:00Z'), dbNow: D('2026-01-02T00:00:00Z') }), await every(1000))
+    const r = plan(
+      input({ nextAt: D('2026-01-01T00:00:00Z'), dbNow: D('2026-01-02T00:00:00Z') }),
+      await every(1000),
+    )
     expect(r.missed).toBe(9_999)
     expect(iso(r.fire)).toBe('2026-01-02T00:00:00.000Z')
   })
@@ -76,7 +84,15 @@ describe('endAt', () => {
     const endAt = D('2026-01-01T12:00:00Z')
     const t = await ticker({ ...spec, pattern: '0 * * * *', endAt })
     for (const misfire of ['once', 'skip'] as const) {
-      const r = plan(input({ nextAt: D('2026-01-01T11:00:00Z'), dbNow: D('2026-01-01T15:30:00Z'), endAt, misfire }), t)
+      const r = plan(
+        input({
+          nextAt: D('2026-01-01T11:00:00Z'),
+          dbNow: D('2026-01-01T15:30:00Z'),
+          endAt,
+          misfire,
+        }),
+        t,
+      )
       expect(iso(r.fire)).toBe('2026-01-01T12:00:00.000Z')
       expect(r.missed).toBe(1)
       expect(r.next).toBeNull()
@@ -101,7 +117,10 @@ describe('endAt', () => {
 
   it('a stored next_at past endAt fires nothing', async () => {
     const endAt = D('2026-01-01T00:00:00Z')
-    const r = plan(input({ nextAt: D('2026-01-01T01:00:00Z'), dbNow: D('2026-01-01T02:00:00Z'), endAt }), await every(60_000))
+    const r = plan(
+      input({ nextAt: D('2026-01-01T01:00:00Z'), dbNow: D('2026-01-01T02:00:00Z'), endAt }),
+      await every(60_000),
+    )
     expect(r.fire).toBeNull()
     expect(r.next).toBeNull()
   })
@@ -113,14 +132,20 @@ describe('limit counts claimed ticks', () => {
     const at = D('2026-01-01T00:00:01Z')
     expect(plan(input({ nextAt: at, dbNow: at, maxRuns: 5, runs: 3 }), t).next).not.toBeNull()
     expect(plan(input({ nextAt: at, dbNow: at, maxRuns: 5, runs: 4 }), t).next).toBeNull()
-    const skipped = plan(input({ nextAt: at, dbNow: D('2026-01-01T01:00:00Z'), maxRuns: 5, runs: 4, misfire: 'skip' }), t)
+    const skipped = plan(
+      input({ nextAt: at, dbNow: D('2026-01-01T01:00:00Z'), maxRuns: 5, runs: 4, misfire: 'skip' }),
+      t,
+    )
     expect(skipped.decided).toBe('missed')
     expect(skipped.next).toBeNull()
   })
 
   it('a schedule with limit 3 claims three ticks', async () => {
     const t = await every(1000)
-    const r = loop(t, input({ nextAt: D('2026-01-01T00:00:01Z'), dbNow: D('2026-01-01T00:00:30Z'), maxRuns: 3 }))
+    const r = loop(
+      t,
+      input({ nextAt: D('2026-01-01T00:00:01Z'), dbNow: D('2026-01-01T00:00:30Z'), maxRuns: 3 }),
+    )
     expect(r.fired.length).toBe(3)
     expect(r.next).toBeNull()
   })
@@ -130,7 +155,11 @@ describe('one-shot at', () => {
   it('fires once and ends; late beyond grace is still fired once', async () => {
     const at = D('2026-03-01T00:00:00Z')
     const t = await ticker({ ...spec, at })
-    expect(plan(input({ nextAt: at, dbNow: at }), t)).toMatchObject({ fire: at, next: null, missed: 0 })
+    expect(plan(input({ nextAt: at, dbNow: at }), t)).toMatchObject({
+      fire: at,
+      next: null,
+      missed: 0,
+    })
     const late = plan(input({ nextAt: at, dbNow: D('2026-03-02T00:00:00Z') }), t)
     expect(late).toMatchObject({ fire: at, next: null, missed: 0, misfired: true })
   })

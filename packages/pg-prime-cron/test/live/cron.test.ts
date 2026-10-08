@@ -11,7 +11,15 @@ let db: Db
 const crons: Cron[] = []
 
 const make = (cfg: Partial<CronConfig> = {}): Cron => {
-  const c = pgCron({ db, schema: S, pollMs: 200, leaseMs: 3000, maintenanceMs: 300, graceMs: 500, ...cfg })
+  const c = pgCron({
+    db,
+    schema: S,
+    pollMs: 200,
+    leaseMs: 3000,
+    maintenanceMs: 300,
+    graceMs: 500,
+    ...cfg,
+  })
   crons.push(c)
   return c
 }
@@ -19,7 +27,8 @@ const q = (text: string) => rows(db, text.replaceAll('$S', S))
 const runsOf = (name: string) =>
   q(`select id, state::text as state, tick_at, manual, missed, error, attempts, payload, result
      from $S.runs where schedule = '${name}' order by id`)
-const sched = async (name: string) => (await q(`select * from $S.schedules where name = '${name}'`))[0]!
+const sched = async (name: string) =>
+  (await q(`select * from $S.schedules where name = '${name}'`))[0]!
 
 beforeAll(async () => {
   srv = await server()
@@ -71,14 +80,29 @@ describe('handler runs', () => {
     await make({ schedules: [a] }).start()
     await until(async () => (await runsOf('a')).some((r) => r['state'] === 'succeeded'))
     const [r] = await runsOf('a')
-    expect(r).toMatchObject({ state: 'succeeded', manual: false, attempts: 1, result: { ok: true } })
-    expect(seen[0]).toMatchObject({ schedule: 'a', manual: false, payload: { n: 7 }, attempt: 1, missed: 0 })
+    expect(r).toMatchObject({
+      state: 'succeeded',
+      manual: false,
+      attempts: 1,
+      result: { ok: true },
+    })
+    expect(seen[0]).toMatchObject({
+      schedule: 'a',
+      manual: false,
+      payload: { n: 7 },
+      attempt: 1,
+      missed: 0,
+    })
     expect((await sched('a'))['running']).toBe(0)
   })
 
   it('manual trigger is picked up by the instance that registered the handler', async () => {
     let got: unknown
-    const a = defineSchedule('a', { cron: '0 0 1 1 *' }, { handler: async (r) => void (got = r.payload) })
+    const a = defineSchedule(
+      'a',
+      { cron: '0 0 1 1 *' },
+      { handler: async (r) => void (got = r.payload) },
+    )
     const c = make({ schedules: [a] })
     await c.start()
     const t = await c.trigger('a', { payload: { x: 1 } })
@@ -90,10 +114,16 @@ describe('handler runs', () => {
 
   it('cancels a pending run and a running one', async () => {
     let aborted = false
-    const a = defineSchedule('a', { cron: '0 0 1 1 *' }, {
-      handler: (r) =>
-        new Promise((resolve) => r.signal.addEventListener('abort', () => resolve((aborted = true)))),
-    })
+    const a = defineSchedule(
+      'a',
+      { cron: '0 0 1 1 *' },
+      {
+        handler: (r) =>
+          new Promise((resolve) =>
+            r.signal.addEventListener('abort', () => resolve((aborted = true))),
+          ),
+      },
+    )
     const admin = make()
     await make({ schedules: [a] }).start()
     const { runId } = await admin.trigger('a')
@@ -121,9 +151,14 @@ describe('overlap', () => {
     await until(async () => (await runsOf('skip')).some((r) => r['state'] === 'skipped'))
     expect(peak).toBe(1)
 
-    const allow = defineSchedule('allow', { everyMs: 1000 }, { handler: slow(2500) }, { overlap: 'allow' })
+    const allow = defineSchedule(
+      'allow',
+      { everyMs: 1000 },
+      { handler: slow(2500) },
+      { overlap: 'allow' },
+    )
     await make({ schedules: [allow] }).start()
-    await until(async () => (await sched('allow'))['running'] >= 2)
+    await until(async () => ((await sched('allow'))['running'] as number) >= 2)
   })
 
   it('a timed-out handler that ignores its signal keeps the slot until it settles', async () => {
@@ -157,7 +192,10 @@ describe('misfire', () => {
     await c.start()
     const before = (await sched('a'))['next_at'] as Date
     await c.pause('a')
-    await shift('a', `next_at = next_at - interval '10 minutes', anchor_at = anchor_at - interval '10 minutes'`)
+    await shift(
+      'a',
+      `next_at = next_at - interval '10 minutes', anchor_at = anchor_at - interval '10 minutes'`,
+    )
     await c.resume('a')
     await until(async () => (await runsOf('a')).length === 1)
     const [r] = await runsOf('a')
@@ -169,9 +207,17 @@ describe('misfire', () => {
 
   it("'skip' records one missed run and runs nothing", async () => {
     let calls = 0
-    const a = defineSchedule('a', { everyMs: 60_000 }, { handler: async () => void calls++ }, { misfire: 'skip' })
+    const a = defineSchedule(
+      'a',
+      { everyMs: 60_000 },
+      { handler: async () => void calls++ },
+      { misfire: 'skip' },
+    )
     await make({ schedules: [a] }).start()
-    await shift('a', `next_at = next_at - interval '5 minutes', anchor_at = anchor_at - interval '5 minutes'`)
+    await shift(
+      'a',
+      `next_at = next_at - interval '5 minutes', anchor_at = anchor_at - interval '5 minutes'`,
+    )
     await until(async () => (await runsOf('a')).length === 1)
     expect((await runsOf('a'))[0]).toMatchObject({ state: 'missed', missed: 4 })
     expect(calls).toBe(0)
@@ -185,11 +231,14 @@ describe('misfire', () => {
     const anchor = (await sched('a'))['anchor_at'] as Date
     await first.close()
     await sleep(1500)
-    await make({ schedules: [defineSchedule('a', { everyMs: 1000 }, { handler: async () => {} })] }).start()
+    await make({
+      schedules: [defineSchedule('a', { everyMs: 1000 }, { handler: async () => {} })],
+    }).start()
     await until(async () => (await runsOf('a')).length >= 2)
     const s = await sched('a')
     expect(s['anchor_at']).toEqual(anchor)
-    for (const r of await runsOf('a')) expect(((r['tick_at'] as Date).getTime() - anchor.getTime()) % 1000).toBe(0)
+    for (const r of await runsOf('a'))
+      expect(((r['tick_at'] as Date).getTime() - anchor.getTime()) % 1000).toBe(0)
   })
 })
 
@@ -204,7 +253,11 @@ describe('bounds and history', () => {
 
   it('a one-shot at fires once', async () => {
     let calls = 0
-    const a = defineSchedule('a', { at: new Date(Date.now() + 300) }, { handler: async () => void calls++ })
+    const a = defineSchedule(
+      'a',
+      { at: new Date(Date.now() + 300) },
+      { handler: async () => void calls++ },
+    )
     await make({ schedules: [a] }).start()
     await until(async () => (await runsOf('a'))[0]?.['state'] === 'succeeded')
     await sleep(500)
@@ -213,10 +266,17 @@ describe('bounds and history', () => {
   })
 
   it('retention keeps the newest history.keep finished runs', async () => {
-    const a = defineSchedule('a', { everyMs: 1000 }, { handler: async () => {} }, { history: { keep: 2 } })
+    const a = defineSchedule(
+      'a',
+      { everyMs: 1000 },
+      { handler: async () => {} },
+      { history: { keep: 2 } },
+    )
     await make({ schedules: [a] }).start()
-    await until(async () => (await sched('a'))['runs'] >= 5, 20_000)
-    await until(async () => (await runsOf('a')).filter((r) => r['state'] === 'succeeded').length <= 2)
+    await until(async () => ((await sched('a'))['runs'] as number) >= 5, 20_000)
+    await until(
+      async () => (await runsOf('a')).filter((r) => r['state'] === 'succeeded').length <= 2,
+    )
     expect((await runsOf('a'))[0]!['id']).toBeGreaterThan(1n)
   })
 })
@@ -224,10 +284,22 @@ describe('bounds and history', () => {
 describe('admin', () => {
   it('create, get, list, update, runs, preview, prune, remove', async () => {
     const c = make()
-    await c.create(defineSchedule('api', { cron: '0 3 * * *', tz: 'Europe/Berlin' }, { handler: async () => {} }))
-    await expect(c.create(defineSchedule('api', { everyMs: 1000 }, { handler: async () => {} }))).rejects.toBeInstanceOf(UsageError)
+    await c.create(
+      defineSchedule(
+        'api',
+        { cron: '0 3 * * *', tz: 'Europe/Berlin' },
+        { handler: async () => {} },
+      ),
+    )
+    await expect(
+      c.create(defineSchedule('api', { everyMs: 1000 }, { handler: async () => {} })),
+    ).rejects.toBeInstanceOf(UsageError)
     const info = await c.get('api')
-    expect(info).toMatchObject({ source: 'api', target: 'handler', when: { cron: '0 3 * * *', tz: 'Europe/Berlin' } })
+    expect(info).toMatchObject({
+      source: 'api',
+      target: 'handler',
+      when: { cron: '0 3 * * *', tz: 'Europe/Berlin' },
+    })
     expect(await c.get('nope')).toBeUndefined()
 
     await c.update('api', { when: { everyMs: 5000 }, timeoutMs: 100 })
@@ -236,8 +308,14 @@ describe('admin', () => {
     expect(updated!.nextAt!.getTime()).not.toBe(info!.nextAt!.getTime())
     await expect(c.update('nope', {})).rejects.toBeInstanceOf(UsageError)
 
-    const p = await c.preview({ cron: '0 0 * * *' }, { count: 2, from: new Date('2026-01-01T12:00:00Z') })
-    expect(p.map((d) => d.toISOString())).toEqual(['2026-01-02T00:00:00.000Z', '2026-01-03T00:00:00.000Z'])
+    const p = await c.preview(
+      { cron: '0 0 * * *' },
+      { count: 2, from: new Date('2026-01-01T12:00:00Z') },
+    )
+    expect(p.map((d) => d.toISOString())).toEqual([
+      '2026-01-02T00:00:00.000Z',
+      '2026-01-03T00:00:00.000Z',
+    ])
 
     for (let i = 0; i < 3; i++) await c.trigger('api')
     const page = await c.runs('api', { limit: 2 })
@@ -247,7 +325,9 @@ describe('admin', () => {
     expect(await c.remove('api', { force: true })).toBe(true)
     expect(await c.remove('api')).toBe(false)
 
-    await make({ schedules: [defineSchedule('x', { everyMs: 60_000 }, { handler: async () => {} })] }).start()
+    await make({
+      schedules: [defineSchedule('x', { everyMs: 60_000 }, { handler: async () => {} })],
+    }).start()
     expect(await c.prune([])).toEqual(['x'])
     expect(await c.list()).toEqual([])
   })
@@ -268,14 +348,20 @@ describe('admin', () => {
   })
 
   it('sync updates a changed definition and keeps operational flags', async () => {
-    const c = make({ schedules: [defineSchedule('a', { everyMs: 60_000 }, { handler: async () => {} })] })
+    const c = make({
+      schedules: [defineSchedule('a', { everyMs: 60_000 }, { handler: async () => {} })],
+    })
     await c.start()
     await c.pause('a')
     const before = await sched('a')
     await c.close()
-    await make({ schedules: [defineSchedule('a', { everyMs: 60_000 }, { handler: async () => {} })] }).start()
+    await make({
+      schedules: [defineSchedule('a', { everyMs: 60_000 }, { handler: async () => {} })],
+    }).start()
     expect((await sched('a'))['next_at']).toEqual(before['next_at'])
-    await make({ schedules: [defineSchedule('a', { everyMs: 120_000 }, { handler: async () => {} })] }).start()
+    await make({
+      schedules: [defineSchedule('a', { everyMs: 120_000 }, { handler: async () => {} })],
+    }).start()
     const after = await sched('a')
     expect(after).toMatchObject({ paused: true, every_ms: 120_000n })
     expect(after['spec_hash']).not.toBe(before['spec_hash'])
@@ -296,14 +382,42 @@ describe('isolation and seams', () => {
         onInternal: (e) => void internal.push(e.kind),
       },
     }).start()
-    await until(async () => (await runsOf('a')).filter((r) => r['state'] === 'succeeded').length >= 2)
+    await until(
+      async () => (await runsOf('a')).filter((r) => r['state'] === 'succeeded').length >= 2,
+    )
     expect(internal).toContain('hook-failed')
+  })
+
+  it('a schedule whose payload throws does not block the others', async () => {
+    const internal: string[] = []
+    const bad = defineSchedule<null>(
+      'bad',
+      { everyMs: 1000 },
+      { handler: async () => {} },
+      {
+        payload: () => {
+          throw new Error('no payload')
+        },
+      },
+    )
+    const good = defineSchedule('good', { everyMs: 1000 }, { handler: async () => {} })
+    await make({
+      schedules: [bad, good],
+      hooks: { onInternal: (e) => void internal.push(e.kind) },
+    }).start()
+    await until(
+      async () => (await runsOf('good')).filter((r) => r['state'] === 'succeeded').length >= 2,
+    )
+    expect(internal).toContain('loop-failed')
+    expect(await runsOf('bad')).toEqual([])
   })
 
   it('a queue target is a seam until the mq target lands', async () => {
     const q = defineSchedule('q', { everyMs: 1000 }, { queue: { name: 'jobs' } })
     const enqueuer = { queue: () => ({ send: async () => ({ id: 1n, deduplicated: false }) }) }
-    await expect(make({ schedules: [q], enqueuer }).start()).rejects.toThrow('queue target not implemented')
+    await expect(make({ schedules: [q], enqueuer }).start()).rejects.toThrow(
+      'queue target not implemented',
+    )
     const plain = make({ schedules: [q] })
     await plain.start()
     await expect(plain.trigger('q')).rejects.toBeInstanceOf(UsageError)

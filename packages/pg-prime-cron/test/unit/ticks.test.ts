@@ -142,7 +142,9 @@ describe('invalid schedules', () => {
   it('names the field', async () => {
     expect(await field(() => cron('not a pattern'))).toBe('cron')
     expect(await field(() => cron('0 0 0 1 1 * 2030'))).toBe('cron')
-    expect(await field(() => defineSchedule('x', { cron: '* * * * *', tz: 'Mars/Base' }, h))).toBe('tz')
+    expect(await field(() => defineSchedule('x', { cron: '* * * * *', tz: 'Mars/Base' }, h))).toBe(
+      'tz',
+    )
     expect(await field(() => defineSchedule('x', { everyMs: 999 }, h))).toBe('everyMs')
     expect(await field(() => defineSchedule('x', { at: new Date('nope') }, h))).toBe('at')
     expect(await field(() => defineSchedule('', { everyMs: 1000 }, h))).toBe('name')
@@ -150,12 +152,15 @@ describe('invalid schedules', () => {
     expect(await field(() => defineSchedule('x', {} as never, h))).toBe('when')
     expect(
       await field(() =>
-        defineSchedule('x', { everyMs: 1000 }, h, { startAt: D('2026-02-01'), endAt: D('2026-01-01') }),
+        defineSchedule('x', { everyMs: 1000 }, h, {
+          startAt: D('2026-02-01'),
+          endAt: D('2026-01-01'),
+        }),
       ),
     ).toBe('endAt')
     expect(await field(() => defineSchedule('x', { everyMs: 1000 }, h, { limit: 0 }))).toBe('limit')
-    expect(await field(() => defineSchedule('x', { everyMs: 1000 }, h, { overlap: 'queue' as never }))).toBe(
-      'overlap',
-    )
+    expect(
+      await field(() => defineSchedule('x', { everyMs: 1000 }, h, { overlap: 'queue' as never })),
+    ).toBe('overlap')
   })
 })

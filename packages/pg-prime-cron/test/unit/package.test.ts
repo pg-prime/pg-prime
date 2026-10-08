@@ -8,7 +8,9 @@ const root = join(import.meta.dirname, '..', '..')
 
 describe('backoffMs', () => {
   it('matches the family vectors', () => {
-    const { vectors } = JSON.parse(readFileSync(join(root, '../../fixtures/backoff/vectors.json'), 'utf8'))
+    const { vectors } = JSON.parse(
+      readFileSync(join(root, '../../fixtures/backoff/vectors.json'), 'utf8'),
+    )
     for (const v of vectors) expect(backoffMs(v.policy, v.attempt, () => v.random)).toBe(v.delayMs)
   })
 })
@@ -22,7 +24,9 @@ describe('@pg-prime/mq stays optional', () => {
   for (const dir of ['src', 'dist']) {
     it(`${dir}/ names no @pg-prime/mq specifier`, () => {
       if (!existsSync(join(root, dir))) return
-      const hits = files(join(root, dir)).filter((f) => /\.(js|ts)$/.test(f) && /['"]@pg-prime\/mq['"/]/.test(readFileSync(f, 'utf8')))
+      const hits = files(join(root, dir)).filter(
+        (f) => /\.(js|ts)$/.test(f) && /['"]@pg-prime\/mq['"/]/.test(readFileSync(f, 'utf8')),
+      )
       expect(hits).toEqual([])
     })
   }

@@ -23,10 +23,13 @@ interface Active {
   readonly run: StartRun
   readonly ac: AbortController
   reason?: Reason
-  done?: Promise<void>
+  done: Promise<void>
 }
 
-export type Emit = <K extends keyof CronHooks>(k: K, e: Parameters<NonNullable<CronHooks[K]>>[0]) => void
+export type Emit = <K extends keyof CronHooks>(
+  k: K,
+  e: Parameters<NonNullable<CronHooks[K]>>[0],
+) => void
 
 export interface Runner {
   readonly size: number
@@ -57,7 +60,8 @@ export function runner(db: Db, t: Tables, leaseMs: number, emit: Emit, onEnd: ()
     const { run, ac } = a
     const t0 = performance.now()
     emit('onRunStart', { schedule: run.schedule, runId: run.id, manual: run.manual })
-    const timer = run.timeoutMs === null ? undefined : setTimeout(() => abort(a, 'timeout'), run.timeoutMs)
+    const timer =
+      run.timeoutMs === null ? undefined : setTimeout(() => abort(a, 'timeout'), run.timeoutMs)
     const r = run.retry ?? {}
     const max = r.maxAttempts ?? 1
     const policy = {
@@ -125,7 +129,7 @@ export function runner(db: Db, t: Tables, leaseMs: number, emit: Emit, onEnd: ()
       return active.size
     },
     start(run, handler) {
-      const a: Active = { run, ac: new AbortController() }
+      const a = { run, ac: new AbortController() } as Active
       active.set(run.id, a)
       a.done = execute(a, handler).finally(() => {
         active.delete(run.id)
@@ -137,7 +141,12 @@ export function runner(db: Db, t: Tables, leaseMs: number, emit: Emit, onEnd: ()
       if (live.length === 0) return
       let rows
       try {
-        rows = await heartbeat(db, t, live.map((a) => a.run), leaseMs).execute()
+        rows = await heartbeat(
+          db,
+          t,
+          live.map((a) => a.run),
+          leaseMs,
+        ).execute()
       } catch (e) {
         return internal('heartbeat failed', e)
       }

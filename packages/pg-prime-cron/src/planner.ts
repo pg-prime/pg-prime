@@ -30,7 +30,8 @@ export function plan(p: PlanInput, t: Ticker): Plan {
   const lateMs = dbNow.getTime() - nextAt.getTime()
   const h = p.endAt !== null && p.endAt < dbNow ? p.endAt : dbNow
   const base = { expect: nextAt, lateMs }
-  if (nextAt > h) return { ...base, fire: null, decided: null, missed: 0, next: null, misfired: false }
+  if (nextAt > h)
+    return { ...base, fire: null, decided: null, missed: 0, next: null, misfired: false }
   const ended = p.maxRuns !== null && p.runs + 1 >= p.maxRuns
   if (lateMs <= p.graceMs) {
     const next = ended ? null : t.next(nextAt)

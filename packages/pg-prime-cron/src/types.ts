@@ -155,7 +155,10 @@ export interface Cron extends AsyncDisposable_ {
   start(): Promise<void>
   close(): Promise<void>
   create<P>(def: ScheduleDef<P>): Promise<void>
-  update(name: string, patch: Partial<{ when: ScheduleWhen } & ScheduleOptions<unknown>>): Promise<void>
+  update(
+    name: string,
+    patch: Partial<{ when: ScheduleWhen } & ScheduleOptions<unknown>>,
+  ): Promise<void>
   remove(name: string, opts?: { force?: boolean }): Promise<boolean>
   pause(name: string): Promise<void>
   resume(name: string): Promise<void>

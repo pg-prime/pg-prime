@@ -29,11 +29,15 @@ export function defineSchedule<P = undefined>(
   target: ScheduleTarget<P>,
   opts: ScheduleOptions<P> = {},
 ): ScheduleDef<P> {
-  if (typeof name !== 'string' || name === '') throw new ScheduleError('name', 'a schedule needs a name')
+  if (typeof name !== 'string' || name === '')
+    throw new ScheduleError('name', 'a schedule needs a name')
   const handler = 'handler' in target && typeof target.handler === 'function'
   const queue = 'queue' in target && typeof target.queue?.name === 'string'
   if (handler === queue) {
-    throw new ScheduleError('target', `schedule '${name}' needs exactly one of { handler } or { queue }`)
+    throw new ScheduleError(
+      'target',
+      `schedule '${name}' needs exactly one of { handler } or { queue }`,
+    )
   }
   const def = { name, when, target, options: opts }
   colsOf(def)
@@ -98,7 +102,8 @@ export function colsOf(def: ScheduleDef<any>): Cols {
 /** 64-bit FNV-1a, hex. */
 export function fnv(s: string): string {
   let h = 0xcbf29ce484222325n
-  for (const b of new TextEncoder().encode(s)) h = BigInt.asUintN(64, (h ^ BigInt(b)) * 0x100000001b3n)
+  for (const b of new TextEncoder().encode(s))
+    h = BigInt.asUintN(64, (h ^ BigInt(b)) * 0x100000001b3n)
   return h.toString(16)
 }
 

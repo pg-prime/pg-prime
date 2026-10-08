@@ -13,31 +13,28 @@ export interface QueueContext {
 }
 
 /** `cron.start()`: start every declared queue so its `{ tx }` sends are allowed. */
-export async function startQueues(
-  _c: QueueContext,
-  defs: readonly ScheduleDef<any>[],
-): Promise<void> {
-  if (defs.length > 0) throw notImplemented()
+export function startQueues(_c: QueueContext, defs: readonly ScheduleDef<any>[]): Promise<void> {
+  return defs.length > 0 ? Promise.reject(notImplemented()) : Promise.resolve()
 }
 
 /** One short transaction: K1 with `decided` `'enqueued'` (or `'missed'`), then `send`. */
-export async function queueTick(
+export function queueTick(
   _c: QueueContext,
   _def: ScheduleDef<any>,
   _row: DueRow,
   _plan: Plan,
   _payload: unknown,
 ): Promise<{ runId: bigint; state: RunState } | undefined> {
-  throw notImplemented()
+  return Promise.reject(notImplemented())
 }
 
 /** A manual run of a queue-target schedule: enqueued at once, never `pending`. */
-export async function queueTrigger(
+export function queueTrigger(
   _c: QueueContext,
   _def: ScheduleDef<any>,
   _payload: unknown,
 ): Promise<{ runId: bigint; state: RunState }> {
-  throw notImplemented()
+  return Promise.reject(notImplemented())
 }
 
 const notImplemented = () => new UsageError('queue target not implemented')
