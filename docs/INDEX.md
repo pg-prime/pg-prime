@@ -2,6 +2,12 @@
 
 One line per doc: path — what it covers — read when.
 
+- docs/packages/pg-prime-context/src/errors.md — ContextError and its codes — read when adding or handling a CONTEXT_* code.
+- docs/packages/pg-prime-context/src/host.md — TransactionHost: ALS store, propagation join/savepoint/new, scoped settings, strict mode, pinned savepoints — read when a host transaction joins, nests or applies settings wrongly.
+- docs/packages/pg-prime-context/src/index.md — @pg-prime/context entry: TransactionHost, option and settings types, AsyncStorage, ContextError — read when changing the context package's exported surface.
+- docs/packages/pg-prime-context/src/pin.md — capture/restore SQL of a pinned savepoint — read when settings leak between requests of a rollbackScope test.
+- docs/packages/pg-prime-context/src/storage.md — AsyncStorage interface and the default AsyncLocalStorage — read when swapping the storage or porting to another runtime.
+- docs/packages/pg-prime-context/src/testing.md — rollbackScope, the rollback-per-test pin — read when changing how tests pin a host.
 - docs/packages/pg-prime-create/src/args.md — create-pg-prime flag parser, --help text, package-manager detection — read when adding or changing a create-pg-prime flag.
 - docs/packages/pg-prime-create/src/cli.md — create-pg-prime bin entry: TTY detection, readline, exit code — read when the scaffolder hangs, mis-prompts or exits wrongly.
 - docs/packages/pg-prime-create/src/index.md — @pg-prime/create library exports and generated versions.ts — read when importing the scaffolder programmatically or versions.ts is missing.
