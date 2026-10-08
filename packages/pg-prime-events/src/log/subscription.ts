@@ -117,8 +117,8 @@ function startReader<T>(
   async function serve(lease: LeaseRow, wake: Waker): Promise<void> {
     const token = lease.token
     let cursor = lease.cursor
-    // A multi-entry attempt still marked at takeover crashed: find its poison entry one by one.
-    let isolate = lease.headId !== null && lease.headSize > 1 ? lease.headSize : 0
+    // A marker still set at takeover means an attempt crashed or was nacked: retry its entries one by one.
+    let isolate = lease.headId === null ? 0 : lease.headSize
     const held = { lost: false }
     const handlerStop = new AbortController()
     const onStop = (): void => handlerStop.abort()
@@ -217,6 +217,8 @@ function startReader<T>(
       }
       if (held.lost) throw lostError()
       lastError = { id: first.id, error: String(failure.error) }
+      // The next attempt must be this entry alone, or a larger batch would reset its count.
+      isolate = Math.max(isolate, 1)
       const delay = backoffMs(def.retry, attempts)
       if (!(await sql.nack(db, t, s, token, delay))) throw lostError()
       hooks.emit('onRetry', {
