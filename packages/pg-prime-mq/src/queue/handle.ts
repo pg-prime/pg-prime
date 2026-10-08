@@ -225,6 +225,7 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
       if (r === undefined) throw lost(m)
     },
     async fail(m, err, opts = {}) {
+      if (opts.tx !== undefined) assertTxSettle(def)
       const r = await failMessage(core, def, await held(m, opts.tx ?? core.db), err, {
         ...(opts.final === undefined ? {} : { final: opts.final }),
         ...(opts.tx === undefined ? {} : { tx: opts.tx }),

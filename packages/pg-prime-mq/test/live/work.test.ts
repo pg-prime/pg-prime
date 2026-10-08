@@ -234,6 +234,10 @@ describe('transactions', () => {
     await expect(
       db.transaction((tx) => capped.complete(m, undefined, { tx })),
     ).rejects.toBeInstanceOf(UsageError)
+    await expect(
+      db.transaction((tx) => capped.fail(m, new Error('x'), { tx })),
+    ).rejects.toBeInstanceOf(UsageError)
+    expect((await capped.get(m.id))?.state).toBe('active')
     let caught: unknown
     const w = capped.work(async (_x, ctx) => {
       try {

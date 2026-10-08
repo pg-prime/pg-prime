@@ -23,6 +23,7 @@
 - `sendMany` takes `{ payload, opts }` items (plan 17 §7.2 also allowed bare payloads, ambiguous at runtime).
 - `retry({ ids })` refuses finished parents with `pending`/`failed` children (a stale read only over-refuses).
 - `fail` re-reads the row through `tx` when given (parent, retry policy); `complete` needs only the token.
+- `complete`/`fail` with `{ tx }` are refused on a queue with a global `concurrency` (`assertTxSettle`).
 - `watch()` needs a LISTEN connection; behind a transaction pooler it is refused, `result()` polls.
 
 ## Tests
