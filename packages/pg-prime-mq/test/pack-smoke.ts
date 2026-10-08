@@ -7,7 +7,7 @@ import { defineSchema, pgPrime } from 'pg-prime'
 
 // An empty server: no ledger yet, every other statement answers no rows.
 const step: MockStep = (q) =>
-  q.text.includes('to_regclass') ? { fields: [{ name: 'ok', dataTypeID: 16 }], rows: [['f']] } : {}
+  q.text.includes('to_regclass') ? { fields: ['ok'], rows: [['f']] } : {}
 const pool = createMockPool({ script: Array.from({ length: 200 }, () => step) })
 const db = pgPrime({ pool, schema: defineSchema({}) })
 const emails = defineQueue<{ to: string }>('emails')

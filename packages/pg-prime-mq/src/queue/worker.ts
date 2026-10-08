@@ -88,6 +88,8 @@ export function startWorker<T, R>(
   let nextMaint = 0
   let cursor = ''
   let groupsFirst = false
+  // A path that came back empty is skipped until something outside this worker wakes it.
+  const dry = { plain: false, grouped: false }
   let beating = false
 
   const onAbort = (): void => void close()
@@ -253,13 +255,14 @@ export function startWorker<T, R>(
   })
 
   /** One claim round over ungrouped (S3/S4) and grouped (S5) messages, alternating which goes first. */
-  const claimRound = async (free: number): Promise<number> => {
+  const claimRound = async (free: number, woken: boolean): Promise<number> => {
     const before = Date.now()
     let got = 0
+    if (woken) dry.plain = dry.grouped = false
     groupsFirst = !groupsFirst
     for (const grouped of groupsFirst ? [true, false] : [false, true]) {
       const n = free - got
-      if (n <= 0 || stop.signal.aborted) break
+      if (n <= 0 || stop.signal.aborted || dry[grouped ? 'grouped' : 'plain']) continue
       let rows: MsgRow[]
       if (grouped) {
         const scan = opts.group?.scan ?? 4 * n
@@ -270,8 +273,12 @@ export function startWorker<T, R>(
         }
         cursor = r.rows.length > 0 || r.scanned >= scan ? r.cursor : ''
         rows = r.rows
+        dry.grouped = r.scanned === 0
       } else {
-        rows = await claim(ctl, t, claimOptions(n))
+        const o = claimOptions(n)
+        rows = await claim(ctl, t, o)
+        // Under global limits a freed slot of ours may free capacity: keep trying.
+        dry.plain = rows.length === 0 && !o.limited
       }
       for (const row of rows) start(row)
       got += rows.length
@@ -340,9 +347,11 @@ export function startWorker<T, R>(
       try {
         await core.ready(def)
         const now = Date.now()
-        if (reason !== 'slot' || now >= promoteAt) {
+        let woken: boolean = reason !== 'slot'
+        if (woken || now >= promoteAt) {
           const p = await promote(ctl, t, queue)
           promoteAt = p.promoted === 1000 ? now : now + (p.nextInMs ?? Infinity)
+          woken ||= p.promoted > 0
         }
         if (now >= nextExpire) {
           nextExpire = now + expireScanMs
@@ -365,7 +374,7 @@ export function startWorker<T, R>(
           )
         }
         const free = Math.min(concurrency - held.size, local.free())
-        const got = free > 0 ? await claimRound(free) : 0
+        const got: number = free > 0 ? await claimRound(free, woken) : 0
         const until = Math.min(promoteAt, nextExpire, nextMaint) - Date.now()
         if (held.size >= concurrency) {
           await slotOrTimeout(until)
