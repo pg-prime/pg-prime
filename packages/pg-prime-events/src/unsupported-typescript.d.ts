@@ -27,4 +27,44 @@
 
 type Unsupported<Message = { ERROR: '@pg-prime/events requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' }> = Message
 
+export declare const EventsLeaseLostError: Unsupported
+export declare const NotStartedError: Unsupported
+export declare const PayloadError: Unsupported
+export declare const SchemaVersionError: Unsupported
+export declare const defineChannel: Unsupported
+export declare const defineSubscription: Unsupported
+export declare const defineTopic: Unsupported
+export declare const engineChannel: Unsupported
+export declare const engineChannelSql: Unsupported
+export declare const pgEvents: Unsupported
+export declare const waker: Unsupported
 
+export type BatchHandler<T0 = any> = Unsupported
+export type ChannelDef<T0 = any> = Unsupported
+export type ChannelHandle<T0 = any> = Unsupported
+export type Entry<T0 = any> = Unsupported
+export type EntryHandler<T0 = any> = Unsupported
+export type Events<T0 = any> = Unsupported
+export type EventsConfig<T0 = any> = Unsupported
+export type EventsDefinitions = Unsupported
+export type EventsHooks = Unsupported
+export type EventsLeaseLostError = Unsupported
+export type InternalKind = Unsupported
+export type NotStartedError = Unsupported
+export type PayloadError = Unsupported
+export type PayloadOf<T0 = any> = Unsupported
+export type PayloadOptions<T0 = any> = Unsupported
+export type PublishOptions = Unsupported
+export type ReadContext = Unsupported
+export type Reader = Unsupported
+export type RetryOptions = Unsupported
+export type RunOptions = Unsupported
+export type SchemaVersionError = Unsupported
+export type StandardSchemaV1<T0 = any, T1 = any> = Unsupported
+export type SubscriptionDef<T0 = any> = Unsupported
+export type SubscriptionHandle<T0 = any> = Unsupported
+export type TopicDef<T0 = any> = Unsupported
+export type TopicHandle<T0 = any> = Unsupported
+export type WakeReason = Unsupported
+export type Waker = Unsupported
+export type WakerOptions = Unsupported
