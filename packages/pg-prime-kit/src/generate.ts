@@ -30,7 +30,16 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { extractCatalog, probeEmptiness, type Diagnostic, type ExtractResult } from "./catalog/extract.js";
+import {
+  afterLaneState,
+  coverageLost,
+  extractCatalog,
+  probeEmptiness,
+  readLaneState,
+  type Diagnostic,
+  type ExtractResult,
+  type LaneState,
+} from "./catalog/extract.js";
 import { GUC_BATCH_SIZE, GUC_WATERMARK } from "./data/batch.js";
 import { HISTORY_SCHEMA } from "./history/schema.js";
 import { BATCH_DEFAULTS } from "./runner/files.js";
@@ -66,7 +75,6 @@ import {
   type RenderedDeclared,
 } from "./schema/declared.js";
 import { loadDesired } from "./schema/load.js";
-import { afterLaneState, coverageLost, readLaneState, type LaneState } from "./schema/rls-state.js";
 import type { SchemaLike } from "./schema/types.js";
 import {
   censusWithout,
@@ -227,7 +235,8 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
     declaredViews.length === 0
       ? NO_VIEWS
       : await withClient(input.target, (c) => presentDeclaredViews(c, schemas, declaredViews));
-  const lane = input.repeatablesDir === undefined ? null : await readLane(input, schemas, input.repeatablesDir);
+  const before = await withClient(input.target, (c) => readLaneState(c, schemas));
+  const lane = input.repeatablesDir === undefined ? null : await readLane(input, schemas, input.repeatablesDir, before);
 
   const shadow = await provisionShadow(admin, input.target, {
     schemas,
@@ -237,27 +246,22 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
 
   try {
     /* ---- IR(desired): emit → shadow → (repeatables) → extract ---- */
-    const seen: { after: LaneState | null } = { after: null };
-    const desired = await loadDesired(
-      input.schema,
-      shadow,
-      lane === null
-        ? {}
-        : {
-            afterLoad: async (client): Promise<void> => {
-              // Every file: a repeatable skipped in the shadow is one whose breakage ships.
-              await applyRepeatables(
-                client,
-                shadowRepeatables(input.schema, lane.dir, lane.hand, shadow.schemaMap, schemas),
-              );
-              if (lane.before !== null) {
-                const reverse = new Map([...shadow.schemaMap].map(([user, s]) => [s, user]));
-                seen.after = await readLaneState(client, [...shadow.schemaMap.values()], reverse);
-              }
-            },
-          },
-    );
-    const laneResult = lane === null ? null : laneHazardsOf(input, lane, seen.after, emptyTables);
+    const seen: { shadow: LaneState | null } = { shadow: null };
+    const desired = await loadDesired(input.schema, shadow, {
+      afterLoad: async (client): Promise<void> => {
+        // Every file: a repeatable skipped in the shadow is one whose breakage ships.
+        if (lane !== null) {
+          await applyRepeatables(
+            client,
+            shadowRepeatables(input.schema, lane.dir, lane.hand, shadow.schemaMap, schemas),
+          );
+        }
+        const reverse = new Map([...shadow.schemaMap].map(([user, s]) => [s, user]));
+        seen.shadow = await readLaneState(client, [...shadow.schemaMap.values()], reverse);
+      },
+    });
+    const after = afterState(before, seen.shadow!, lane);
+    const laneResult = lane === null ? null : laneHazardsOf(input, lane, before, after, emptyTables);
 
     /* ---- renames: annotation first, then the hints file, then candidates ---- */
     const annotations = annotationHints(input.schema, defaultSchema);
@@ -284,6 +288,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       volatileDefaults,
       emptyTables,
       multiFile: input.multiFile !== false,
+      lane: { before, after },
       ...(noConcurrentIndexes.size === 0 ? {} : { noConcurrentIndexes }),
       ...(input.noSafeRewrite === undefined ? {} : { noSafeRewrite: input.noSafeRewrite }),
     };
@@ -530,14 +535,19 @@ interface Lane {
   readonly renderOptions: RenderDeclaredOptions;
   readonly acks: readonly LaneAck[];
   readonly diagnostics: readonly Diagnostic[];
-  /** The target's RLS state; null when nothing is declared, so no lane hazard can arise. */
-  readonly before: LaneState | null;
+  /** Something is declared, or the prune file exists: lane hazards can arise. */
+  readonly active: boolean;
   readonly currentCensus: Readonly<Record<string, number>>;
   readonly desiredCensus: Readonly<Record<string, number>>;
 }
 
 /** Render the lane and read the target's side of it (design/20 §5.3 step 1); refuse on conflicts. */
-async function readLane(input: GenerateInput, schemas: readonly string[], dir: string): Promise<Lane> {
+async function readLane(
+  input: GenerateInput,
+  schemas: readonly string[],
+  dir: string,
+  before: LaneState,
+): Promise<Lane> {
   const defaultSchema = schemas[0] ?? "public";
   const onDisk = await scanRepeatables(dir);
   const prune = onDisk.find((f) => isDeclared(f) && f.directives[0]!.value === "prune");
@@ -546,31 +556,27 @@ async function readLane(input: GenerateInput, schemas: readonly string[], dir: s
   const declared = renderDeclared(input.schema, { ...renderOptions, acks });
   const hand = onDisk.filter((f) => !isDeclared(f));
   const views = renderViewRepeatables(input.schema, { defaultSchema });
-  const found = [...declared.diagnostics, ...laneConflicts(hand, declared.files, defaultSchema)];
+  const owned = [...declared.files, ...views.files.map((f) => ({ ...f, objects: [] }))];
+  const found = [...declared.diagnostics, ...laneConflicts(hand, owned, defaultSchema)];
   const lane = { dir, hand, views, declared, renderOptions, acks };
   const objects = declared.files.flatMap((f) => f.objects);
   if (objects.length === 0 && prune === undefined) {
     return {
       ...lane,
       diagnostics: [...views.diagnostics, ...found],
-      before: null,
+      active: false,
       currentCensus: {},
       desiredCensus: {},
     };
   }
 
   const ids = new Set(objects.map((o) => `${o.kind} ${o.identity}`));
-  const [before, marks] = await withClient(
-    input.target,
-    async (c) =>
-      [
-        await readLaneState(c, schemas),
-        await readMarks(
-          c,
-          schemas,
-          objects.map((o) => o.identity),
-        ),
-      ] as const,
+  const marks = await withClient(input.target, (c) =>
+    readMarks(
+      c,
+      schemas,
+      objects.map((o) => o.identity),
+    ),
   );
   for (const p of input.schema.policies ?? []) {
     for (const role of p.$.roles) {
@@ -591,33 +597,46 @@ async function readLane(input: GenerateInput, schemas: readonly string[], dir: s
   return {
     ...lane,
     diagnostics: [...views.diagnostics, ...found],
-    before,
+    active: true,
     currentCensus: count(marks.filter((m) => m.hash !== null && ids.has(`${m.kind} ${m.identity}`)).map((m) => m.kind)),
     desiredCensus: count(objects.map((o) => o.kind)),
   };
 }
 
-/** RL101/RL103/RL105/RL108 on before vs after (D25); refuses unless every error is acknowledged (D23). */
-function laneHazardsOf(
-  input: GenerateInput,
-  lane: Lane,
-  shadowState: LaneState | null,
-  emptyTables: ReadonlySet<string>,
-): { hazards: PlanHazard[]; files: readonly DeclaredFile[] } {
-  const { before } = lane;
-  if (before === null || shadowState === null) return { hazards: [], files: lane.declared.files };
-  const objects = lane.declared.files.flatMap((f) => f.objects);
-  const declaredForce = new Map(objects.filter((o) => o.kind === "rls").map((o) => [o.identity, o.state === "force"]));
-  const prior = new Map(before.tables.map((t) => [`${t.schema}.${t.name}`, t]));
-  const merged = afterLaneState(before, shadowState);
-  // FORCE is the lane's on tables with rls.*() and untouched everywhere else (D4).
-  const after: LaneState = {
+const forceOf = (lane: Lane | null): Map<string, boolean> =>
+  new Map(
+    (lane?.declared.files ?? [])
+      .flatMap((f) => f.objects)
+      .filter((o) => o.kind === "rls")
+      .map((o) => [o.identity, o.state === "force"]),
+  );
+
+/** D25's after-state; FORCE is the lane's on tables with rls.*() and untouched everywhere else (D4). */
+function afterState(before: LaneState, shadow: LaneState, lane: Lane | null): LaneState {
+  const declaredForce = forceOf(lane);
+  const prior = new Map(before.tables.map((t) => [`${t.schema}.${t.name}`, t.forced]));
+  const merged = afterLaneState(before, shadow);
+  return {
     ...merged,
     tables: merged.tables.map((t) => {
       const id = `${t.schema}.${t.name}`;
-      return { ...t, forced: declaredForce.get(id) ?? prior.get(id)?.forced ?? false };
+      return { ...t, forced: declaredForce.get(id) ?? prior.get(id) ?? false };
     }),
   };
+}
+
+/** RL101/RL103/RL105/RL108 on the lane path; refuses unless every error is acknowledged (D23). */
+function laneHazardsOf(
+  input: GenerateInput,
+  lane: Lane,
+  before: LaneState,
+  after: LaneState,
+  emptyTables: ReadonlySet<string>,
+): { hazards: PlanHazard[]; files: readonly DeclaredFile[] } {
+  if (!lane.active) return { hazards: [], files: lane.declared.files };
+  const objects = lane.declared.files.flatMap((f) => f.objects);
+  const declaredForce = forceOf(lane);
+  const prior = new Map(before.tables.map((t) => [`${t.schema}.${t.name}`, t]));
   const declaredPolicies = new Set(objects.filter((o) => o.kind === "policy").map((o) => o.identity));
   const raw = [
     ...before.policies
@@ -637,14 +656,17 @@ function laneHazardsOf(
         subject: id,
         message: `${id} is FORCE'd and the lane renders NO FORCE; its owner stops being filtered`,
       })),
-    ...coverageLost(before, after, emptyTables).map((l) => ({
-      code: l.code,
-      subject: l.subject,
-      message:
-        l.code === "RL101"
-          ? `${l.role} loses its ${l.command.toUpperCase()} policy on ${l.schema}.${l.table} and will see or change no rows`
-          : `FORCE on ${l.schema}.${l.table} filters its owner ${l.role}, which has no ${l.command.toUpperCase()} policy`,
-    })),
+    // The statement path reports RL101 on tables this plan enables.
+    ...coverageLost(before, after, emptyTables)
+      .filter((l) => l.code === "RL108" || prior.get(`${l.schema}.${l.table}`)?.enabled === true)
+      .map((l) => ({
+        code: l.code,
+        subject: l.subject,
+        message:
+          l.code === "RL101"
+            ? `${l.role} loses its ${l.command.toUpperCase()} policy on ${l.schema}.${l.table} and will see or change no rows`
+            : `FORCE on ${l.schema}.${l.table} filters its owner ${l.role}, which has no ${l.command.toUpperCase()} policy`,
+      })),
   ];
   const ack = input.acknowledge;
   const recorded = (h: { code: string; subject: string }): boolean =>

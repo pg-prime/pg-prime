@@ -24,7 +24,7 @@
  *    quietly ignores its own argument is how a bisect lies to you.
  */
 
-import { extractCatalog } from "../../catalog/extract.js";
+import { extractCatalog, readLaneState } from "../../catalog/extract.js";
 import { listCheckpoints } from "../../checkpoint/checkpoint.js";
 import { ConfigError, loadSchema, type ResolvedConfig } from "../../config/load.js";
 import { diffIR } from "../../diff/diff.js";
@@ -35,7 +35,6 @@ import { applyRepeatables, createRepeatablesPass, scanRepeatables } from "../../
 import { applyPending } from "../../runner/run.js";
 import { declaredCensus, isDeclared } from "../../schema/declared.js";
 import { loadDesired } from "../../schema/load.js";
-import { readLaneState } from "../../schema/rls-state.js";
 import type { SchemaLike } from "../../schema/types.js";
 import { provisionShadow, type Shadow, type ShadowStrategy } from "../../shadow/ladder.js";
 import { bool, str, type OptionSpec, type ParseResult } from "../args.js";

@@ -16,12 +16,12 @@ if (!ok) console.warn("verify-declared: skipped, the test role cannot CREATE ROL
 
 const schema = (
   predicate: string,
-): string => `import { definePolicy, defineSchema, pgTable, sql, updatedAtTrigger } from 'pg-prime'
+): string => `import { definePolicy, defineSchema, pgTable, rls, sql, updatedAtTrigger } from 'pg-prime'
 
 export const notes = pgTable(
   'notes',
   (t) => ({ id: t.integer().primaryKey(), author: t.text(), updatedAt: t.timestamptz() }),
-  (t) => [updatedAtTrigger(t.updatedAt)],
+  (t) => [rls.enable(), updatedAtTrigger(t.updatedAt)],
 )
 
 export const notesAuthor = definePolicy('author', {
@@ -84,13 +84,13 @@ describe.skipIf(!ok)("verify, doctor and check on the declared lane", () => {
       expect(await findings()).toEqual([]);
 
       await withRole(LOGIN, "LOGIN", async () => {
-        await sql(`ALTER TABLE notes ENABLE ROW LEVEL SECURITY; ALTER TABLE notes OWNER TO ${LOGIN}`);
+        await sql(`ALTER TABLE notes OWNER TO ${LOGIN}`);
         try {
           const r = await cli("doctor");
           expect(r.code).toBe(EXIT.drift);
           expect((envelopeOf(r)["findings"] as string[]).join("\n")).toContain("rls_not_forced: public.notes");
         } finally {
-          await sql("ALTER TABLE notes OWNER TO CURRENT_USER; ALTER TABLE notes DISABLE ROW LEVEL SECURITY");
+          await sql("ALTER TABLE notes OWNER TO CURRENT_USER");
         }
       });
     },

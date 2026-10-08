@@ -36,18 +36,13 @@ interface Lane {
   query(text: string): Promise<Record<string, unknown>[]>;
 }
 
-async function lane(db: string, rlsTables: readonly string[]): Promise<Lane> {
+async function lane(db: string): Promise<Lane> {
   await makeDatabase(db);
   const root = await tempDir(`pgprime-r2-${db}`);
   const migrations = join(root, "migrations");
   const sql = join(root, "sql");
   await mkdir(migrations, { recursive: true });
   await mkdir(sql, { recursive: true });
-  // ENABLE through the hand lane as well, so the suite does not depend on the structural emitter.
-  await writeFile(
-    join(sql, "040_enable.sql"),
-    rlsTables.map((t) => `ALTER TABLE public.${t} ENABLE ROW LEVEL SECURITY;\n`).join(""),
-  );
   let seq = 1;
   return {
     db,
@@ -110,7 +105,7 @@ describe.skipIf(!ok)("the declared lane: generate → apply → change → prune
   let l: Lane;
 
   beforeAll(async () => {
-    l = await lane("pgprime_r2_lane", ["documents", "document_shares"]);
+    l = await lane("pgprime_r2_lane");
   }, T);
   afterAll(async () => {
     await destroyDatabase(l.db).catch(() => undefined);
@@ -129,7 +124,6 @@ describe.skipIf(!ok)("the declared lane: generate → apply → change → prune
       const first = await l.gen(base);
       expect(first.status, JSON.stringify(first.diagnostics)).toBe("generated");
       expect((await readdir(l.sql, { recursive: true })).filter((f) => f.endsWith(".sql")).sort()).toEqual([
-        "040_enable.sql",
         "050_policies/public__document_shares.sql",
         "050_policies/public__documents.sql",
         "070_triggers/000_functions.sql",
@@ -294,7 +288,6 @@ describe.skipIf(!ok)("the declared lane: generate → apply → change → prune
       const r = await l.gen(bare, { acknowledge: { allowDataLoss: true, reason: "lane removed" } });
       expect(r.status).toBe("up_to_date");
       expect((await readdir(l.sql, { recursive: true })).filter((f) => f.endsWith(".sql")).sort()).toEqual([
-        "040_enable.sql",
         "050_policies/public__document_shares.sql",
         "050_policies/public__documents.sql",
         PRUNE_FILE,
@@ -351,7 +344,7 @@ describe.skipIf(!ok)("lane hazards on the full before/after state (D25)", () => 
     );
 
   beforeAll(async () => {
-    l = await lane("pgprime_r2_hazards", ["items", "things", "docs"]);
+    l = await lane("pgprime_r2_hazards");
     expect((await l.gen(registry(tables, [sel, ins, thingsAll, docsAll]))).status).toBe("generated");
     expect((await l.apply()).status).toBe("applied");
     await l.query("INSERT INTO items VALUES (1); INSERT INTO things VALUES (1); INSERT INTO docs VALUES (1)");
