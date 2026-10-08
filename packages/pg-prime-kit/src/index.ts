@@ -236,6 +236,7 @@ export {
   readHintsFile,
   slug,
   GenerateRefusedError,
+  LaneRefusedError,
   type DatabaseGenerateInput,
   type DatabaseGenerateResult,
   type DataStubInput,
@@ -261,6 +262,7 @@ export { desiredSql, loadDesired, DesiredLoadError, type LoadDesiredOptions } fr
 export { makeRemapper, remapDiagnostics, remapIr, remapObserved, type Remapper } from "./schema/remap.js";
 export type {
   ColumnDdl,
+  PolicyLike,
   RefRuntime,
   SchemaLike,
   TableExtra,
@@ -282,6 +284,23 @@ export {
   type SyncedViews,
   type SyncViewsOptions,
 } from "./schema/views.js";
+export {
+  declaredCensus,
+  POLICIES_DIR,
+  PRUNE_FILE,
+  renderDeclared,
+  syncDeclared,
+  TRIGGERS_DIR,
+  type DeclaredCensus,
+  type DeclaredFile,
+  type DeclaredKind,
+  type DeclaredObject,
+  type LaneAck,
+  type RenderDeclaredOptions,
+  type RenderedDeclared,
+  type SyncDeclaredOptions,
+  type SyncedDeclared,
+} from "./schema/declared.js";
 export {
   parseShadowUrl,
   provisionShadow,

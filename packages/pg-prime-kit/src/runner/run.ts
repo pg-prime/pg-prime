@@ -64,6 +64,7 @@ import {
 } from "./apply.js";
 import { executionPlan, readMigrationsDir, type ExecutionPlan, type MigrationFile, type TxMode } from "./files.js";
 import type { AppliedRepeatable, RepeatablesPass, RepeatablesPlan } from "../repeatables/index.js";
+import { healDeclared } from "../repeatables/plan.js";
 
 /* --------------------------- Tier R, as a seam --------------------------- */
 
@@ -861,6 +862,7 @@ export async function applyPendingOn(
       options.repeatables ?? NO_REPEATABLES,
       options.repeatablesDir ?? null,
       present,
+      schemas,
     );
 
     const status: RunnerStatus = dryRun ? "dry_run" : applied.length > 0 ? "applied" : "up_to_date";
@@ -1236,11 +1238,12 @@ async function runRepeatables(
   pass: RepeatablesPass,
   dir: string | null,
   historyReadable: boolean,
+  schemas: readonly string[],
 ): Promise<RepeatablesReport> {
   if (dir === null) return { applied: [], unchanged: [] };
   const rows = historyReadable ? await readRepeatableRows(reader) : [];
   const hashes = new Map(rows.map((r) => [r.path, r.checksum]));
-  const plan = await pass.plan(dir, hashes);
+  const plan = await healDeclared(reader, await pass.plan(dir, hashes), schemas);
   const changed = plan.toApply;
   const unchanged = plan.unchanged.map((f) => f.path);
   if (changed.length === 0) return { applied: [], unchanged };

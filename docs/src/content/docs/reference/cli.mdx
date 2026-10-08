@@ -33,7 +33,7 @@ Commands:
   migrate verify      replay every migration from empty into an ephemeral database and assert the result matches the schema.
   migrate lint        run the design/06 §3.4 rules over generated or hand-written SQL. Defaults to the unapplied migrations.
   migrate push        DEV ONLY: apply the diff directly, writing no files and no history rows. Requires the literal --dev.
-  migrate doctor      read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables.
+  migrate doctor      read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables, declared-lane markers.
   migrate unlock      inspect or break a stale migration lease.
   migrate checkpoint  write a full-schema checkpoint a fresh database jumps to; existing ones ignore it. Nothing is deleted.
   db seed             run seeds/*.sql and seeds/*.ts. Never recorded in the migration history; refuses on production.
@@ -63,7 +63,7 @@ They are uniform across every command, which is what makes a deploy script simpl
 |---|---|---|
 | `0` | success, or nothing to do | continue |
 | `1` | error | stop and read the message |
-| `2` | a rename or data-loss decision is missing | a human must decide; re-run `generate` with `--hints-file` or `--allow-data-loss --reason` |
+| `2` | a rename, data-loss or declared-lane decision is missing | a human must decide; re-run `generate` with `--hints-file` or `--allow-data-loss --reason` |
 | `3` | lint | fix the hazard or suppress it with a reason |
 | `4` | drift — the database is not what the history says it is | stop; investigate before applying anything |
 | `5` | pending migrations | run `apply` (this is `status`/`check` doing its job in CI) |
@@ -91,6 +91,12 @@ CI can read `status`, `hazards` and `exit` rather than parsing prose.
 
 Builds a migration from the TypeScript schema: diff, order, lock-safe rewrite, prove, write. It is
 the only command that needs a shadow database, and the only one that writes files.
+
+It also renders the declared lane — views, `definePolicy` exports, `rls.*()` FORCE state and
+`updatedAtTrigger` — into `sql/`, including on a run whose structural diff is empty. A
+`declared_conflict`, a `policy_unknown_role` or an unacknowledged RL101/RL103/RL105/RL108 refuses
+the whole run with status `lane_refused` and exit 2, and nothing is written; `--allow-data-loss
+--reason <text>` records the acknowledgement in `sql/990_declared_prune.sql`.
 
 {/* docs: cli="migrate generate --help" */}
 ```text frame="terminal"
@@ -123,7 +129,7 @@ Options:
   --help                                    print this help
   --version                                 print the version
 
-Exit: 0 written or nothing to do · 1 error · 2 a rename or data-loss decision is missing · 3 lint · 7 proof failed
+Exit: 0 written or nothing to do · 1 error · 2 a rename, data-loss or declared-lane decision is missing · 3 lint · 7 proof failed
 ```
 
 ## `migrate apply`
@@ -187,7 +193,8 @@ Exit: 0 up to date · 4 drift · 5 pending
 ## `migrate check`
 
 The default CI gate: is the repository consistent with the schema, the checksums and the database?
-It writes nothing, not even history rows.
+It writes nothing, not even history rows. A declared lane that does not match the schema
+(`declared_lane_stale`), a `declared_conflict` and an unacknowledged lane hazard exit 3.
 
 {/* docs: cli="migrate check --help" */}
 ```text frame="terminal"
@@ -213,7 +220,10 @@ Exit: 0 ok · 1 error · 2 missing hints · 3 lint · 4 the schema changed and n
 ## `migrate verify`
 
 Replays every migration from empty into an ephemeral database and asserts the result matches the
-schema. This is the slow, thorough version of `check`; it belongs in a nightly job.
+schema. This is the slow, thorough version of `check`; it belongs in a nightly job. The replay's
+declared objects must carry the markers their files declare, FORCE state included; a missing,
+stale or orphaned one is drift (`census` in the envelope, exit 4). `warnings` lists RLS tables with
+no policy.
 
 {/* docs: cli="migrate verify --help" */}
 ```text frame="terminal"
@@ -235,7 +245,7 @@ Options:
   --help                     print this help
   --version                  print the version
 
-Exit: 0 verified · 1 error or no ephemeral database available · 4 non-empty diff
+Exit: 0 verified · 1 error or no ephemeral database available · 4 non-empty diff or declared-lane drift
 ```
 
 ## `migrate lint`
@@ -323,13 +333,15 @@ Exit: 0 pushed or nothing to do · 1 refused or failed · 2 a decision is missin
 ## `migrate doctor`
 
 A read-only health report: INVALID indexes, `_ccnew` leftovers, NOT VALID constraints, drift, stale
-leases, orphaned repeatables.
+leases, orphaned repeatables, and the declared lane against the target — `declared_missing`,
+`declared_unmarked`, `declared_orphan` (files not yet applied are skipped) and `rls_not_forced` for
+an unforced RLS table whose owner can log in. It says when `990_declared_prune.sql` may be deleted.
 
 {/* docs: cli="migrate doctor --help" */}
 ```text frame="terminal"
 pg-prime migrate doctor
 
-  read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables.
+  read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables, declared-lane markers.
 
 Options:
   --stale-lock-after <duration>  a lease whose heartbeat is older than this is stale (default 60s)

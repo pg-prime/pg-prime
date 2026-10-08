@@ -12,6 +12,8 @@
  * that no longer exist on disk are reported so `doctor` can name them.
  */
 
+import type { CatalogClient } from "../catalog/extract.js";
+import { declaredCensus, scanOrder } from "../schema/declared.js";
 import type { AppliedRepeatable, RepeatableClient } from "./apply.js";
 import { applyRepeatables } from "./apply.js";
 import type { RepeatableFile, ScanOptions } from "./scan.js";
@@ -46,6 +48,24 @@ export async function planRepeatables(
   // Sorted so a `doctor` report is stable across runs and reviewable as a diff.
   const orphaned = [...applied.keys()].filter((path) => !onDisk.has(path)).sort();
   return { toApply, unchanged, orphaned };
+}
+
+/**
+ * design/20 D24: an unchanged declared file whose objects are missing, carry another hash or have
+ * the wrong FORCE state re-applies — a restored declaration has the bytes of its old checksum row.
+ */
+export async function healDeclared(
+  client: CatalogClient,
+  plan: RepeatablesPlan,
+  schemas: readonly string[],
+): Promise<RepeatablesPlan> {
+  const { heal } = await declaredCensus(client, [...plan.toApply, ...plan.unchanged], schemas);
+  if (!plan.unchanged.some((f) => heal.has(f.path))) return plan;
+  return {
+    toApply: [...plan.toApply, ...plan.unchanged.filter((f) => heal.has(f.path))].sort(scanOrder),
+    unchanged: plan.unchanged.filter((f) => !heal.has(f.path)),
+    orphaned: plan.orphaned,
+  };
 }
 
 /**

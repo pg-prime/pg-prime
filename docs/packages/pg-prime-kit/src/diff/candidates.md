@@ -1,7 +1,7 @@
 # packages/pg-prime-kit/src/diff/candidates.ts
 
 ## Purpose
-Turns drop/create pairs that look like renames into questions (`RenameCandidate`), never into renames. `generate()` in `packages/pg-prime-kit/src/generate.ts:243` calls `renameCandidates` after `diffIR`; `unresolvedDecisions` (`packages/pg-prime-kit/src/generate.ts:705`) turns them into a `missing_hints` result (CLI exit 2), and `cli/commands/generate.ts` shows them under `--interactive`.
+Turns drop/create pairs that look like renames into questions (`RenameCandidate`), never into renames. `generate()` in `packages/pg-prime-kit/src/generate.ts:280` calls `renameCandidates` after `diffIR`; `unresolvedDecisions` (`packages/pg-prime-kit/src/generate.ts:950`) turns them into a `missing_hints` result (CLI exit 2), and `cli/commands/generate.ts` shows them under `--interactive`.
 
 ## Public API
 - `RenameConfidence` — `"unambiguous" | "ambiguous" | "nearMiss"`.

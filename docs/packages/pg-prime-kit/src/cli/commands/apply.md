@@ -1,7 +1,7 @@
 # packages/pg-prime-kit/src/cli/commands/apply.ts
 
 ## Purpose
-CLI wrapper for `pg-prime migrate apply` (alias `deploy`): maps flags and config onto `ApplyPendingOptions`, calls the runner's `applyPending`, and renders the result as a JSON envelope plus text. Registered in the `COMMANDS` table of `packages/pg-prime-kit/src/cli/main.ts:113` and dispatched from `packages/pg-prime-kit/src/cli/main.ts:424`; callees are `applyPending` (`packages/pg-prime-kit/src/runner/run.ts:369`) and `createRepeatablesPass` from `src/repeatables/index.ts`.
+CLI wrapper for `pg-prime migrate apply` (alias `deploy`): maps flags and config onto `ApplyPendingOptions`, calls the runner's `applyPending`, and renders the result as a JSON envelope plus text. Registered in the `COMMANDS` table of `packages/pg-prime-kit/src/cli/main.ts:113` and dispatched from `packages/pg-prime-kit/src/cli/main.ts:424`; callees are `applyPending` (`packages/pg-prime-kit/src/runner/run.ts:370`) and `createRepeatablesPass` from `src/repeatables/index.ts`.
 
 ## Public API
 - `APPLY_OPTIONS: readonly OptionSpec[]` — command flags: `--to`, `--dry-run`, `--lock-timeout`, `--statement-timeout`, `--lock-wait`, `--stale-lock-after`, `--heartbeat`, `--verify-fingerprint`, `--dev`, `--yes`, `--applied-from`.

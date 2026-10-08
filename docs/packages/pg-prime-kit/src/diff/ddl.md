@@ -24,7 +24,7 @@ Turns a `DiffResult` into unordered DDL `Statement`s with dependency ids, lock c
 6. `policyDependents` adds RL106 to a column drop/retype or table drop that a policy on a surviving table depends on, then statements return in delta order; ordering is `orderStatements`' job (`packages/pg-prime-kit/src/diff/ddl.ts:1179`, `:1183`).
 
 ## Gotchas
-- **Rewrite gate.** `concurrentOk` needs `multiFile`, no `noSafeRewrite`, and an existing non-partitioned table (`packages/pg-prime-kit/src/diff/ddl.ts:269-274`); `packages/pg-prime-kit/src/generate.ts:276` retries with `multiFile: false` if `splitStages` declines.
+- **Rewrite gate.** `concurrentOk` needs `multiFile`, no `noSafeRewrite`, and an existing non-partitioned table (`packages/pg-prime-kit/src/diff/ddl.ts:269-274`); `packages/pg-prime-kit/src/generate.ts:307` retries with `multiFile: false` if `splitStages` declines.
 - **Volatility.** An empty `volatileDefaults` set is treated as "not supplied" and falls back to the regex (`packages/pg-prime-kit/src/diff/ddl.ts:209-210`). The catalog test is `provolatile <> 'i'` (`packages/pg-prime-kit/src/catalog/extract.ts:413`), which includes STABLE `now()`; the regex fallback deliberately excludes it (`packages/pg-prime-kit/src/diff/ddl.ts:142-149`).
 - **Renames.** Table → BC101, column → BC102, constraint/index/type/sequence → BC104, enum label → BC105 with `lockClass: "none"`, schema → BC101; any other kind → `unsupported_rename` error (`packages/pg-prime-kit/src/diff/ddl.ts:335-469`).
 - **Schema.** `CREATE SCHEMA IF NOT EXISTS`; drop is `DROP SCHEMA IF EXISTS` with DS101, no `CASCADE` (`packages/pg-prime-kit/src/diff/ddl.ts:501-512`, `packages/pg-prime-kit/src/diff/ddl.ts:1155-1167`).

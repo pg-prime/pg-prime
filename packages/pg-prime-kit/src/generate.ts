@@ -30,7 +30,16 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { extractCatalog, probeEmptiness, type Diagnostic, type ExtractResult } from "./catalog/extract.js";
+import {
+  afterLaneState,
+  coverageLost,
+  extractCatalog,
+  probeEmptiness,
+  readLaneState,
+  type Diagnostic,
+  type ExtractResult,
+  type LaneState,
+} from "./catalog/extract.js";
 import { GUC_BATCH_SIZE, GUC_WATERMARK } from "./data/batch.js";
 import { HISTORY_SCHEMA } from "./history/schema.js";
 import { BATCH_DEFAULTS } from "./runner/files.js";
@@ -43,11 +52,28 @@ import { withClient, type ConnInfo } from "./db/pg.js";
 import { SchemaIR } from "./ir/fact.js";
 import { encodeId, parseId, type StableId } from "./ir/stable-id.js";
 import { planSql, writePlan, WriteRefusedError } from "./plan/emit.js";
-import { buildPlan, type AcknowledgeInput, type Plan, type Proof } from "./plan/plan.js";
+import { buildPlan, osUser, type AcknowledgeInput, type Plan, type PlanHazard, type Proof } from "./plan/plan.js";
 import { proveOnShadowClone, type ProveStage } from "./prove/prove.js";
 import { proveInTempSchemas } from "./prove/temp-schema.js";
 import type { DumpOracleMode, PgDumpLauncher } from "./prove/pg-dump.js";
-import { loadRepeatables, type RepeatableFile } from "./repeatables/index.js";
+import { applyRepeatables, scanRepeatables, type RepeatableFile } from "./repeatables/index.js";
+import {
+  asRepeatable,
+  isDeclared,
+  laneConflicts,
+  parseAcks,
+  POLICIES_DIR,
+  PRUNE_FILE,
+  readMarks,
+  renderDeclared,
+  scanOrder,
+  syncDeclared,
+  TRIGGERS_DIR,
+  type DeclaredFile,
+  type LaneAck,
+  type RenderDeclaredOptions,
+  type RenderedDeclared,
+} from "./schema/declared.js";
 import { loadDesired } from "./schema/load.js";
 import type { SchemaLike } from "./schema/types.js";
 import {
@@ -56,7 +82,9 @@ import {
   NO_VIEWS,
   presentDeclaredViews,
   renderedViewCensus,
-  syncViewRepeatables,
+  renderViewRepeatables,
+  VIEWS_DIR,
+  type RenderedViews,
   type ViewCensus,
 } from "./schema/views.js";
 import { provisionShadow, type Shadow, type ShadowStrategy } from "./shadow/ladder.js";
@@ -147,6 +175,8 @@ export interface GenerateResult {
   readonly shadow: { readonly tier: 1 | 2 | 3; readonly reason: string };
   readonly proof: Proof | null;
   readonly diagnostics: readonly Diagnostic[];
+  /** Declared-lane hazards (design/20 D23); every one here is acknowledged, or generate threw. */
+  readonly laneHazards: readonly PlanHazard[];
   readonly writeRefusal?: string;
   readonly durationMs: number;
 }
@@ -157,6 +187,22 @@ export class GenerateRefusedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "GenerateRefusedError";
+  }
+}
+
+/** The declared lane refused the run (design/20 D23): nothing was written. */
+export class LaneRefusedError extends GenerateRefusedError {
+  constructor(
+    readonly diagnostics: readonly Diagnostic[],
+    readonly hazards: readonly PlanHazard[],
+  ) {
+    super(
+      `the declared lane refused: ${[
+        ...diagnostics.map((d) => `${d.code} ${d.subject ?? ""}: ${d.message}`),
+        ...hazards.filter((h) => !h.acknowledged).map((h) => `${h.code} ${h.subject}: ${h.message}`),
+      ].join("; ")}. Fix the declarations, or acknowledge a hazard with --allow-data-loss --reason <text>.`,
+    );
+    this.name = "LaneRefusedError";
   }
 }
 
@@ -174,25 +220,23 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
   const schemas = [...new Set(input.schemas ?? ["public"])].sort();
   const admin = adminFor(input.target, input.admin);
 
-  /*
-   * Tier R, declared half (design/01 §3 row 58): every `pgView` / `pgMaterializedView` is
-   * rendered into `<repeatablesDir>/020_views/` BEFORE the shadow loads the lane, so the shadow
-   * gets the current definitions, the proof covers them and `apply` finds ordinary repeatable
-   * files later. Writing is gated on `outDir` — `migrate check` writes nothing and reports a
-   * stale lane instead — and it happens up here rather than beside the plan files because a
-   * view-only change produces an EMPTY structural diff and returns `up_to_date` long before the
-   * writing block, which is exactly the change the lane exists to carry.
-   */
-  const declaredViews = declaredViewIdentities(input.schema, schemas[0] ?? "public");
-  const viewSync =
-    input.repeatablesDir === undefined
-      ? { files: [], diagnostics: [] as readonly Diagnostic[] }
-      : await syncViewRepeatables(input.schema, input.repeatablesDir, {
-          defaultSchema: schemas[0] ?? "public",
-          write: input.outDir !== undefined,
-        });
-  /** What the shadow will hold once the lane is loaded: exactly the emitted declarations. */
-  const desiredViews: ViewCensus = renderedViewCensus(viewSync);
+  const defaultSchema = schemas[0] ?? "public";
+
+  /* ---- target reads first (design/20 D22): on tier 3 the shadow lives in the target ---- */
+  const current = await withClient(input.target, (c) => extractCatalog(c, { schemas, observe: true }));
+  const emptyTables = await withClient(input.target, (c) =>
+    probeEmptiness(
+      c,
+      current.ir.factsOfKind("table").map((f) => f.id),
+    ),
+  );
+  const declaredViews = declaredViewIdentities(input.schema, defaultSchema);
+  const currentViews: ViewCensus =
+    declaredViews.length === 0
+      ? NO_VIEWS
+      : await withClient(input.target, (c) => presentDeclaredViews(c, schemas, declaredViews));
+  const before = await withClient(input.target, (c) => readLaneState(c, schemas));
+  const lane = input.repeatablesDir === undefined ? null : await readLane(input, schemas, input.repeatablesDir, before);
 
   const shadow = await provisionShadow(admin, input.target, {
     schemas,
@@ -202,37 +246,30 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
 
   try {
     /* ---- IR(desired): emit → shadow → (repeatables) → extract ---- */
-    let repeatables: readonly RepeatableFile[] = [];
-    const desired = await loadDesired(
-      input.schema,
-      shadow,
-      input.repeatablesDir === undefined
-        ? {}
-        : {
-            afterLoad: async (client): Promise<void> => {
-              // Every file, not the changed ones: the shadow was created seconds ago, so
-              // "changed" has no meaning against it, and a repeatable that is skipped is a
-              // repeatable whose breakage ships (design/06 §3.8).
-              repeatables = await loadRepeatables(client, input.repeatablesDir!);
-            },
-          },
-    );
-
-    /* ---- IR(current) ---- */
-    const current = await withClient(input.target, (c) => extractCatalog(c, { schemas, observe: true }));
-    // Which of the declared views the TARGET already has, by name. See `presentDeclaredViews`.
-    const currentViews: ViewCensus =
-      declaredViews.length === 0
-        ? NO_VIEWS
-        : await withClient(input.target, (c) => presentDeclaredViews(c, schemas, declaredViews));
+    const seen: { shadow: LaneState | null } = { shadow: null };
+    const desired = await loadDesired(input.schema, shadow, {
+      afterLoad: async (client): Promise<void> => {
+        // Every file: a repeatable skipped in the shadow is one whose breakage ships.
+        if (lane !== null) {
+          await applyRepeatables(
+            client,
+            shadowRepeatables(input.schema, lane.dir, lane.hand, shadow.schemaMap, schemas),
+          );
+        }
+        const reverse = new Map([...shadow.schemaMap].map(([user, s]) => [s, user]));
+        seen.shadow = await readLaneState(client, [...shadow.schemaMap.values()], reverse);
+      },
+    });
+    const after = afterState(before, seen.shadow!, lane);
+    const laneResult = lane === null ? null : laneHazardsOf(input, lane, before, after, emptyTables);
 
     /* ---- renames: annotation first, then the hints file, then candidates ---- */
-    const annotations = annotationHints(input.schema, schemas[0] ?? "public");
+    const annotations = annotationHints(input.schema, defaultSchema);
     const hints = acceptHints([...annotations, ...(input.hints ?? [])], current.ir, desired.ir);
 
     const extractorDiagnostics = [
-      ...censusWithout(current.diagnostics, currentViews),
-      ...censusWithout(desired.diagnostics, desiredViews),
+      ...censusWithout(current.diagnostics, { ...currentViews, ...lane?.currentCensus }),
+      ...censusWithout(desired.diagnostics, { ...(lane && renderedViewCensus(lane.views)), ...lane?.desiredCensus }),
     ];
     const diff = diffIR(current.ir, desired.ir, {
       renameHints: hints,
@@ -242,22 +279,16 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
 
     const candidates = renameCandidates(diff, desired.ir);
 
-    /* ---- the two catalog questions the hazard rules need answered ---- */
-    const emptyTables = await withClient(input.target, (c) =>
-      probeEmptiness(
-        c,
-        current.ir.factsOfKind("table").map((f) => f.id),
-      ),
-    );
     const volatileDefaults = new Set(
       extractorDiagnostics.filter((d) => d.code === "volatile_default").map((d) => d.subject ?? ""),
     );
 
-    const noConcurrentIndexes = nonConcurrentIndexes(input.schema, schemas[0] ?? "public");
+    const noConcurrentIndexes = nonConcurrentIndexes(input.schema, defaultSchema);
     const buildOptions: BuildOptions = {
       volatileDefaults,
       emptyTables,
       multiFile: input.multiFile !== false,
+      lane: { before, after },
       ...(noConcurrentIndexes.size === 0 ? {} : { noConcurrentIndexes }),
       ...(input.noSafeRewrite === undefined ? {} : { noSafeRewrite: input.noSafeRewrite }),
     };
@@ -277,9 +308,23 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       staged = splitStages(built.statements);
     }
 
+    const laneFiles = lane === null || laneResult === null ? [] : [...lane.views.files, ...laneResult.files];
+    const laneSync =
+      lane === null || input.outDir !== undefined
+        ? null
+        : await syncDeclared(lane.dir, laneFiles, { write: false, dirs: LANE_DIRS });
+    const repeatables =
+      lane === null ? [] : [...lane.hand, ...laneFiles.map((f) => asRepeatable(lane.dir, f))].sort(scanOrder);
+    const laneHazards = laneResult?.hazards ?? [];
+    const writeLane = async (): Promise<void> => {
+      if (lane !== null && input.outDir !== undefined)
+        await syncDeclared(lane.dir, laneFiles, { write: true, dirs: LANE_DIRS });
+    };
+
     const diagnostics: Diagnostic[] = [
       ...extractorDiagnostics,
-      ...viewSync.diagnostics,
+      ...(lane?.diagnostics ?? []),
+      ...(laneSync?.diagnostics ?? []),
       ...built.diagnostics,
       ...staged.diagnostics,
       ...declineNotes,
@@ -287,6 +332,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
 
     const empty = staged.files.every((f) => f.statements.length === 0);
     if (empty) {
+      await writeLane();
       return {
         status: "up_to_date",
         files: [],
@@ -300,6 +346,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
         shadow: { tier: shadow.tier, reason: shadow.reason },
         proof: null,
         diagnostics,
+        laneHazards,
         durationMs: Date.now() - started,
       };
     }
@@ -326,6 +373,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
         shadow: { tier: shadow.tier, reason: shadow.reason },
         proof: null,
         diagnostics,
+        laneHazards,
         durationMs: Date.now() - started,
       };
     }
@@ -400,6 +448,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       return report("hazards", files);
     }
     if (input.outDir === undefined) return report("generated", files);
+    await writeLane();
 
     const written: GeneratedFile[] = [];
     try {
@@ -439,6 +488,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
         shadow: { tier: shadow.tier, reason: shadow.reason },
         proof,
         diagnostics,
+        laneHazards,
         durationMs: Date.now() - started,
       };
     }
@@ -450,6 +500,201 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
 /* -------------------------------------------------------------------------- */
 /* the pieces                                                                 */
 /* -------------------------------------------------------------------------- */
+
+const LANE_DIRS = [VIEWS_DIR, POLICIES_DIR, TRIGGERS_DIR];
+
+/**
+ * What a shadow loads (design/20 D22): the hand files on disk plus the declared lane rendered into
+ * the shadow's schemas, never the prune — on tier 3 it would drop the target's live objects.
+ */
+export function shadowRepeatables(
+  schema: SchemaLike,
+  dir: string,
+  hand: readonly RepeatableFile[],
+  schemaMap: ReadonlyMap<string, string>,
+  schemas: readonly string[],
+): RepeatableFile[] {
+  const defaultSchema = schemas[0] ?? "public";
+  const rendered = renderDeclared(schema, { defaultSchema, schemas, schemaOf: (s) => schemaMap.get(s) ?? s });
+  const own = [
+    ...renderViewRepeatables(schema, { defaultSchema }).files,
+    ...rendered.files.filter((f) => f.path !== PRUNE_FILE),
+  ];
+  return [...hand, ...own.map((f) => asRepeatable(dir, f))].sort(scanOrder);
+}
+
+const ROLE_KEYWORDS = new Set(["public", "current_user", "current_role", "session_user"]);
+
+interface Lane {
+  readonly dir: string;
+  /** The non-declared files on disk. */
+  readonly hand: readonly RepeatableFile[];
+  readonly views: RenderedViews;
+  /** Disk form, with the acknowledgements already in the prune header. */
+  readonly declared: RenderedDeclared;
+  readonly renderOptions: RenderDeclaredOptions;
+  readonly acks: readonly LaneAck[];
+  readonly diagnostics: readonly Diagnostic[];
+  /** Something is declared, or the prune file exists: lane hazards can arise. */
+  readonly active: boolean;
+  readonly currentCensus: Readonly<Record<string, number>>;
+  readonly desiredCensus: Readonly<Record<string, number>>;
+}
+
+/** Render the lane and read the target's side of it (design/20 §5.3 step 1); refuse on conflicts. */
+async function readLane(
+  input: GenerateInput,
+  schemas: readonly string[],
+  dir: string,
+  before: LaneState,
+): Promise<Lane> {
+  const defaultSchema = schemas[0] ?? "public";
+  const onDisk = await scanRepeatables(dir);
+  const prune = onDisk.find((f) => isDeclared(f) && f.directives[0]!.value === "prune");
+  const acks = prune === undefined ? [] : parseAcks(prune.directives);
+  const renderOptions: RenderDeclaredOptions = { defaultSchema, schemas, existingPrune: prune !== undefined };
+  const declared = renderDeclared(input.schema, { ...renderOptions, acks });
+  const hand = onDisk.filter((f) => !isDeclared(f));
+  const views = renderViewRepeatables(input.schema, { defaultSchema });
+  const owned = [...declared.files, ...views.files.map((f) => ({ ...f, objects: [] }))];
+  const found = [...declared.diagnostics, ...laneConflicts(hand, owned, defaultSchema)];
+  const lane = { dir, hand, views, declared, renderOptions, acks };
+  const objects = declared.files.flatMap((f) => f.objects);
+  if (objects.length === 0 && prune === undefined) {
+    return {
+      ...lane,
+      diagnostics: [...views.diagnostics, ...found],
+      active: false,
+      currentCensus: {},
+      desiredCensus: {},
+    };
+  }
+
+  const ids = new Set(objects.map((o) => `${o.kind} ${o.identity}`));
+  const marks = await withClient(input.target, (c) =>
+    readMarks(
+      c,
+      schemas,
+      objects.map((o) => o.identity),
+    ),
+  );
+  for (const p of input.schema.policies ?? []) {
+    for (const role of p.$.roles) {
+      if (ROLE_KEYWORDS.has(role) || before.memberOf.has(role)) continue;
+      found.push({
+        code: "policy_unknown_role",
+        severity: "error",
+        message: `definePolicy("${p.name}") is granted to ${role}, which does not exist on the target; create the role first`,
+        subject: role,
+      });
+    }
+  }
+  const errors = found.filter((d) => d.severity === "error");
+  if (errors.length > 0) throw new LaneRefusedError(errors, []);
+
+  const count = (kinds: readonly string[]): Record<string, number> =>
+    Object.fromEntries(["policy", "trigger", "function"].map((k) => [k, kinds.filter((x) => x === k).length]));
+  return {
+    ...lane,
+    diagnostics: [...views.diagnostics, ...found],
+    active: true,
+    currentCensus: count(marks.filter((m) => m.hash !== null && ids.has(`${m.kind} ${m.identity}`)).map((m) => m.kind)),
+    desiredCensus: count(objects.map((o) => o.kind)),
+  };
+}
+
+const forceOf = (lane: Lane | null): Map<string, boolean> =>
+  new Map(
+    (lane?.declared.files ?? [])
+      .flatMap((f) => f.objects)
+      .filter((o) => o.kind === "rls")
+      .map((o) => [o.identity, o.state === "force"]),
+  );
+
+/** D25's after-state; FORCE is the lane's on tables with rls.*() and untouched everywhere else (D4). */
+function afterState(before: LaneState, shadow: LaneState, lane: Lane | null): LaneState {
+  const declaredForce = forceOf(lane);
+  const prior = new Map(before.tables.map((t) => [`${t.schema}.${t.name}`, t.forced]));
+  const merged = afterLaneState(before, shadow);
+  return {
+    ...merged,
+    tables: merged.tables.map((t) => {
+      const id = `${t.schema}.${t.name}`;
+      return { ...t, forced: declaredForce.get(id) ?? prior.get(id) ?? false };
+    }),
+  };
+}
+
+/** RL101/RL103/RL105/RL108 on the lane path; refuses unless every error is acknowledged (D23). */
+function laneHazardsOf(
+  input: GenerateInput,
+  lane: Lane,
+  before: LaneState,
+  after: LaneState,
+  emptyTables: ReadonlySet<string>,
+): { hazards: PlanHazard[]; files: readonly DeclaredFile[] } {
+  if (!lane.active) return { hazards: [], files: lane.declared.files };
+  const objects = lane.declared.files.flatMap((f) => f.objects);
+  const declaredForce = forceOf(lane);
+  const prior = new Map(before.tables.map((t) => [`${t.schema}.${t.name}`, t]));
+  const declaredPolicies = new Set(objects.filter((o) => o.kind === "policy").map((o) => o.identity));
+  const raw = [
+    ...before.policies
+      .filter((p) => p.marker !== null && !p.permissive && !declaredPolicies.has(`${p.schema}.${p.table}.${p.name}`))
+      .map((p) => {
+        const id = `${p.schema}.${p.table}.${p.name}`;
+        return {
+          code: "RL105",
+          subject: id,
+          message: `the restrictive policy ${id} is no longer declared; access widens`,
+        };
+      }),
+    ...[...declaredForce]
+      .filter(([id, force]) => !force && prior.get(id)?.forced === true)
+      .map(([id]) => ({
+        code: "RL103",
+        subject: id,
+        message: `${id} is FORCE'd and the lane renders NO FORCE; its owner stops being filtered`,
+      })),
+    // The statement path reports RL101 on tables this plan enables.
+    ...coverageLost(before, after, emptyTables)
+      .filter((l) => l.code === "RL108" || prior.get(`${l.schema}.${l.table}`)?.enabled === true)
+      .map((l) => ({
+        code: l.code,
+        subject: l.subject,
+        message:
+          l.code === "RL101"
+            ? `${l.role} loses its ${l.command.toUpperCase()} policy on ${l.schema}.${l.table} and will see or change no rows`
+            : `FORCE on ${l.schema}.${l.table} filters its owner ${l.role}, which has no ${l.command.toUpperCase()} policy`,
+      })),
+  ];
+  const ack = input.acknowledge;
+  const recorded = (h: { code: string; subject: string }): boolean =>
+    lane.acks.some((a) => a.code === h.code && a.subject === h.subject);
+  const hazards: PlanHazard[] = raw.map((h) => ({
+    ...h,
+    severity: "error",
+    statement: -1,
+    acknowledged: ack?.allowDataLoss === true || ack?.dataLoss?.includes(h.subject) === true || recorded(h),
+  }));
+  if (hazards.some((h) => !h.acknowledged)) throw new LaneRefusedError([], hazards);
+  const oneLine = (s: string): string => s.replace(/\s+/g, " ");
+  const fresh = hazards
+    .filter((h) => !recorded(h))
+    .map((h) => ({
+      code: h.code,
+      subject: h.subject,
+      by: oneLine(ack?.by ?? input.by ?? osUser()),
+      reason: oneLine(ack?.reason ?? "--allow-data-loss"),
+    }));
+  return {
+    hazards,
+    files:
+      fresh.length === 0
+        ? lane.declared.files
+        : renderDeclared(input.schema, { ...lane.renderOptions, acks: [...lane.acks, ...fresh] }).files,
+  };
+}
 
 interface Draft {
   readonly stage: "main" | "concurrent" | "data";

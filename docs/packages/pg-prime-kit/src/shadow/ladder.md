@@ -2,7 +2,7 @@
 
 ## Purpose
 The shadow ladder: provisions a place to load the desired schema DDL so it can be read back through the catalog. Tier 1 is a caller-supplied database, tier 2 a fresh `pgprime_shadow_<hex>` database (needs `CREATEDB`), tier 3 temp schemas inside the target database; tier 4 (`offline`) is refused.
-Callers: `packages/pg-prime-kit/src/generate.ts:197` and `src/cli/commands/verify.ts` (`provisionShadow`), `packages/pg-prime-kit/src/prove/temp-schema.ts:121` (`provisionShadow(target, target, …)`), `src/config/load.ts` and `src/cli/commands/generate.ts` (`parseShadowStrategy`), CLI `check`/`generate`/`push` (`OfflineShadowError`), `src/schema/load.ts` and `src/config/define.ts` (types); partly re-exported from `src/index.ts`.
+Callers: `packages/pg-prime-kit/src/generate.ts:241` and `src/cli/commands/verify.ts` (`provisionShadow`), `packages/pg-prime-kit/src/prove/temp-schema.ts:121` (`provisionShadow(target, target, …)`), `src/config/load.ts` and `src/cli/commands/generate.ts` (`parseShadowStrategy`), CLI `check`/`generate`/`push` (`OfflineShadowError`), `src/schema/load.ts` and `src/config/define.ts` (types); partly re-exported from `src/index.ts`.
 Callees: `db/pg.ts` (`withClient`, `withDatabase`, `dropDatabase`, `isObjectInUse`, `SHADOW_PREFIX`), `sql/ident.ts` (`quoteIdent`), `pg`.
 
 ## Public API

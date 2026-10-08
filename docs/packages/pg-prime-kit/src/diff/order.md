@@ -27,7 +27,7 @@ Dependency-orders the unordered `Statement[]` from `buildStatements` (`diff/ddl.
 - `phase` only breaks ties; correctness depends on emitters filling the four id lists (`packages/pg-prime-kit/src/diff/order.ts:16-22`).
 - The cycle fallback re-sorts everything by phase (`packages/pg-prime-kit/src/diff/order.ts:89`), discarding the partial topological order already found.
 - A segment index refers to positions in the ORDERED `statements`, not the input.
-- On decline, `files` is empty; `packages/pg-prime-kit/src/generate.ts:264-277` rebuilds with `multiFile: false` and calls `splitStages` again.
+- On decline, `files` is empty; `packages/pg-prime-kit/src/generate.ts:295-308` rebuilds with `multiFile: false` and calls `splitStages` again.
 - Re-ordering a stage on its own drops cross-stage edges; that is safe only because the global pass already proved stage order is monotone (`packages/pg-prime-kit/src/diff/order.ts:170-172`).
 - `order.includes` in the cycle path is quadratic (`packages/pg-prime-kit/src/diff/order.ts:82`, `packages/pg-prime-kit/src/diff/order.ts:88`); fine for plan-sized input.
 

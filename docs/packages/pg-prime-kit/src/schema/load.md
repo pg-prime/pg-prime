@@ -1,10 +1,10 @@
 # packages/pg-prime-kit/src/schema/load.ts
 
 ## Purpose
-Builds IR(desired): emits the DSL schema as DDL, loads it into a provisioned shadow, extracts the shadow's catalog and maps schema names back to the user's. Called by `generate.ts` (`packages/pg-prime-kit/src/generate.ts:206`) and `migrate verify` (`packages/pg-prime-kit/src/cli/commands/verify.ts:211`). Calls `emitSchema` (`schema/emit.ts`), `extractCatalog`, `remapIr`/`remapObserved`/`remapDiagnostics` (`schema/remap.ts`) and `withClient`.
+Builds IR(desired): emits the DSL schema as DDL, loads it into a provisioned shadow, extracts the shadow's catalog and maps schema names back to the user's. Called by `generate.ts` (`packages/pg-prime-kit/src/generate.ts:250`) and `migrate verify` (`packages/pg-prime-kit/src/cli/commands/verify.ts:224`). Calls `emitSchema` (`schema/emit.ts`), `extractCatalog`, `remapIr`/`remapObserved`/`remapDiagnostics` (`schema/remap.ts`) and `withClient`.
 
 ## Public API
-- `LoadDesiredOptions` — `{ defaultSchema?, statementTimeout?, afterLoad? }`; `afterLoad(client)` runs on the shadow connection after the DDL and before extraction (used to load Tier-R repeatables).
+- `LoadDesiredOptions` — `{ defaultSchema?, statementTimeout?, afterLoad? }`; `afterLoad(client)` runs on the shadow connection after the DDL and before extraction (used to load Tier-R repeatables and, in `generate`, to read the shadow's lane state).
 - `DesiredLoadError` — code `PG_PRIME_DESIRED_LOAD`, carries the failing `sql` (or `undefined`) and the emitter's `diagnostics`.
 - `loadDesired(schema, shadow, options?)` — returns an `ExtractResult` in user schema names; throws `DesiredLoadError` on an error-severity emit diagnostic or a statement that fails to load.
 - `desiredSql(schema, shadow, options?)` — the statements `loadDesired` would run (same `emitSchema` call), for `--dry-run` and golden tests.

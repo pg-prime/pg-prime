@@ -25,5 +25,7 @@
   },
   "fingerprint": "<masked>",
   "deltas": [],
+  "census": [],
+  "warnings": [],
   "error": null
 }

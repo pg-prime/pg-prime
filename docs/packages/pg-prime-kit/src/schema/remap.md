@@ -1,7 +1,7 @@
 # packages/pg-prime-kit/src/schema/remap.ts
 
 ## Purpose
-Rewrites schema names in an extracted IR, its diagnostics and its Tier-O observations, so a desired state loaded into `pgprime_shadow_<token>_<schema>` reads back in the user's schema names. Used by `loadDesired` (`packages/pg-prime-kit/src/schema/load.ts:127`) in the shadow → user direction and by `proveInTempSchemas` (`packages/pg-prime-kit/src/prove/temp-schema.ts:130`) in both directions. Re-exported from `packages/pg-prime-kit/src/index.ts:261`.
+Rewrites schema names in an extracted IR, its diagnostics and its Tier-O observations, so a desired state loaded into `pgprime_shadow_<token>_<schema>` reads back in the user's schema names. Used by `loadDesired` (`packages/pg-prime-kit/src/schema/load.ts:127`) in the shadow → user direction and by `proveInTempSchemas` (`packages/pg-prime-kit/src/prove/temp-schema.ts:130`) in both directions. Re-exported from `packages/pg-prime-kit/src/index.ts:262`.
 
 ## Public API
 - `Remapper` — `{ text(s), id(id) }`: rewrites server-produced SQL text and `StableId`s.

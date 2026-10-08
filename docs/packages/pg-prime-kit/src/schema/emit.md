@@ -1,7 +1,7 @@
 # packages/pg-prime-kit/src/schema/emit.ts
 
 ## Purpose
-The DSL → DDL emitter: turns a `SchemaLike` registry into deterministic, always schema-qualified SQL statements that, loaded into an empty database (the shadow), produce the declared schema. It does not build an IR itself; `loadDesired` (`packages/pg-prime-kit/src/schema/load.ts:66`) runs the text and `extractCatalog` reads it back. Uses `makeObjectName`/`quoteIdent`/`quoteLiteral`/`quoteQualified` from `sql/ident.ts`. Re-exported from `packages/pg-prime-kit/src/index.ts:259`.
+The DSL → DDL emitter: turns a `SchemaLike` registry into deterministic, always schema-qualified SQL statements that, loaded into an empty database (the shadow), produce the declared schema. It does not build an IR itself; `loadDesired` (`packages/pg-prime-kit/src/schema/load.ts:66`) runs the text and `extractCatalog` reads it back. Uses `makeObjectName`/`quoteIdent`/`quoteLiteral`/`quoteQualified` from `sql/ident.ts`. Re-exported from `packages/pg-prime-kit/src/index.ts:260`.
 
 ## Public API
 - `EmitOptions` — `{ schemaMap?, defaultSchema? }`; `schemaMap` is user schema → emitted schema (tier-3 shadow), `defaultSchema` defaults to `"public"`.

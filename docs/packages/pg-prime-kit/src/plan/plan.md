@@ -33,7 +33,7 @@ Defines the `.plan.json` artifact (`Plan`) and builds it from ordered statements
 
 ## Gotchas
 - `planId` excludes `generated`, `acknowledged` and `proof`, so re-proving or re-acknowledging keeps the id (`packages/pg-prime-kit/src/plan/plan.ts:370-372`).
-- `migration.sha256` covers the text `buildPlan` rendered, including `data`/`checkpoint` header lines. `plan/emit.ts`'s `planSql` does not pass those flags, so a plan built with them must be written with its own renderer (`packages/pg-prime-kit/src/checkpoint/checkpoint.ts:239` does); otherwise `packages/pg-prime-kit/src/runner/run.ts:717` reports a checksum mismatch.
+- `migration.sha256` covers the text `buildPlan` rendered, including `data`/`checkpoint` header lines. `plan/emit.ts`'s `planSql` does not pass those flags, so a plan built with them must be written with its own renderer (`packages/pg-prime-kit/src/checkpoint/checkpoint.ts:239` does); otherwise `packages/pg-prime-kit/src/runner/run.ts:718` reports a checksum mismatch.
 - `pg.minVersion` and the `requires-pg` header are hard-coded to 150000 (`packages/pg-prime-kit/src/plan/plan.ts:342`, `packages/pg-prime-kit/src/plan/plan.ts:353`); `pgVersionNum` is recorded only as `generatedAgainst`.
 - The header timeout is the single shared value, or `per-statement` when statements differ; `null` renders as `0` (`packages/pg-prime-kit/src/plan/plan.ts:403-408`).
 - An unknown hazard code is `error` (`packages/pg-prime-kit/src/plan/plan.ts:201-203`), so a new emitter code without a table entry blocks `writePlan`.

@@ -12,7 +12,7 @@ Imported by `packages/pg-prime-kit/src/cli/main.ts`, most `cli/commands/*.ts`, `
 
 ## Flow
 1. Commands and the runner name codes through `EXIT` rather than numeric literals.
-2. `applyPending` builds its result with `exitCode: RUNNER_EXIT[status]` (`packages/pg-prime-kit/src/runner/run.ts:453`).
+2. `applyPending` builds its result with `exitCode: RUNNER_EXIT[status]` (`packages/pg-prime-kit/src/runner/run.ts:454`).
 3. `main` returns the command's `exitCode`, which `packages/pg-prime-kit/src/cli.ts:13` assigns to `process.exitCode`.
 
 ## Gotchas

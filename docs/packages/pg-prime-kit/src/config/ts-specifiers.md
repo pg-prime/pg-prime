@@ -1,7 +1,7 @@
 # packages/pg-prime-kit/src/config/ts-specifiers.ts
 
 ## Purpose
-A Node resolve hook that lets an uncompiled `.ts` file loaded by the kit import its siblings with the `.js` specifiers `tsc`'s `nodenext` resolution requires (`import { schema } from './db/schema.js'` when only `schema.ts` exists). Called before every import of user code: `loadConfig` and `loadSchema` in `packages/pg-prime-kit/src/config/load.ts:165`, `:330`, and the seed loaders in `packages/pg-prime-kit/src/seed/run.ts:41` and `packages/pg-prime-kit/src/seed/db.ts:24`. `tsSpecifierAdvice` in `config/load.ts` reuses `typeScriptSiblingUrl` to explain the failure on Nodes without the hook.
+A Node resolve hook that lets an uncompiled `.ts` file loaded by the kit import its siblings with the `.js` specifiers `tsc`'s `nodenext` resolution requires (`import { schema } from './db/schema.js'` when only `schema.ts` exists). Called before every import of user code: `loadConfig` and `loadSchema` in `packages/pg-prime-kit/src/config/load.ts:165`, `:333`, and the seed loaders in `packages/pg-prime-kit/src/seed/run.ts:41` and `packages/pg-prime-kit/src/seed/db.ts:24`. `tsSpecifierAdvice` in `config/load.ts` reuses `typeScriptSiblingUrl` to explain the failure on Nodes without the hook.
 
 ## Public API
 - `typeScriptSiblingUrl(url: string): string | null` — for a resolved URL ending in `.js`/`.mjs`/`.cjs` that is not on disk, the URL of the existing `.ts`/`.mts`/`.cts` sibling; otherwise `null`.

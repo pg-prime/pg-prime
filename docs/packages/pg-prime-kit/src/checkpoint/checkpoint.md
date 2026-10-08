@@ -26,7 +26,7 @@ Callees: `catalog/extract.ts`, `diff/diff.ts` (`diffIR`), `diff/ddl.ts` (`buildS
 2. `diffIR` → `buildStatements` → `orderStatements` produce the full DDL (`:206-208`).
 3. `buildPlan` stamps seq, name `checkpoint`, fingerprints, schemas, `checkpoint: true` and proof status `skipped` (`:211-227`); `checkpointSql` renders the file (`:239-251`).
 4. `writeCheckpoint` creates `checkpoints/` and writes the three files, failing if any exists (`:266-279`).
-5. At apply time the runner calls `listCheckpoints` and, for an empty history, jumps to the newest one (see `packages/pg-prime-kit/src/runner/run.ts:638-644`).
+5. At apply time the runner calls `listCheckpoints` and, for an empty history, jumps to the newest one (see `packages/pg-prime-kit/src/runner/run.ts:639-645`).
 6. On a fingerprint mismatch, `describeDrift` takes the last applied id's seq, picks the newest checkpoint with an IR at or before it, reads it, extracts the live catalog with `observe: false`, and diffs (`packages/pg-prime-kit/src/checkpoint/checkpoint.ts:314-331`).
 7. `exact` is true when no applied migration comes after the checkpoint; otherwise `since` lists them and `driftSentence` says the list is a superset (`:324-342`).
 

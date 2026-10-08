@@ -41,6 +41,10 @@
     }
   ],
   "unmodeled": [],
+  "declared": {
+    "findings": [],
+    "pruneDeletable": false
+  },
   "findings": [],
   "error": null
 }

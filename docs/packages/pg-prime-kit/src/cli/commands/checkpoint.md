@@ -21,7 +21,7 @@
 ## Gotchas
 - Records nothing: the `pgprime.checkpoints` row is written by `apply` when a fresh database actually jumps to the checkpoint (`packages/pg-prime-kit/src/cli/commands/checkpoint.ts:8`).
 - Every error inside the `try` (including connection failures) is caught and reported as `refused` with exit 1 rather than thrown (`packages/pg-prime-kit/src/cli/commands/checkpoint.ts:174`).
-- The `hasConnection` guard is defensive: through `main`, `resolveConfig` already throws a `ConfigError` for a missing connection because only `lint` sets `needsConnection: false` (`packages/pg-prime-kit/src/config/load.ts:496`).
+- The `hasConnection` guard is defensive: through `main`, `resolveConfig` already throws a `ConfigError` for a missing connection because only `lint` sets `needsConnection: false` (`packages/pg-prime-kit/src/config/load.ts:502`).
 - `nextSeq` duplicates the one in `generate.ts`; both count every file `MIGRATION_FILE` matches.
 - Nothing is deleted: older migrations stay on disk and existing databases continue linearly.
 
