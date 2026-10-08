@@ -13,12 +13,12 @@ The DSL → DDL emitter: turns a `SchemaLike` registry into deterministic, alway
 
 ## Flow
 1. Sort tables by `schema name`, report `duplicate_table`, collect enums used by columns (`collectEnum`, `enum_conflict` on label mismatch) (`packages/pg-prime-kit/src/schema/emit.ts:212`).
-2. `buildTable` per table: column lines (type, generated/identity/default, NOT NULL, inline UNIQUE/CHECK/FK) and table-level PK/UNIQUE/CHECK/EXCLUDE/FK, with server-style default names via `makeObjectName` (`packages/pg-prime-kit/src/schema/emit.ts:563`).
+2. `buildTable` per table: column lines (type, `COLLATE` when `ColumnDdl.collation` is set, generated/identity/default, NOT NULL, inline UNIQUE/CHECK/FK) and table-level PK/UNIQUE/CHECK/EXCLUDE/FK, with server-style default names via `makeObjectName` (`packages/pg-prime-kit/src/schema/emit.ts:563`).
 3. Merge standalone `pgEnum` declarations (adds comments; column-derived labels win) (`packages/pg-prime-kit/src/schema/emit.ts:265`).
 4. Emit `CREATE EXTENSION IF NOT EXISTS` (user schema name; `shadow_extension_fixed_schema` warning under a non-identity map) (`packages/pg-prime-kit/src/schema/emit.ts:290`).
 5. `CREATE SCHEMA IF NOT EXISTS` for every touched (mapped) schema except `public` (`packages/pg-prime-kit/src/schema/emit.ts:320`).
 6. `CREATE TYPE … AS ENUM`, `CREATE DOMAIN` (CHECKs sorted by name), `CREATE SEQUENCE` (`packages/pg-prime-kit/src/schema/emit.ts:325`–`:359`).
-7. Tables in `topoOrder` (iterative Tarjan SCC over FK targets and partition parents); FKs inline when the target already exists or is self, otherwise deferred (`packages/pg-prime-kit/src/schema/emit.ts:361`, `:1023`).
+7. Tables in `topoOrder` (iterative Tarjan SCC over FK targets and partition parents); FKs inline when the target already exists or is self, otherwise deferred (`packages/pg-prime-kit/src/schema/emit.ts:361`, `:1024`).
 8. Each `CREATE TABLE` gets `PARTITION BY` when declared; a partition child is created standalone, then `ALTER TABLE <parent> ATTACH PARTITION` (`packages/pg-prime-kit/src/schema/emit.ts:391`).
 9. Deferred FKs as `ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY` (`packages/pg-prime-kit/src/schema/emit.ts:400`).
 10. Indexes sorted by qualified name via `indexStatement` (USING, keys with opclass/DESC/NULLS, INCLUDE, NULLS NOT DISTINCT, WITH, TABLESPACE, WHERE) (`packages/pg-prime-kit/src/schema/emit.ts:474`).
@@ -31,17 +31,18 @@ The DSL → DDL emitter: turns a `SchemaLike` registry into deterministic, alway
 - Default literals are rendered by the column's pg type first: `json`/`jsonb` always `JSON.stringify`; negative numbers are parenthesised; arrays cast to the emitted type (`packages/pg-prime-kit/src/schema/emit.ts:128`).
 - Constraint names follow PostgreSQL's `makeObjectName`; a duplicate name is reported (`constraint_name_collision`) rather than suffixed (`packages/pg-prime-kit/src/schema/emit.ts:567`).
 - A column `.primaryKey()` plus a `primaryKey()` extra is `duplicate_primary_key`; a named `primaryKey({ name })` overrides `<table>_pkey`.
-- FK errors: `foreign_key_unresolved`, `foreign_key_arity`, `foreign_key_split`, `foreign_key_target_unknown` (target outside the registry) (`packages/pg-prime-kit/src/schema/emit.ts:879`).
+- FK errors: `foreign_key_unresolved`, `foreign_key_arity`, `foreign_key_split`, `foreign_key_target_unknown` (target outside the registry) (`packages/pg-prime-kit/src/schema/emit.ts:880`).
 - EXCLUDE errors: `empty_exclude`, `missing_required_extension` when `.requires()` names an undeclared `pgExtension`.
 - `.generatedAlwaysAs((cols) => …)` that was never resolved by `pgTable` is `unresolved_generated`; unknown extras are `unsupported_extra` warnings.
 - Partition children use `ATTACH PARTITION`, not `PARTITION OF`, because PG 18 would clone the parent's NOT NULL constraint names.
 - Standalone and column-derived enums with the same name: the column's labels win without a conflict check (`packages/pg-prime-kit/src/schema/emit.ts:276`).
-- An `index` extra without `items` falls back to plain column keys (`packages/pg-prime-kit/src/schema/emit.ts:978`).
+- An `index` extra without `items` falls back to plain column keys (`packages/pg-prime-kit/src/schema/emit.ts:979`).
 - Views are not emitted here; see `schema/views.ts`.
 
 ## Tests
 - `packages/pg-prime-kit/test/schema-emit/emit.test.ts` — determinism, statement order, `makeObjectName` names and collisions, default literals, FK cycle breaking and self-references, index option clause order, extensions, EXCLUDE/generated/type comments, enums, the tier-3 map (including unmapped-schema errors), load-stopping diagnostics, `pgSchema`.
 - `packages/pg-prime-kit/test/schema-emit/roundtrip.test.ts` — emit → load → extract → re-emit round trip, strict `pg_dump` oracle, tier-3 map fingerprint equality (covers `remapTypeQualifier`/`remapNextval`).
+- `packages/pg-prime-kit/test/collate.test.ts` — `COLLATE "C"` in CREATE TABLE and its round trip (live).
 - `packages/pg-prime-kit/test/schema-emit/no-value-import.test.ts` — the type-only `pg-prime` import rule.
 - Run: `pnpm --filter @pg-prime/kit exec vitest run test/schema-emit` (`roundtrip.test.ts` needs a real server, `PG_PRIME_TEST_URL`, and `pg_dump`).
 - Uncovered: domain base types qualified with a mapped schema under tier 3 have no test.

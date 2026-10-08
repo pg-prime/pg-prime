@@ -180,6 +180,7 @@ const HAZARD_SEVERITY: Record<string, "error" | "warn"> = {
   LK110: "warn",
   LK111: "warn",
   LK112: "warn",
+  LK113: "warn",
   TX101: "error",
   TX102: "error",
   TX201: "error",

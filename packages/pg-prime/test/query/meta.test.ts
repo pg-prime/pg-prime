@@ -238,6 +238,7 @@ describe('codecFor — failing loudly, at seam time', () => {
       references: undefined,
       checks: [],
       comment: undefined,
+      collation: undefined,
       renamedFrom: undefined,
     }
     expect(() => codecFor(ddl, r, 'settings', 'prefs')).toThrow(NoCodecError)

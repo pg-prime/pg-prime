@@ -377,6 +377,14 @@ The enum's own schema travels with it, so a shared enum does not move because on
 
 {/* docs: signature */}
 ```ts
+type CollatablePg = 'text' | 'varchar' | 'citext' | 'bpchar' | 'name'
+type CollateFn<M extends ColMeta> = M['pg'] extends
+  | CollatablePg
+  | `${CollatablePg}[]`
+  | (`${string}[]` extends M['pg'] ? string : never)
+  ? (name: string) => Col<M>
+  : OrmTypeError<'.collate() on a non-collatable type: only text, varchar, citext, their arrays and t.raw() types take a collation'>
+
 interface Col<M extends ColMeta> {
   readonly [META]: M
   readonly $: ColumnRuntime
@@ -394,6 +402,7 @@ interface Col<M extends ColMeta> {
   references(target: () => RefLike, options?: ForeignKeyOptions): Col<M>
   check(expression: AnyFragment, name?: string): Col<M>
   comment(text: string): Col<M>
+  collate: CollateFn<M>
   renamedFrom(old: string): Col<M>
   array(): Col<{
     t: Exclude<M['t'], null>[] | Extract<M['t'], null>
@@ -469,6 +478,12 @@ Four modifiers worth reading twice:
   `.nullable()` **before** it: a stored generated column may be nullable, but `ro: true` closes
   `.nullable()` for the same reason it closes `.default()`. PostgreSQL 18's `VIRTUAL` is refused —
   see [`GeneratedAlwaysAsOptions`](#generatedalwaysasoptions).
+- **`.collate(name)`** emits `COLLATE "<name>"` after the type: `t.text().collate('C')` sorts by
+  byte order, which is what a fractional-index `position` column needs. It exists only on `text`,
+  `varchar`, `citext`, their arrays and `t.raw()` columns; on any other type it is an
+  [`OrmTypeError`](#OrmTypeError). The name is a single identifier (no schema qualifier). Changing
+  it on an existing column plans `ALTER COLUMN … TYPE … COLLATE`, which rebuilds the column's
+  indexes but not the table — hazard [`LK113`](/pg-prime/reference/hazard-codes/#LK113).
 
 ### `GeneratedAlwaysAsOptions`
 
@@ -1879,7 +1894,7 @@ which is the rule that keeps the type budget flat as the DSL grows.
 |---|---|---|
 | <a id="TableRuntime"/>`TableRuntime` | `table.$` | `name`, `schema`, `columns`, `extras`, and `column(key)`. |
 | <a id="ColumnRuntime"/>`ColumnRuntime` | `col.$`, `ref.$.column` | `ddl` and `ts` — the two halves of the `$` law. |
-| <a id="ColumnDdl"/>`ColumnDdl` | `col.$.ddl` | Everything a column contributes to DDL: `pgType`, `dbName`, `notNull`, `default`, `identity`, `primaryKey`, `unique`, `uniqueSpec`, the three `enum*` fields, `arrayDim`, `references`, `checks`, `comment`, `renamedFrom`. No `$`-prefixed modifier may ever write here. |
+| <a id="ColumnDdl"/>`ColumnDdl` | `col.$.ddl` | Everything a column contributes to DDL: `pgType`, `dbName`, `notNull`, `default`, `identity`, `primaryKey`, `unique`, `uniqueSpec`, the three `enum*` fields, `arrayDim`, `references`, `checks`, `comment`, `collation`, `renamedFrom`. No `$`-prefixed modifier may ever write here. |
 | <a id="ColumnTsMeta"/>`ColumnTsMeta` | `col.$.ts` | `defaultFn`, `onUpdateFn`, `narrowed`. Never reaches DDL or the migration IR. |
 | <a id="RefRuntime"/>`RefRuntime` | `ref.$` | `table`, `schema`, `key`, `dbName`, `column`. The schema is carried here as well as on the table because `.references()` hands the emitter a column reference and nothing else, and guessing a cross-schema target by table name is ambiguous the moment two schemas hold a table of the same name. |
 | <a id="DefaultSpec"/>`DefaultSpec` | `ColumnDdl.default` | `{ kind: 'value', value }` from `.default()`, or `{ kind: 'expr', expr }` from `.defaultSql()`. |

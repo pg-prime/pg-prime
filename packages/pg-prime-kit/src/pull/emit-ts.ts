@@ -537,6 +537,7 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       head = builder === undefined ? `t.raw(${lit(base)}, ${lit(dbName)})` : `t.${builder}(${lit(dbName)})`;
     }
     if (arrayMatch !== null) chain.push(".array()");
+    if (p.collation !== null) chain.push(`.collate(${lit(p.collation)})`);
 
     /* modifiers, in the order the DSL's own gates accept them */
     if (p.identity === "a") chain.push(".generatedAlways()");
@@ -561,13 +562,6 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
           ? "attgenerated = 'v' (PG 18 VIRTUAL) — pg-prime emits STORED only, because a generated " +
               "column cannot be converted in place in either direction"
           : `attgenerated = '${p.generated}' with no generation expression in pg_attrdef`,
-      );
-    }
-    if (p.collation !== null) {
-      drop(
-        "column collation",
-        `${ctx.schema}.${ctx.name}.${dbName}`,
-        `COLLATE ${p.collation} — the DSL has no \`.collate()\``,
       );
     }
     if (p.notNullValidated === false) {

@@ -14,7 +14,7 @@ The `Statement` record every DDL emitter produces and its supporting vocabularie
 1. `buildStatements` fills each `Statement`, usually through its `simple()` helper whose defaults are transactional, `accessExclusive`, non-idempotent, no data loss (`packages/pg-prime-kit/src/diff/ddl.ts:1126-1144`).
 2. `produces`/`consumes`/`destroys`/`releases` become hard ordering edges in `orderStatements` (`packages/pg-prime-kit/src/diff/order.ts:59-62`); `phase` only breaks ties (`packages/pg-prime-kit/src/diff/order.ts:68-69`).
 3. `transactionality` drives segmentation and the EN101 check (`packages/pg-prime-kit/src/diff/order.ts:95-131`); `stage` drives `splitStages` (`packages/pg-prime-kit/src/diff/order.ts:174-219`).
-4. `buildPlan` copies the fields into `PlanStatement` and adds `index` and timeouts (`packages/pg-prime-kit/src/plan/plan.ts:246-267`).
+4. `buildPlan` copies the fields into `PlanStatement` and adds `index` and timeouts (`packages/pg-prime-kit/src/plan/plan.ts:247-268`).
 
 ## Gotchas
 - `phase` is not a correctness mechanism; a missing `produces`/`consumes` edge falls back to `PHASE` order, which can be wrong across schemas (see `referencesHeldBy`, `packages/pg-prime-kit/src/diff/ddl.ts:244-262`).

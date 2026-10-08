@@ -732,7 +732,7 @@ TS-only (`$` prefix — never in the IR, per D4):
 > | `.comment('…')` `.renamedFrom('old')` | **built**, as `ColumnDdl.comment` / `ColumnDdl.renamedFrom`. `renamedFrom` is carried, not acted on: it becomes a `RenameHint` in K2b (`11` §1.8). |
 > | `.default(sql\`…\`)` | spelled **`.defaultSql('…')`** (WS0) and unchanged: `.default()`'s parameter is `M['t']`, and widening it to `M['t'] \| Fragment` would put a conditional on the hottest signature in the package. |
 > | `.generatedAlwaysAsIdentity()` / `.generatedByDefaultAsIdentity()` | spelled **`.generatedAlways()` / `.generatedByDefault()`** (WS0). Same DDL. |
-> | ~~`.generatedAlwaysAs(expr)`~~ `.oneOf()` `.collate()` `.storage()` `.compression()` `.deprecated()` | **not built.** None is reachable from `ColumnDdl` yet; each is one field plus one emitter branch. → `.generatedAlwaysAs()` **is built** (design/14 §G, below); the other five are not. |
+> | ~~`.generatedAlwaysAs(expr)`~~ `.oneOf()` ~~`.collate()`~~ `.storage()` `.compression()` `.deprecated()` | **not built.** None is reachable from `ColumnDdl` yet; each is one field plus one emitter branch. → `.generatedAlwaysAs()` **is built** (design/14 §G, below), and `.collate(name)` **is built** as `ColumnDdl.collation` (text, varchar, citext, their arrays and `t.raw()` only, gated at the type level); the other four are not. |
 >
 > **Not one of these moved `Col<M>`.** Every addition is a `ColumnDdl` field and every new method
 > returns `Col<M>` unchanged — asserted per method by `expectTypeOf` in

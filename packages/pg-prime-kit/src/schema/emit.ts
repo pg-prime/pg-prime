@@ -586,6 +586,7 @@ function buildTable(decl: TableDecl, ctx: BuildContext): void {
     const ddl = ref.column.ddl;
     const typeSql = columnType(ddl, ctx, decl);
     const bits: string[] = [quoteIdent(ref.dbName), typeSql];
+    if (ddl.collation !== undefined) bits.push(`COLLATE ${quoteIdent(ddl.collation)}`);
 
     if (ddl.generatedAs !== undefined) {
       // Opaque text, exactly like `defaultSql`: the tier-3 schema map is NOT applied to it

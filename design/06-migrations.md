@@ -663,6 +663,7 @@ when one is reachable; offline, MF rules stay at `error` and must be acknowledge
 | LK110 | `ADD … GENERATED … STORED` / `AS IDENTITY` ⇒ rewrite | PG309/310 |
 | LK111 | `CREATE TRIGGER` takes SHARE ROW EXCLUSIVE | PG308 |
 | LK112 | `SET LOGGED`/`UNLOGGED` ⇒ rewrite | PG307 |
+| LK113 | Collation change (`ALTER COLUMN TYPE … COLLATE`, same type) ⇒ index rebuild, no table rewrite | — |
 
 LK109 checks `pg_proc.provolatile != 'i'` — a constant default is *not* a rewrite. (pg-delta gets
 this wrong in the conservative direction; we do not inherit that.)
@@ -733,6 +734,7 @@ Escape hatch: `-- pg-orm:nolint LK101 "index is on a 200-row lookup table"` — 
 > | LK110 `ADD … IDENTITY`/`GENERATED STORED` | ✅ | `ddl.ts` `alterColumn` identity branch |
 > | LK111 `CREATE TRIGGER` takes SHARE ROW EXCLUSIVE | ✅ | `lint/rules.ts` (Tier R) |
 > | LK112 `SET LOGGED`/`UNLOGGED` | ✅ | `ddl.ts` alter `table` persistence |
+> | LK113 collation-only column change | ✅ | `ddl.ts` `alterColumn` collation branch (`rewrite: false`; a type change keeps LK108/MF105/BC103) |
 > | TX101 non-transactional statement without `txmode none` | ✅ | `lint/rules.ts` |
 > | TX102 mixed transactionality without a segment boundary | ✅ | `lint/rules.ts`, from `plan.segments` |
 > | TX201 non-idempotent statement in a `txmode none` file | ✅ | `lint/rules.ts` over a plan; `repeatables/idempotence.ts` over a `sql/` file's statements |

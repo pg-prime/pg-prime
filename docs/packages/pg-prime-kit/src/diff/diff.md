@@ -27,7 +27,7 @@
 - The partition test is `partitionOf === null`, so a payload missing the key (`undefined`) is treated as a partition (`packages/pg-prime-kit/src/diff/diff.ts:87`); `packages/pg-prime-kit/src/diff/ddl.ts:1154` guards the same field with `isPartitioned`.
 - The delta sort is by kind rank and id, not dependency order; `diff/order.ts` does real ordering on the emitted statements.
 - `strictUnmodeled` never inspects the IR: without `options.diagnostics` it adds nothing (`packages/pg-prime-kit/src/diff/diff.ts:188`).
-- Error diagnostics (`EN102`, `unmodeled_kind_strict`) become unacknowledged hazards in `buildPlan` (`packages/pg-prime-kit/src/plan/plan.ts:290-300`), which `writePlan` refuses.
+- Error diagnostics (`EN102`, `unmodeled_kind_strict`) become unacknowledged hazards in `buildPlan` (`packages/pg-prime-kit/src/plan/plan.ts:291-301`), which `writePlan` refuses.
 
 ## Tests
 - `packages/pg-prime-kit/test/enum.test.ts` (label append ordering, `addEnumValue` anchors, label renames), `test/evolve.test.ts` (two populated catalogs), `test/kinds/partition.test.ts` (adopted partitions), `test/kinds/extension.test.ts` (never dropped), `test/kinds/observation.test.ts` (`strictUnmodeled` escalation, Tier R left alone), `test/schema.test.ts`, `test/roundtrip.test.ts`, plus the fixture sweep in `test/corpus.test.ts`.

@@ -1846,14 +1846,17 @@ function alterColumn(
       ...extra,
     });
 
-  if (b.type !== a.type || b.collation !== a.collation) {
-    const collate = a.collation ? ` COLLATE ${quoteIdent(a.collation)}` : "";
+  const collate = a.collation ? ` COLLATE ${quoteIdent(a.collation)}` : "";
+  if (b.type !== a.type) {
     out.push(
       mk(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${a.type}${collate} USING ${col}::${a.type}`, {
         rewrite: true,
         hazards: ["LK108", "MF105", "BC103"],
       }),
     );
+  } else if (b.collation !== a.collation) {
+    // Same type: no table rewrite, but every index on the column is rebuilt.
+    out.push(mk(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${a.type}${collate}`, { hazards: ["LK113"] }));
   }
   out.push(...notNullTransition(before, after, desired, mk, emptyTables));
   // A generated column cannot be converted in place: PostgreSQL offers only

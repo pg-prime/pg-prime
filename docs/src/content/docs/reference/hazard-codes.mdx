@@ -3,7 +3,7 @@ title: Hazard codes
 description: Every code migrate lint can report, with its default severity.
 ---
 
-pg-prime ships **33 hazard codes** in six families, plus **6 style codes** that are off unless you
+pg-prime ships **34 hazard codes** in six families, plus **6 style codes** that are off unless you
 ask for them. Every code on this page is checked against the kit's own tables on every build, so a
 rule that exists and a rule that is documented are the same set.
 
@@ -123,6 +123,7 @@ what you see in a plan is what could not be rewritten, or what you asked for lit
 | <a id="LK110"/>`LK110` | warn | Adding `GENERATED … STORED` or `GENERATED … AS IDENTITY` to an existing column rewrites the table. |
 | <a id="LK111"/>`LK111` | warn | `CREATE TRIGGER` takes `SHARE ROW EXCLUSIVE`, which blocks writes for the duration. Found in hand-written SQL, because triggers are never diffed. |
 | <a id="LK112"/>`LK112` | warn | `SET LOGGED` or `SET UNLOGGED` rewrites the whole table and its indexes under `ACCESS EXCLUSIVE`. |
+| <a id="LK113"/>`LK113` | warn | A collation change on a column (`ALTER COLUMN … TYPE … COLLATE`). The table is not rewritten, but every index on the column is rebuilt under `ACCESS EXCLUSIVE`, and `ORDER BY`, range comparisons and uniqueness on the column follow the new collation from then on. |
 
 ## TX — transaction and robustness
 

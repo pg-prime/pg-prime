@@ -36,7 +36,7 @@ Table-level declarations returned from `pgTable`'s third-argument callback: prim
 - `concurrently` defaults to `true`; it is a generate-time flag, not a catalog fact (`packages/pg-prime/src/schema/extras.ts:58`–`:67`, `:254`).
 - `nullsNotDistinct()` is accepted on a non-unique index.
 - `index` node `columns` / `include` hold raw DB names; `exclude` items hold an already-quoted identifier (`packages/pg-prime/src/schema/extras.ts:647`).
-- `requires()` stores only the extension name; the kit checks it against exported `pgExtension(...)` declarations (`packages/pg-prime-kit/src/schema/emit.ts:731`).
+- `requires()` stores only the extension name; the kit checks it against exported `pgExtension(...)` declarations (`packages/pg-prime-kit/src/schema/emit.ts:732`).
 - `initiallyDeferred()` on `exclude` sets `deferrable` too; `foreignKey` uses `deferrable ?? initiallyDeferred`, so explicit `deferrable: false` plus `initiallyDeferred: true` passes through.
 - `partitionBy` key and `partitionOf` bound are verbatim text, not validated beyond non-blank.
 - Per-column index options are item objects, not methods on `Ref` (`packages/pg-prime/src/schema/extras.ts:186`–`:191`).

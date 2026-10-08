@@ -116,6 +116,7 @@ function derivedColumn(): ColumnRuntime {
       references: undefined,
       checks: [],
       comment: undefined,
+      collation: undefined,
       renamedFrom: undefined,
     },
     ts: { defaultFn: undefined, onUpdateFn: undefined, narrowed: false },

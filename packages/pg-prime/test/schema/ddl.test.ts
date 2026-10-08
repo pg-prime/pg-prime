@@ -15,6 +15,7 @@ import { expectTypeOf } from 'expect-type'
 import {
   check,
   comment,
+  enumColumn,
   foreignKey,
   index,
   integer,
@@ -22,11 +23,13 @@ import {
   pgSchema,
   pgTable,
   primaryKey,
+  raw,
   renamedFrom,
   text,
   timestamptz,
   unique,
   uniqueIndex,
+  varchar,
   type AnyRef,
   type Col,
   type RefLike,
@@ -216,6 +219,24 @@ describe('.comment() / .renamedFrom()', () => {
   })
 })
 
+describe('.collate()', () => {
+  it('records the collation without touching the builder it was called on', () => {
+    const base = text()
+    const col = base.collate('C')
+    expect(col.$.ddl.collation).toBe('C')
+    expect(base.$.ddl.collation).toBeUndefined()
+    expect(varchar().array().collate('POSIX').$.ddl.collation).toBe('POSIX')
+    expect(raw('character(4)').collate('C').$.ddl.collation).toBe('C')
+  })
+
+  it('rejects a name PostgreSQL cannot store, and an enum column', () => {
+    expect(() => text().collate('')).toThrow(SchemaError)
+    expect(() => text().collate('x'.repeat(64))).toThrow(SchemaError)
+    const col = enumColumn(pgEnum('mood', ['ok'])) as unknown as { collate(name: string): unknown }
+    expect(() => col.collate('C')).toThrow(/cannot take \.collate\(\)/)
+  })
+})
+
 describe('the type did not move (design/11 §3 K2a hard rule)', () => {
   it('every new modifier returns the SAME Col<M>', () => {
     const base = text()
@@ -226,6 +247,7 @@ describe('the type did not move (design/11 §3 K2a hard rule)', () => {
     expectTypeOf(base.check(sql`true`)).toEqualTypeOf<Base>()
     expectTypeOf(base.comment('x')).toEqualTypeOf<Base>()
     expectTypeOf(base.renamedFrom('old')).toEqualTypeOf<Base>()
+    expectTypeOf(base.collate('C')).toEqualTypeOf<Base>()
     // …and the meta parameter itself, spelled out
     expectTypeOf(base.renamedFrom('old')).toEqualTypeOf<
       Col<{ t: string; pg: 'text'; opt: false; ro: false; pk: false }>
