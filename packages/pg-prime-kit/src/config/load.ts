@@ -263,6 +263,7 @@ export interface LoadedSchema {
     readonly schemas: readonly unknown[];
     /** `pgView` / `pgMaterializedView`, both kinds in one list (design/01 §3 row 58). */
     readonly views: readonly unknown[];
+    readonly policies: readonly unknown[];
   };
   readonly files: readonly string[];
 }
@@ -286,6 +287,7 @@ const declarationOf = (v: unknown): string | null => {
   if (typeof r.name !== "string") return null;
   if (r.kind === "view" || r.kind === "materializedView") return "view";
   return r.kind === "enum" ||
+    r.kind === "policy" ||
     r.kind === "domain" ||
     r.kind === "sequence" ||
     r.kind === "extension" ||
@@ -321,6 +323,7 @@ export async function loadSchema(paths: string | readonly string[], base: string
     extension: new Map(),
     schema: new Map(),
     view: new Map(),
+    policy: new Map(),
   };
   for (const file of list) {
     if (!(await exists(file))) throw new ConfigError(`no schema module at ${file}`);
@@ -352,9 +355,11 @@ export async function loadSchema(paths: string | readonly string[], base: string
       const kind = declarationOf(value);
       if (kind === null) continue;
       const decl = value as { name: string; schema?: string };
-      const runtime = (value as { $?: { schema?: string } }).$;
-      const ns = (kind === "view" ? runtime?.schema : decl.schema) ?? "public";
-      declared[kind]!.set(kind === "schema" ? decl.name : `${ns}.${decl.name}`, value);
+      const runtime = (value as { $?: { schema?: string; table?: { name: string; schema?: string } } }).$;
+      const owner = kind === "view" ? runtime : kind === "policy" ? runtime?.table : decl;
+      const ns = owner?.schema ?? "public";
+      const id = kind === "policy" ? `${ns}.${runtime?.table?.name ?? ""}.${decl.name}` : `${ns}.${decl.name}`;
+      declared[kind]!.set(kind === "schema" ? decl.name : id, value);
       declarations += 1;
     }
     // A file of nothing but views (or domains, or enums) is a real way to organize a schema, and
@@ -376,6 +381,7 @@ export async function loadSchema(paths: string | readonly string[], base: string
       extensions: [...declared["extension"]!.values()],
       schemas: [...declared["schema"]!.values()],
       views: [...declared["view"]!.values()],
+      policies: [...declared["policy"]!.values()],
     },
     files: list,
   };

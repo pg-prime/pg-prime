@@ -32,10 +32,9 @@
  * so the person reading the diff learns it there.
  */
 
-import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { CatalogClient, Diagnostic } from "../catalog/extract.js";
 import { quoteIdent, quoteLiteral } from "../sql/ident.js";
+import { syncDeclared } from "./declared.js";
 import type { SchemaLike, ViewLike } from "./types.js";
 
 /** The directory declared views are rendered into, relative to the repeatables root. */
@@ -270,24 +269,24 @@ export function renderedViewCensus(rendered: RenderedViews): ViewCensus {
 }
 
 /**
- * Drop the declared views out of one extractor's Tier-U census.
- *
- * A kind whose remainder is zero disappears from the census entirely — "N view(s) present and not
- * diffed" about views the schema *does* model is the false alarm this removes — and a kind with
- * something left keeps its message with the smaller number.
+ * Drop declared objects out of one extractor's Tier-U census, by kind (`view`, `policy`, …). A kind
+ * whose remainder is zero disappears; one with something left keeps its message with the smaller
+ * number.
  */
-export function censusWithout(diagnostics: readonly Diagnostic[], declared: ViewCensus): readonly Diagnostic[] {
-  if (declared.view === 0 && declared.materializedView === 0) return diagnostics;
+export function censusWithout(
+  diagnostics: readonly Diagnostic[],
+  declared: Readonly<Record<string, number>>,
+): readonly Diagnostic[] {
   const out: Diagnostic[] = [];
   for (const d of diagnostics) {
-    const kind = d.subject === "view" || d.subject === "materializedView" ? d.subject : null;
-    if (d.code !== "unmodeled_kind" || kind === null) {
+    const minus = d.code === "unmodeled_kind" ? (declared[d.subject ?? ""] ?? 0) : 0;
+    if (minus === 0) {
       out.push(d);
       continue;
     }
-    const n = Math.max(0, (d.count ?? 0) - declared[kind]);
+    const n = Math.max(0, (d.count ?? 0) - minus);
     if (n === 0) continue;
-    out.push({ ...d, message: `${String(n)} ${kind} object(s) present and not diffed (Tier R)`, count: n });
+    out.push({ ...d, message: `${String(n)} ${d.subject ?? ""} object(s) present and not diffed (Tier R)`, count: n });
   }
   return out;
 }
@@ -295,13 +294,7 @@ export function censusWithout(diagnostics: readonly Diagnostic[], declared: View
 /* -------------------------------- the sync -------------------------------- */
 
 export interface SyncViewsOptions extends RenderViewsOptions {
-  /**
-   * Write and prune, or only compare?
-   *
-   * `migrate generate` writes; `migrate check` does not write anything at all, so it compares and
-   * reports a stale lane instead — which is the answer its user wants ("you changed a view and did
-   * not run generate") rather than a silent repair.
-   */
+  /** Write and prune, or (`migrate check`) only compare and report a stale lane. */
   readonly write: boolean;
 }
 
@@ -312,75 +305,18 @@ export interface SyncedViews extends RenderedViews {
   readonly pruned: readonly string[];
 }
 
-async function existingDeclaredFiles(dir: string): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  let names: string[];
-  try {
-    names = await readdir(join(dir, VIEWS_DIR));
-  } catch {
-    return out;
-  }
-  for (const name of names.sort()) {
-    if (!name.toLowerCase().endsWith(".sql")) continue;
-    const rel = `${VIEWS_DIR}/${name}`;
-    let text: string;
-    try {
-      text = await readFile(join(dir, VIEWS_DIR, name), "utf8");
-    } catch {
-      continue;
-    }
-    if (text.startsWith(DECLARED_DIRECTIVE)) out.set(rel, text);
-  }
-  return out;
-}
-
-/**
- * Bring `<dir>/020_views/` into line with the declarations — or, with `write: false`, say how far
- * out of line it is.
- */
+/** Bring `<dir>/020_views/` into line with the declarations, or say how far out of line it is. */
 export async function syncViewRepeatables(
   schema: SchemaLike,
   dir: string,
   options: SyncViewsOptions,
 ): Promise<SyncedViews> {
   const rendered = renderViewRepeatables(schema, options);
-  const diagnostics = [...rendered.diagnostics];
-  const onDisk = await existingDeclaredFiles(dir);
-  const wanted = new Map(rendered.files.map((f) => [f.path, f.sql]));
-
-  const written: string[] = [];
-  const pruned: string[] = [];
-  const stale: string[] = [];
-
-  for (const [path, sql] of wanted) {
-    if (onDisk.get(path) === sql) continue;
-    if (options.write) {
-      await mkdir(join(dir, VIEWS_DIR), { recursive: true });
-      await writeFile(join(dir, VIEWS_DIR, path.slice(VIEWS_DIR.length + 1)), sql, "utf8");
-      written.push(path);
-    } else {
-      stale.push(path);
-    }
-  }
-  for (const path of onDisk.keys()) {
-    if (wanted.has(path)) continue;
-    if (options.write) {
-      await unlink(join(dir, VIEWS_DIR, path.slice(VIEWS_DIR.length + 1))).catch(() => {});
-      pruned.push(path);
-    } else {
-      stale.push(path);
-    }
-  }
-  if (stale.length > 0) {
-    diagnostics.push({
-      code: "declared_views_stale",
-      severity: "warning",
-      message:
-        `${String(stale.length)} declared view file(s) in ${VIEWS_DIR}/ do not match the schema ` +
-        `(${stale.sort().join(", ")}); run \`pg-prime migrate generate\` to rewrite the lane`,
-      subject: VIEWS_DIR,
-      count: stale.length,
-    });
-  }
-  return { files: rendered.files, diagnostics, written, pruned };
+  const synced = await syncDeclared(dir, rendered.files, { write: options.write, dirs: [VIEWS_DIR] });
+  return {
+    files: rendered.files,
+    diagnostics: [...rendered.diagnostics, ...synced.diagnostics],
+    written: synced.written,
+    pruned: synced.pruned,
+  };
 }

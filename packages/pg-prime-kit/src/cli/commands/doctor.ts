@@ -17,6 +17,7 @@ import { withClient } from "../../db/pg.js";
 import { historyPresent } from "../../history/schema.js";
 import { currentFingerprint, readMigrationRows, readRepeatableRows } from "../../history/store.js";
 import { planRepeatables } from "../../repeatables/index.js";
+import { declaredCensus, isDeclared, PRUNE_FILE, readMarks } from "../../schema/declared.js";
 import { inspectLease } from "../../runner/run.js";
 import { readMigrationsDir } from "../../runner/files.js";
 import { ms, type OptionSpec, type ParseResult } from "../args.js";
@@ -38,7 +39,7 @@ const names = (r: { rows: Record<string, unknown>[] }): string[] => r.rows.map((
 async function catalogFindings(
   client: CatalogClient,
   schemas: readonly string[],
-): Promise<{ invalidIndexes: string[]; ccnew: string[]; notValid: string[] }> {
+): Promise<{ invalidIndexes: string[]; ccnew: string[]; notValid: string[]; notForced: string[] }> {
   const list = [...schemas];
   const invalid = await client.query(
     `SELECT n.nspname || '.' || c.relname AS name
@@ -60,7 +61,19 @@ async function catalogFindings(
       WHERE NOT c.convalidated AND n.nspname = ANY($1) ORDER BY 1`,
     [list],
   );
-  return { invalidIndexes: names(invalid), ccnew: names(ccnew), notValid: names(notValid) };
+  const notForced = await client.query(
+    `SELECT n.nspname || '.' || c.relname AS name
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_roles r ON r.oid = c.relowner
+      WHERE c.relrowsecurity AND NOT c.relforcerowsecurity AND r.rolcanlogin AND NOT (r.rolsuper OR r.rolbypassrls)
+        AND n.nspname = ANY($1) ORDER BY 1`,
+    [list],
+  );
+  return {
+    invalidIndexes: names(invalid),
+    ccnew: names(ccnew),
+    notValid: names(notValid),
+    notForced: names(notForced),
+  };
 }
 
 export async function runDoctor(config: ResolvedConfig, argv: ParseResult): Promise<CommandOutput> {
@@ -90,6 +103,18 @@ export async function runDoctor(config: ResolvedConfig, argv: ParseResult): Prom
     /* Tier R: recorded, no longer on disk — design/06 §2.2 says removal is never auto-detected. */
     const tracked = present ? await readRepeatableRows(client) : [];
     const repeatables = await planRepeatables(config.repeatablesDir, new Map(tracked.map((r) => [r.path, r.checksum])));
+
+    /* design/20 §5.5: declared objects against their catalog markers, pending files skipped. */
+    const pending = new Set(repeatables.toApply.map((f) => f.path));
+    const lane = [...repeatables.toApply, ...repeatables.unchanged];
+    const census = (await declaredCensus(client, lane, config.schemas)).findings.filter(
+      (d) => d.path === undefined || !pending.has(d.path),
+    );
+    const declared = lane.filter(isDeclared);
+    const pruneDeletable =
+      declared.length > 0 &&
+      declared.every((f) => f.path.endsWith(`/${PRUNE_FILE}`)) &&
+      (await readMarks(client, config.schemas, [])).length === 0;
 
     /* Tier O census and Tier U census. */
     const observed = observedCounts(extracted.observed);
@@ -121,6 +146,11 @@ export async function runDoctor(config: ResolvedConfig, argv: ParseResult): Prom
             `a stale lease is held by ${lease.lease.holder} (last beat ${String(lease.lease.heartbeatAgeMs)} ms ago); \`migrate unlock --force\` breaks it`,
           ]
         : []),
+      ...census.map((d) => `${d.code}: ${d.message}`),
+      ...catalog.notForced.map(
+        (n) =>
+          `rls_not_forced: ${n} has row level security enabled, not FORCE'd, and its owner can log in — the owner bypasses every policy; use rls.force() or a non-owner application role`,
+      ),
       ...repeatables.orphaned.map(
         (p) =>
           `${p} is recorded in pgprime.repeatables but is gone from disk — the objects it created are STILL in the database (design/06 §2.2: a Tier-R removal is never auto-detected)`,
@@ -153,6 +183,7 @@ export async function runDoctor(config: ResolvedConfig, argv: ParseResult): Prom
         },
         observed,
         unmodeled,
+        declared: { findings: census.map((d) => ({ code: d.code, subject: d.subject ?? null })), pruneDeletable },
         findings,
         error: null,
       },
@@ -176,6 +207,7 @@ export async function runDoctor(config: ResolvedConfig, argv: ParseResult): Prom
         ]),
         bullets("findings:", findings),
         findings.length === 0 ? "\nno findings." : "",
+        pruneDeletable ? `\nno declared objects are left: ${PRUNE_FILE} may be deleted.` : "",
       ]
         .filter((l) => l !== "")
         .join("\n"),
