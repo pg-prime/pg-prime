@@ -105,7 +105,7 @@ The schema as migration files to vendor into a kit project; they converge with `
 | `result(ref, { timeoutMs?, signal?, pollMs? })` | the result; rejects with `MessageFailedError`; needs `watch: true` |
 | `watch(handler, { signal? })` | a live stream of `{ id, state }`; needs `watch: true` |
 | `pause()`, `resume()` | no claim starts while paused |
-| `cancel(ref, reason?)` | an idle message is cancelled at once; an active one through its handler's signal |
+| `cancel(ref, reason?)` | an idle message is cancelled at once; an active one through its handler's signal, or when its attempt next fails or defers |
 | `retry({ ids } \| { state, limit? })` | finished → ready, attempts reset; refuses a parent with unresolved children |
 | `promote(ref)` | a delayed message becomes ready now |
 | `remove(ref)` | deletes the message and its descendants; refuses while any is active |

@@ -19,11 +19,10 @@ import {
 } from '../sql/maintain.js'
 import { holder } from '../sql/read.js'
 import type { MsgRow } from '../sql/read.js'
-import { move } from '../sql/settle.js'
 import { ASYNC_DISPOSE, limiter } from '../util.js'
 import { isDeferral, message, workContext } from './context.js'
 import type { Deferral, Message, Running, WorkContext } from './context.js'
-import { completeMessage, failMessage, recoverExpired, settleSafely } from './settle.js'
+import { completeMessage, failMessage, moveMessage, recoverExpired, settleSafely } from './settle.js'
 
 export type Handler<T, R> = (msg: Message<T>, ctx: WorkContext<T, R>) => Promise<R | Deferral>
 
@@ -172,6 +171,9 @@ export function startWorker<T, R>(
     )
   }
 
+  const outcome = (r: SettleOutcome | 'moved' | 'gone' | undefined): SettleOutcome | undefined =>
+    r === 'gone' ? undefined : r === 'moved' ? 'deferred' : r
+
   const runOne = async (e: Entry): Promise<void> => {
     const started = Date.now()
     const { row } = e
@@ -181,16 +183,14 @@ export function startWorker<T, R>(
       payload = await decodePayload(def.payload, row.payload)
     } catch (err) {
       const r = await settleSafely(core, m, () => failMessage(core, def, m, err, { final: true }))
-      return settled(e, r === 'gone' ? undefined : r, started, err)
+      return settled(e, outcome(r), started, err)
     }
     try {
       const value = await handler(message<T, never>(row, payload), workContext(core, def, e))
       if (e.inTx) return settled(e, await afterTx(e, undefined), started)
       if (isDeferral(value)) {
-        const ok = await settleSafely(core, m, () =>
-          move(core.db, t, row.id, e.token, value.deferral),
-        )
-        if (ok === true) return settled(e, 'deferred', started)
+        const r = await settleSafely(core, m, () => moveMessage(core, m, value.deferral))
+        if (r !== undefined) return settled(e, outcome(r), started)
         // waitForChildren refused: a `fail` child failed (fail now), or nothing is pending (run again).
         const h = value.deferral.kind === 'wait' ? await holder(core.db, t, row.id) : undefined
         if (h?.state === 'active' && h.token === e.token) {
@@ -198,9 +198,8 @@ export function startWorker<T, R>(
             ? await failMessage(core, def, m, new NonRetryableError('a child failed'), {
                 final: true,
               })
-            : (await move(core.db, t, row.id, e.token, { kind: 'release' })) &&
-              ('deferred' as const)
-          return settled(e, r || undefined, started)
+            : await moveMessage(core, m, { kind: 'release' })
+          return settled(e, outcome(r), started)
         }
         return settled(e, undefined, started)
       }
@@ -209,12 +208,12 @@ export function startWorker<T, R>(
     } catch (err) {
       if (e.inTx) return settled(e, await afterTx(e, err), started, err)
       if (e.lost) return settled(e, undefined, started, err)
-      const r = await settleSafely(core, m, (): Promise<SettleOutcome | false | undefined> =>
+      const r = await settleSafely(core, m, () =>
         e.shutdown && !e.cancelled
-          ? move(core.db, t, row.id, e.token, { kind: 'release' }).then((ok) => ok && 'deferred')
+          ? moveMessage(core, m, { kind: 'release' })
           : failMessage(core, def, m, err, { cancelled: e.cancelled }),
       )
-      settled(e, r === 'gone' || r === false ? undefined : r, started, err)
+      settled(e, outcome(r), started, err)
     }
   }
 

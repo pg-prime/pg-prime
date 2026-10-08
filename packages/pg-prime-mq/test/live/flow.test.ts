@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { UsageError, sql } from 'pg-prime'
 import { defineQueue, pgMq } from '../../src/index.js'
 import type { Message, OnFail, WorkContext, Worker } from '../../src/index.js'
-import { freshSchema, until, useServer } from '../_db.js'
+import { freshSchema, racing, until, useServer } from '../_db.js'
 
 const server = useServer()
 type P = { name: string; fail?: boolean }
@@ -185,32 +185,15 @@ describe('flows (F1)', () => {
     const plain = pgMq({ db, schema }).queue(defA)
     let raced = false
     // After the flow's insert, the key's holder completes before its owner is read.
-    const racing = new Proxy(db, {
-      get(o, k) {
-        if (k !== 'withOptions') {
-          const v = Reflect.get(o, k)
-          return typeof v === 'function' ? v.bind(o) : v
-        }
-        return (opts: { label: string }) => {
-          const q = o.withOptions(opts)
-          if (opts.label !== 'mq.flow' || raced) return q
-          raced = true
-          return {
-            sql: (s: TemplateStringsArray, ...v: unknown[]) => ({
-              execute: async () => {
-                const rows = await q.sql(s, ...v).execute()
-                const [m] = (await plain.claim()) as [Message<P>]
-                await plain.complete(m, 'done')
-                return rows
-              },
-            }),
-          }
-        }
-      },
-    })
+    const finish = async () => {
+      const [m] = (await plain.claim()) as [Message<P>]
+      await plain.complete(m, 'done')
+      raced = true
+    }
     const opts = { key: 'k', dedup: 'until-done' as const }
     const first = await plain.send({ name: 'first' }, opts)
-    const ref = await pgMq({ db: racing, schema }).flow({ queue: defA, payload: { name: 'x' }, opts })
+    const mq = pgMq({ db: racing(db, 'mq.flow', finish, 'after'), schema })
+    const ref = await mq.flow({ queue: defA, payload: { name: 'x' }, opts })
     expect(raced).toBe(true)
     expect(ref.deduplicated).toBe(false)
     expect((await plain.get(ref))?.payload).toStrictEqual({ name: 'x' })

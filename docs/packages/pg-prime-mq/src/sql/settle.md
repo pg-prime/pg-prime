@@ -5,7 +5,7 @@ The one `finish` builder for terminal transitions, the token-guarded moves out o
 (retry, defer, release, wait for children), progress and lease extension.
 
 ## Public API
-- Internal: `Terminal`, `Guard` (`token` | `expired` | `blocked` | `idle`), `FinishArgs`, `Settled`, `Move`;
+- Internal: `Terminal`, `Guard` (`token` | `flagged` | `expired` | `blocked` | `idle`), `FinishArgs`, `Settled`, `Move`;
   `finishSql`, `finish`, `lockAncestors`, `depsCtes`, `moveSql`, `move`, `progress`, `extend`.
 
 ## Flow
@@ -19,6 +19,7 @@ The one `finish` builder for terminal transitions, the token-guarded moves out o
 - `pr` updates the parent, a different row than `done`: no statement modifies a row twice.
 - The release reads `pending_deps` on the locked parent row (EvalPlanQual): released once.
 - S14 refuses `child_failed`, read on the parent's own locked row.
+- Every move refuses a row flagged by `cancel()`; the caller finishes it with the `flagged` guard (`moveMessage`).
 
 ## Tests
 - `test/unit/sql.test.ts` (fragment matrix, lock order); `test/pg/concurrency.test.ts`. `pnpm --filter @pg-prime/mq test:pg`.

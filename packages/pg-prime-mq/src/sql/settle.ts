@@ -5,11 +5,13 @@ import type { Cte, F, Q, Tables } from './tables.js'
 export type Terminal = 'completed' | 'failed' | 'cancelled'
 
 /**
- * Who may finish the message: its owner (`token`), the lease-expiry scan (`expired`), a flow
- * cascade on a waiting parent (`blocked`), or a cancel of a message nobody runs (`idle`).
+ * Who may finish the message: its owner (`token`), its owner once `cancel()` flagged it
+ * (`flagged`), the lease-expiry scan (`expired`), a flow cascade on a waiting parent (`blocked`),
+ * or a cancel of a message nobody runs (`idle`).
  */
 export type Guard =
   | { readonly kind: 'token'; readonly token: string }
+  | { readonly kind: 'flagged'; readonly token: string }
   | { readonly kind: 'expired' }
   | { readonly kind: 'blocked' }
   | { readonly kind: 'idle'; readonly queue: string }
@@ -32,12 +34,14 @@ export interface Settled {
   readonly cascadeTo: bigint | null
 }
 
-const fromActive = (g: Guard): boolean => g.kind === 'token' || g.kind === 'expired'
+const fromActive = (g: Guard): boolean => g.kind !== 'blocked' && g.kind !== 'idle'
 
 function guardSql(g: Guard): F {
   switch (g.kind) {
     case 'token':
       return sql`m.token = ${g.token} and m.state = 'active'`
+    case 'flagged':
+      return sql`m.token = ${g.token} and m.state = 'active' and m.cancel`
     case 'expired':
       return sql`m.state = 'active' and m.lease_until < now()`
     case 'blocked':
@@ -192,9 +196,12 @@ export type Move =
   /** S14: `ctx.waitForChildren`; refused while a `fail` child has failed. */
   | { readonly kind: 'wait' }
 
-/** S8r, S12, S13, S14: token-guarded moves out of `active`, each with its counter decrements. */
+/**
+ * S8r, S12, S13, S14: token-guarded moves out of `active`, each with its counter decrements. A
+ * message flagged by `cancel()` is never moved: its owner finishes it `cancelled` instead.
+ */
 export function moveSql(t: Tables, id: bigint, token: string, mv: Move): F {
-  const guard = sql`m.id = ${id}::bigint and m.token = ${token} and m.state = 'active'`
+  const guard = sql`m.id = ${id}::bigint and m.token = ${token} and m.state = 'active' and not m.cancel`
   const fresh = sql`order_key = sign(m.order_key) * ${t.next}`
   let set: F
   switch (mv.kind) {

@@ -312,15 +312,16 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
     async cancel(ref, reason) {
       await ready()
       const id = idOf(ref)
-      const error = reason ?? 'cancelled'
-      const r = await finishMessage(
-        core,
-        { id, queue: name },
-        'cancelled',
-        { kind: 'idle', queue: name },
-        { error },
-      )
-      if (r === undefined) await flagCancel(core.db, t, name, id, reason ?? null)
+      const idle = { kind: 'idle', queue: name } as const
+      // A message that moves between idle and active meanwhile is caught by the next pass.
+      for (;;) {
+        const r = await finishMessage(core, { id, queue: name }, 'cancelled', idle, {
+          error: reason ?? 'cancelled',
+        })
+        if (r !== undefined || (await flagCancel(core.db, t, name, id, reason ?? null))) return
+        const s = (await get(core.db, t, name, { id }))?.state
+        if (s !== 'ready' && s !== 'delayed' && s !== 'blocked' && s !== 'active') return
+      }
     },
     async retry(sel) {
       await ready()

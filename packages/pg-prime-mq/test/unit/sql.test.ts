@@ -61,6 +61,7 @@ function matrix(): [string, Fragment<unknown>][] {
   const out: [string, Fragment<unknown>][] = []
   const guards: Guard[] = [
     { kind: 'token', token: 'tok' },
+    { kind: 'flagged', token: 'tok' },
     { kind: 'expired' },
     { kind: 'blocked' },
     { kind: 'idle', queue: 'jobs' },

@@ -10,7 +10,7 @@ import {
   pgMq,
 } from '../../src/index.js'
 import type { Message, MqHooks, QueueDef, SettleOutcome } from '../../src/index.js'
-import { freshSchema, sleep, until, useServer } from '../_db.js'
+import { freshSchema, racing, sleep, until, useServer } from '../_db.js'
 
 const server = useServer()
 type P = { n: number }
@@ -334,6 +334,41 @@ describe('admin', () => {
     await until(async () => (await q.get(active))?.state === 'cancelled')
     await w.close()
     expect(reason).toBeInstanceOf(CancelledError)
+  })
+
+  it('a cancel flagged during a short attempt holds when it fails or defers', async () => {
+    const { q } = setup()
+    const failing = await q.send({ n: 1 })
+    const deferring = await q.send({ n: 2 })
+    let open = (): void => {}
+    const flagged = new Promise<void>((r) => (open = r))
+    let runs = 0
+    const w = q.work(
+      async (m, ctx) => {
+        runs++
+        await flagged
+        if (m.payload.n === 1) throw new Error('boom')
+        return ctx.defer({ delayMs: 0 })
+      },
+      { ...fast, concurrency: 2 },
+    )
+    await until(async () => (await q.counts()).active === 2)
+    await q.cancel(failing)
+    await q.cancel(deferring)
+    open()
+    await until(async () => (await q.counts()).cancelled === 2)
+    await w.close()
+    expect(runs).toBe(2)
+  })
+
+  it('cancel catches a message that left active before it was flagged', async () => {
+    const { db, schema, q } = setup({ retry: { baseDelayMs: 0 } })
+    const ref = await q.send({ n: 1 })
+    const [m] = (await q.claim()) as [Message<P>]
+    const jobs = defineQueue<P>('jobs', { retry: { baseDelayMs: 0 } })
+    const late = pgMq({ db: racing(db, 'mq.cancel', () => q.fail(m, 'x'), 'before'), schema })
+    await late.queue(jobs).cancel(ref)
+    expect((await q.get(ref))?.state).toBe('cancelled')
   })
 
   it('cancel never reaches a message of another queue', async () => {
