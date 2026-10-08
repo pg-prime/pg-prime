@@ -103,8 +103,9 @@ export function runner(db: Db, t: Tables, leaseMs: number, emit: Emit, onEnd: ()
           ? 'failed'
           : 'succeeded'
     const message = a.reason === 'timeout' ? 'timeout' : state === 'failed' ? describe(error) : null
+    let finished
     try {
-      await finish(db, t, {
+      finished = await finish(db, t, {
         id: run.id,
         token: run.token,
         state,
@@ -113,7 +114,10 @@ export function runner(db: Db, t: Tables, leaseMs: number, emit: Emit, onEnd: ()
         attempts: attempt,
       }).execute()
     } catch (e) {
-      internal(`could not finish run ${run.id}`, e)
+      return internal(`could not finish run ${run.id}`, e)
+    }
+    if (finished.length === 0) {
+      return internal(`run ${run.id} lost its lease`, new CronLeaseLostError(run.id))
     }
     emit('onRunEnd', {
       schedule: run.schedule,

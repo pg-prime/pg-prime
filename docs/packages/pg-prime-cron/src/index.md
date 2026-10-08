@@ -17,7 +17,7 @@ The `@pg-prime/cron` entry point: re-exports the two functions, three error clas
 
 ## Gotchas
 - `Cron` extends core's `AsyncDisposable_`, not the lib `AsyncDisposable`, so the build needs no `esnext.disposable` lib (`types.ts:158`).
-- `CronEnqueuer` is structural: nothing in `src` or `dist` names `@pg-prime/mq` as a specifier (checked by `test/unit/package.test.ts`).
+- `CronEnqueuer` and the queue target are structural (`{ kind: 'queue', name }`, which mq's `QueueDef` has): nothing in `src` or `dist` names `@pg-prime/mq` as a specifier (checked by `test/unit/package.test.ts`).
 - `onInternal` kinds include `'loop-failed'`, added beyond plan 18 §5 so a failing iteration is reported.
 
 ## Tests

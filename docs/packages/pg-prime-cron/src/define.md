@@ -9,7 +9,7 @@ Turns a schedule definition into validated `schedules` columns and a hash. Used 
 - `fnv(s): string` (internal) — 64-bit FNV-1a, hex; the spec hash (`fnv(JSON.stringify(cols))`) and the NOTIFY channel suffix.
 
 ## Flow
-1. `defineSchedule` (`define.ts:26`) checks the name and that the target is exactly one of a `handler` function or a `queue` with a `name`.
+1. `defineSchedule` (`define.ts:26`) checks the name and that the target is exactly one of a `handler` function or a `queue` declaration (`kind: 'queue'` and a `name`, as `defineQueue(...)` returns); a bare `{ name }` is refused.
 2. `colsOf` (`:47`) requires exactly one of `cron`/`everyMs`/`at`, a non-empty pattern, a valid `tz` (`assertTz`), `everyMs >= 1000`, valid Dates, `endAt > startAt`, integer counts and the two enums.
 3. A function payload is stored as `null`; the claiming instance calls it.
 

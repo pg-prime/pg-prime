@@ -32,7 +32,8 @@ export function defineSchedule<P = undefined>(
   if (typeof name !== 'string' || name === '')
     throw new ScheduleError('name', 'a schedule needs a name')
   const handler = 'handler' in target && typeof target.handler === 'function'
-  const queue = 'queue' in target && typeof target.queue?.name === 'string'
+  const queue =
+    'queue' in target && target.queue?.kind === 'queue' && typeof target.queue.name === 'string'
   if (handler === queue) {
     throw new ScheduleError(
       'target',

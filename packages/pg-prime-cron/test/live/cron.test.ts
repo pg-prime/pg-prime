@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { UsageError } from 'pg-prime'
 import type { Db } from 'pg-prime'
-import { defineSchedule, pgCron, SchemaVersionError } from '../../src/index.js'
+import { CronLeaseLostError, defineSchedule, pgCron, SchemaVersionError } from '../../src/index.js'
 import type { Cron, CronConfig, RunContext } from '../../src/index.js'
 import { dropSchema, open, rows, server, sleep, until } from '../_harness.js'
 
@@ -58,6 +58,11 @@ describe('start and sync', () => {
     expect((await q(`select version from $S.migrations`)).length).toBe(1)
   })
 
+  it('an already-aborted signal closes the instance before it starts', async () => {
+    const c = make({ signal: AbortSignal.abort() })
+    await expect(c.start()).rejects.toBeInstanceOf(UsageError)
+  })
+
   it('refuses a missing schema with autoMigrate off', async () => {
     await expect(make({ autoMigrate: false }).start()).rejects.toBeInstanceOf(SchemaVersionError)
   })
@@ -110,6 +115,32 @@ describe('handler runs', () => {
     await until(async () => (await runsOf('a'))[0]?.['state'] === 'succeeded')
     expect(got).toEqual({ x: 1 })
     await expect(c.trigger('nope')).rejects.toBeInstanceOf(UsageError)
+  })
+
+  it('a finish that matches no row reports a lost lease, not a completion', async () => {
+    const ends: string[] = []
+    const lost: unknown[] = []
+    const a = defineSchedule(
+      'a',
+      { cron: '0 0 1 1 *' },
+      {
+        handler: async () =>
+          void (await q(`update $S.runs set state = 'failed', token = null where schedule = 'a'`)),
+      },
+    )
+    const c = make({
+      schedules: [a],
+      hooks: {
+        onRunEnd: (e) => void ends.push(e.state),
+        onInternal: (e) => void lost.push(e.cause),
+      },
+    })
+    await c.start()
+    await c.trigger('a')
+    await until(() => lost.length > 0)
+    await c.close()
+    expect(lost[0]).toBeInstanceOf(CronLeaseLostError)
+    expect(ends).toEqual([])
   })
 
   it('cancels a pending run and a running one', async () => {

@@ -83,10 +83,11 @@ export const setFlags = (
   where name = ${name}
   returning name`
 
+/** `running = 0` is rechecked on the locked row, so a run committed while this waited is seen. */
 export const remove = (q: Q, t: Tables, name: string, force: boolean): RawQuery => q.sql`
   with d as (
     delete from ${t.s} where name = ${name}
-      and (${force}::boolean or not exists (select 1 from ${t.r}
+      and (${force}::boolean or running = 0 and not exists (select 1 from ${t.r}
            where schedule = ${name} and state in ('pending', 'running', 'cancelling')))
     returning 1
   )

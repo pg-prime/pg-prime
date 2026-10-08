@@ -295,6 +295,7 @@ export function pgCron(config: CronConfig): Cron {
     })())
   }
   config.signal?.addEventListener('abort', () => void close(), { once: true })
+  if (config.signal?.aborted === true) void close()
 
   async function lockedUpdate(name: string, f: (row: RawRow, tx: Q) => Promise<void>) {
     await ensure()
@@ -329,6 +330,7 @@ export function pgCron(config: CronConfig): Cron {
 
     async create(def: ScheduleDef<any>) {
       await ensure()
+      if (queues !== undefined && isQueue(def)) await startQueues(queues, [def])
       if (!(await write(def, 'api', await clock(), false))) {
         throw new UsageError(`cron: schedule '${def.name}' already exists`)
       }
@@ -361,7 +363,9 @@ export function pgCron(config: CronConfig): Cron {
           when: when ?? info.when,
           target:
             local?.target ??
-            (info.queue !== null ? { queue: { name: info.queue } } : { handler: async () => {} }),
+            (info.queue !== null
+              ? { queue: { kind: 'queue', name: info.queue } }
+              : { handler: async () => {} }),
           options: { ...stored, ...options },
         }
         const cols = colsOf(def)

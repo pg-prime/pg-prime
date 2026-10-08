@@ -43,9 +43,10 @@ export interface RunContext<P> {
   readonly signal: AbortSignal
 }
 
+/** `queue` is a declaration such as `@pg-prime/mq`'s `defineQueue(...)`, never a bare name. */
 export type ScheduleTarget<P> =
   | { handler: (run: RunContext<P>) => Promise<unknown> }
-  | { queue: { readonly name: string } }
+  | { queue: { readonly kind: 'queue'; readonly name: string } }
 
 export interface ScheduleDef<P = unknown> {
   readonly name: string
@@ -56,7 +57,7 @@ export interface ScheduleDef<P = unknown> {
 
 /** Structurally satisfied by `@pg-prime/mq`'s `pgMq(...)`. */
 export interface CronEnqueuer {
-  queue(def: { readonly name: string }): {
+  queue(def: { readonly kind: 'queue'; readonly name: string }): {
     start?(): Promise<void>
     send(
       payload: any,

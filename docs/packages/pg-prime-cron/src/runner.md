@@ -11,19 +11,19 @@ Executes claimed handler runs in-process: one `AbortController` per run, timeout
 - `backoffMs(policy, attempt, random?)` (`backoff.ts:7`) — the family's 15 fixed vectors.
 
 ## Flow
-1. `start` (`runner.ts:131`) emits `onRunStart`, arms `timeoutMs`, calls the handler with `RunContext`.
+1. `start` (`runner.ts:135`) emits `onRunStart`, arms `timeoutMs`, calls the handler with `RunContext`.
 2. A throw retries after `backoffMs` until `retry.maxAttempts` (default 1), unless the run was aborted.
 3. `abort` (`:45`) is idempotent: it aborts the signal, and for `timeout`/`close` marks the run `cancelling` with a token-guarded update.
-4. On settle: `cancel`/`close` → `cancelled`; `timeout` → `failed`/`'timeout'`; else `succeeded` (JSON result) or `failed` (message); F1 frees the slot; `onRunEnd`.
-5. `heartbeat` (`:139`): a run missing from the result lost its lease (`abort('lost')`, no F1, `onInternal('heartbeat-failed')` with `CronLeaseLostError`); state `cancelling` aborts with `cancel`.
+4. On settle: `cancel`/`close` → `cancelled`; `timeout` → `failed`/`'timeout'`; else `succeeded` (JSON result) or `failed` (message); F1 frees the slot; `onRunEnd` only when F1 returned a row. F1 matching nothing (maintenance expired the run first) reports `onInternal('heartbeat-failed')` with `CronLeaseLostError` instead.
+5. `heartbeat` (`:143`): a run missing from the result lost its lease (`abort('lost')`, no F1, `onInternal('heartbeat-failed')` with `CronLeaseLostError`); state `cancelling` aborts with `cancel`.
 
 ## Gotchas
 - Abort is not finish: the slot stays taken until the handler's promise settles, so a handler that ignores its signal still blocks `overlap: 'skip'`.
 - A non-JSON result is stored as `null`.
-- A failing F1 is reported, and the run is later expired by maintenance as `lease-expired`.
+- A failing F1 is reported without `onRunEnd`, and the run is later expired by maintenance as `lease-expired`.
 - Durations and timeouts use client timers; due times never do.
 
 ## Tests
-- `packages/pg-prime-cron/test/live/cron.test.ts`: timeout with a signal-ignoring handler, cancel of a running run, results.
+- `packages/pg-prime-cron/test/live/cron.test.ts`: timeout with a signal-ignoring handler, cancel of a running run, results, F1 matching nothing.
 - `packages/pg-prime-cron/test/pg/cron.test.ts`: SIGKILL (lease expiry), cancel under skip.
 - `packages/pg-prime-cron/test/unit/package.test.ts`: backoff vectors.
