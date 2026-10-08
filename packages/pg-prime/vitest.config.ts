@@ -12,6 +12,7 @@ import { configDefaults, defineConfig } from 'vitest/config'
  */
 
 const LIVE_GLOBAL_SETUP = ['./test/live/_globalSetup.ts']
+const BUN_CHECK = './test/live/_bun.ts'
 
 /** Fuzz + bulk suites against a WASM server are slower than the 5 s default. */
 const LIVE_TIMEOUT_MS = 120_000
@@ -20,7 +21,7 @@ const LIVE_TIMEOUT_MS = 120_000
  * Runs before every live test file: on PGlite it boots that file its own backend (`_pglite.ts`
  * documents why per file), against `PG_PRIME_TEST_URL` it is a no-op.
  */
-const LIVE_SETUP = ['./test/live/_setup.ts']
+const LIVE_SETUP = [BUN_CHECK, './test/live/_setup.ts']
 
 export default defineConfig({
   test: {
@@ -28,6 +29,7 @@ export default defineConfig({
       {
         test: {
           name: 'unit',
+          setupFiles: [BUN_CHECK],
           // `test/live/*.unit.test.ts` is the harness's own tier-0 test: no database, no setup
           // file, so it costs nothing here and it is the only thing that pins the wire-protocol
           // rules the PGlite bridge implements.

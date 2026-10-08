@@ -323,6 +323,46 @@ jobs:
       - run: pnpm build
       - run: pnpm docs:examples:pg
 
+  bun:
+    # Downstream runs pg-prime on Bun with the `pg` driver: the offline tier plus tier 2 on Bun.
+    name: bun 1.4.2 · unit + pg (tier 2) · PostgreSQL 17
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: pgprime
+          POSTGRES_PASSWORD: pgprime
+          POSTGRES_DB: pgprime
+          TZ: UTC
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pgprime"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_PRIME_EXPECT_BUN: '1'
+      PG_PRIME_TEST_URL: postgres://pgprime:pgprime@127.0.0.1:5432/pgprime
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter pg-prime --filter @pg-prime/testing --filter @pg-prime/create exec bunx --bun vitest run --project unit
+      - name: pg-prime tier 2 on Bun, LISTEN reconnect + gap must not skip
+        working-directory: packages/pg-prime
+        run: |
+          test -n "$PG_PRIME_TEST_URL"
+          bunx --bun vitest run --project pg --reporter=default --reporter=json --outputFile.json=pg.json
+          jq -e '[.testResults[] | select(.name | endswith("session-listen.test.ts")) | .assertionResults[].status] | length > 0 and all(. == "passed")' pg.json
+
   perf:
     # design/08 §5: "On PRs labelled `perf`: the runtime benchmark runs and posts a 3-run-median
     # comparison. Informational, never blocking." So this job exists only when the label does, and
