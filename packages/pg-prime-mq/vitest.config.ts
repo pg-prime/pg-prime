@@ -45,6 +45,8 @@ export default defineConfig({
         test: {
           name: 'pg',
           include: ['test/pg/**/*.test.ts'],
+          // Tier-2 files measure latencies and share one server's connection budget.
+          fileParallelism: false,
           setupFiles: ['../pg-prime/test/live/_bun.ts'],
           testTimeout: SLOW_MS,
           hookTimeout: SLOW_MS,

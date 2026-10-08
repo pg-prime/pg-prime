@@ -1,6 +1,55 @@
 ---
 title: "Work queues"
-description: Message states, the lease model and the EPQ rule.
+description: Message states, the lease and token model, and why claims count only on locked rows.
 ---
 
-`@pg-prime/mq` is being built; this page is written with it. The design is [plan 17](https://github.com/pg-prime/pg-prime/blob/main/design/17-mq.md).
+A work queue hands each message to one consumer at a time and survives that consumer dying.
+`@pg-prime/mq` does it with one table, a lease, a token, and statements that decide only from
+rows they hold locked.
+
+## States
+
+| State | Meaning | Leaves by |
+|---|---|---|
+| `ready` | claimable now | a claim |
+| `delayed` | claimable from `run_at` (database clock) | promotion, `promote()` |
+| `active` | held by one consumer's lease | completion, failure, defer, release, expiry |
+| `blocked` | a flow parent waiting for its children | the last child resolving, or a `fail` child |
+| `completed` | done; `result` stored | retention, `retry()` |
+| `failed` | out of attempts, or non-retryable: the dead-letter state | retention, `retry()`, `purge()` |
+| `cancelled` | cancelled before or while running | retention, `retry()` |
+
+Every transition is one statement, or one short transaction for a failure that climbs a flow.
+Every move into `completed`, `failed` or `cancelled` is built by one function, whatever the path,
+so the dedup key, the group and queue counters, the parent's dependency count and the watch
+notification are always settled together.
+
+## The lease and the token
+
+A claim sets `state = 'active'`, a fresh `token` and `lease_until = now() + leaseMs`. Every write
+the consumer makes after that is guarded: `where id = $id and token = $token and state =
+'active'`, and zero rows back is a `LeaseLostError`. A heartbeat extends every lease a worker holds
+in one statement, every `leaseMs / 3` by default.
+
+If a consumer stops heartbeating, a scanner finds `lease_until < now()` and treats the expiry as a
+**failed attempt**: the message is re-queued with backoff, or failed on its last attempt. A poison
+message that kills its worker therefore still reaches `failed`, and the old owner's late
+completion is rejected by the token guard. The guarantee is at-least-once, never two valid owners
+at once, and exactly-once for effects written in the same transaction as the completion.
+
+## Why counters live on locked rows
+
+Global and group limits are counters on the `queues` and `groups` rows. At READ COMMITTED a
+statement's snapshot is taken before it waits for a lock, so a count of active messages read in a
+claim would miss a claim that committed while it waited, and over-book.
+
+Instead a limited claim locks the queue row first (waiting, not skipping). When the holder
+commits, PostgreSQL re-evaluates the waiting claim against the **new** row version
+(EvalPlanQual), whose counters already include the other claim. Group rows are claimed with
+`SKIP LOCKED`, so a busy group is passed over rather than waited for.
+
+The same rule makes a flow parent release exactly once: siblings that finish together serialize
+on the parent row, and only the one that sees `pending_deps = 1` on the locked version releases it.
+
+Lock order is fixed: message rows, then the group row, then the queue row. A claim takes the queue
+row first but never waits on a message or group row, so no cycle can form.

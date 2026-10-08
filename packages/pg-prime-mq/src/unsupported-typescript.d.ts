@@ -27,4 +27,56 @@
 
 type Unsupported<Message = { ERROR: '@pg-prime/mq requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' }> = Message
 
+export declare const CancelledError: Unsupported
+export declare const LeaseLostError: Unsupported
+export declare const MessageFailedError: Unsupported
+export declare const NonRetryableError: Unsupported
+export declare const NotStartedError: Unsupported
+export declare const PayloadError: Unsupported
+export declare const SchemaVersionError: Unsupported
+export declare const defineQueue: Unsupported
+export declare const migrationSql: Unsupported
+export declare const pgMq: Unsupported
+export declare const spanAttributes: Unsupported
 
+export type BindOptions<T0 = any, T1 = any> = Unsupported
+export type Binding = Unsupported
+export type CancelledError = Unsupported
+export type ChildSendOptions = Unsupported
+export type ChildStatus = Unsupported
+export type Deferral = Unsupported
+export type FlowChild<T0 = any> = Unsupported
+export type FlowRef = Unsupported
+export type FlowRoot<T0 = any> = Unsupported
+export type GroupLimits = Unsupported
+export type Handler<T0 = any, T1 = any> = Unsupported
+export type InternalKind = Unsupported
+export type Keep = Unsupported
+export type KeepOptions = Unsupported
+export type LeaseLostError = Unsupported
+export type Message<T0 = any, T1 = any> = Unsupported
+export type MessageFailedError = Unsupported
+export type MessageRef = Unsupported
+export type MessageState = Unsupported
+export type Mq<T0 = any> = Unsupported
+export type MqConfig<T0 = any> = Unsupported
+export type MqHooks = Unsupported
+export type NonRetryableError = Unsupported
+export type NotStartedError = Unsupported
+export type OnFail = Unsupported
+export type PayloadError = Unsupported
+export type PayloadOf<T0 = any> = Unsupported
+export type PayloadOptions<T0 = any> = Unsupported
+export type QueueDef<T0 = any, T1 = any> = Unsupported
+export type QueueHandle<T0 = any, T1 = any> = Unsupported
+export type QueueOptions<T0 = any> = Unsupported
+export type ResultOf<T0 = any> = Unsupported
+export type RetryOptions = Unsupported
+export type RetryPolicy = Unsupported
+export type SchemaVersionError = Unsupported
+export type SendOptions = Unsupported
+export type SettleEvent = Unsupported
+export type SettleOutcome = Unsupported
+export type WorkContext<T0 = any, T1 = any> = Unsupported
+export type Worker = Unsupported
+export type WorkerOptions = Unsupported

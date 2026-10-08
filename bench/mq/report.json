@@ -1,0 +1,28 @@
+{
+  "when": "2026-10-08T19:33:36.670Z",
+  "server": "17.11",
+  "results": {
+    "fast path, NOTIFY on": {
+      "sendPerSec": 53731,
+      "perSec": 1970,
+      "messages": 100000
+    },
+    "fast path, NOTIFY off": {
+      "sendPerSec": 50428,
+      "perSec": 2108,
+      "messages": 100000
+    },
+    "groups (100), NOTIFY on": {
+      "sendPerSec": 45510,
+      "perSec": 817,
+      "messages": 100000
+    },
+    "retention, completed not kept": {
+      "sendPerSec": 55884,
+      "perSec": 1455,
+      "messages": 1000000,
+      "deadTuples": 121233,
+      "liveTuples": 0
+    }
+  }
+}

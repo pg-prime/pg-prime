@@ -1,7 +1,223 @@
 ---
 title: "@pg-prime/mq"
-description: Every export of @pg-prime/mq.
-apiEntry: "@pg-prime/mq#."
+description: Every export of @pg-prime/mq — declarations, the instance, queue handles, workers, flows, bindings and errors.
+apiEntry:
+  - "@pg-prime/mq#."
+  - "pg-prime#."
 ---
 
-`@pg-prime/mq` is being built; this page is written with it. The design is [plan 17](https://github.com/pg-prime/pg-prime/blob/main/design/17-mq.md).
+Work queues on PostgreSQL: competing consumers with a lease and a token, retries with backoff,
+delay, priority, dedup, groups, global limits, flows and topic bindings.
+[Queues](/pg-prime/guides/queues/) is the guide, [Work queues](/pg-prime/concepts/work-queues/)
+explains the lease model, and [Operating queues](/pg-prime/operations/queues/) covers sizing,
+poolers and retention.
+
+```sh
+pnpm add @pg-prime/mq
+```
+
+The one runtime dependency is `@pg-prime/events` (wake-ups and bindings); `pg-prime` is the peer.
+
+## Declarations
+
+### `defineQueue`
+
+{/* docs: signature */}
+```ts
+function defineQueue<T, R = void>(name: string, opts?: QueueOptions<T>): QueueDef<T, R>
+```
+
+`T` is the payload type, inferred from `schema` when one is given; `R` is the handler's result
+type. A `ConfigError` refuses `watch: true` with `keep.completed: false`, a `concurrency` below 1,
+a `rate` below 1 per 1 ms and `maxAttempts` below 1.
+
+| Type | What it is |
+|---|---|
+| <a id="QueueOptions"></a>`QueueOptions<T>` | `PayloadOptions<T>` plus `retry?`, `keep?`, `rate?: { max, perMs }`, `concurrency?`, `watch?` |
+| <a id="QueueDef"></a>`QueueDef<T, R>` | `{ kind: 'queue', name, payload, retry, shouldRetry, keep, rate, concurrency, watch }` |
+| <a id="RetryOptions"></a>`RetryOptions` | `{ maxAttempts?: 3, baseDelayMs?: 1000, maxDelayMs?: 60_000, jitter?: 'full', shouldRetry? }` |
+| <a id="RetryPolicy"></a>`RetryPolicy` | the stored part of a retry policy: `RetryOptions` without `shouldRetry`, all required |
+| <a id="KeepOptions"></a>`KeepOptions` | `{ completed?: Keep, failed?: Keep }`; defaults 1 day and 7 days; `failed` also covers `cancelled` |
+| <a id="Keep"></a>`Keep` | `false` (a completion deletes the row; a failure expires at once) or `{ ageMs?, count? }` |
+| <a id="PayloadOptions"></a>`PayloadOptions<T>` | `{ schema?: StandardSchemaV1<unknown, T>, codec?: { encode, decode } }` |
+| <a id="PayloadOf"></a>`PayloadOf<D>` | the payload type of a `QueueDef` |
+| <a id="ResultOf"></a>`ResultOf<D>` | the result type of a `QueueDef` |
+
+Payloads and results are JSON, at most 1 MiB; progress values at most 64 KiB. A NUL character
+anywhere is refused with its path.
+
+## The instance
+
+### `pgMq`
+
+{/* docs: signature */}
+```ts
+function pgMq<const D extends Record<string, QueueDef<any, any>> = {}>(config: MqConfig<D>): Mq<D>
+```
+
+### `MqConfig`
+
+| Field | Default | |
+|---|---|---|
+| `db` | — | the pg-prime `Db` |
+| `schema` | `'pgprime_mq'` | the schema the queues live in |
+| `autoMigrate` | `true` | `false` only checks the version and throws `SchemaVersionError` |
+| `events` | created on the first `bind` | the `pgEvents` instance bindings read through |
+| `define` | `{}` | declared queues |
+| `hooks` | — | an initial `MqHooks` observer |
+| `notify` | `true` | engine wake-up NOTIFYs; `false` makes workers find work by polling |
+
+### `Mq`
+
+| Member | |
+|---|---|
+| `queues` | a typed `QueueHandle` for every declaration in `define` |
+| `queue(def)` | a handle for an undeclared (ad hoc) queue |
+| `flow(root, { tx? })` | inserts a whole tree in one statement; returns a `FlowRef` |
+| `bind(sub, queue, opts?)` | runs a subscription reader that sends every entry as a message; returns a `Binding` |
+| `start()` | migrates and upserts declared queues (and starts `events`); required before any `{ tx }` call |
+| `migrate()` | applies missing schema versions whatever `autoMigrate` says |
+| `observe(hooks)` | adds an observer, returns the unsubscribe function |
+| `close()`, `[Symbol.asyncDispose]()` | stops every worker and binding this instance started; `db` stays open |
+
+### `migrationSql`
+
+{/* docs: signature */}
+```ts
+function migrationSql(opts?: { schema?: string }): OwnedSchemaFile[]
+```
+
+The schema as migration files to vendor into a kit project; they converge with `migrate()`.
+
+## Queues
+
+### `QueueHandle`
+
+| Method | |
+|---|---|
+| `start()` | upserts this queue's row; required before `{ tx }` sends on an ad hoc queue |
+| `send(payload, opts?)` | one message; `opts` is a `SendOptions`; returns a `MessageRef` |
+| `sendMany(items, { tx? })` | `items` are `{ payload, opts? }`; one statement per dedup mode |
+| `work(handler, opts?)` | starts a `Worker` |
+| `claim({ token?, leaseMs?, limit? })` | manual consumption: active `Message`s with their `token` |
+| `complete(m, result, { tx? })`, `fail(m, err, { tx?, final? })`, `extend(m, leaseMs)` | settle a claimed message; a lost lease is a `LeaseLostError` |
+| `get(ref)`, `list({ state?, limit?, after? })`, `counts()` | reads; `ref` is a `MessageRef`, an id or `{ key }` |
+| `result(ref, { timeoutMs?, signal?, pollMs? })` | the result; rejects with `MessageFailedError`; needs `watch: true` |
+| `watch(handler, { signal? })` | a live stream of `{ id, state }`; needs `watch: true` |
+| `pause()`, `resume()` | no claim starts while paused |
+| `cancel(ref, reason?)` | an idle message is cancelled at once; an active one through its handler's signal |
+| `retry({ ids } \| { state, limit? })` | finished → ready, attempts reset; refuses a parent with unresolved children |
+| `promote(ref)` | a delayed message becomes ready now |
+| `remove(ref)` | deletes the message and its descendants; refuses while any is active |
+| `purge({ states, olderThanMs? })` | batched deletes; refuses `active` |
+| `drop({ force? })` | deletes the queue; refuses while a message is active unless `force` |
+| `pauseGroup(key)`, `resumeGroup(key)`, `setGroupLimits(key, limits)` | per-group control; `limits` is a `GroupLimits` |
+
+### `SendOptions`
+
+`{ tx?, delayMs?, runAt?, priority?, lifo?, key?, dedup?, group?, retry? }`. `priority` is
+lower-first; `dedup` is `'until-done'` or `{ windowMs, extend? }` and needs `key`; `runAt` is
+compared on the database clock.
+
+| Type | What it is |
+|---|---|
+| <a id="MessageRef"></a>`MessageRef` | `{ queue, id, deduplicated }`; a deduplicated send returns the message holding the key |
+| <a id="Message"></a>`Message<T, R>` | `{ id, queue, state, payload, key, priority, group, attempts, claims, progress, result, error, token, createdAt, startedAt, finishedAt, runAt }` |
+| <a id="MessageState"></a>`MessageState` | `'ready' \| 'delayed' \| 'active' \| 'completed' \| 'failed' \| 'cancelled' \| 'blocked'` |
+| <a id="GroupLimits"></a>`GroupLimits` | `{ concurrency?: number \| null, rate?: { max, perMs } \| null }`; `null` clears, absent keeps |
+
+## Workers
+
+### `Handler`
+
+`(msg, ctx) => Promise<R | Deferral>`. Resolving completes the message with the result; throwing
+retries it with backoff, or fails it on the last attempt or with a `NonRetryableError`.
+
+### `WorkContext`
+
+| Member | |
+|---|---|
+| `signal`, `token`, `attempt` | aborts on lease loss, cancel or `close({ graceMs })`; `attempt` is 1-based |
+| `progress(value)` | stores a progress value while the lease is held |
+| `spawn(queue, payload, opts?)` | a child of this message, inserted with its dependency; `opts` is a `ChildSendOptions` |
+| `childResults()` | `{ '<queue>:<id>': { status, value? } }` |
+| `complete(result, { tx })` | completes inside your transaction; must be its last statement |
+| `transaction(fn)` | `db.transaction(fn)` with `complete` as its last statement |
+| `defer({ delayMs } \| { until })`, `rateLimit(ms)`, `waitForChildren()` | return one as the handler's result: no attempt is counted |
+
+| Type | What it is |
+|---|---|
+| <a id="Deferral"></a>`Deferral` | what `defer`, `rateLimit` and `waitForChildren` return |
+| <a id="ChildStatus"></a>`ChildStatus` | `'pending' \| 'completed' \| 'failed' \| 'ignored'` |
+
+### `WorkerOptions`
+
+| Field | Default | |
+|---|---|---|
+| `concurrency` | `1` | messages handled at once |
+| `leaseMs` | `30_000` | how long a claim holds without a heartbeat |
+| `heartbeatMs` | `leaseMs / 3` | one statement extends every lease the worker holds |
+| `pollMs` | `5_000` | longest sleep without a wake-up |
+| `expireScanMs` | `15_000` | lease-expiry scan, one scanner per queue per interval |
+| `maintenanceMs` | `5_000` | retention, counter reconcile, dedup cleanup |
+| `localRate` | — | `{ max, perMs }` for this worker's own claims |
+| `group` | — | `{ concurrency?, rate?, scan? }` defaults for groups whose row sets none |
+| `signal` | — | aborting it closes the worker |
+| `controlDb` | `db` | a second small pool for claims, heartbeats and expiry |
+
+### `Worker`
+
+`{ running, close({ graceMs? }), [Symbol.asyncDispose]() }`. `close` stops claiming and waits for
+running handlers; with `graceMs` it then aborts their signals and releases those that fail.
+
+## Flows
+
+| Type | What it is |
+|---|---|
+| <a id="FlowRoot"></a>`FlowRoot<T>` | `{ queue, payload, opts?, children? }`; dedup only here |
+| <a id="FlowChild"></a>`FlowChild<T>` | `{ queue, payload, opts?: ChildSendOptions, children? }` |
+| <a id="FlowRef"></a>`FlowRef` | a `MessageRef` plus `children: FlowRef[]` |
+| <a id="ChildSendOptions"></a>`ChildSendOptions` | `SendOptions` without `tx`, `key` and `dedup`, plus `onFail?` |
+| <a id="OnFail"></a>`OnFail` | `'wait'` (default: the parent stays blocked), `'fail'` (the parent fails) or `'ignore'` |
+
+## Bindings
+
+| Type | What it is |
+|---|---|
+| <a id="BindOptions"></a>`BindOptions<E, T>` | `{ map?, batchSize?: 100, leaseMs?, pollMs?, signal? }`; `map` turns an `Entry` into `{ payload, key?, group?, priority? }` |
+| <a id="Binding"></a>`Binding` | `{ active, close(), [Symbol.asyncDispose]() }` |
+
+## Hooks
+
+### `MqHooks`
+
+`onSend`, `onClaim`, `onSettle`, `onLeaseExpired`, `onBind` and `onInternal`. Hooks are
+synchronous; a throwing hook is reported as `hook-failed` and never reaches your code.
+
+| Type | What it is |
+|---|---|
+| <a id="SettleEvent"></a>`SettleEvent` | `{ queue, id, outcome, durationMs, attempt, error? }` |
+| <a id="SettleOutcome"></a>`SettleOutcome` | `'completed' \| 'retry' \| 'failed' \| 'cancelled' \| 'deferred'` |
+| <a id="InternalKind"></a>`InternalKind` | `'listen-unavailable' \| 'heartbeat-failed' \| 'maintenance-failed' \| 'worker-failed' \| 'lease-lost' \| 'hook-failed'` |
+
+### `spanAttributes`
+
+{/* docs: signature */}
+```ts
+function spanAttributes(e: SettleEvent): Readonly<Record<string, string | number>>
+```
+
+OpenTelemetry messaging attributes (`messaging.system: 'pg-prime-mq'`,
+`messaging.destination.name`, `messaging.message.id`, `messaging.operation.type`) for a settle.
+
+## Errors
+
+| Class | `code` | Thrown when |
+|---|---|---|
+| <a id="NonRetryableError"></a>`NonRetryableError` | `MQ_NON_RETRYABLE` | thrown by a handler: fail now, no retries |
+| <a id="LeaseLostError"></a>`LeaseLostError` | `MQ_LEASE_LOST` | a token-guarded write found the message held by someone else |
+| <a id="CancelledError"></a>`CancelledError` | `MQ_CANCELLED` | the reason a handler's signal aborts on cancel or close |
+| <a id="MessageFailedError"></a>`MessageFailedError` | `MQ_FAILED` | `result()` of a failed or cancelled message; `state` says which |
+| <a id="PayloadError"></a>`PayloadError` | `MQ_PAYLOAD` | schema, codec, size or NUL check failed; `path` locates it |
+| <a id="SchemaVersionError"></a>`SchemaVersionError` | `MQ_SCHEMA_VERSION` | the schema is behind with `autoMigrate: false`, or newer than the client |
+| <a id="NotStartedError"></a>`NotStartedError` | `MQ_NOT_STARTED` | a `{ tx }` call came before `start()` resolved; a `UsageError` |
