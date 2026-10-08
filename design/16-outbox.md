@@ -475,3 +475,61 @@ and runs in parallel with them after S0 and F0.
 **Deferred from v0 (outbox):**
 - `onPark: 'skip'` — a second park mode that releases a key past a lost record; strict order plus operator `replay`/`discard` is one mechanism.
 - `repartition` — changing `P` races writers and strands parked records (X8).
+
+#### A3 — RESULT (2026-10-08)
+
+Branch `worktree-agent-ae2bae630fb22d361`, from `f2d0a36`. Commits: `38fcabb` source, `2c7b13f` tests,
+`8075511` api snapshot + `outbox-write` golden + pack-smoke consumer, `7cf0ec6` docs, `8e7fade` bench,
+`d372fbe` write-path refactor.
+
+**As built.** `defineOutbox`, `pgOutbox` (`topics`, `topic`, `start`, `migrate`, `close`),
+`OutboxTopic` (`write`, `writeMany`, `relay`, `parked`, `replay`, `discard`, `pause`, `resume`,
+`stats`, `start`, `name`), `functionSink`, `webhookSink`, `migrationSql`, and the errors
+`NotStartedError`, `SchemaVersionError`, `PayloadError`, `NonRetryableSinkError`,
+`OutboxLeaseLostError`. Statements W1, heartbeat, L1, release, R1, D1 (both variants), F1, K1,
+retention and admin are in `src/sql/` and `src/relay/`; the waker is local (X1).
+
+**Gates** (PG 17.11; shared server for the package tiers, a temporary `postgres:17` + `edoburu/pgbouncer`
+in transaction mode for the full chain, so every PgBouncer test ran):
+- outbox: unit 51, live (PGlite) 17, pg 9 (the whole §7 tier-2 table: per-key order under 4 relays and
+  8 writers over 200 × 100 records, ordered writes + the `ordered: false` inversion, no concurrent
+  delivery of a partition while relays come and go, head failure, SIGKILL, rebalance 1 → 4 → 2, wake
+  latency, PgBouncer). Bun 1.4.2: unit 51, pg 9.
+- Mutation checks: dropping the failed-key exclusion fails "head failure"; keeping released partitions
+  fails "no concurrent delivery" and "rebalance".
+- Full chain green: lint, format, typecheck, test, test:live, test:pg (pg-prime 2 031, kit 461, …,
+  outbox 77), build, package:check, bench:types, bench:compile, docs:check (104 examples),
+  docs:examples:pg (10).
+
+**Measured (for the integrator to ratchet):** unpacked 116.4 KB (budget 120 KB); install footprint
+132.7 KB (150 KB); `outbox-write` tree-shake delta 7 305 B min+gz (budget 10 240 → 8 192).
+Bench (local PG 17): writes/s ordered 2 671, unordered 2 867; relay records/s at P = 16: 1 relay
+29 350, 4 relays 39 726.
+
+**Plan fixes and deviations:**
+- X2/W1: `mod(abs(hashtextextended(key, 0)), P)` overflows when the hash is the minimum bigint; the
+  plan text and code now use `abs(hashtextextended(key, 0) % P)`.
+- W1 generates a missing idempotency key client-side (`randomUUID()`), so every input row maps back by
+  `idem`; duplicates' ids come from a second statement only when there are duplicates.
+- L1 also returns the live relay count (one aggregate row over the update CTE). The relay runs L1 on
+  every loop round unless it is above its share, and releases excess right after; with the NOTIFY in
+  `release`, a released partition is re-leased at once, not at the next heartbeat.
+- The heartbeat also deletes other members unseen for `10 × leaseMs`.
+- Additions to §5: `NotStartedError`, `SchemaVersionError`, `PayloadError` (family names),
+  `migrationSql`, `ParkedRecord` (`parked()` returns the error), `PartitionStats`/`OutboxStats` shapes,
+  `OutboxTopic.name`, and the internal kind `relay-failed`.
+- `tsconfig.build.json` loads `node` types (the package imports `node:crypto` and `node:os`).
+- `bench/outbox` is a dependency-free workspace package reading the built `dist`. `pnpm install` adds
+  `bench/outbox: {}` to `pnpm-lock.yaml` importers; not committed (integrator file).
+- knip now hints that `packages/pg-prime-outbox`'s `ignoreDependencies` can be dropped.
+
+**INDEX lines (integrator):**
+- `- docs/packages/pg-prime-outbox/src/index.md — @pg-prime/outbox entry: defineOutbox, public types, error classes — read when changing the outbox's exported surface.`
+- `- docs/packages/pg-prime-outbox/src/outbox.md — pgOutbox: schema start-up, topic handles, start rules, lazy admin calls — read when changing start(), write gating or topic handles.`
+- `- docs/packages/pg-prime-outbox/src/relay/deliver.md — R1 read, waves, D1/F1/K1 settles under the partition lock, retention sweep — read when changing delivery, failure or retention SQL.`
+- `- docs/packages/pg-prime-outbox/src/relay/lease.md — partition leases: heartbeat, L1 fair share, release, why leases give per-key order — read when changing leasing or rebalance.`
+- `- docs/packages/pg-prime-outbox/src/relay/relay.md — relay loop, waker, backoffMs, close/grace — read when changing relay scheduling, wake-ups or shutdown.`
+- `- docs/packages/pg-prime-outbox/src/schema.md — outbox migration v1 tables and indexes, migrationSql vendoring — read when changing the outbox schema.`
+- `- docs/packages/pg-prime-outbox/src/sinks.md — functionSink and webhookSink: headers, HMAC, retryable statuses — read when changing sinks or the webhook contract.`
+- `- docs/packages/pg-prime-outbox/src/sql/admin.md — topic create, parked list, replay, discard, pause, stats statements — read when changing operator calls.`
+- `- docs/packages/pg-prime-outbox/src/sql/write.md — W1 write: key locks, idempotent insert, NOTIFY, why id order is commit order — read when changing the write path.`
