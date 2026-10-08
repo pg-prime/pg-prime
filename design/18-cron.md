@@ -144,7 +144,7 @@ Inputs: the row and `db_now`. Outputs: `$expect = next_at` (always), and `$fire`
 - **Horizon.** `h = min(db_now, end_at)`. No tick after `end_at` is ever fired, whatever the
   policy. A late tick inside the horizon:
   - `late = db_now − next_at ≤ grace` → `$fire = next_at`.
-  - Otherwise, with `missed` = ticks in `(next_at, h]` (counted with croner, capped at 10 000):
+  - Otherwise, with `missed` = ticks in `[next_at, h]` (counted with croner, capped at 10 000):
     - `skip` → fire none; write one `missed` run with `$fire` = the last tick ≤ `h`;
     - `once` (default) → `$fire` = the last tick ≤ `h`; that run carries `missed − 1`.
 - **Next.**
@@ -262,7 +262,7 @@ another run. That holds during `close()` too.
    (`for update skip locked`) gets F1 with `$st = 'failed'` and `error = 'lease-expired'` (a
    `cancelling` run gets `cancelled`), guarded by state instead of token.
 2. **Counter reconcile, lock-then-count** (15 §0.5 rule 3). A short transaction locks schedules with
-   `running > 0` (`for update skip locked`, ≤ 500 rows). Its second statement (a fresh snapshot)
+   `running > 0` or an open run (`for update skip locked`, ≤ 500 rows). Its second statement (a fresh snapshot)
    sets `running = count(pending, running, cancelling)`. Every statement that moves the counter
    holds the same row lock, so the count cannot race them.
 3. **Retention.** Per schedule, delete finished runs beyond `keep_runs` or older than
@@ -376,7 +376,7 @@ export interface CronHooks {
   onRunStart?(e: { schedule: string; runId: bigint; manual: boolean }): void
   onRunEnd?(e: { schedule: string; runId: bigint; state: RunState; durationMs: number; error?: unknown }): void
   onMisfire?(e: { schedule: string; policy: 'skip' | 'once'; missed: number }): void
-  onInternal?(e: { kind: 'listen-unavailable' | 'heartbeat-failed' | 'pending-unclaimed' | 'hook-failed'; message: string; cause?: unknown }): void
+  onInternal?(e: { kind: 'listen-unavailable' | 'heartbeat-failed' | 'pending-unclaimed' | 'hook-failed' | 'loop-failed'; message: string; cause?: unknown }): void
 }
 ```
 
@@ -426,7 +426,7 @@ declared retry, retention and limits are never overwritten.
 | Queue target: crash mid-transaction | nothing committed; the tick is claimed again on the next loop (grace permitting) | §6 |
 | All instances down for an hour | misfire policy on restart; `onMisfire` with the count | C-D7 |
 | Clock skew / host time zone | none: ticks from DB times, `tz` explicit, default UTC | C-D5 |
-| DST gap or overlap | croner semantics: a nonexistent local time is skipped, a repeated hour fires once (pinned by unit goldens) | C-D3 |
+| DST gap or overlap | croner semantics: a nonexistent local time fires one hour later (02:30 → 03:30) at most once, a repeated hour fires once (pinned by unit goldens) | C-D3 |
 | NOTIFY unavailable | edits and triggers reach other instances within `pollMs`; due ticks are unaffected (timer-driven) | §4 |
 | Rolling deploy with two code versions of one schedule | `spec_hash` flip-flops until the deploy finishes; `next_at` is recomputed each time (C-Q3) | C-D10 |
 
@@ -550,3 +550,87 @@ rate limits; a UI.
 - `overlap: 'queue'` — needs a queued state, a promotion path, and its own races in finish, cancel, maintenance and shutdown; `skip`/`allow` remain.
 - `misfire: 'all'` with `maxCatchUp` — needs per-catch-up state the stateless planner cannot hold; `skip`/`once` remain.
 - The mq group mapping for queue-target overlap (followed `overlap: 'queue'` out).
+
+#### A4 — RESULT (2026-10-08)
+
+Branch `worktree-agent-ab6853aa5a4785be8`, from `f2d0a36`. Commits: `d5c6e49` core (C0–C2),
+`b82e1db` tier-2 suite, `8322f42` per-schedule isolation + format, `c246ef2`/`eb76d5e` goldens and
+pack-smoke consumer, `6d60d81` docs, `e42f257` inlined SIGKILL victim, plus this RESULT.
+
+**As built.** `defineSchedule`, `pgCron` (`start`, `close`, `create`, `update`, `remove`, `pause`,
+`resume`, `enable`, `disable`, `trigger`, `cancel`, `get`, `list`, `runs`, `preview`, `prune`,
+async dispose), `CronLeaseLostError`, `ScheduleError` (with `field`), `SchemaVersionError`, and the
+§5 types. Migration v1 as §2. Statements Q1, K1, `advance`, T1, T2, heartbeat, F1, X1, maintenance
+(gate, expire, reconcile, retain, pending-unclaimed) in `src/sql/*`, golden-tested. croner is
+`import()`ed on the first pattern. `src/target/queue.ts` is the seam (`startQueues`, `queueTick`,
+`queueTrigger`), wired into `start()`, `tick()` and `trigger()`; each rejects with
+`UsageError('queue target not implemented')`.
+
+**Gates.** All green on PG 17.11:
+- cron: unit 59; live 78 (unit + 19 tier 1); pg 94 (adds 8 tier-2 × direct and PgBouncer
+  transaction mode by polling). Bun 1.4.2: unit 59, pg 8 (direct).
+- Full chain, test:pg on a temporary `postgres:17` + `edoburu/pgbouncer` (transaction mode):
+  - unit: pg-prime 1 122, create 35, testing 23, cron 59, 3 × 1 slot;
+  - live: pg-prime 1 949 (+12 skipped), testing 28, cron 78, 3 × 1;
+  - pg: pg-prime 2 031 (+29 skipped), kit 461, create 42, testing 36, cron 94, 3 × 1;
+  - package:check 27/27 size gates; tree-shake ok; pack smoke ok;
+  - docs:check: 654 blocks, 106 examples; docs:examples:pg 10; bench:types, bench:compile.
+- `dist`/`src` hold no `@pg-prime/mq` specifier (`test/unit/package.test.ts`); cron's pack-smoke
+  project installs without mq and runs `preview` over `createMockPool`.
+
+**Measured (for `tools/budgets.json`):** unpacked 141.4 KB (144 794 B) in 71 files, tarball
+34.6 KB; install footprint 306.6 KB of 350 KB; `cron-define` 17 832 B min+gz delta over pg-prime
+(design 20 480), 27 modules, croner included.
+
+**Deviations and plan corrections** (plan text fixed where marked):
+- §3.2 misfire count is over `[next_at, h]`, so 10 overdue ticks give `missed = 9` as the §8 oracle
+  states (fixed). `onMisfire.missed` = ticks not run.
+- §7 DST: croner 10.0.1 fires a nonexistent local time one hour later (02:30 → 03:30), at most
+  once; it does not skip it (fixed). Pinned by goldens for New York and Berlin.
+- §3.7 reconcile also locks schedules with an open run, so a counter that drifted low is repaired
+  (fixed). Expiry groups by schedule: `update … from f` with two expired runs of one schedule
+  would decrement once.
+- `onInternal` gained `'loop-failed'` (fixed in §5): a failing iteration, or one schedule's failing
+  tick (e.g. a throwing payload function), is reported and the other schedules continue.
+- Q1 also returns `overlap`, `payload`, `timeout_ms`, `retry`; T2 joins them, so the database is the
+  source of truth for everything but the handler and a payload function.
+- K1 sets `finished_at` on `skipped`/`missed` rows and returns `payload`; handlers get the stored
+  JSON for ticks and manual runs alike. T1 matches only `target = 'handler'` and
+  `coalesce`s the schedule's payload.
+- The heartbeat is one statement for all live runs (`unnest` of ids and tokens).
+- Sync recomputes `next_at`/`anchor_at` only when the timing (pattern, every, at, tz, start, end,
+  limit) changed; other definition changes keep `next_at`. A one-shot `at` in the past is stored, so
+  the misfire policy decides it. The `every` grid extends in both directions from its anchor.
+- `SchemaVersionError` (code `CRON_SCHEMA_VERSION`) added per 15 §0.3. No `NotStartedError`: no cron
+  API takes `{ tx }`, so §8's tier-1 bullet does not apply.
+- `Cron extends AsyncDisposable_` (core's), not the lib type: the build has no `esnext.disposable`.
+- The default instance is `$HOSTNAME:pid:random` read from `globalThis.process`: the build has no
+  Node types, so `node:os` is not imported.
+- `remove({ force: true })` deletes schedule → runs, the reverse of F1's lock order; a concurrent
+  finish can deadlock (40P01). Documented, not fixed.
+
+**For A6.** `QueueContext` is `{ db, t, enqueuer, instance }`; `queueTick(c, def, row, plan, payload)`
+gets the Q1 row (with `overlap`) and the planner's `{ expect, fire, decided, missed, next }`; call
+`claim()` from `src/sql/claim.ts` with `decided: plan.decided ?? 'enqueued'` inside your transaction,
+and return `{ runId, state }` so `tick()` emits `onTick`/`onMisfire`. `queueTrigger` must return
+`{ runId, state }`. `startQueues` receives the declared queue-target defs and runs only when an
+`enqueuer` is set; without one, queue schedules are synced but never claimed (C-D9). Replace the
+test "a queue target is a seam until the mq target lands" in `test/live/cron.test.ts`.
+
+**INDEX lines (integrator):**
+- `- docs/packages/pg-prime-cron/src/cron.md — pgCron instance: start-up, claim loop, maintenance cadence, admin methods — read when changing cron start/close, the loop or admin calls.`
+- `- docs/packages/pg-prime-cron/src/define.md — defineSchedule validation, schedule columns, spec hash — read when a ScheduleError field or code-schedule sync looks wrong.`
+- `- docs/packages/pg-prime-cron/src/index.md — @pg-prime/cron exports, errors and public types — read when finding which cron export to use.`
+- `- docs/packages/pg-prime-cron/src/migrations.md — pgprime_cron migration v1 tables, indexes, runs_tick — read when changing the cron schema.`
+- `- docs/packages/pg-prime-cron/src/planner.md — misfire planner: grace, once/skip, endAt, limit — read when a late or missed tick fires wrongly.`
+- `- docs/packages/pg-prime-cron/src/runner.md — handler runs: lease, heartbeat, timeout, retry, cancel, drain — read when a run stays running, cancelling or times out wrongly.`
+- `- docs/packages/pg-prime-cron/src/sql/claim.md — Q1, K1 claim, T1 trigger, T2 pickup; exactly-once argument — read when a tick runs twice or never.`
+- `- docs/packages/pg-prime-cron/src/sql/maintenance.md — lease expiry, counter reconcile, retention, maintenance gate — read when running counters drift or history grows.`
+- `- docs/packages/pg-prime-cron/src/sql/runs.md — heartbeat, F1 finish, X1 cancel statements — read when finishing or cancelling a run misbehaves.`
+- `- docs/packages/pg-prime-cron/src/sql/schedules.md — schedule upsert/sync, admin statements, row decoders — read when sync or admin calls write the wrong row.`
+- `- docs/packages/pg-prime-cron/src/target/queue.md — queue-target seam for the mq target (C4) — read when implementing or calling the cron queue target.`
+- `- docs/packages/pg-prime-cron/src/ticks.md — next-tick module: croner patterns, every grid, at, DST — read when a pattern, time zone or DST tick is wrong.`
+- `- docs/packages/pg-prime-cron/src/wake.md — LISTEN-or-poll sleep for the cron loop — read when cron reacts slowly to triggers or behind PgBouncer.`
+
+**Integrator also:** knip's `ignoreDependencies` for cron (`croner`, `pg-prime`, `@pg-prime/testing`)
+can be dropped; the cron tier-2 test bundles a child process with the root `esbuild`.
