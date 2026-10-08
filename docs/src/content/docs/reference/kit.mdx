@@ -850,9 +850,10 @@ Tier R: `sql/` files re-applied whenever their bytes change, recorded in `pgprim
 
 Tier R, the half that comes from TypeScript rather than from a file you wrote. `migrate generate`
 renders every `pgView` / `pgMaterializedView` in the schema into `<repeatablesDir>/020_views/` —
-before the shadow loads the lane, so the shadow gets the current definitions and the proof covers
-them — and from that point on they are ordinary repeatables: hashed, drift-detected, re-applied on
-change, and visible in the pull request that changed them.
+the shadow loads the same text from memory, so the proof covers the current definitions, and the
+files are written only when the run succeeds — and from that point on they are ordinary
+repeatables: hashed, drift-detected, re-applied on change, and visible in the pull request that
+changed them.
 
 A file rather than an in-memory contribution because `apply`, `status` and `doctor` do not load the
 TypeScript schema, and `apply` in particular has to work in a deploy image that ships migrations and
@@ -881,8 +882,7 @@ Every object carries `COMMENT … IS 'pg-prime:declared sha256:<hash of its CREA
 marked objects in the managed schemas that are no longer declared, and is rendered for as long as the
 file exists — only a person deletes it. `generate` loads the lane into the shadow from memory,
 rendered into the shadow's schemas and without the prune, and refuses the whole write on a
-`declared_conflict`, a `policy_unknown_role` or an unacknowledged RL101/RL103/RL105/RL108. See the
-[row-level security guide](/pg-prime/guides/row-level-security/).
+`declared_conflict`, a `policy_unknown_role` or an unacknowledged RL101/RL103/RL105/RL108.
 
 | Name | Shape | What it is |
 |---|---|---|
