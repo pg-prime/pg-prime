@@ -34,8 +34,7 @@
     },
     "packages/pg-prime-cron": {
       "entry": ["src/index.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
-      "project": ["src/**/*.ts", "test/**/*.ts"],
-      "ignoreDependencies": ["@pg-prime/mq"]
+      "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "packages/pg-prime-events": {
       "entry": ["src/index.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
@@ -58,17 +57,7 @@
         "test/bun/*.ts"
       ],
       "project": ["src/**/*.ts", "test/**/*.ts"],
-      "ignoreDependencies": [
-        "@apollo/server",
-        "@as-integrations/express5",
-        "@nestjs/apollo",
-        "@nestjs/graphql",
-        "@nestjs/testing",
-        "@pg-prime/context",
-        "@pg-prime/testing",
-        "graphql",
-        "pg-prime"
-      ]
+      "ignoreDependencies": ["@as-integrations/express5"]
     },
     "packages/pg-prime-outbox": {
       "entry": ["src/index.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],

@@ -130,6 +130,13 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime-mq/src/sql/settle.md — finish builder, guards, deps/group/global fragments, moves — read when editing settle SQL or lock order.
 - docs/packages/pg-prime-mq/src/sql/tables.md — identifiers, run/withCtes, watch and wake fragments — read when adding a statement or a NOTIFY fragment.
 - docs/packages/pg-prime-mq/src/util.md — sleep, ASYNC_DISPOSE, backoffMs, local rate limiter — read when retry delays or localRate misbehave.
+- docs/packages/pg-prime-nestjs/src/add-on.md — provideAddOn: add-on from the module's Db, start at bootstrap, close before the pool ends — read when an add-on starts, stops or ends in the wrong order.
+- docs/packages/pg-prime-nestjs/src/index.md — @pg-prime/nestjs entry: module, decorators, tokens, provideAddOn, context re-exports — read when changing the nestjs package's exported surface.
+- docs/packages/pg-prime-nestjs/src/module.md — PgPrimeModule forRoot/forRootAsync: db, host, lifecycle and interceptor providers per name — read when module wiring, shutdown or db.end misbehaves.
+- docs/packages/pg-prime-nestjs/src/request.md — request interceptor and @RequestTransaction: settings scope, tx modes, GraphQL field resolvers — read when a request runs without its settings or transaction.
+- docs/packages/pg-prime-nestjs/src/testing.md — rollbackScopeFor, rollback-per-test for a Nest app — read when changing how Nest tests pin the host.
+- docs/packages/pg-prime-nestjs/src/tokens.md — db/host tokens, InjectDb/InjectHost, the host registry and hostOf — read when injection or @Transactional host resolution picks the wrong host.
+- docs/packages/pg-prime-nestjs/src/transactional.md — @Transactional: wrapper, label, metadata copy, propagation — read when a decorated method joins, nests or loses route metadata wrongly.
 - docs/packages/pg-prime-outbox/src/index.md — @pg-prime/outbox entry: defineOutbox, public types, error classes — read when changing the outbox's exported surface.
 - docs/packages/pg-prime-outbox/src/outbox.md — pgOutbox: schema start-up, topic handles, start rules, lazy admin calls — read when changing start(), write gating or topic handles.
 - docs/packages/pg-prime-outbox/src/relay/deliver.md — R1 read, waves, D1/F1/K1 settles under the partition lock, retention sweep — read when changing delivery, failure or retention SQL.
