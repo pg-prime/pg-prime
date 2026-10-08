@@ -101,6 +101,28 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime-kit/src/seed/run.md — `db seed` scan, sets, production refusal, per-file transactions — read when seeds run in the wrong order, refuse, or fail.
 - docs/packages/pg-prime-kit/src/shadow/ladder.md — shadow tiers 1–3 provisioning, strategy parsing, tier-4 refusal — read when generate picks the wrong shadow tier or leaves shadow objects.
 - docs/packages/pg-prime-kit/src/sql.md — identifier/literal quoting, PostgreSQL auto-naming, SQL lexer and statement splitter — read when quoting rejects a name or SQL splitting/canonicalization misbehaves.
+- docs/packages/pg-prime-mq/src/define.md — defineQueue declarations, retry/keep/limit defaults, PayloadOf/ResultOf — read when adding a queue option or changing defaults.
+- docs/packages/pg-prime-mq/src/errors.md — MQ_* error classes and when each is thrown — read when an mq error code or message changes.
+- docs/packages/pg-prime-mq/src/hooks.md — MqHooks bus, InternalKind values, spanAttributes — read when adding a hook, an onInternal kind or span attributes.
+- docs/packages/pg-prime-mq/src/index.md — @pg-prime/mq entry exports — read when adding or renaming an mq export.
+- docs/packages/pg-prime-mq/src/mq.md — pgMq instance, schema ensure, queue upserts, start/migrate/close, migrationSql — read when changing start-up, autoMigrate or NotStartedError.
+- docs/packages/pg-prime-mq/src/payload.md — payload/result/progress encoding, schema, codec, NUL and size limits — read when a payload is refused or decoding fails.
+- docs/packages/pg-prime-mq/src/queue/bind.md — topic→queue binding: send and offset commit in one transaction — read when a binding duplicates, stalls or parks entries.
+- docs/packages/pg-prime-mq/src/queue/context.md — Message view, WorkContext, ctx.complete({ tx }), deferral sentinels — read when changing handler context or transactional completion.
+- docs/packages/pg-prime-mq/src/queue/flow.md — SendOptions, MessageRef, flows and ctx.spawn row building — read when changing send options, flows or spawn.
+- docs/packages/pg-prime-mq/src/queue/handle.md — QueueHandle sends, dedup lookups, manual claims, result/watch, admin — read when changing a queue handle method.
+- docs/packages/pg-prime-mq/src/queue/settle.md — completion, retry/backoff, final failure and the fail cascade transaction — read when a message settles wrongly or a cascade deadlocks.
+- docs/packages/pg-prime-mq/src/queue/worker.md — worker loop: claims, slots, heartbeats, expiry, maintenance, indeterminate commits — read when a worker stalls, double-runs or loses leases.
+- docs/packages/pg-prime-mq/src/schema/migrations.md — mq schema v1: queues, messages, groups, deps, dedup and indexes — read when changing the mq schema or adding a migration.
+- docs/packages/pg-prime-mq/src/sql/admin.md — queue upsert, pause, cancel flag, retry, remove, purge, drop, group rows — read when editing an admin statement.
+- docs/packages/pg-prime-mq/src/sql/claim.md — S2 promote, S3/S4/S5 claims, skip scan, EPQ counters — read when claims over-book, starve groups or slow down.
+- docs/packages/pg-prime-mq/src/sql/lease.md — S6 heartbeat, S9 lease expiry, SQL backoff — read when leases expire wrongly or a recovery runs twice.
+- docs/packages/pg-prime-mq/src/sql/maintain.md — maintenance gate, retention, dedup cleanup, lock-then-count reconciles — read when retention or counters drift.
+- docs/packages/pg-prime-mq/src/sql/read.md — message row shape, get/list/counts, child results, holder check — read when changing a read or the Message mapping.
+- docs/packages/pg-prime-mq/src/sql/send.md — S1/F1/spawn insert, dedup decision, group and deps rows — read when a send duplicates, loses a dedup key or misses a group row.
+- docs/packages/pg-prime-mq/src/sql/settle.md — finish builder, guards, deps/group/global fragments, moves — read when editing settle SQL or lock order.
+- docs/packages/pg-prime-mq/src/sql/tables.md — identifiers, run/withCtes, watch and wake fragments — read when adding a statement or a NOTIFY fragment.
+- docs/packages/pg-prime-mq/src/util.md — sleep, ASYNC_DISPOSE, backoffMs, local rate limiter — read when retry delays or localRate misbehave.
 - docs/packages/pg-prime-outbox/src/index.md — @pg-prime/outbox entry: defineOutbox, public types, error classes — read when changing the outbox's exported surface.
 - docs/packages/pg-prime-outbox/src/outbox.md — pgOutbox: schema start-up, topic handles, start rules, lazy admin calls — read when changing start(), write gating or topic handles.
 - docs/packages/pg-prime-outbox/src/relay/deliver.md — R1 read, waves, D1/F1/K1 settles under the partition lock, retention sweep — read when changing delivery, failure or retention SQL.

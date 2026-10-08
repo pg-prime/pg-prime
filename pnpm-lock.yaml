@@ -80,6 +80,8 @@ importers:
 
   bench/events: {}
 
+  bench/mq: {}
+
   bench/outbox: {}
 
   bench/runtime:

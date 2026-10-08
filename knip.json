@@ -43,8 +43,7 @@
     },
     "packages/pg-prime-mq": {
       "entry": ["src/index.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
-      "project": ["src/**/*.ts", "test/**/*.ts"],
-      "ignoreDependencies": ["@pg-prime/events", "@pg-prime/testing", "pg-prime"]
+      "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "packages/pg-prime-outbox": {
       "entry": ["src/index.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
