@@ -7,11 +7,11 @@
 //
 // ─── Method ──────────────────────────────────────────────────────────────────
 //
-//  1. The built package is staged into a throwaway `node_modules/pg-prime` in os.tmpdir() —
-//     `package.json` plus `dist/`, i.e. exactly what `files: ["dist"]` publishes. Every fixture
-//     imports `pg-prime` and `pg-prime/<subpath>` by NAME, so resolution goes through the export
-//     map. Bundling `../../packages/pg-prime/src` instead would test a thing we do not ship, and
-//     would silently pass if the export map pointed at nothing.
+//  1. Each package a fixture imports is staged into a throwaway `node_modules/<name>` in
+//     os.tmpdir() — `package.json` plus `dist/`, i.e. exactly what `files: ["dist"]` publishes —
+//     together with its `dependencies`. Fixtures import packages by NAME, so resolution goes through
+//     the export maps. Bundling `../../packages/*/src` instead would test a thing we do not ship,
+//     and would silently pass if an export map pointed at nothing.
 //  2. esbuild `--bundle --format=esm --minify --platform=node --metafile`, then gzip. That is
 //     §2.4 step 1 and step 2.
 //  3. **The exact set of included input modules is asserted against a committed golden**
@@ -24,6 +24,11 @@
 //     and its module set is diffed against esbuild's; the gate is esbuild's, because esbuild is
 //     what the golden is derived from and two bundlers on one gate is two ways to go red for a
 //     reason that is not ours. A rollup/esbuild module-set disagreement is printed loudly.
+//  5. An add-on fixture's budget is `{ "delta": bytes }`: the gate is the min+gz of the same entry
+//     bundled with `pg-prime` external, i.e. what the add-on adds over the pg-prime an app already
+//     ships. The module-set golden still covers the whole bundle.
+//  6. A golden of `{ "modules": null }` is a seeded slot whose API does not exist yet: while its
+//     entry fails to bundle it is reported as pending; once it bundles, the golden must be recorded.
 import { build as esbuild, transform } from 'esbuild'
 import { rollup } from 'rollup'
 import nodeResolve from '@rollup/plugin-node-resolve'
@@ -42,25 +47,44 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { PACKAGES } from './packages.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
 const FIXTURES = join(ROOT, 'fixtures', 'treeshake')
-const PKG_DIR = join(ROOT, 'packages', 'pg-prime')
 
 const gz = (text) => gzipSync(Buffer.from(text, 'utf8'), { level: 9 }).length
 const posix = (p) => p.split(sep).join('/')
 
-/** `node_modules/pg-prime` = package.json + dist, the two things `files: ["dist"]` ships. */
-function stagePackage(tmp) {
-  const dest = join(tmp, 'node_modules', 'pg-prime')
-  mkdirSync(dest, { recursive: true })
-  if (!existsSync(join(PKG_DIR, 'dist', 'index.js'))) {
-    throw new Error('treeshake-check: packages/pg-prime/dist is missing — run `pnpm build` first')
+/**
+ * The packages the fixtures import, plus their `dependencies` (workspace or third-party), under
+ * `tmp/node_modules`. Only what is imported: a staged `pg` (the kit's dependency) would turn
+ * pg-prime's lazy `import('pg')` into a bundled one.
+ */
+function stagePackages(tmp, names) {
+  const staged = new Set()
+  const stage = (name, from) => {
+    if (staged.has(name)) return
+    staged.add(name)
+    const ws = PACKAGES.find((p) => p.name === name)
+    const dest = join(tmp, 'node_modules', name)
+    if (!ws) {
+      cpSync(realpathSync(join(from, 'node_modules', name)), dest, { recursive: true })
+      return
+    }
+    const src = join(ROOT, ws.dir)
+    if (!existsSync(join(src, 'dist', 'index.js'))) {
+      throw new Error(`treeshake-check: ${ws.dir}/dist is missing — run \`pnpm build\` first`)
+    }
+    mkdirSync(dest, { recursive: true })
+    cpSync(join(src, 'dist'), join(dest, 'dist'), { recursive: true })
+    cpSync(join(src, 'package.json'), join(dest, 'package.json'))
+    for (const dep of Object.keys(ws.pkg.dependencies ?? {})) stage(dep, src)
   }
-  cpSync(join(PKG_DIR, 'dist'), join(dest, 'dist'), { recursive: true })
-  cpSync(join(PKG_DIR, 'package.json'), join(dest, 'package.json'))
-  return dest
+  for (const n of names) {
+    const entry = readFileSync(join(FIXTURES, n, 'entry.ts'), 'utf8')
+    for (const [, spec] of entry.matchAll(/from '((?:@[^/']+\/)?[^/']+)/g)) stage(spec, ROOT)
+  }
 }
 
 export function caseNames() {
@@ -73,8 +97,9 @@ export function caseNames() {
 /** Metafile input keys → stable module ids, relative to the staged tmp dir. */
 const normalise = (paths) => [...new Set(paths.map(posix))].sort()
 
-async function bundleWithEsbuild(tmp, name) {
+async function bundleWithEsbuild(tmp, name, external = []) {
   const result = await esbuild({
+    external,
     absWorkingDir: tmp,
     entryPoints: [join(tmp, name, 'entry.ts')],
     bundle: true,
@@ -150,16 +175,28 @@ export async function run({ update = false, only = undefined } = {}) {
   const tmp = mkdtempSync(join(tmpdir(), 'pg-prime-treeshake-'))
   const results = []
   try {
-    stagePackage(tmp)
     const names = caseNames().filter((n) => !only || n === only)
+    stagePackages(tmp, names)
     for (const name of names) {
       cpSync(join(FIXTURES, name), join(tmp, name), { recursive: true })
-      const es = await bundleWithEsbuild(tmp, name)
-      const ro = await bundleWithRollup(tmp, name)
-      const budget = budgets[name]
-      if (budget === undefined)
+      const spec = budgets[name]
+      if (spec === undefined)
         throw new Error(`treeshake-check: no budget for fixture \`${name}\` in tools/budgets.json`)
       const goldenPath = join(FIXTURES, name, 'expected-modules.json')
+      const golden = existsSync(goldenPath)
+        ? JSON.parse(readFileSync(goldenPath, 'utf8')).modules
+        : undefined
+      let es
+      try {
+        es = await bundleWithEsbuild(tmp, name)
+      } catch (e) {
+        if (golden !== null) throw e
+        results.push({ name, pending: true })
+        continue
+      }
+      const ro = await bundleWithRollup(tmp, name)
+      const delta = typeof spec === 'object'
+      const budget = delta ? spec.delta : spec
       if (update) {
         writeFileSync(
           goldenPath,
@@ -177,14 +214,14 @@ export async function run({ update = false, only = undefined } = {}) {
           ) + '\n',
         )
       }
-      const golden = existsSync(goldenPath)
-        ? JSON.parse(readFileSync(goldenPath, 'utf8')).modules
-        : null
-      const gzEs = gz(es.code)
+      const recorded = update ? es.modules : (golden ?? null)
+      const gzEs = delta
+        ? gz((await bundleWithEsbuild(tmp, name, ['pg-prime', 'pg-prime/*'])).code)
+        : gz(es.code)
       const gzRo = gz(ro.code)
       const sizeOk = gzEs <= budget
-      const setDiff = golden ? diffSets(golden, es.modules) : { missing: [], added: [] }
-      const setOk = golden !== null && setDiff.missing.length === 0 && setDiff.added.length === 0
+      const setDiff = recorded ? diffSets(recorded, es.modules) : { missing: [], added: [] }
+      const setOk = recorded !== null && setDiff.missing.length === 0 && setDiff.added.length === 0
       // The entry itself is `entry.ts` for esbuild and the transpiled `entry.rollup.mjs` for
       // rollup, so it is dropped from BOTH sides of the second-opinion comparison — it is the same
       // file twice, not a disagreement.
@@ -192,13 +229,14 @@ export async function run({ update = false, only = undefined } = {}) {
       const bundlersAgree = diffSets(es.modules.filter(notEntry), ro.modules.filter(notEntry))
       results.push({
         name,
+        delta,
         gzEs,
         gzRo,
         budget,
         sizeOk,
         setOk,
         setDiff,
-        golden,
+        golden: recorded,
         modules: es.modules,
         bytes: es.bytes,
         bundlersAgree,
@@ -212,16 +250,21 @@ export async function run({ update = false, only = undefined } = {}) {
     `  ${'fixture'.padEnd(22)} ${'design'.padStart(9)} ${'esbuild'.padStart(9)} ${'budget'.padStart(9)}  ${'rollup'.padStart(9)}  modules`,
   )
   for (const r of results) {
+    if (r.pending) {
+      console.log(`  ${r.name.padEnd(22)} pending (the entry does not bundle yet: a seeded slot)`)
+      continue
+    }
     const design = budgets._design?.[r.name]
     console.log(
       `  ${r.name.padEnd(22)} ${String(design ?? '—').padStart(9)} ${String(r.gzEs).padStart(9)} ${String(r.budget).padStart(9)}  ` +
-        `${String(r.gzRo).padStart(9)}  ${String(r.modules.length).padStart(3)}  ${r.sizeOk ? 'ok' : 'FAIL'} ${r.setOk ? 'golden ok' : 'GOLDEN DRIFT'}`,
+        `${String(r.gzRo).padStart(9)}  ${String(r.modules.length).padStart(3)}  ${r.sizeOk ? 'ok' : 'FAIL'} ${r.setOk ? 'golden ok' : 'GOLDEN DRIFT'}${r.delta ? '  (delta over pg-prime)' : ''}`,
     )
   }
   console.log(`  (bytes, min+gz. design = design/08 §1.2; ${budgets._baselined})`)
 
   const failed = []
   for (const r of results) {
+    if (r.pending) continue
     // Same rule as size-budget.mjs and bench/runtime: a budget looser than its design number must
     // be named in `_overDesign` with a reason, or the tool fails even though the measurement passes.
     const design = budgets._design?.[r.name]
@@ -231,7 +274,7 @@ export async function run({ update = false, only = undefined } = {}) {
       )
     }
     if (!r.sizeOk) {
-      failed.push(`${r.name}: ${r.gzEs} B min+gz > budget ${r.budget} B`)
+      failed.push(`${r.name}: ${r.gzEs} B min+gz${r.delta ? ' delta' : ''} > budget ${r.budget} B`)
       console.error(`  top 10 contributors to \`${r.name}\` (pre-gzip bytes in the bundle):`)
       for (const [m, n] of Object.entries(r.bytes)
         .sort((a, b) => b[1] - a[1])

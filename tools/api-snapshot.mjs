@@ -37,6 +37,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
+import { PACKAGES } from './packages.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -47,13 +48,6 @@ const ts = require('typescript59')
 
 /** The brand text design §2.2 settles on, after the refinement note under the verified output. */
 const errorText = (pkgName) => `${pkgName} requires TypeScript >= 5.9 — see https://pg-prime.dev/ts`
-
-export const PACKAGES = [
-  { dir: 'packages/pg-prime', name: 'pg-prime', golden: 'pg-prime.json' },
-  { dir: 'packages/pg-prime-kit', name: '@pg-prime/kit', golden: 'pg-prime-kit.json' },
-  { dir: 'packages/pg-prime-create', name: '@pg-prime/create', golden: 'pg-prime-create.json' },
-  { dir: 'packages/pg-prime-testing', name: '@pg-prime/testing', golden: 'pg-prime-testing.json' },
-]
 
 /** The entries of an `exports` map that carry code, in map order. `./package.json` is not one. */
 export function entriesOf(pkgJson) {

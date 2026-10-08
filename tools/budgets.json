@@ -47,6 +47,51 @@
       "requiredPeers": ["pg-prime"],
       "optionalPeers": ["@electric-sql/pglite", "@testcontainers/postgresql"],
       "_whyPeers": "design/13 decision 3. Zero runtime `dependencies` — the assertion `zeroDependencies` switches on — with `pg-prime` the one REQUIRED peer (it is the package this one exists to test, and the real-server fixtures talk to the admin database through it rather than shipping a second wire client) and the two fixtures' backends OPTIONAL, each behind a lazy `import()` that fails with a sentence naming it. `size-budget.mjs` fails on any peer not named here, in either list, which is what keeps an optional peer from quietly becoming required."
+    },
+    "packages/pg-prime-events": {
+      "_design": {
+        "_why": "design/15 §0.4's table. installBytes is the package plus its runtime dependencies in its own throwaway project, excluding pg-prime (tools/pack-smoke.mjs).",
+        "unpackedBytes": 153600,
+        "installBytes": 204800
+      },
+      "unpackedBytes": 153600,
+      "installBytes": 204800,
+      "dependencies": [],
+      "requiredPeers": ["pg-prime"]
+    },
+    "packages/pg-prime-outbox": {
+      "_design": {
+        "_why": "design/15 §0.4's table. installBytes is the package plus its runtime dependencies in its own throwaway project, excluding pg-prime (tools/pack-smoke.mjs).",
+        "unpackedBytes": 122880,
+        "installBytes": 153600
+      },
+      "unpackedBytes": 122880,
+      "installBytes": 153600,
+      "dependencies": [],
+      "requiredPeers": ["pg-prime"]
+    },
+    "packages/pg-prime-mq": {
+      "_design": {
+        "_why": "design/15 §0.4's table. installBytes is the package plus its runtime dependencies in its own throwaway project, excluding pg-prime (tools/pack-smoke.mjs).",
+        "unpackedBytes": 358400,
+        "installBytes": 614400
+      },
+      "unpackedBytes": 358400,
+      "installBytes": 614400,
+      "dependencies": ["@pg-prime/events"],
+      "requiredPeers": ["pg-prime"]
+    },
+    "packages/pg-prime-cron": {
+      "_design": {
+        "_why": "design/15 §0.4's table. installBytes is the package plus its runtime dependencies in its own throwaway project, excluding pg-prime (tools/pack-smoke.mjs).",
+        "unpackedBytes": 153600,
+        "installBytes": 358400
+      },
+      "unpackedBytes": 153600,
+      "installBytes": 358400,
+      "dependencies": ["croner"],
+      "requiredPeers": ["pg-prime"],
+      "optionalPeers": ["@pg-prime/mq"]
     }
   },
   "treeshake": {
@@ -57,7 +102,11 @@
       "connect-one-select": 35840,
       "full-crud-tx": 56320,
       "root-import-all": 122880,
-      "side-effects-only": 200
+      "side-effects-only": 200,
+      "events-basic": 12288,
+      "outbox-write": 10240,
+      "mq-send": 30720,
+      "cron-define": 20480
     },
     "_measured": {
       "_when": "2026-10-08, the integrated doc-collab readiness tree: typed helpers + .collate() + executeRowCount()/.ifVersion().",
@@ -125,7 +174,20 @@
       "full-crud-tx": 73234,
       "root-import-all": 80140,
       "side-effects-only": 20
-    }
+    },
+    "events-basic": {
+      "delta": 12288
+    },
+    "outbox-write": {
+      "delta": 10240
+    },
+    "mq-send": {
+      "delta": 30720
+    },
+    "cron-define": {
+      "delta": 20480
+    },
+    "_delta": "design/15 §0.4: an add-on fixture's budget is `{ delta }`, the min+gz of its entry bundled with `pg-prime` external — what the add-on adds over the pg-prime an app already ships. Design numbers until the first measurement, then ratcheted by the rule above."
   },
   "_overDesign": {
     "_why": "Every entry is a budget deliberately looser than design/08 §1.2's number, with the reason and the measurement. `size-budget.mjs` FAILS on a budget that exceeds its `_design` twin and is not listed here, so widening one is a machine-checkable event and not only a review one. An entry leaves this block by measurement — by the number coming down — never by editing the number.",

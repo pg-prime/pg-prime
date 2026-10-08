@@ -1,0 +1,4 @@
+{
+  "_why": "Seeded slot: @pg-prime/mq does not export this API yet, so the gate reports it as pending. The workstream that builds it records the real set with `node tools/treeshake-check.mjs --update --case mq-send`.",
+  "modules": null
+}
