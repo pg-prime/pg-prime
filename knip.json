@@ -62,6 +62,7 @@
       "project": ["src/**/*.ts", "test/**/*.ts"],
       "ignoreDependencies": [
         "@apollo/server",
+        "@as-integrations/express5",
         "@nestjs/apollo",
         "@nestjs/graphql",
         "@nestjs/testing",
