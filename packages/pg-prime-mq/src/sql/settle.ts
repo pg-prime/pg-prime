@@ -57,8 +57,9 @@ const RETURNING = sql`m.id, m.queue, m.state, m.group_key, m.parent, m.dedup_key
  * `[deps]`: a settled child resolves its `deps` row and, unless it failed under `wait`, its
  * parent: a completed or ignored child decrements `pending_deps` (the last one releases a blocked
  * parent once, by EvalPlanQual on the parent row); a `fail` child flags `child_failed`.
+ * `removed`: a removed child also resolves a `failed` row, which its parent still counts.
  */
-export function depsCtes(t: Tables, result: string | null): (Cte | false)[] {
+export function depsCtes(t: Tables, result: string | null, removed = false): (Cte | false)[] {
   const release = sql`dp.status <> 'failed' and p.pending_deps = 1 and p.state = 'blocked'`
   return [
     [
@@ -67,7 +68,8 @@ export function depsCtes(t: Tables, result: string | null): (Cte | false)[] {
           status = (case when done.state = 'completed' then 'completed'
             when done.on_fail = 'ignore' then 'ignored' else 'failed' end)::${t.depStatus},
           value = ${result}::jsonb
-        from done where d.parent = done.parent and d.child = done.id and d.status = 'pending'
+        from done where d.parent = done.parent and d.child = done.id
+          and d.status ${removed ? sql`in ('pending', 'failed')` : sql`= 'pending'`}
         returning d.parent, d.status, done.on_fail`,
     ],
     [

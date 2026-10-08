@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { UsageError, sql } from 'pg-prime'
 import { defineQueue, pgMq } from '../../src/index.js'
-import type { Message, OnFail, WorkContext, Worker } from '../../src/index.js'
+import type { FlowRef, Message, OnFail, WorkContext, Worker } from '../../src/index.js'
 import { freshSchema, racing, until, useServer } from '../_db.js'
 
 const server = useServer()
@@ -151,6 +151,22 @@ describe('flows (F1)', () => {
       [`flaky:${root.children[0]?.id}`]: { status: 'completed', value: 'ok' },
     })
     expect((await s.a.get(root))?.claims).toBe(1)
+  })
+
+  it('removing a failed `wait` child releases its parent', async () => {
+    const { mq, a, stop } = setup()
+    const defA = defineQueue<P, string>('a', once)
+    const root = await mq.flow({
+      queue: defA,
+      payload: { name: 'root' },
+      children: [{ queue: defA, payload: { name: 'bad', fail: true } }],
+    })
+    const child = root.children[0] as FlowRef
+    await until(async () => (await a.get(child))?.state === 'failed')
+    expect((await a.get(root))?.state).toBe('blocked')
+    expect(await a.remove(child)).toBe(true)
+    await until(async () => (await a.get(root))?.state === 'completed')
+    await stop()
   })
 
   it('a deduplicated root inserts nothing; dedup on a child or in spawn is refused', async () => {
