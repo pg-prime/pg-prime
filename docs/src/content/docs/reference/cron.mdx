@@ -1,7 +1,388 @@
 ---
 title: "@pg-prime/cron"
 description: Every export of @pg-prime/cron.
-apiEntry: "@pg-prime/cron#."
+apiEntry:
+  - "@pg-prime/cron#."
+  - "pg-prime#."
 ---
 
-`@pg-prime/cron` is being built; this page is written with it. The design is [plan 18](https://github.com/pg-prime/pg-prime/blob/main/design/18-cron.md).
+import { Aside } from '@astrojs/starlight/components'
+
+Scheduled jobs on PostgreSQL. [Cron](/pg-prime/guides/cron/) is the guide and
+[Cron in production](/pg-prime/operations/cron/) covers time zones, downtime and poolers; this page
+is the surface.
+
+```sh
+pnpm add @pg-prime/cron
+```
+
+<Aside>
+`pg-prime` is a required peer. The one runtime dependency is `croner`, imported lazily the first
+time a cron pattern is evaluated. `@pg-prime/mq` is an **optional** peer: the queue target takes any
+object shaped like [`CronEnqueuer`](#cronenqueuer), and nothing in the package imports mq.
+</Aside>
+
+## Defining
+
+### `defineSchedule`
+
+{/* docs: signature */}
+```ts
+function defineSchedule<P = undefined>(
+  name: string,
+  when: ScheduleWhen,
+  target: ScheduleTarget<P>,
+  opts?: ScheduleOptions<P>,
+): ScheduleDef<P>
+```
+
+Validates everything that does not need a parser — the name, exactly one of `cron`/`everyMs`/`at`,
+the time zone, the bounds and every count — and throws [`ScheduleError`](#scheduleerror) naming
+the field. The cron pattern itself is parsed by `start()`, `create()`, `update()` and `preview()`.
+
+### `ScheduleWhen`
+
+{/* docs: signature */}
+```ts
+type ScheduleWhen = { cron: string; tz?: string } | { everyMs: number } | { at: Date }
+```
+
+- `cron`: 5 fields, or 6 with seconds first; `L`, `W`, `#`, `?` and nicknames such as `@hourly`.
+  `tz` is an IANA zone and defaults to `'UTC'`, never the host's zone.
+- `everyMs`: at least 1 000. The grid is anchored at `startAt`, or at the time the schedule was
+  first written; a restart keeps it.
+- `at`: one tick. A past `at` is kept, so the misfire policy decides whether it still runs.
+
+### `ScheduleTarget`
+
+{/* docs: signature */}
+```ts
+type ScheduleTarget<P> =
+  | { handler: (run: RunContext<P>) => Promise<unknown> }
+  | { queue: { readonly name: string } }
+```
+
+A handler runs in the instance that claimed the tick. A queue target sends one `@pg-prime/mq`
+message per tick, in the claim's transaction; it needs `enqueuer` in [`CronConfig`](#cronconfig).
+
+### `ScheduleOptions`
+
+{/* docs: signature */}
+```ts
+interface ScheduleOptions<P> {
+  startAt?: Date
+  endAt?: Date
+  limit?: number
+  overlap?: 'skip' | 'allow'
+  misfire?: 'skip' | 'once'
+  misfireGraceMs?: number
+  payload?: P | ((tick: { tickAt: Date | null; manual: boolean }) => P)
+  timeoutMs?: number
+  retry?: {
+    maxAttempts?: number
+    baseDelayMs?: number
+    maxDelayMs?: number
+    jitter?: 'full' | 'equal' | 'none'
+  }
+  history?: { keep?: number; ageMs?: number }
+}
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `startAt`, `endAt` | none | no tick before `startAt` or after `endAt`, even after downtime |
+| `limit` | none | ticks to **claim**, whatever each claim decides; manual runs do not count |
+| `overlap` | `'skip'` | `'skip'` records a `skipped` run while one is open; `'allow'` runs concurrently |
+| `misfire` | `'once'` | past the grace: `'once'` runs the latest missed tick, `'skip'` records one `missed` run |
+| `misfireGraceMs` | 60 000 | a tick this late is not a misfire; late loops catch up tick by tick |
+| `payload` | `null` | stored as JSON on each run; a function is called by the claiming instance |
+| `timeoutMs` | none | aborts the handler's `signal`; the run ends `failed` / `'timeout'` once it settles |
+| `retry` | 1 attempt | in-process retries under the same lease (1 000 ms base, 60 s cap, full jitter) |
+| `history` | 100 runs, 30 days | finished runs kept per schedule |
+
+### `ScheduleDef`
+
+{/* docs: signature */}
+```ts
+interface ScheduleDef<P = unknown> {
+  readonly name: string
+  readonly when: ScheduleWhen
+  readonly target: ScheduleTarget<P>
+  readonly options: ScheduleOptions<P>
+}
+```
+
+### `RunContext`
+
+{/* docs: signature */}
+```ts
+interface RunContext<P> {
+  readonly schedule: string
+  readonly tickAt: Date | null
+  readonly manual: boolean
+  readonly payload: P
+  readonly attempt: number
+  readonly missed: number
+  readonly signal: AbortSignal
+}
+```
+
+`tickAt` is `null` for a manual run. `missed` counts the ticks a misfire folded into this run.
+`signal` aborts on timeout, on `cancel()` and on `close()` after `graceMs`.
+
+## The instance
+
+### `pgCron`
+
+{/* docs: signature */}
+```ts
+function pgCron(config: CronConfig): Cron
+```
+
+### `CronConfig`
+
+{/* docs: signature */}
+```ts
+interface CronConfig {
+  db: Db
+  schema?: string
+  autoMigrate?: boolean
+  schedules?: readonly ScheduleDef<any>[]
+  enqueuer?: CronEnqueuer
+  instance?: string
+  pollMs?: number
+  leaseMs?: number
+  maintenanceMs?: number
+  maxConcurrent?: number
+  graceMs?: number
+  signal?: AbortSignal
+  hooks?: CronHooks
+}
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `schema` | `'pgprime_cron'` | the schema the package owns, with its ledger in `<schema>.migrations` |
+| `autoMigrate` | `true` | `false` refuses to start on a missing or older schema ([`SchemaVersionError`](#schemaversionerror)) |
+| `schedules` | `[]` | upserted by `start()`; this instance claims only these (and those it `create`s) |
+| `instance` | `$HOSTNAME:pid:random` | recorded on every run |
+| `pollMs` | 10 000 | the longest sleep; NOTIFY wakes the loop sooner when LISTEN is available |
+| `leaseMs` | 30 000 | a run's lease; heartbeats every `leaseMs / 3` |
+| `maintenanceMs` | 15 000 | expiry, counter reconcile and retention, run by one instance per period |
+| `maxConcurrent` | unlimited | handler runs at once; ticks over the cap are left to other instances |
+| `graceMs` | 10 000 | how long `close()` waits before aborting handlers, and again after |
+| `signal` | none | aborting it calls `close()` |
+
+### `Cron`
+
+{/* docs: signature */}
+```ts
+interface Cron extends AsyncDisposable_ {
+  start(): Promise<void>
+  close(): Promise<void>
+  create<P>(def: ScheduleDef<P>): Promise<void>
+  update(
+    name: string,
+    patch: Partial<{ when: ScheduleWhen } & ScheduleOptions<unknown>>,
+  ): Promise<void>
+  remove(name: string, opts?: { force?: boolean }): Promise<boolean>
+  pause(name: string): Promise<void>
+  resume(name: string): Promise<void>
+  enable(name: string): Promise<void>
+  disable(name: string): Promise<void>
+  trigger(name: string, opts?: { payload?: unknown }): Promise<{ runId: bigint; state: RunState }>
+  cancel(runId: bigint): Promise<boolean>
+  get(name: string): Promise<ScheduleInfo | undefined>
+  list(): Promise<ScheduleInfo[]>
+  runs(name: string, opts?: { limit?: number; before?: bigint }): Promise<RunInfo[]>
+  preview(when: ScheduleWhen, opts?: { count?: number; from?: Date }): Promise<Date[]>
+  prune(keep: readonly string[]): Promise<string[]>
+}
+```
+
+| Method | Does |
+|---|---|
+| `start()` | migrates (or checks), upserts the declared schedules, starts declared queues, LISTENs, starts the loop |
+| `close()` | stops claiming, waits `graceMs`, aborts what is left and marks it `cancelling`, waits `graceMs` again |
+| `create(def)` | inserts a schedule with `source: 'api'`; a duplicate name is a `UsageError` |
+| `update(name, patch)` | merges the patch into the stored definition (shallow), recomputing `nextAt` when the timing changed |
+| `remove(name, { force })` | `false` when absent; a `UsageError` when runs are open and `force` is not set |
+| `pause` / `resume` | `nextAt` is kept, so resuming after a long pause applies the misfire policy |
+| `disable` / `enable` | `nextAt` is cleared, and recomputed from now on `enable` |
+| `trigger(name)` | a manual run: `pending` (picked up by an instance that registered the handler) or `skipped` by overlap |
+| `cancel(runId)` | `pending` → `cancelled`; `running` → `cancelling` until the handler stops |
+| `runs(name)` | newest first, 50 by default; `before` pages by run id |
+| `preview(when)` | the next ticks after `from` (default: the database's `now()`) |
+| `prune(keep)` | deletes `source: 'code'` schedules not named in `keep`, returning their names |
+
+Every method except `start`, `close` and `preview` runs the schema step lazily on first use.
+
+### `CronHooks`
+
+{/* docs: signature */}
+```ts
+interface CronHooks {
+  onTick?(e: {
+    schedule: string
+    tickAt: Date
+    decision: RunState
+    missed: number
+    lateMs: number
+  }): void
+  onRunStart?(e: { schedule: string; runId: bigint; manual: boolean }): void
+  onRunEnd?(e: {
+    schedule: string
+    runId: bigint
+    state: RunState
+    durationMs: number
+    error?: unknown
+  }): void
+  onMisfire?(e: { schedule: string; policy: 'skip' | 'once'; missed: number }): void
+  onInternal?(e: {
+    kind:
+      | 'listen-unavailable'
+      | 'heartbeat-failed'
+      | 'pending-unclaimed'
+      | 'hook-failed'
+      | 'loop-failed'
+    message: string
+    cause?: unknown
+  }): void
+}
+```
+
+Hooks are synchronous and isolated: one that throws is reported as `onInternal('hook-failed')` and
+changes nothing else.
+
+### `CronEnqueuer`
+
+{/* docs: signature */}
+```ts
+interface CronEnqueuer {
+  queue(def: { readonly name: string }): {
+    start?(): Promise<void>
+    send(
+      payload: any,
+      opts: { tx: Queryable<any>; key: string; dedup?: 'until-done' },
+    ): Promise<{ id: bigint; deduplicated: boolean }>
+  }
+}
+```
+
+The structural shape of `@pg-prime/mq`'s `pgMq(...)`, so passing an mq instance needs no import
+from this package.
+
+## Reading back
+
+### `ScheduleInfo`
+
+{/* docs: signature */}
+```ts
+interface ScheduleInfo {
+  readonly name: string
+  readonly when: ScheduleWhen
+  readonly target: 'handler' | 'queue'
+  readonly queue: string | null
+  readonly startAt: Date | null
+  readonly endAt: Date | null
+  readonly limit: number | null
+  readonly overlap: 'skip' | 'allow'
+  readonly misfire: 'skip' | 'once'
+  readonly misfireGraceMs: number
+  readonly payload: unknown
+  readonly timeoutMs: number | null
+  readonly enabled: boolean
+  readonly paused: boolean
+  readonly nextAt: Date | null
+  readonly runs: number
+  readonly running: number
+  readonly source: 'code' | 'api'
+  readonly updatedAt: Date
+}
+```
+
+`runs` is the number of claimed ticks (what `limit` counts); `running` the open runs (`pending`,
+`running`, `cancelling`) that hold the overlap slot.
+
+### `RunInfo`
+
+{/* docs: signature */}
+```ts
+interface RunInfo {
+  readonly id: bigint
+  readonly schedule: string
+  readonly tickAt: Date | null
+  readonly manual: boolean
+  readonly state: RunState
+  readonly attempts: number
+  readonly missed: number
+  readonly instance: string | null
+  readonly messageId: bigint | null
+  readonly payload: unknown
+  readonly startedAt: Date | null
+  readonly finishedAt: Date | null
+  readonly error: string | null
+  readonly result: unknown
+  readonly createdAt: Date
+}
+```
+
+### `RunState`
+
+{/* docs: signature */}
+```ts
+type RunState =
+  | 'pending'
+  | 'running'
+  | 'cancelling'
+  | 'succeeded'
+  | 'failed'
+  | 'skipped'
+  | 'missed'
+  | 'enqueued'
+  | 'cancelled'
+```
+
+| State | Meaning |
+|---|---|
+| `pending` | a manual run waiting for an instance that registered the handler |
+| `running` | claimed, under a lease |
+| `cancelling` | aborted (cancel, timeout or shutdown); still holds the slot until the handler settles |
+| `succeeded`, `failed`, `cancelled` | finished; `error` is `'timeout'` or `'lease-expired'` for those two causes |
+| `skipped` | overlap `'skip'` found a run open |
+| `missed` | misfire `'skip'`: one row for the ticks it dropped |
+| `enqueued` | a queue target sent its message |
+
+## Errors
+
+### `ScheduleError`
+
+{/* docs: signature */}
+```ts
+class ScheduleError extends PgPrimeError {
+  readonly field: string
+}
+```
+
+Code `'CRON_SCHEDULE'`. `field` is the option at fault: `'cron'`, `'tz'`, `'everyMs'`, `'endAt'`, …
+
+### `SchemaVersionError`
+
+{/* docs: signature */}
+```ts
+class SchemaVersionError extends PgPrimeError {}
+```
+
+Code `'CRON_SCHEMA_VERSION'`: the schema is missing or behind with `autoMigrate: false`, its
+checksum differs from the package's, or it needs a newer client.
+
+### `CronLeaseLostError`
+
+{/* docs: signature */}
+```ts
+class CronLeaseLostError extends PgPrimeError {}
+```
+
+Code `'CRON_LEASE_LOST'`, reported as the `cause` of `onInternal('heartbeat-failed')` when a
+heartbeat finds its run gone — expired by maintenance or removed with `force`. The handler's
+`signal` is aborted and nothing is recorded by this instance.
