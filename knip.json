@@ -47,8 +47,7 @@
     },
     "packages/pg-prime-context": {
       "entry": ["src/index.ts", "src/testing.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
-      "project": ["src/**/*.ts", "test/**/*.ts"],
-      "ignoreDependencies": ["@pg-prime/testing", "pg-prime"]
+      "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "packages/pg-prime-nestjs": {
       "entry": [
