@@ -28,7 +28,7 @@ ordered, and they become numbered `.sql` files:
 > schemas · tables (including partitioned parents and partitions) · columns · defaults ·
 > constraints (PK, FK, UNIQUE, CHECK, EXCLUDE — including `NOT VALID` state) · indexes ·
 > types (enum, domain, composite) · enum labels · composite attributes · sequences
-> (including identity and `OWNED BY`) · comments · extensions
+> (including identity and `OWNED BY`) · comments · extensions · a table's `ENABLE ROW LEVEL SECURITY` flag
 
 Twelve fact kinds, listed with their identity tuples in
 [the migration model](/pg-prime/concepts/migration-model/#the-ir). Three of the mappings are worth
@@ -69,8 +69,9 @@ converging silently would mean losing them:
 
 > views · materialized views · functions · procedures · triggers · policies (RLS) · rules
 
-These are **not diffed**. They are authored as `.sql` files under `sql/`, hashed, and re-applied
-whole whenever their bytes change.
+These are **not diffed**. They are `.sql` files under `sql/`, hashed, and re-applied whole whenever
+their bytes change. Most are written by hand; [declared](#declared-tier-r) views, policies and
+`updated_at` triggers are rendered from TypeScript.
 
 The reason is not laziness, it is that these are exactly the objects whose diff is hardest.
 PostgreSQL stores a rewritten parse tree, so `pg_get_viewdef` never textually matches what you wrote
@@ -119,15 +120,18 @@ sql/
   020_views/
     public__active_users.sql
   030_matviews/
-  040_rls/
   050_policies/
-    public__posts__posts_own.sql
+    public__posts.sql            declared
   070_triggers/
+    000_functions.sql            declared
+    public__posts.sql            declared
     public__users__users_bump.sql
+  990_declared_prune.sql         declared
 ```
 
-That is the tree `pg-prime pull` writes; a hand-written project can use any names it likes, as long
-as the lexicographic order is the order the objects need.
+`pg-prime pull` writes the hand-written shape; `migrate generate` writes the declared files. A
+hand-written project can use any names it likes, as long as the lexicographic order is the order
+the objects need.
 
 ```sql title="sql/010_functions/public__bump_updated_at.sql"
 -- pg-prime:object function public.bump_updated_at()
@@ -154,12 +158,39 @@ first line that is neither closes it. Otherwise a `-- pg-prime:nolint …` writt
 or one that happens to sit inside a quoted function body, would silently reconfigure the whole file.
 
 <Aside type="caution">
-**A repeatable's removal is not auto-detected.** Deleting `sql/020_views/public__active_users.sql`
-leaves the view in the database and nothing in any plan will ever drop it. This is the honest cost of
-the tier, and it is reported rather than hidden: `migrate doctor` names every path recorded in
-`pgprime.repeatables` that is gone from disk, says that the objects it created are still there, and
-exits `4`. Dropping the object is a `generate --empty` migration you write.
+**A hand-written repeatable's removal is not auto-detected.** Deleting
+`sql/020_views/public__active_users.sql` leaves the view in the database and nothing in any plan will
+ever drop it. This is the honest cost of the tier, and it is reported rather than hidden: `migrate
+doctor` names every path recorded in `pgprime.repeatables` that is gone from disk, says that the
+objects it created are still there, and exits `4`. Dropping the object is a `generate --empty`
+migration you write. Declared policies and triggers are the exception: the prune drops them.
 </Aside>
+
+### Declared Tier R
+
+`pgView`, `definePolicy`, `rls.force()` and `updatedAtTrigger` are declared in TypeScript and still
+Tier R: `migrate generate` renders them into `sql/` on every run, and from there they are ordinary
+repeatables that `apply` runs without the TypeScript.
+
+- **Header.** A declared file starts `-- pg-prime:declared`. A policy or trigger file also lists the
+  objects it owns as `-- pg-prime:object <kind> <identity> sha256:<hash>` (or `force` / `noforce`
+  for a table's FORCE state). `generate` overwrites and deletes only files with that first line; a hand-written file at a
+  declared path is `declared_conflict`, and nothing is written.
+- **Marker.** Every declared policy, trigger and trigger function carries
+  `COMMENT … IS 'pg-prime:declared sha256:<hash of its CREATE>'`. Hand-written objects never do.
+- **Prune.** `990_declared_prune.sql` runs last and drops marked objects in the managed schemas that
+  are no longer declared. It stays rendered while it exists, so removing the last declaration still
+  drops it; only a person deletes the file.
+- **Self-heal.** Before the lane runs, `apply` compares the headers with the markers in the catalog
+  and re-applies any file whose objects are missing, carry another hash or have the wrong FORCE
+  state, whatever `pgprime.repeatables` says.
+- **Census.** The same comparison is drift in `migrate verify`, a finding in `migrate doctor`
+  (`declared_missing`, `declared_unmarked`, `declared_orphan`), and `migrate check` exits 3 on
+  `declared_lane_stale`. A hand `ALTER POLICY` that keeps the marker is not detected: bodies are
+  hashed, not diffed.
+
+[Row-level security](/pg-prime/guides/row-level-security/#the-declared-lane) walks through it;
+[views](/pg-prime/guides/views/) covers the view half.
 
 ## Tier O: observed
 
@@ -208,8 +239,9 @@ on any project that has one.
 ## What this means in practice
 
 - If it is Tier M, declare it and pg-prime will generate the migration.
-- If it is Tier R, write the `.sql`, keep it idempotent, and remember that deleting the file does not
-  drop the object.
+- If it is Tier R, declare it when the DSL can (views, policies, `updated_at` triggers), or write
+  the `.sql`, keep it idempotent, and remember that deleting a hand-written file does not drop the
+  object.
 - If it is Tier O or U, pg-prime will tell you it is there and then leave it alone. Manage it in your
   own migrations — `generate --empty` writes the file — or accept it as somebody else's.
 
