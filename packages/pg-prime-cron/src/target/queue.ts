@@ -14,7 +14,8 @@ export interface QueueContext {
 
 type Result = { runId: bigint; state: RunState }
 
-const queueOf = (def: ScheduleDef<any>) => (def.target as { queue: { name: string } }).queue
+const queueOf = (def: ScheduleDef<any>) =>
+  (def.target as { queue: Parameters<CronEnqueuer['queue']>[0] }).queue
 
 /** `cron.start()`: start every declared queue so its `{ tx }` sends are allowed. */
 export async function startQueues(

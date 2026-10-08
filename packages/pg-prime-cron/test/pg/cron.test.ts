@@ -3,10 +3,12 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { requiresConcurrency } from '@pg-prime/testing'
-import { defineSchema, pgPrime } from 'pg-prime'
+import { defineSchema, pgPrime, UsageError } from 'pg-prime'
 import type { Db } from 'pg-prime'
 import { defineSchedule, pgCron } from '../../src/index.js'
 import type { Cron, CronConfig, ScheduleDef } from '../../src/index.js'
+import { trigger } from '../../src/sql/claim.js'
+import { tables } from '../../src/sql/tables.js'
 import { dropSchema, open, rows, sleep, until } from '../_harness.js'
 
 const S = 'pgprime_cron_pg'
@@ -264,7 +266,11 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
         `update $S.schedules set next_at = '${new Date(endAt.getTime() - 3_600_000).toISOString()}'`,
       )
       await fleet(3, () => [def])
-      await until(async () => (await sched('s'))['next_at'] === null)
+      await until(
+        async () =>
+          (await sched('s'))['next_at'] === null &&
+          (await runsOf('s')).every((r) => r['state'] !== 'running'),
+      )
       const runs = await runsOf('s')
       expect(runs.length).toBe(1)
       expect((runs[0]!['tick_at'] as Date).getTime()).toBe(endAt.getTime())
@@ -276,6 +282,38 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
       await Promise.all(crons.splice(0).map((x) => x.close()))
     }
   }, 60_000)
+
+  test('remove waiting on a trigger refuses once the trigger commits its run', async () => {
+    await fresh()
+    const c = instance()
+    await c.create(defineSchedule('r', { cron: '0 0 1 1 *' }, { handler: async () => {} }))
+    let release!: () => void
+    let triggered!: () => void
+    const held = new Promise<void>((r) => (triggered = r))
+    const tx = admin.transaction(async (tx) => {
+      await trigger(tx, tables(S), {
+        name: 'r',
+        instance: 'x',
+        payload: null,
+        channel: 'x',
+      }).execute()
+      triggered()
+      await new Promise<void>((r) => (release = r))
+    })
+    await held
+    const removed = c.remove('r').catch((e: unknown) => e)
+    await until(
+      async () =>
+        (
+          await q(`select 1 from pg_stat_activity
+                   where wait_event_type = 'Lock' and query like '%delete from "$S"%'`)
+        ).length > 0,
+    )
+    release()
+    await tx
+    expect(await removed).toBeInstanceOf(UsageError)
+    expect((await runsOf('r')).map((r) => r['state'])).toEqual(['pending'])
+  }, 30_000)
 })
 
 // Claims a tick, says so, then hangs until killed.

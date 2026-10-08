@@ -59,11 +59,13 @@ type ScheduleWhen = { cron: string; tz?: string } | { everyMs: number } | { at: 
 ```ts
 type ScheduleTarget<P> =
   | { handler: (run: RunContext<P>) => Promise<unknown> }
-  | { queue: { readonly name: string } }
+  | { queue: { readonly kind: 'queue'; readonly name: string } }
 ```
 
 A handler runs in the instance that claimed the tick. A queue target sends one `@pg-prime/mq`
 message per tick, in the claim's transaction; it needs `enqueuer` in [`CronConfig`](#cronconfig).
+`queue` is the queue's declaration (`defineQueue(...)`), never a bare `{ name }`: mq needs its
+retry, retention and payload settings, so `defineSchedule` throws a `ScheduleError` for one.
 
 ### `ScheduleOptions`
 
@@ -171,7 +173,7 @@ interface CronConfig {
 | `maintenanceMs` | 15 000 | expiry, counter reconcile and retention, run by one instance per period |
 | `maxConcurrent` | unlimited | handler runs at once; ticks over the cap are left to other instances |
 | `graceMs` | 10 000 | how long `close()` waits before aborting handlers, and again after |
-| `signal` | none | aborting it calls `close()` |
+| `signal` | none | aborting it calls `close()`; an already-aborted one closes at once, so `start()` rejects |
 
 ### `Cron`
 
@@ -204,9 +206,9 @@ interface Cron extends AsyncDisposable_ {
 |---|---|
 | `start()` | migrates (or checks), upserts the declared schedules, starts declared queues, LISTENs, starts the loop |
 | `close()` | stops claiming, waits `graceMs`, aborts what is left and marks it `cancelling`, waits `graceMs` again |
-| `create(def)` | inserts a schedule with `source: 'api'`; a duplicate name is a `UsageError` |
+| `create(def)` | inserts a schedule with `source: 'api'`, starting a queue target's queue first; a duplicate name is a `UsageError` |
 | `update(name, patch)` | merges the patch into the stored definition (shallow), recomputing `nextAt` when the timing changed |
-| `remove(name, { force })` | `false` when absent; a `UsageError` when runs are open and `force` is not set |
+| `remove(name, { force })` | `false` when absent; a `UsageError` when runs are open, including one a concurrent tick or trigger just committed, and `force` is not set |
 | `pause` / `resume` | `nextAt` is kept, so resuming after a long pause applies the misfire policy |
 | `disable` / `enable` | `nextAt` is cleared, and recomputed from now on `enable` |
 | `trigger(name)` | a manual run: `pending` (picked up by an instance that registered the handler) or `skipped` by overlap |
@@ -259,7 +261,7 @@ changes nothing else.
 {/* docs: signature */}
 ```ts
 interface CronEnqueuer {
-  queue(def: { readonly name: string }): {
+  queue(def: { readonly kind: 'queue'; readonly name: string }): {
     start?(): Promise<void>
     send(
       payload: any,
@@ -384,5 +386,6 @@ class CronLeaseLostError extends PgPrimeError {}
 ```
 
 Code `'CRON_LEASE_LOST'`, reported as the `cause` of `onInternal('heartbeat-failed')` when a
-heartbeat finds its run gone — expired by maintenance or removed with `force`. The handler's
-`signal` is aborted and nothing is recorded by this instance.
+heartbeat or the finish finds its run gone — expired by maintenance or removed with `force`. A
+heartbeat aborts the handler's `signal`; either way this instance records nothing and emits no
+`onRunEnd`.

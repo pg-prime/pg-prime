@@ -208,6 +208,7 @@ update pgprime_cron.runs set lease_until = now() + $lease * interval '1 ms'
 where id = $id and token = $tok and state in ('running', 'cancelling') returning state
 
 -- F1: finish (token-guarded, or state-guarded from maintenance) and free the slot; locks run → schedule
+-- 0 rows from the owner → CronLeaseLostError, and no onRunEnd
 with f as (
   update pgprime_cron.runs set state = $st,                -- 'succeeded' | 'failed' | 'cancelled' (operator cancel)
          finished_at = clock_timestamp(), error = $err, result = $res,
@@ -325,13 +326,14 @@ export interface RunContext<P> {
 export function defineSchedule<P = undefined>(
   name: string,
   when: ScheduleWhen,
-  target: { handler: (run: RunContext<P>) => Promise<unknown> } | { queue: { readonly name: string } },
+  target: { handler: (run: RunContext<P>) => Promise<unknown> }
+    | { queue: { readonly kind: 'queue'; readonly name: string } },  // mq's QueueDef; a bare { name } throws ScheduleError
   opts?: ScheduleOptions<P>,
 ): ScheduleDef<P>
 
 export interface CronEnqueuer {                   // structurally satisfied by @pg-prime/mq's `pgMq(...)`
-  queue(def: { readonly name: string }): {
-    start?(): Promise<void>                       // mq's QueueHandle.start(); awaited by cron.start() for every queue target
+  queue(def: { readonly kind: 'queue'; readonly name: string }): {
+    start?(): Promise<void>                       // mq's QueueHandle.start(); awaited by cron.start() for every queue target and by create()
     send(payload: any, opts: { tx: Queryable<any>; key: string; dedup?: 'until-done' }): Promise<{ id: bigint; deduplicated: boolean }>
   }
 }
@@ -348,7 +350,7 @@ export interface CronConfig {
   maintenanceMs?: number                          // 15_000
   maxConcurrent?: number
   graceMs?: number                                // 10_000
-  signal?: AbortSignal
+  signal?: AbortSignal                            // abort (or already aborted) → close()
   hooks?: CronHooks
 }
 export function pgCron(config: CronConfig): Cron
@@ -356,9 +358,9 @@ export function pgCron(config: CronConfig): Cron
 export interface Cron extends AsyncDisposable {
   start(): Promise<void>
   close(): Promise<void>
-  create<P>(def: ScheduleDef<P>): Promise<void>                       // source 'api'
+  create<P>(def: ScheduleDef<P>): Promise<void>                       // source 'api'; starts a queue target's queue first
   update(name: string, patch: Partial<{ when: ScheduleWhen } & ScheduleOptions<unknown>>): Promise<void>
-  remove(name: string, opts?: { force?: boolean }): Promise<boolean>
+  remove(name: string, opts?: { force?: boolean }): Promise<boolean>  // refuses open runs: `running = 0` rechecked on the locked row
   pause(name: string): Promise<void>; resume(name: string): Promise<void>
   enable(name: string): Promise<void>; disable(name: string): Promise<void>
   trigger(name: string, opts?: { payload?: unknown }): Promise<{ runId: bigint; state: RunState }>
@@ -680,7 +682,8 @@ or `cron:<name>:manual:<run id>`. Only `CronEnqueuer` is used; `dist` names no `
 on `messages.payload`: `toJson` yields `'null'`, and `jsonb_to_recordset` turns a JSON `null` into
 SQL NULL. A queue-target schedule without a payload therefore fails every tick (`loop-failed`).
 Fix in mq (e.g. `coalesce(s.payload, 'null'::jsonb)` in S1); the cron tests give every schedule a
-payload until then, and `target/queue.md` Gotchas records it.
+payload until then, and `target/queue.md` Gotchas records it. Fixed in `018ca20`: S1 coalesces the
+payload to JSON `null` (tested in mq's live `send.test.ts`), and the Gotcha is gone.
 
 **INDEX line (replace A4's):**
 - `- docs/packages/pg-prime-cron/src/target/queue.md — mq queue target: claim and send in one transaction, overlap → dedup keys, manual trigger — read when a queue-target tick sends twice, never, or under the wrong key.`

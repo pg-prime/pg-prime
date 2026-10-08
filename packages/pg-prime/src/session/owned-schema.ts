@@ -79,7 +79,10 @@ export async function migrateOwnedSchema<Sc extends AnySchema>(
   }
 }
 
-/** The same versions as SQL files; re-running one after the runtime applied it is a no-op ledger insert. */
+/**
+ * The same versions as SQL files. They converge with the runtime only when applied first: a file
+ * whose version the runtime already applied fails on its DDL, which is not idempotent.
+ */
 export function ownedSchemaSql(opts: OwnedSchemaOptions): OwnedSchemaFile[] {
   const { q, key, steps } = plan(opts)
   return steps.map((s) => ({

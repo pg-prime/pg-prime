@@ -17,25 +17,26 @@ Re-exported from `packages/pg-prime/src/index.ts:418`.
 ## Flow
 1. `plan` quotes the schema with `quoteIdentPart`, checks versions are strictly increasing integers
    (`UsageError` otherwise), renders each `up`, and checksums the statements with the 64-bit FNV-1a of
-   `advisoryKey` (`packages/pg-prime/src/session/owned-schema.ts:100`).
+   `advisoryKey` (`packages/pg-prime/src/session/owned-schema.ts:103`).
 2. `migrateOwnedSchema` loops one transaction per step (`packages/pg-prime/src/session/owned-schema.ts:53`):
    `tx.advisoryLock('pgprime-owned:' + schema)` (`:62`), then `ledger` creates the schema and ledger
-   when missing and `apply` is on (`:127`), then `check` (`:142`).
+   when missing and `apply` is on (`:130`), then `check` (`:145`).
 3. The first version missing from the ledger is applied and its row inserted; the loop ends when at most
    one was missing. `from` is the ledger's version seen by the first transaction.
 4. `ownedSchemaSql` emits per version: `pg_advisory_xact_lock(<same key>)`, the bootstrap, the DDL and an
-   `insert … on conflict do nothing` ledger row (`packages/pg-prime/src/session/owned-schema.ts:83`).
+   `insert … on conflict do nothing` ledger row (`packages/pg-prime/src/session/owned-schema.ts:86`).
 
 ## Gotchas
 - `check` throws `ConfigError` for a ledger checksum that differs from the client's, and for a ledger
-  `min_client` above the client's latest version (`packages/pg-prime/src/session/owned-schema.ts:147`,
-  `:154`). Packages wrap it in their own `SchemaVersionError`.
+  `min_client` above the client's latest version (`packages/pg-prime/src/session/owned-schema.ts:150`,
+  `:157`). Packages wrap it in their own `SchemaVersionError`.
 - The checksum covers the DDL as rendered with the schema name, so the same migration under another
   schema has another checksum; that is consistent because the ledger lives in the schema.
-- With `apply: false` nothing is created; a missing ledger reads as version 0 (`:134`).
+- With `apply: false` nothing is created; a missing ledger reads as version 0 (`:137`).
 - Every version runs in a transaction, so `create index concurrently` cannot be a step.
 - Vendored files converge only in one direction: applied first, `migrateOwnedSchema` then skips them.
-  After the runtime applied a version its file's ledger insert is a no-op, but its DDL is not idempotent.
+  A file whose version the runtime already applied fails on its DDL (`42P07`, `42710`) before it
+  reaches the `on conflict do nothing` ledger insert, so re-running it is not a no-op.
 - The lock key is `advisoryKey('pgprime-owned:' + schema)`, so the vendored file and the runtime
   migrator serialize on the same lock.
 

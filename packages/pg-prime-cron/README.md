@@ -35,5 +35,6 @@ await cron.start()
 
 One runtime dependency, `croner`. `@pg-prime/mq` is an optional peer for the queue target.
 
-Docs: [guide](https://pg-prime.dev/guides/cron/), [operations](https://pg-prime.dev/operations/cron/),
-[reference](https://pg-prime.dev/reference/cron/).
+Docs: [guide](https://pg-prime.github.io/pg-prime/guides/cron/),
+[operations](https://pg-prime.github.io/pg-prime/operations/cron/),
+[reference](https://pg-prime.github.io/pg-prime/reference/cron/).

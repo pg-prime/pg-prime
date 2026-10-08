@@ -24,7 +24,6 @@ const runsOf = (state?: string) =>
   q(`select id, state::text as state, tick_at, manual, missed, message_id, finished_at
      from $S.runs where schedule = 'q' ${state ? `and state = '${state}'` : ''} order by id`)
 const messages = () => q(`select id, key, payload, state from $MQ.messages order by id`)
-// mq refuses a null payload (not-null violation), so every schedule here carries one.
 const schedule = (o: ScheduleOptions<unknown> = {}, everyMs = 1000) =>
   defineSchedule('q', { everyMs }, { queue: jobs }, { payload: { n: 1 }, ...o })
 
@@ -65,6 +64,14 @@ describe('queue target', () => {
     )
     expect(new Set(decisions)).toEqual(new Set(['enqueued']))
     expect((await q(`select running from $S.schedules`))[0]).toEqual({ running: 0 })
+  })
+
+  it('a queue schedule created after start() starts its queue', async () => {
+    const c = make()
+    await c.start()
+    await c.create(schedule({ overlap: 'allow' }))
+    await until(async () => (await runsOf('enqueued')).length >= 1)
+    expect((await messages())[0]).toMatchObject({ payload: { n: 1 } })
   })
 
   it("overlap 'skip' sends nothing while the previous message is unfinished", async () => {

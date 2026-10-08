@@ -195,7 +195,8 @@ through `onInternal('pending-unclaimed')`.
 
 A schedule can send a message to an `@pg-prime/mq` queue instead of running a handler. The work
 then runs on mq's workers, with mq's retries, limits and history. Hand `pgCron` the mq instance as
-its `enqueuer`; `start()` starts every target queue, so no separate `mq.start()` is needed:
+its `enqueuer`; `start()` starts every target queue, and `create()` the queue of a schedule it
+adds, so no separate `mq.start()` is needed:
 
 {/* docs: use=blog */}
 ```ts title="queue-target.ts"
