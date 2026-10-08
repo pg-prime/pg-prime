@@ -17,7 +17,7 @@
       "dtsWarnBytes": 768000,
       "dtsFiles": 200,
       "largestDtsBytes": 79872,
-      "jsBytes": 997376,
+      "jsBytes": 1005568,
       "zeroDependencies": true,
       "optionalPeers": ["pg"]
     },
@@ -152,7 +152,7 @@
     },
     "connect-one-select": 76800,
     "full-crud-tx": 76800,
-    "root-import-all": 88064,
+    "root-import-all": 89088,
     "side-effects-only": 200,
     "_measuredBeforeSessionLayer": {
       "_when": "2026-08-28 (design/11 §3 K2a), esbuild 0.28.2, node 24.14.1, packages/pg-prime built with typescript 7.0.2",
