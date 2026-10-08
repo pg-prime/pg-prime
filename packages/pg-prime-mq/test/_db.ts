@@ -12,9 +12,7 @@ export const freshSchema = (): string => {
   return s
 }
 
-type Extra = Partial<
-  Pick<DbConfig<any>, 'connection' | 'devGuard' | 'directConnection' | 'poolerMode'>
->
+type Extra = Partial<DbConfig<any>>
 
 /** A server for this file: `PG_PRIME_TEST_URL` when set, otherwise one PGlite. */
 export function useServer(): { url: () => string; db: (max?: number, extra?: Extra) => Db } {

@@ -2,7 +2,7 @@ import { sql } from 'pg-prime'
 import type { Keep, QueueDef } from '../define.js'
 import { depsCtes } from './settle.js'
 import type { MessageState } from './read.js'
-import { ms, one, run, wakeCte, watchCte, withCtes } from './tables.js'
+import { ms, one, raw, run, wakeCte, watchCte, withCtes } from './tables.js'
 import type { F, Q, Tables } from './tables.js'
 
 const keepMs = (k: Keep): number | null => (k === false ? 0 : (k.ageMs ?? null))
@@ -57,7 +57,7 @@ export type RetrySel =
   | { readonly state: 'failed' | 'cancelled' | 'completed'; readonly limit?: number }
 
 const unresolved = (t: Tables, m: string): F =>
-  sql`exists (select from ${t.deps} d where d.parent = ${sql.unsafeRaw(m)}.id and d.status in ('pending', 'failed'))`
+  sql`exists (select from ${t.deps} d where d.parent = ${raw(m)}.id and d.status in ('pending', 'failed'))`
 
 /** Finished messages of `ids` whose children are not all resolved (retry refuses them). */
 export async function withUnresolvedChildren(
@@ -249,9 +249,7 @@ export async function setGroup(
   s: { readonly paused?: boolean } & GroupLimits,
 ): Promise<void> {
   const keep = (v: unknown, col: string, val: F): F =>
-    v === undefined
-      ? sql`${sql.unsafeRaw(col)} = r.${sql.unsafeRaw(col)}`
-      : sql`${sql.unsafeRaw(col)} = ${val}`
+    v === undefined ? sql`${raw(col)} = r.${raw(col)}` : sql`${raw(col)} = ${val}`
   await run(
     q,
     'group',

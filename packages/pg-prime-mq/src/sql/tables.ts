@@ -38,7 +38,13 @@ export function tables(schema: string, notify = true): Tables {
   }
 }
 
-export const raw = (s: string): F => sql.unsafeRaw(s)
+const raws = new Map<string, F>()
+/** Static SQL text (CTE and column names), built once: `unsafeRaw` records its caller each time. */
+export const raw = (s: string): F => {
+  let f = raws.get(s)
+  if (f === undefined) raws.set(s, (f = sql.unsafeRaw(s)))
+  return f
+}
 
 export const run = (q: Q, label: string, f: F): Promise<RawRow[]> =>
   q.withOptions({ label: `mq.${label}` }).sql`${f}`.execute()

@@ -1,5 +1,5 @@
 import { sql } from 'pg-prime'
-import { ms, run, wakeCte, watchCte, withCtes } from './tables.js'
+import { ms, raw, run, wakeCte, watchCte, withCtes } from './tables.js'
 import type { Cte, F, Q, Tables } from './tables.js'
 
 export type Terminal = 'completed' | 'failed' | 'cancelled'
@@ -88,7 +88,7 @@ export function depsCtes(t: Tables, result: string | null): (Cte | false)[] {
  */
 function counterCtes(t: Tables, after: string | null, limitMs?: number): (Cte | false)[] {
   const gate = (cte: string | null): F =>
-    cte === null ? sql`` : sql`and (select count(*) from ${sql.unsafeRaw(cte)}) >= 0`
+    cte === null ? sql`` : sql`and (select count(*) from ${raw(cte)}) >= 0`
   return [
     [
       'gd',
