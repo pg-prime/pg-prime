@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ConfigError, UsageError } from 'pg-prime'
-import { PayloadError, defineQueue, spanAttributes } from '../../src/index.js'
+import type { Db } from 'pg-prime'
+import { PayloadError, defineQueue, pgMq, spanAttributes } from '../../src/index.js'
 import { createHooks } from '../../src/hooks.js'
 import { MAX_PROGRESS, decodePayload, encodePayload, toJson } from '../../src/payload.js'
 import { limiter } from '../../src/util.js'
@@ -24,6 +25,12 @@ describe('defineQueue', () => {
     expect(() => defineQueue('q', { rate: { max: 0, perMs: 10 } })).toThrow(ConfigError)
     expect(() => defineQueue('q', { retry: { maxAttempts: 0 } })).toThrow(ConfigError)
     expect(() => defineQueue('')).toThrow(UsageError)
+  })
+
+  it('queue() refuses an object defineQueue did not make', () => {
+    const mq = pgMq({ db: {} as Db })
+    expect(() => mq.queue({ kind: 'queue', name: 'q' } as never)).toThrow(UsageError)
+    expect(() => mq.queue(defineQueue('q'))).not.toThrow()
   })
 })
 

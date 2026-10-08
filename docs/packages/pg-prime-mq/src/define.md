@@ -20,6 +20,7 @@ once with the family defaults. Read by `src/mq.ts` (queue upserts) and every que
 - `R` is carried by the phantom `__result` property; `ResultOf` reads it.
 - `keep.failed` also governs `cancelled` messages.
 - Declarations must agree across processes: claims choose S3 or S4 from the local `rate`/`concurrency`.
+- `queue(def)` accepts only objects `defineQueue` returned (a private `WeakSet`); a hand-built `{ kind, name }` is a `UsageError`.
 
 ## Tests
 - `test/unit/define.test.ts` (defaults, refusals); `test/unit/types.test.ts` (inference). `pnpm --filter @pg-prime/mq test`.

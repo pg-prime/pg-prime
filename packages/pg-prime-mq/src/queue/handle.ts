@@ -1,6 +1,7 @@
 import { engineChannel, waker } from '@pg-prime/events'
 import { UsageError } from 'pg-prime'
 import type { Queryable, Subscription } from 'pg-prime'
+import { isQueueDef } from '../define.js'
 import type { QueueDef } from '../define.js'
 import { LeaseLostError, MessageFailedError } from '../errors.js'
 import type { Core } from '../mq.js'
@@ -91,6 +92,9 @@ export interface QueueHandle<T, R> {
 const idOf = (ref: MessageRef | bigint): bigint => (typeof ref === 'bigint' ? ref : ref.id)
 
 export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<T, R> {
+  if (!isQueueDef(def)) {
+    throw new UsageError('@pg-prime/mq: pass a queue made by defineQueue(), not a plain object.')
+  }
   const { t } = core
   const name = def.name
   const toMessage = async (r: MsgRow): Promise<Message<T, R>> =>

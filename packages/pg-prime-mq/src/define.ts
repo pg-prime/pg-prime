@@ -51,6 +51,9 @@ export type PayloadOf<D> = D extends QueueDef<infer T, any> ? T : never
 export type ResultOf<D> = D extends QueueDef<any, infer R> ? R : never
 
 const DAY = 86_400_000
+const defs = new WeakSet<object>()
+
+export const isQueueDef = (d: object): boolean => defs.has(d)
 
 /** Declares a queue: its payload type, retry policy, retention, global limits and watching. */
 export function defineQueue<T, R = void>(name: string, opts: QueueOptions<T> = {}): QueueDef<T, R> {
@@ -95,7 +98,8 @@ export function defineQueue<T, R = void>(name: string, opts: QueueOptions<T> = {
   if (concurrency !== undefined && !(Number.isInteger(concurrency) && concurrency >= 1)) {
     throw new ConfigError(`@pg-prime/mq: queue ${name}: concurrency must be an integer ≥ 1.`)
   }
-  return Object.freeze(def) as QueueDef<T, R>
+  defs.add(Object.freeze(def))
+  return def as QueueDef<T, R>
 }
 
 export function checkRetry(p: RetryPolicy, where: string): void {
