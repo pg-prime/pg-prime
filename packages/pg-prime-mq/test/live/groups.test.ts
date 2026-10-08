@@ -52,6 +52,24 @@ describe('groups (S5)', () => {
     expect(served[4]).toBe('g02')
   })
 
+  it('a saturated worker goes back to an empty claim path within pollMs', async () => {
+    const { q } = setup()
+    await sendGroups(q, 200, 1)
+    const served: string[] = []
+    const w = q.work(
+      async (m) => {
+        served.push(m.payload.g)
+        await sleep(10)
+      },
+      { ...fast, pollMs: 100, concurrency: 2 },
+    )
+    await until(() => served.length >= 10)
+    await q.send({ g: 'plain', n: 0 })
+    await until(() => served.includes('plain'))
+    await w.close()
+    expect(served.indexOf('plain')).toBeLessThan(150)
+  })
+
   it('manual claims serve groups round-robin and move past paused ones', async () => {
     const { q } = setup()
     await sendGroups(q, 8, 2)

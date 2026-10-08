@@ -87,8 +87,9 @@ export function startWorker<T, R>(
   let nextMaint = 0
   let cursor = ''
   let groupsFirst = false
-  // A path that came back empty is skipped until something outside this worker wakes it.
+  // A path that came back empty is skipped until a wake-up, a promotion or `pollMs` passes.
   const dry = { plain: false, grouped: false }
+  let wokeAt = 0
   let beating = false
 
   const onAbort = (): void => void close()
@@ -329,7 +330,9 @@ export function startWorker<T, R>(
       try {
         await core.ready(def)
         const now = Date.now()
-        let woken: boolean = reason !== 'slot'
+        // A busy worker never waits on the waker, so `pollMs` stands in for its wake-ups.
+        let woken = reason !== 'slot' || now - wokeAt >= pollMs
+        if (woken) wokeAt = now
         if (woken || now >= promoteAt) {
           const p = await promote(ctl, t, queue)
           promoteAt = p.promoted === 1000 ? now : now + (p.nextInMs ?? Infinity)
