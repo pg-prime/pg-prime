@@ -45,7 +45,7 @@ All return `Expr<boolean, 'bool'>` unless noted; right operands are values (boun
 - `add`, `sub`, `mul`, `div`, `mod(a, b)`, `abs(a)` — `NumOperand<T, P>`; `Expr<T, P>`, `a`'s codec.
 - `matches(a, q)` — `tsvector @@ tsquery`; `tsRank`, `tsRankCd(a, q)` — `Expr<number, 'float4'>`.
 - `tsHeadline([config, ]doc, q, opts?)` — `ts_headline`, overload picked by `typeof config === 'string'`;
-  `Expr<string | null-of-doc, 'text'>`.
+  `Expr<string | null-of-doc-or-query, 'text'>`.
 - `rangeOverlaps`, `rangeContains`, `rangeContainedBy`, `strictlyLeft`, `strictlyRight`, `adjacent(a, b)` —
   `&&`, `@>`, `<@`, `<<`, `>>`, `-|-` on `RangeOperand<P>`.
 - `rangeUnion`, `rangeIntersection(a, b)` — `+` / `*`, `a`'s codec; `rangeLower`, `rangeUpper(a)` —

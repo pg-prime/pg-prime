@@ -322,8 +322,9 @@ export class IndeterminateCommitError extends PgPrimeError {
 }
 
 /**
- * An `.ifVersion()` statement matched no row: the row changed or is gone. Never retried unless
- * `retry.on` names `'VERSION_CONFLICT'`. `expected` is set only under `errors.includeParams`.
+ * An `.ifVersion()` statement matched no row: the row changed or is gone. Not retried by default;
+ * `retry.on` or a `shouldRetry` predicate opts in, which only helps if the callback re-reads the
+ * version. `expected` is set only under `errors.includeParams`.
  */
 export class VersionConflictError extends PgPrimeError {
   declare readonly code: 'VERSION_CONFLICT'

@@ -7,6 +7,7 @@ import { expectTypeOf } from 'expect-type'
 import { jsonbCodec, tsqueryCodec, tsvectorCodec } from '../../../src/codec/index.js'
 import type { Executor, Expr, RowOf } from '../../../src/query/types.js'
 import {
+  cast,
   jsonbSet,
   similarity,
   sql,
@@ -37,8 +38,15 @@ const q = sql`websearch_to_tsquery('english', ${'x'})`.as(tsqueryCodec)
 const hl = db.from(h.blocks, 'b').select((t) => ({
   a: tsHeadline('english', t.b.text, q, { maxWords: 10, startSel: '<b>' }),
   b: tsHeadline(t.b.note, q),
+  c: tsHeadline(t.b.text, cast(t.b.note, tsqueryCodec)),
+  d: tsHeadline('english', t.b.text, cast(t.b.note, tsqueryCodec)),
 }))
-expectTypeOf<RowOf<typeof hl>>().toEqualTypeOf<{ a: string; b: string | null }>()
+expectTypeOf<RowOf<typeof hl>>().toEqualTypeOf<{
+  a: string
+  b: string | null
+  c: string | null
+  d: string | null
+}>()
 // @ts-expect-error the query is a tsquery, not text
 db.from(h.blocks, 'b').select((t) => ({ a: tsHeadline(t.b.text, t.b.text) }))
 // @ts-expect-error the document is text, not a tsvector

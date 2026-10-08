@@ -490,8 +490,9 @@ you read its version. Raised by the runner on every execute path, so `execute()`
 `prepare().execute()` all see it, and inside `db.transaction()` it rolls the whole batch back.
 `table` is the target table's name; `expected` is the version you passed, and is present only under
 `errors.includeParams` because it is a bind value. It is not a `UsageError` and not a server error,
-so it never poisons the transaction and is not retried unless `retry: { on: ['VERSION_CONFLICT'] }`
-asks — which only helps if the callback re-reads the version.
+so it never poisons the transaction. It is not retried by default; `retry: { on: ['VERSION_CONFLICT'] }`
+or a `shouldRetry` predicate that accepts it opts in, which only helps if the callback re-reads the
+version.
 
 ## Usage errors
 

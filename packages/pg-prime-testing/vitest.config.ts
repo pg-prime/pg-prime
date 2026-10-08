@@ -46,7 +46,11 @@ export default defineConfig({
     projects: [
       {
         resolve: resolvePgPrimeToSource,
-        test: { name: 'unit', include: ['test/unit/**/*.test.ts'] },
+        test: {
+          name: 'unit',
+          include: ['test/unit/**/*.test.ts'],
+          setupFiles: ['../pg-prime/test/live/_bun.ts'],
+        },
       },
       {
         resolve: resolvePgPrimeToSource,

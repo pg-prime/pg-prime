@@ -1032,8 +1032,8 @@ yourself. `.ifVersion()` is not a `.where()`: the no-`WHERE` guard still wants o
 The check is enforced by the runner, so `execute()`, `executeTakeFirst()`, `executeRowCount()`,
 `db.run(q)`, `db.run(q.compile())` and `prepare().execute()` all throw; `stream()`, `streamBatches()`,
 `explain({ analyze: true, rollback: false })` and use as a CTE body are refused because they could not
-check. `VersionConflictError` is not retried unless `retry: { on: ['VERSION_CONFLICT'] }` asks, and
-that only helps when the callback re-reads the version.
+check. `VersionConflictError` is not retried by default; `retry: { on: ['VERSION_CONFLICT'] }` or a
+`shouldRetry` predicate opts in, and that only helps when the callback re-reads the version.
 
 `.ifVersion()` means "at least one row matched", so it cannot be combined with `fromValues`. For a
 batch with per-row versions, compare `executeRowCount()` with the number of rows and throw inside the

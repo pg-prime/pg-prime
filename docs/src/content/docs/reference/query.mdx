@@ -905,7 +905,7 @@ distinguishes them, which is the concrete payoff of typing operands by PostgreSQ
 | <a id="matches"/> `matches` | `a @@ q` | The right operand is a **`tsquery`**, never a string: build it with `fn.toTsquery(config, q)` or one of its siblings. |
 | <a id="tsRank"/> `tsRank` | `ts_rank(a, q)` | Returns `float4` (`real`), not `float8` — confirmed against the server's own OIDs. |
 | <a id="tsRankCd"/> `tsRankCd` | `ts_rank_cd(a, q)` | Cover-density ranking, same result type. |
-| <a id="tsHeadline"/> `tsHeadline` | `ts_headline([$1::regconfig, ]a, q[, $2])` | The document with query matches marked. The configuration is optional and bound like `fn.toTsvector`'s. [`HeadlineOptions`](#HeadlineOptions) is rendered to one bound option string, every string value double-quoted. Result `text`, null when the document is. |
+| <a id="tsHeadline"/> `tsHeadline` | `ts_headline([$1::regconfig, ]a, q[, $2])` | The document with query matches marked. The configuration is optional and bound like `fn.toTsvector`'s. [`HeadlineOptions`](#HeadlineOptions) is rendered to one bound option string, every string value double-quoted. Result `text`, null when the document or the query is. |
 
 ### Vectors
 

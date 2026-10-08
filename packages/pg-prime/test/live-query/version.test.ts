@@ -137,17 +137,30 @@ describe('.ifVersion()', () => {
     ['prepare().execute()', (h) => bump(h, 2n, 0).prepare().execute({})],
   ]
   it.each(paths)('a conflict via %s rolls back the earlier write', async (_, conflicting) => {
+    let conflict: unknown
     await expect(
       db().transaction(async (tx) => {
-        await bump(tx as never, 1n, 1).execute()
-        await conflicting(tx as never)
+        expect(await bump(tx as never, 1n, 1).executeRowCount()).toBe(1)
+        await conflicting(tx as never).catch((e: unknown) => {
+          conflict = e
+          throw e
+        })
         await bump(tx as never, 3n, 1).execute()
       }),
-    ).rejects.toBeInstanceOf(VersionConflictError)
+    ).rejects.toSatisfy((e) => e === conflict)
+    expect(conflict).toBeInstanceOf(VersionConflictError)
     expect(await rows()).toStrictEqual([
       ['1', 'a', '1'],
       ['2', 'b', '1'],
       ['3', 'c', '1'],
     ])
+  })
+
+  it('a caught conflict leaves the transaction usable', async () => {
+    await db().transaction(async (tx) => {
+      await expect(bump(tx as never, 2n, 0).execute()).rejects.toBeInstanceOf(VersionConflictError)
+      await bump(tx as never, 1n, 1).execute()
+    })
+    expect((await rows())[0]).toStrictEqual(['1', 'new', '2'])
   })
 })

@@ -24,7 +24,7 @@ Type-only module declaring the frozen state records every query builder wraps, t
 - `QueryRunOptions` is declared here rather than imported from `src/session/types.ts` because the builder layer must not depend on the session layer (`packages/pg-prime/src/query/builder-state.ts:95`).
 - `InsertState.owner` is typed `unknown` to avoid an import cycle with `cte.ts` (`packages/pg-prime/src/query/builder-state.ts:181`).
 - `SelectState.sources` keeps alias → handle so every scope can be re-derived when the alias set grows (`packages/pg-prime/src/query/builder-state.ts:142`).
-- `PoolRunner` and `ConnRunner` (both `packages/pg-prime/src/session/runner.ts:309`, `:542`, over `BaseRunner` at `:210`) are the implementations; the `db` vs `tx` difference lives entirely behind `Runner`.
+- `PoolRunner` and `ConnRunner` (both `packages/pg-prime/src/session/runner.ts:279`, `:512`, over `BaseRunner` at `:202`) are the implementations; the `db` vs `tx` difference lives entirely behind `Runner`.
 
 ## Tests
 - No dedicated spec; the shapes are exercised through every builder spec in `packages/pg-prime/test/query/` (unit) and `packages/pg-prime/test/live-query/` (live).

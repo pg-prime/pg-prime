@@ -731,17 +731,17 @@ function headlineOptions(o: HeadlineOptions): string | undefined {
 }
 
 /** `ts_headline([$config::regconfig, ]doc, q[, $options])` — the text with query matches marked. */
-export function tsHeadline<A extends TextOperand>(
+export function tsHeadline<A extends TextOperand, Q extends TsqueryOperand>(
   config: string,
   doc: A,
-  q: TsqueryOperand,
+  q: Q,
   opts?: HeadlineOptions,
-): Expr<string | Extract<A[typeof OUT], null>, 'text'>
-export function tsHeadline<A extends TextOperand>(
+): Expr<string | Extract<A[typeof OUT] | Q[typeof OUT], null>, 'text'>
+export function tsHeadline<A extends TextOperand, Q extends TsqueryOperand>(
   doc: A,
-  q: TsqueryOperand,
+  q: Q,
   opts?: HeadlineOptions,
-): Expr<string | Extract<A[typeof OUT], null>, 'text'>
+): Expr<string | Extract<A[typeof OUT] | Q[typeof OUT], null>, 'text'>
 export function tsHeadline(...args: unknown[]): unknown {
   const [config, doc, q, opts] = typeof args[0] === 'string' ? args : [undefined, ...args]
   const options = headlineOptions((opts ?? {}) as HeadlineOptions)

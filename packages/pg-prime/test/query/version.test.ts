@@ -168,6 +168,29 @@ describe('runtime', () => {
     expect(tx.context).toMatchObject({ handle: 'tx', depth: 0, attempt: 1 })
   })
 
+  it('is observed as a statement error: onQueryError and the error log, with its call site', async () => {
+    const seen: string[] = []
+    const errors: unknown[] = []
+    const records: unknown[] = []
+    const db = pgPrime({
+      driver: mockDriver(),
+      schema,
+      errors: { captureCallSite: true },
+      hooks: {
+        onQueryEnd: () => seen.push('end'),
+        onQueryError: (e: { error: unknown }) => errors.push(e.error),
+      },
+      log: { logAllQueries: true, sink: (r) => void records.push(r) },
+    })
+    const e = await conflict(versionedUpdate(db).execute())
+    expect(seen).toStrictEqual([])
+    expect(errors).toStrictEqual([e])
+    expect(e.callSite).toMatch(/version\.test\.ts/)
+    expect(records).toMatchObject([
+      { kind: 'query-error', code: 'VERSION_CONFLICT', callSite: e.callSite },
+    ])
+  })
+
   it('stream, streamBatches and explain-analyze-without-rollback refuse it', async () => {
     const db = pgPrime({ driver: mockDriver(), schema })
     const drain = async (it: AsyncIterable<unknown>) => {

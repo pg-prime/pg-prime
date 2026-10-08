@@ -1,26 +1,12 @@
 /**
- * Where a statement meets a connection, once the session layer exists (design/07 §1, §4, §6, §7).
- *
- * `src/query/run.ts` used to hold two eight-line runners whose only job was connection lifetime.
- * They are still the only two shapes — one checks a connection out per operation, one reuses the
- * connection `transaction()` holds — but every cross-cutting concern in `07` lands on exactly this
- * seam, and putting them anywhere else would mean putting them in five places:
- *
- *  - **error mapping** (§4): once, at the executor boundary, from `PgDriverErrorData` to a class;
- *  - **hooks** (§7.1): start/end/error with the `serverMs` / `decodeMs` / `waitedForConnectionMs`
- *    split nobody else reports;
- *  - **the slow-query log** (§7.3) and **call-site capture** (§7.4);
- *  - **session GUCs** (§3.6): once per *physical* connection, and not at all under a transaction
- *    profile;
- *  - **cancellation and per-statement timeouts** (§6.1–6.2), including destroying a connection
- *    after a cancel;
- *  - **the dev guard** (§1.5) and the concurrent-statements warning (§3.2).
- *
- * The `Runner` interface itself is unchanged (`src/query/builder-state.ts`), so every terminal in
- * the builder keeps working with no knowledge that any of this exists.
+ * Where a statement meets a connection (design/07 §1, §4, §6, §7): `PoolRunner` checks one out per
+ * operation, `ConnRunner` reuses the one `transaction()` holds. `execute()` is the one statement
+ * path, so error mapping, hooks, the slow-query log, call-site capture, timeouts and the
+ * `.ifVersion()` check live there once; session GUCs, cancellation and the dev guard sit around it.
+ * Builder terminals reach all of it through the `Runner` interface (`src/query/builder-state.ts`).
  */
 
-import type { Compiled } from '../compile/contract.js'
+import type { Compiled, CompiledMeta } from '../compile/contract.js'
 import { paramTypesOf } from '../compile/contract.js'
 import type { PgConnection, PgDriver, PgNoticeData } from '../driver/types.js'
 import { PgPrimeError as PgPrimeErrorClass } from '../errors/index.js'
@@ -117,6 +103,8 @@ export interface StatementDescriptor<Row> {
   paramValues(opts: StatementOptions): readonly unknown[] | undefined
   /** Runs it. `timing` is filled when somebody is listening. */
   perform(conn: PgConnection, env: ExecEnv, opts: RunOptions): Promise<StatementResult<Row>>
+  /** After `perform`: the `.ifVersion()` check the statement failed, if any. */
+  conflict?(): CompiledMeta['versionCheck']
 }
 
 /** What {@link StatementDescriptor.perform} resolves with. */
@@ -195,6 +183,10 @@ export function compiledStatement<Row>(compiled: Compiled<Row>): StatementDescri
 class CountedStatement<Row> extends CompiledStatement<Row> {
   readonly count = { rowCount: 0 }
 
+  conflict(): CompiledMeta['versionCheck'] {
+    return this.count.rowCount === 0 ? this.compiled.meta.versionCheck : undefined
+  }
+
   override perform(
     conn: PgConnection,
     env: ExecEnv,
@@ -228,43 +220,21 @@ abstract class BaseRunner implements Runner {
   abstract scope<T>(f: (conn: PgConnection) => AsyncIterable<T>): AsyncIterable<T>
   abstract runRaw<Row>(desc: StatementDescriptor<Row>, opts?: RunOptions): Promise<Row[]>
   abstract runChunked<Row>(all: readonly Compiled<Row>[], opts?: RunOptions): Promise<Row[]>
-  /** What a runtime error raised outside the driver carries as `context`. */
-  protected abstract context(): ErrorContext
 
   async run<Row>(compiled: Compiled<Row>, opts?: RunOptions): Promise<Row[]> {
     if (compiled.meta.versionCheck === undefined) {
       return this.runRaw(compiledStatement(compiled), opts)
     }
-    return (await this.#counted(compiled, opts)).rows
+    return (await this.runCounted(compiled, opts)).rows
   }
 
-  runCounted<Row>(
+  async runCounted<Row>(
     compiled: Compiled<Row>,
     opts?: RunOptions,
   ): Promise<{ rows: Row[]; rowCount: number }> {
-    return this.#counted(compiled, opts)
-  }
-
-  /** The one path that reads the command tag, and so the one place `.ifVersion()` is enforced. */
-  async #counted<Row>(
-    compiled: Compiled<Row>,
-    opts: RunOptions | undefined,
-  ): Promise<{ rows: Row[]; rowCount: number }> {
     const desc = new CountedStatement(compiled)
     const rows = await this.runRaw(desc, opts)
-    const { rowCount } = desc.count
-    const check = compiled.meta.versionCheck
-    if (check !== undefined && rowCount === 0) {
-      throw new VersionConflictError(
-        `pg-prime: version conflict on "${check.table}": no row matched .ifVersion().`,
-        {
-          context: this.context(),
-          table: check.table,
-          ...(this.state.errors.includeParams ? { expected: check.expected } : {}),
-        },
-      )
-    }
-    return { rows, rowCount }
+    return { rows, rowCount: desc.count.rowCount }
   }
 
   protected merged(opts: RunOptions | undefined): StatementOptions {
@@ -919,6 +889,18 @@ export async function execute<Row>(
 
   try {
     const out = await desc.perform(lease.conn, state.env, runOpts)
+    const check = desc.conflict?.()
+    if (check !== undefined) {
+      throw new VersionConflictError(
+        `pg-prime: version conflict on "${check.table}": no row matched .ifVersion().`,
+        {
+          context: contextOf(handle, tx, o),
+          table: check.table,
+          ...(state.errors.includeParams ? { expected: check.expected } : {}),
+          ...(callSite === undefined ? {} : { callSite }),
+        },
+      )
+    }
     if (start !== undefined) {
       const durationMs = performance.now() - started
       const serverMs = timing?.serverMs ?? durationMs
@@ -936,7 +918,10 @@ export async function execute<Row>(
     }
     return out.rows
   } catch (raw) {
-    const error = mapStatementError(state, raw, desc, o, handle, tx, callSite, timer.fired())
+    const error =
+      raw instanceof VersionConflictError
+        ? raw
+        : mapStatementError(state, raw, desc, o, handle, tx, callSite, timer.fired())
     if (tx !== undefined && isPoisoning(error)) tx.poison.error ??= error
     if (start !== undefined) {
       const durationMs = performance.now() - started
@@ -1068,6 +1053,18 @@ function startClientTimeout(
   }
 }
 
+function contextOf(
+  handle: 'db' | 'tx' | 'session',
+  tx: TxRuntime | undefined,
+  o: StatementOptions,
+): ErrorContext {
+  return {
+    handle,
+    ...(tx === undefined ? {} : { attempt: tx.attempt, depth: tx.depth, txId: tx.txId }),
+    ...(o.label === undefined ? {} : { label: o.label }),
+  }
+}
+
 function mapStatementError<Row>(
   state: SessionState,
   raw: unknown,
@@ -1079,11 +1076,7 @@ function mapStatementError<Row>(
   timedOut: boolean,
 ): PgPrimeError {
   const mapped = mapError(raw, {
-    context: {
-      handle,
-      ...(tx === undefined ? {} : { attempt: tx.attempt, depth: tx.depth, txId: tx.txId }),
-      ...(o.label === undefined ? {} : { label: o.label }),
-    },
+    context: contextOf(handle, tx, o),
     errors: state.errors,
     sql: desc.sql,
     // `07` §4.3's `paramCount` and `params` come from ONE place. The values are the PII and
