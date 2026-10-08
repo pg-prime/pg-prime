@@ -1,8 +1,8 @@
 /**
  * Tier R, read out of the catalog for `pg-prime pull` (design/06 §2.2, §3.8).
  *
- * Functions, views, materialized views, triggers, RLS policies and aggregates are **not**
- * facts — they are re-applied from `sql/` by hash rather than diffed — so the IR does not
+ * Functions, views, materialized views, triggers and aggregates are **not** facts — they are
+ * re-applied from `sql/` by hash rather than diffed — so the IR does not
  * carry them and `pull` has to ask the catalog itself. Every statement produced here is
  * idempotent, because `checkIdempotence` (TX201) refuses a repeatable that is not: a
  * repeatable is re-applied on every deploy whose bytes changed, and a bare `CREATE TRIGGER`
@@ -20,7 +20,7 @@
 import type { CatalogClient } from "../catalog/extract.js";
 
 export interface TierRObject {
-  /** `function` | `view` | `matview` | `trigger` | `policy` | `aggregate` */
+  /** `function` | `view` | `matview` | `trigger` | `aggregate`; policies and RLS flags are DSL */
   readonly kind: string;
   readonly schema: string;
   /** human-addressable, e.g. `public.actor_info` or `public.film.last_updated` */
@@ -113,21 +113,6 @@ SELECT n.nspname AS schema, c.relname AS "table", t.tgname AS name,
  WHERE n.nspname = ANY($1) AND NOT t.tgisinternal
  ORDER BY 1, 2, 3`;
 
-const Q_POLICIES = `
-SELECT n.nspname AS schema, c.relname AS "table", p.polname AS name,
-       CASE p.polcmd WHEN 'r' THEN 'SELECT' WHEN 'a' THEN 'INSERT' WHEN 'w' THEN 'UPDATE'
-                     WHEN 'd' THEN 'DELETE' ELSE 'ALL' END AS command,
-       p.polpermissive AS permissive,
-       (SELECT string_agg(quote_ident(r.rolname), ', ' ORDER BY r.rolname)
-          FROM pg_roles r WHERE r.oid = ANY(p.polroles)) AS roles,
-       pg_get_expr(p.polqual, p.polrelid) AS using_expr,
-       pg_get_expr(p.polwithcheck, p.polrelid) AS check_expr
-  FROM pg_policy p
-  JOIN pg_class c ON c.oid = p.polrelid
-  JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE n.nspname = ANY($1)
- ORDER BY 1, 2, 3`;
-
 const Q_AGGREGATES = `
 SELECT n.nspname AS schema, p.proname AS name,
        pg_get_function_identity_arguments(p.oid) AS args,
@@ -145,13 +130,6 @@ SELECT n.nspname AS schema, p.proname AS name,
  WHERE n.nspname = ANY($1)
    AND ${NOT_FROM_EXTENSION.replace("$CLASS$", "'pg_proc'").replace("$OID$", "p.oid")}
  ORDER BY 1, 2, 3`;
-
-/** Tables with RLS turned on — the `ALTER TABLE … ENABLE ROW LEVEL SECURITY` a policy needs. */
-const Q_RLS_TABLES = `
-SELECT n.nspname AS schema, c.relname AS name, c.relforcerowsecurity AS forced
-  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE n.nspname = ANY($1) AND c.relkind IN ('r','p') AND c.relrowsecurity
- ORDER BY 1, 2`;
 
 /* --------------------------------- the read -------------------------------- */
 
@@ -263,51 +241,6 @@ export async function readTierR(
         "-- DROP first, which is a decision (and a REFRESH) rather than something a repeatable does.",
         `CREATE MATERIALIZED VIEW IF NOT EXISTS ${q(schema)}.${q(name)} AS\n${stmt(str(r["def"]))}`,
         ...(mvIndexes.get(identity) ?? []),
-      ].join("\n"),
-    );
-  }
-
-  /* 040 — RLS enablement, then the policies. */
-  for (const r of (await client.query(Q_RLS_TABLES, [list])).rows as Row[]) {
-    const schema = str(r["schema"]);
-    const name = str(r["name"]);
-    const identity = `${schema}.${name}`;
-    push(
-      "rls",
-      "040_rls",
-      schema,
-      identity,
-      `${fileSlug(schema)}__${fileSlug(name)}`,
-      [
-        `-- pg-prime:object rls ${identity}`,
-        `ALTER TABLE ${q(schema)}.${q(name)} ENABLE ROW LEVEL SECURITY;`,
-        ...(r["forced"] === true ? [`ALTER TABLE ${q(schema)}.${q(name)} FORCE ROW LEVEL SECURITY;`] : []),
-      ].join("\n"),
-    );
-  }
-  for (const r of (await client.query(Q_POLICIES, [list])).rows as Row[]) {
-    const schema = str(r["schema"]);
-    const table = str(r["table"]);
-    const name = str(r["name"]);
-    const identity = `${schema}.${table}.${name}`;
-    const bits = [
-      `CREATE POLICY ${q(name)} ON ${q(schema)}.${q(table)}`,
-      `  AS ${r["permissive"] === true ? "PERMISSIVE" : "RESTRICTIVE"}`,
-      `  FOR ${str(r["command"])}`,
-      `  TO ${r["roles"] === null || r["roles"] === undefined ? "PUBLIC" : str(r["roles"])}`,
-      ...(r["using_expr"] === null || r["using_expr"] === undefined ? [] : [`  USING (${str(r["using_expr"])})`]),
-      ...(r["check_expr"] === null || r["check_expr"] === undefined ? [] : [`  WITH CHECK (${str(r["check_expr"])})`]),
-    ];
-    push(
-      "policy",
-      "050_policies",
-      schema,
-      identity,
-      `${fileSlug(schema)}__${fileSlug(table)}__${fileSlug(name)}`,
-      [
-        `-- pg-prime:object policy ${identity}`,
-        `DROP POLICY IF EXISTS ${q(name)} ON ${q(schema)}.${q(table)};`,
-        `${bits.join("\n")};`,
       ].join("\n"),
     );
   }

@@ -15,7 +15,10 @@ export interface TablePayload extends Payload {
   readonly relkind: "r" | "p";
   /** `pg_class.relpersistence`: `p` permanent, `u` unlogged, `t` temp */
   readonly persistence: string;
-  /** `pg_class.relrowsecurity` */
+  /**
+   * `pg_class.relrowsecurity`. FORCE is not here: hashing it would move the fingerprint of every
+   * FORCE'd database (design/20 D4); `readLaneState` reads it instead.
+   */
   readonly rowSecurity: boolean;
   /**
    * `pg_partitioned_table.partstrat` — `r` range, `l` list, `h` hash — null when this

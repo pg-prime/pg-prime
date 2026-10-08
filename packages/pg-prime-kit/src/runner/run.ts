@@ -681,10 +681,15 @@ export async function applyPendingOn(
       pending = pending.filter((f) => f.seq < target.seq || (f.seq === target.seq && f.name <= target.name));
     }
 
-    /* 6. Pre-flight sweep. */
+    /* 6. Pre-flight sweep. RLS filtering turns into 42501 rather than silently missing rows (design/20 D20). */
+    await setConfig(client, "row_security", "off", false);
     const preflight = await sweep(client, schemas, pending);
     for (const finding of preflight.touchedByPending) {
       warnings.push(`pre-flight: ${finding} is invalid or unvalidated and a pending plan names it`);
+    }
+    for (const d of await rlsDataFiles(client, schemas, pending)) {
+      diagnostics.push(d);
+      warnings.push(`pre-flight: ${d.message}`);
     }
 
     const applied: AppliedMigration[] = [];
@@ -1191,6 +1196,38 @@ async function sweep(
   );
   return { invalidIndexes, notValidConstraints, ccnewLeftovers, touchedByPending: touched };
 }
+
+/** RL107: a data file touching an RLS-enabled table fails with 42501 unless the runner role bypasses RLS. */
+async function rlsDataFiles(
+  client: CatalogClient,
+  schemas: readonly string[],
+  pending: readonly MigrationFile[],
+): Promise<Diagnostic[]> {
+  const data = pending.filter((f) => f.directives.data || f.directives.batch !== null);
+  if (data.length === 0) return [];
+  const { rows } = await client.query(
+    `SELECT n.nspname AS schema, c.relname AS name
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relrowsecurity AND n.nspname = ANY($1)
+        AND NOT (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user)
+      ORDER BY 1, 2`,
+    [[...schemas]],
+  );
+  return data.flatMap((f) =>
+    rows
+      .filter((t) => new RegExp(`(?<![\\w$])("?)${escapeRe(String(t["name"]))}\\1(?![\\w$])`, "i").test(f.text))
+      .map((t) => ({
+        code: "RL107",
+        severity: "warning" as const,
+        subject: f.id,
+        message:
+          `RL107 ${f.id} touches ${String(t["schema"])}.${String(t["name"])}, which has row-level security, and ` +
+          `the runner role has no BYPASSRLS: it fails with 42501 under row_security = off`,
+      })),
+  );
+}
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** design/06 §5.1 step 8 — changed `sql/` files, re-applied in ONE transaction. */
 async function runRepeatables(
