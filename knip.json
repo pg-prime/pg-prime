@@ -46,6 +46,31 @@
       "project": ["src/**/*.ts", "test/**/*.ts"],
       "ignoreDependencies": ["@pg-prime/events", "@pg-prime/testing", "pg-prime"]
     },
+    "packages/pg-prime-context": {
+      "entry": ["src/index.ts", "src/testing.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"],
+      "ignoreDependencies": ["@pg-prime/testing", "pg-prime"]
+    },
+    "packages/pg-prime-nestjs": {
+      "entry": [
+        "src/index.ts",
+        "src/testing.ts",
+        "test/**/*.test.ts",
+        "test/pack-smoke.ts",
+        "test/bun/*.ts"
+      ],
+      "project": ["src/**/*.ts", "test/**/*.ts"],
+      "ignoreDependencies": [
+        "@apollo/server",
+        "@nestjs/apollo",
+        "@nestjs/graphql",
+        "@nestjs/testing",
+        "@pg-prime/context",
+        "@pg-prime/testing",
+        "graphql",
+        "pg-prime"
+      ]
+    },
     "packages/pg-prime-outbox": {
       "entry": ["src/index.ts", "test/**/*.test.ts", "test/pack-smoke.ts"],
       "project": ["src/**/*.ts", "test/**/*.ts"]
@@ -72,7 +97,14 @@
         "@pg-prime/cron",
         "@pg-prime/events",
         "@pg-prime/mq",
-        "@pg-prime/outbox"
+        "@pg-prime/outbox",
+        "@pg-prime/context",
+        "@pg-prime/nestjs",
+        "@nestjs/common",
+        "@nestjs/core",
+        "@nestjs/testing",
+        "reflect-metadata",
+        "rxjs"
       ]
     }
   },

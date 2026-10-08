@@ -92,6 +92,28 @@
       "dependencies": ["croner"],
       "requiredPeers": ["pg-prime"],
       "optionalPeers": ["@pg-prime/mq"]
+    },
+    "packages/pg-prime-context": {
+      "_design": {
+        "_why": "design/19 §8.2's table. installBytes is the package plus its runtime dependencies in its own throwaway project, excluding peers (tools/pack-smoke.mjs).",
+        "unpackedBytes": 40960,
+        "installBytes": 61440
+      },
+      "unpackedBytes": 40960,
+      "installBytes": 61440,
+      "dependencies": [],
+      "requiredPeers": ["pg-prime"]
+    },
+    "packages/pg-prime-nestjs": {
+      "_design": {
+        "_why": "design/19 §8.2's table. installBytes is the package plus its runtime dependencies (@pg-prime/context) in its own throwaway project, excluding peers (tools/pack-smoke.mjs).",
+        "unpackedBytes": 61440,
+        "installBytes": 122880
+      },
+      "unpackedBytes": 61440,
+      "installBytes": 122880,
+      "dependencies": ["@pg-prime/context"],
+      "requiredPeers": ["@nestjs/common", "@nestjs/core", "pg-prime", "rxjs"]
     }
   },
   "treeshake": {
@@ -106,7 +128,9 @@
       "events-basic": 12288,
       "outbox-write": 10240,
       "mq-send": 30720,
-      "cron-define": 20480
+      "cron-define": 20480,
+      "context-basic": 3072,
+      "nestjs-module": 8192
     },
     "_measured": {
       "_when": "2026-10-08, the integrated doc-collab readiness tree: typed helpers + .collate() + executeRowCount()/.ifVersion().",
@@ -187,7 +211,13 @@
     "cron-define": {
       "delta": 20480
     },
-    "_delta": "design/15 §0.4: an add-on fixture's budget is `{ delta }`, the min+gz of its entry bundled with `pg-prime` external — what the add-on adds over the pg-prime an app already ships. Design numbers until the first measurement, then ratcheted by the rule above."
+    "context-basic": {
+      "delta": 3072
+    },
+    "nestjs-module": {
+      "delta": 8192
+    },
+    "_delta": "design/15 §0.4: an add-on fixture's budget is `{ delta }`, the min+gz of its entry bundled with its peers (`pg-prime`, and a framework such as Nest) external — what the add-on adds over what an app already ships. Design numbers until the first measurement, then ratcheted by the rule above."
   },
   "_overDesign": {
     "_why": "Every entry is a budget deliberately looser than design/08 §1.2's number, with the reason and the measurement. `size-budget.mjs` FAILS on a budget that exceeds its `_design` twin and is not listed here, so widening one is a machine-checkable event and not only a review one. An entry leaves this block by measurement — by the number coming down — never by editing the number.",

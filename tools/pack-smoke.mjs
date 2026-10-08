@@ -27,7 +27,8 @@
 //      declares a `bin`, and whether a shebang'd `dist/cli.js` keeps its 0755 through `pnpm pack` →
 //      `npm install` is not something any other check here would notice.
 //   8. Every add-on (a package with `test/pack-smoke.ts`) gets its own throwaway project holding
-//      only its tarball, its in-repo dependencies, pg-prime and @pg-prime/testing. Its consumer
+//      only its tarball, its in-repo dependencies, pg-prime, @pg-prime/testing and any registry
+//      peers named in REGISTRY_PEERS (Nest for @pg-prime/nestjs). Its consumer
 //      body is compiled with TypeScript 5.9.3 and run, and its install footprint — the package
 //      plus its runtime dependencies, excluding pg-prime — is held to `installBytes` in
 //      tools/budgets.json.
@@ -59,6 +60,10 @@ const BUDGETS = JSON.parse(readFileSync(join(HERE, 'budgets.json'), 'utf8'))
 const CORE = ['pg-prime', '@pg-prime/kit', '@pg-prime/testing']
 const ADDONS = ALL.filter((p) => existsSync(join(ROOT, p.dir, 'test', 'pack-smoke.ts')))
 const PACKAGES = ALL.filter((p) => CORE.includes(p.name) || ADDONS.includes(p))
+/** Registry packages an add-on's consumer needs beside the tarballs, at its devDependency ranges. */
+const REGISTRY_PEERS = {
+  '@pg-prime/nestjs': ['@nestjs/common', '@nestjs/core', 'rxjs', 'reflect-metadata'],
+}
 const tarballName = (p) => `${p.name.replace('@', '').replace('/', '-')}-${p.pkg.version}.tgz`
 
 /** The exact SQL `consumer.ts` asserts. Spelled here too so a change shows up in this file's diff. */
@@ -243,13 +248,20 @@ function smokeAddon(addon, tmp, tars, failures) {
   // `--legacy-peer-deps`: an add-on's peer floor names the release that ships it, which the
   // in-tree pg-prime only becomes at `changeset version`. size-budget.mjs asserts the peers.
   const tarballs = members.map((p) => join(tars, tarballName(p)))
-  sh('npm', ['install', '--no-audit', '--no-fund', '--legacy-peer-deps', ...tarballs], app)
+  const registry = (REGISTRY_PEERS[addon.name] ?? []).map(
+    (n) => `${n}@${addon.pkg.devDependencies[n]}`,
+  )
+  sh(
+    'npm',
+    ['install', '--no-audit', '--no-fund', '--legacy-peer-deps', ...tarballs, ...registry],
+    app,
+  )
 
   const bytes = footprint(app, addon.name)
   const limit = BUDGETS.packages[addon.dir]?.installBytes
   const fits = limit !== undefined && bytes <= limit
   const shown = limit === undefined ? 'no installBytes budget' : `${(limit / 1024).toFixed(1)} KB`
-  console.log(`  install footprint, excl. pg-prime: ${(bytes / 1024).toFixed(1)} KB / ${shown}`)
+  console.log(`  install footprint, excl. peers: ${(bytes / 1024).toFixed(1)} KB / ${shown}`)
   if (!fits) failures.push(`${addon.name} install footprint ${bytes} B > installBytes ${limit}`)
 
   const tsc = tryRun(process.execPath, [TSC_59, '-p', 'tsconfig.json', '--pretty', 'false'], app)

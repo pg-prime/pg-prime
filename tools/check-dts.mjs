@@ -16,7 +16,8 @@
 //
 // It also asserts that a package's emitted `.d.ts` tree names no module beyond its `dependencies`
 // and REQUIRED peers. For `pg-prime` that is none at all, so its zero-dependency promise holds at
-// the type level too; an optional peer leaking into a declaration would make it required.
+// the type level too; an optional peer leaking into a declaration would make it required. A type
+// reference directive for `x` counts as `@types/x`, so `@types/node` cannot leak in either.
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -51,6 +52,7 @@ export function externalSpecifiers(distDir) {
     if (!f.endsWith('.d.ts')) continue
     const text = readFileSync(join(distDir, f), 'utf8')
     const source = ts.createSourceFile(f, text, ts.ScriptTarget.ES2023, true, ts.ScriptKind.TS)
+    for (const r of source.typeReferenceDirectives) add(`@types/${r.fileName}`, f)
     const visit = (node) => {
       if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
         add(node.moduleSpecifier.text, f)
@@ -69,7 +71,7 @@ export function externalSpecifiers(distDir) {
   return found
 }
 
-function tsconfigFor(pkgDir, tmp, name) {
+function tsconfigFor(pkgDir, tmp, name, types) {
   const path = join(tmp, `tsconfig.${name}.json`)
   writeFileSync(
     path,
@@ -86,7 +88,8 @@ function tsconfigFor(pkgDir, tmp, name) {
           noUncheckedIndexedAccess: true,
           skipLibCheck: false,
           noEmit: true,
-          types: [],
+          types,
+          typeRoots: [join(ROOT, 'node_modules', '@types')],
         },
         include: [join(pkgDir, 'dist', '**', '*.d.ts').split('\\').join('/')],
       },
@@ -122,8 +125,13 @@ if (process.argv[1] && process.argv[1].endsWith('check-dts.mjs')) {
           `  FAIL the emitted declarations name \`${spec}\` (in ${externals.get(spec).slice(0, 3).join(', ')}), which is not a dependency or required peer of ${pkg.name}`,
         )
       }
+      // A framework peer's own declarations need Node's types, as its consumers always have them.
+      const framework = Object.keys(pkg.pkg.peerDependencies ?? {}).some(
+        (d) => !optional[d]?.optional && !PACKAGES.some((p) => p.name === d),
+      )
+      const types = framework ? ['node'] : []
       for (const [version, tsc] of Object.entries(COMPILERS)) {
-        const cfg = tsconfigFor(pkgDir, tmp, `${pkg.dir.replace(/[\\/]/g, '_')}.${version}`)
+        const cfg = tsconfigFor(pkgDir, tmp, `${pkg.dir.replace(/[\\/]/g, '_')}.${version}`, types)
         const started = Date.now()
         let out = ''
         let ok = true
