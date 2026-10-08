@@ -1,0 +1,10 @@
+{
+  "name": "@pg-prime/bench-outbox",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Plan 16 §7's nightly outbox bench: writes/s with ordered vs unordered keys, relay records/s at P = 16 with 1 and 4 relays. Runs the built packages against PG_PRIME_TEST_URL and writes report.json.",
+  "type": "module",
+  "scripts": {
+    "bench": "node run.mjs"
+  }
+}
