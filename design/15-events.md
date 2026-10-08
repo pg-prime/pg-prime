@@ -201,7 +201,7 @@ non-obvious reason, workaround or trap; no history or ticket ids in comments.
 | E-D3 | **Cursor = position `(last_xid, last_id)` plus `pending`: the transactions below the position that were still running at a read, each with its own progress `after_id`** (§3.3). Not a bare `xmin` watermark. The whole cursor is exposed as an opaque `cursor` string on every delivered entry | Exact even with per-entry commits inside a late transaction, and **not delayed by unrelated long transactions**, which an `xmin` watermark is. An opaque cursor is the only correct replay handle, because ids follow neither xid order nor commit order |
 | E-D4 | `entries` is **append-only** (never updated); retention is a range delete; no partitioning in v0 | No update bloat; E-Q2 covers time partitions |
 | E-D5 | Payload `jsonb`, typed by the declaration (`defineTopic<T>` or inferred from a Standard Schema validator; the interface is copied as a type, no dependency); optional `codec`; default 1 MiB limit; `\u0000` refused with path | typed with zero deps |
-| E-D6 | Engine channels `ev_` + 24 hex chars of `sha256(schema '/' topic)` (same in SQL and TS). **User channels use their literal name** | Fixed-length, schema-isolated engine names; a SQL trigger can `pg_notify('cache-bust', …)` into a typed channel |
+| E-D6 | Engine channels `ev_` + 24 hex chars of `sha256(schema '/' kind '/' name)` (same in SQL and TS; topics use kind `t`). **User channels use their literal name** | Fixed-length, schema-isolated engine names; a SQL trigger can `pg_notify('cache-bust', …)` into a typed channel |
 | E-D7 | **Building blocks exported for sibling packages**: `waker()`, `engineChannel()`/`engineChannelSql()`, the subscription API. Documented and in the API golden | mq reuses them instead of duplicating (0.1) |
 
 ---
@@ -275,12 +275,14 @@ retention skips ids present in `parked`.
 ```sql
 with e as (
   insert into pgprime_events.entries (topic, type, key, payload, headers)
-  select $t, type, key, payload, headers
-  from jsonb_to_recordset($rows) as r(type text, key text, payload jsonb, headers jsonb)
+  select $t, r.type, r.key, r.payload, r.headers
+  from rows from (jsonb_to_recordset($rows) as (type text, key text, payload jsonb, headers jsonb))
+       with ordinality as r(type, key, payload, headers, n)
+  order by r.n
   returning id
 )
-select array_agg(id) as ids,
-       (select pg_notify($chan, '') where exists (select from e)) is null as woke
+select array_agg(id order by id) as ids,
+       (select pg_notify($chan, '') where exists (select from e)) is not null as woke
 from e
 ```
 
@@ -332,6 +334,8 @@ order by x.xid, x.id
 ```
 
 There is always exactly one row from `m`; the entry columns are null when nothing matched.
+`pg_snapshot_xip` lists only running xids below the snapshot's `xmax`; a running xid at or above it
+is above every visible entry, so no position can step over it (as built: verified on PG 15–18).
 
 Entries are delivered in result order: `late` units first, then `next`.
 
@@ -368,8 +372,10 @@ Why nothing is lost or duplicated:
    bounded by the number of concurrent transactions.
 
 **Ordering contract:** each entry is delivered once per cursor. A producer transaction's entries
-arrive together, in insertion order. There is no total order across concurrent transactions (none
-exists before commit). Every delivered `Entry` carries `cursor`: the opaque, serialized cursor
+arrive in insertion order. As built: they do **not** always arrive together — `next`'s limit can
+split a transaction, and a late transaction's entries are then delivered between its parts (the
+property test found it; the plan's "together" was wrong). There is no total order across concurrent
+transactions (none exists before commit). Every delivered `Entry` carries `cursor`: the opaque, serialized cursor
 state right after that entry. That is the only valid replay or resume handle.
 
 ### 3.4 Commit (C1), retry and park
@@ -411,6 +417,10 @@ returning 1                                       -- 0 rows only when the lease 
 - **Isolation.** A multi-entry attempt that throws, or whose marker is found still set at the next
   read or lease takeover (it crashed), switches the reader to **isolation**. That means batch size
   1 for the next `head_size` entries. Nothing is charged for the batch failure.
+- As built: a marker found at takeover isolates `head_size` entries **whatever its size** (also 1),
+  and a failed single-entry attempt keeps the reader isolated until that entry succeeds or is
+  parked. Otherwise the next, larger batch re-marks `head_size > 1`, resets `head_attempts`, and the
+  entry is never parked.
 - **Charging.** In isolation each entry gets its own A1 (`$size = 1`), so `head_attempts` counts
   real attempts of that one entry, crashes included. Before invoking, the reader parks the entry
   (K1) instead when the count A1 returns exceeds `maxAttempts`. With `maxAttempts: 1`, an innocent
