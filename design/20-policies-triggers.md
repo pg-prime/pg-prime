@@ -754,3 +754,56 @@ and the `040_rls` layout.
 - `pull/emit-ts.md`: add "rls/definePolicy/updatedAtTrigger".
 - `pull/tier-r.md`: drop "RLS, policies".
 - `runner/run.md`: add "row_security = off, RL107 pre-flight".
+
+#### R2 — RESULT
+
+Branch `worktree-agent-a40acf1e9b738486c` on `a8c1e75`, merged with R3 (`10e4d27`, merge `cadf74e`).
+Commits: `2fb8de6` lane (src + tests), `00dc569` exports, CLI help, reference entries, `9851fe5` wired
+to R3's readers (adapter removed, `BuildOptions.lane`, real pull round trip), `15e5a3c` module docs,
+then this RESULT. No adapter is left to swap: `generate`/`verify` import `readLaneState`,
+`afterLaneState` and `coverageLost` from `catalog/extract.ts`.
+
+**Built:**
+- `schema/declared.ts`: `renderDeclared` (§4 files byte-pinned by goldens, FORCE/NO FORCE line +
+  `-- pg-prime:object rls` header, marker hash = sha256 of `ddl()` without `;`), the prune (three
+  `DO` loops, keep-lists as `(…) NOT IN (VALUES …)`, acks in the header), `syncDeclared` (views use
+  it too; a non-declared file at a declared path is `declared_conflict`, prune never deleted),
+  `laneConflicts` (D16 on lexed statements and `-- pg-prime:object` headers, `rls_declared_twice`),
+  `declaredCensus` (`declared_missing`/`_orphan`/`_unmarked`, FORCE state, `heal` paths).
+- `generate`: target reads first (IR, emptiness, lane state, markers), the shadow loads hand files ∪
+  the lane rendered through `schemaMap` from memory, prune excluded (D22); shadow lane state always
+  read, so `BuildOptions.lane = { before, after }` rides every run. Lane path: RL105, RL103 (NO FORCE),
+  RL101 on tables already enabled (the statement path owns enabling ones) and every RL108; plus
+  `declared_conflict`, `declared_invalid`, `policy_unknown_role` (refused before the shadow). An
+  unacknowledged one throws `LaneRefusedError` and nothing is written; `--allow-data-loss` acks land
+  in the prune header and are carried forward. Lane files are written only on `generated`/`up_to_date`.
+- Runner: `healDeclared` (`repeatables/plan.ts`) in `runRepeatables`, one call; nothing else in `run.ts`.
+- CLI: `generate` → `lane_refused`, exit 2; `check` → `declared_lane_stale`/`declared_conflict`/lane
+  hazards exit 3; `verify` → census findings are drift (exit 4), `rls_no_policies` warnings;
+  `doctor` → census (pending files skipped), `rls_not_forced` (login owner without bypass), says when
+  the prune file may be deleted. `updated_at_on_update_overlap` and RL104 come from the render.
+- Exports: `renderDeclared`, `syncDeclared`, `declaredCensus`, `POLICIES_DIR`, `TRIGGERS_DIR`,
+  `PRUNE_FILE`, `LaneRefusedError`, types incl. `PolicyLike`; `SchemaLike.policies`; loader discovers
+  `definePolicy` exports. `pg-prime-kit.json` + stub regenerated (only the kit golden).
+
+**Deviations:** `declared_lane_stale` is a warning in `generate` (a dry run must not exit 3) and is
+mapped to exit 3 by `check`. Lane DB tests grant to `PUBLIC` and create roles only inside a rolled-back
+transaction or for one `it` (dropped after), because `doctor` goldens count the cluster's roles. The
+"upgrade" case of §8 (hand-FORCE'd DB keeps its fingerprint) is covered by R3's fingerprint pin only.
+Follow-up (§5.3): on tier 3, hand-written repeatables still run against the target's real schemas.
+
+**Tests:** kit `test:pg` on docker PG 17.11 superuser: 68 files, 512 passed / 6 skipped; lane suites
+(declared 17, declared-rls 13, verify-declared 3, rls-roundtrip 2) also green on PG 18. Chain on the
+merged tree: lint, format:check, typecheck, test, test:live, test:pg, build, package:check,
+bench:types, bench:compile, docs:check, docs:examples:pg all exit 0 (docs-coverage 100 %). No
+size-only failure; kit unpacked **1961.0 KB** (tarball 476.7 KB) of 8192 KB.
+
+**INDEX lines** (for the integrator):
+- New: docs/packages/pg-prime-kit/src/schema/declared.md — RLS policies, FORCE and updatedAt triggers as marked sql/ repeatables, prune, census — read when declared lane files, markers, `declared_*` findings or the prune misbehave.
+- `cli/commands/check.md` → "`migrate check` gate: schema drift, stale declared lane, checksums, pending, exit precedence — read when check exits 3/4/5 unexpectedly or editing CI gating."
+- `cli/commands/doctor.md` → "… invalid indexes, drift, leases, orphans, declared markers …".
+- `cli/commands/verify.md` → "… replay migrations into an ephemeral database, diff, declared-lane census …".
+- `generate.md` → "migrate generate pipeline, declared-lane refusals, statuses, stub templates, hints, generateFromDatabases — read when changing how migrations or lane files are generated, proven or written."
+- `repeatables.md` → "… hash plan, declared self-heal, one-transaction apply …".
+- `schema/types.md` → "type-only SchemaLike/TableLike/ViewLike/PolicyLike view …".
+- `schema/views.md` → "declared views rendered into sql/020_views, sync via syncDeclared, per-kind census adjustment …".
