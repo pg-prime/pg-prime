@@ -1006,9 +1006,10 @@ type PolicySpec<T extends AnyTable> = PolicyBase<T> &
 can reference a table declared later in the file. Both are optional, as in PostgreSQL: a permissive
 policy without one grants nothing, a restrictive one restricts nothing.
 
-Every column renders qualified by its table name — `"documents"."org_id"` — so a subquery over
-another table that also has an `org_id` cannot capture it. A subquery over the policy's *own* table
-must alias it (`FROM documents d`). A value becomes a typed literal (`'f'::boolean`); a prepared
+Every column renders qualified by its table name — `"documents"."org_id"` — so a subquery over a
+differently named table that also has an `org_id` cannot capture it. A raw subquery over the policy's
+*own* table, or a same-named table in another schema, must alias it (`FROM documents d`); a typed
+subquery whose FROM alias (its `defineSchema` key) is the policy's table name is a `SchemaError`. A value becomes a typed literal (`'f'::boolean`); a prepared
 placeholder, an aggregate, a window call or a `bytea` value is a `SchemaError`.
 
 ### `PolicyExpr`
@@ -1065,7 +1066,8 @@ interface PolicyRuntime {
 ```
 
 `ddl` returns the statement without a trailing semicolon, evaluating the predicates on every call.
-`schemaOf` maps the table's declared schema (`undefined` for the default) to the one to emit.
+`schemaOf` maps the table's declared schema (`undefined` for the default) to the one to emit; a
+typed subquery's FROM tables go through it too.
 
 ### `updatedAtTrigger`
 

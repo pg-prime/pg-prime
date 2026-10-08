@@ -96,6 +96,42 @@ describe('definePolicy $.ddl()', () => {
     `)
   })
 
+  it('maps a typed FROM table through schemaOf', () => {
+    const sc = defineSchema({ memberships })
+    const db = compileOnly(sc)
+    const p = definePolicy('typed', {
+      on: documents,
+      using: (t) =>
+        exists(
+          db
+            .from(sc.h.memberships)
+            .select(({ memberships: m }) => ({ u: m.userId }))
+            .where(({ memberships: m }) => eq(m.orgId, t.orgId)),
+        ),
+    })
+    expect(p.$.ddl((s) => `shadow_${s ?? 'public'}`)).toContain(
+      'from "shadow_public"."memberships" as "memberships"',
+    )
+  })
+
+  it("refuses a typed FROM aliased like the policy's table, in any schema", () => {
+    const archive = pgSchema('archive').table('documents', (t) => ({ orgId: t.uuid() }))
+    for (const sc of [defineSchema({ documents }), defineSchema({ documents: archive })]) {
+      const db = compileOnly(sc)
+      const p = definePolicy('captured', {
+        on: documents,
+        using: (t) =>
+          exists(
+            db
+              .from(sc.h.documents)
+              .select(({ documents: d }) => ({ o: d.orgId }))
+              .where(({ documents: d }) => eq(d.orgId, t.orgId)),
+          ),
+      })
+      expect(() => p.$.ddl(pub)).toThrow(/FROM item aliased "documents"/)
+    }
+  })
+
   it('maps the schema through schemaOf and leaves omitted clauses out', () => {
     const audit = pgSchema('audit')
     const log = audit.table('log', (t) => ({ id: t.integer() }))

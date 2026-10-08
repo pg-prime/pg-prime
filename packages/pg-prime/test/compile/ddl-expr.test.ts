@@ -24,6 +24,7 @@ import {
   param,
   placeholder,
 } from '../../src/compile/nodes.js'
+import { pgTable } from '../../src/schema/index.js'
 import { SchemaError } from '../../src/sql/errors.js'
 import { sql } from '../../src/sql/index.js'
 import { toNode } from '../../src/sql/fragment.js'
@@ -70,11 +71,22 @@ describe('compileDdlExpr', () => {
   })
 
   it('qualifies a schema ref interpolated into raw SQL by its relation name', () => {
-    const plainRef = { $: { table: 'memberships', dbName: 'org_id' } }
+    const memberships = pgTable('memberships', (t) => ({ orgId: t.uuid() }))
     expect(
-      ddl(toNode(sql`exists (select 1 from memberships m where ${plainRef} = ${orgId})`)),
+      ddl(
+        toNode(
+          sql`exists (select 1 from memberships m where ${memberships.cols.orgId} = ${orgId})`,
+        ),
+      ),
     ).toBe(
       `exists (select 1 from memberships m where "memberships"."org_id" = "documents"."org_id")`,
+    )
+  })
+
+  it('encodes data shaped like a schema ref as data', () => {
+    const lookalike = { $: { table: 'documents', dbName: 'org_id' } }
+    expect(ddl(bin('=', orgId, param(lookalike, jsonbCodec)))).toBe(
+      `"documents"."org_id" = '{"$":{"table":"documents","dbName":"org_id"}}'::jsonb`,
     )
   })
 

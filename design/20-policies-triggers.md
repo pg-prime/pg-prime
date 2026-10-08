@@ -250,8 +250,9 @@ COMMENT ON POLICY "shared" ON "public"."documents" IS 'pg-prime:declared sha256:
 
 Policies sorted by name; `<x>` = sha256 of that CREATE statement; the inlined `false` is whatever
 the bool codec encodes (golden-pinned); role keywords bare, other roles quoted. A subquery over the
-policy's own table must alias it (`FROM documents d`), or `"documents"` binds to the inner scan —
-documented, and pinned by a live case.
+policy's own table (or a same-named table in another schema) must alias it (`FROM documents d`), or
+`"documents"` binds to the inner scan — documented, pinned by a live case, and refused for a typed
+FROM.
 
 **`sql/070_triggers/000_functions.sql`** (one function per `(schema, column)` in use):
 
@@ -644,9 +645,11 @@ PGlite; no `no-run` fallback needed.
   `E'a\\b'::text`, `NULL::integer`); a bind whose codec is `unknownCodec` (raw `sql` holes, columns
   whose type the default registry does not know: enums, arrays, typmods) is a bare untyped literal.
   Column codecs come from `defaultRegistry().byName(pgType)`, no `src/query` import.
-- A schema ref passed as data (e.g. `${other.cols.x}` in raw SQL) renders `"<table>"."<col>"`.
-- Typed subqueries via `compileOnly` render (`exists(db.from(...)…)`), but their `FROM` keeps the
-  declared schema; `schemaOf` does not remap them. Documented; raw `sql` is the remappable form.
+- A schema ref passed as data (e.g. `${other.cols.x}` in raw SQL) renders `"<table>"."<col>"`. It is
+  recognised by the ref's `NAME` symbol key, so data shaped like one (a jsonb value) stays data.
+- Typed subqueries via `compileOnly` render (`exists(db.from(...)…)`); their FROM tables go through
+  `schemaOf` like the ON table. A FROM item aliased like the policy's table would capture its
+  `"<table>"."<col>"` refs and is a `SchemaError`; a raw subquery must alias such a table itself.
 - Aggregates/window calls are refused anywhere in the tree, subqueries included.
 
 **Added for design/19:** `inTransactionFrame(tx, fn)` (`session/guard.ts`, `txFrames` filled in

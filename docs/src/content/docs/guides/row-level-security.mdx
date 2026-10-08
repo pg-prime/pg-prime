@@ -113,9 +113,11 @@ export const documentsShared = definePolicy('shared', {
 })
 ```
 
-Every column renders qualified by its table (`"documents"."id"`), so `s.org_id` in the subquery
-cannot capture the outer `org_id`. A subquery over the policy's **own** table must alias it
-(`FROM documents d`), or `"documents"` binds to the inner scan. A value becomes a typed literal
+Every column renders qualified by its table name (`"documents"."id"`), so `s.org_id` in the
+subquery cannot capture the outer `org_id`. Any FROM item named `documents` can: a raw subquery over
+the policy's **own** table, or over a same-named table in another schema, must alias it
+(`FROM documents d`), or `"documents"` binds to the inner scan. A typed subquery whose FROM is aliased
+`documents` (its `defineSchema` key) is a `SchemaError`. A value becomes a typed literal
 (`'f'::boolean`); a placeholder, an aggregate, a window call or a `bytea` value is a `SchemaError`.
 
 Omitted predicates are legal, as in PostgreSQL: a permissive policy without one grants nothing, a
