@@ -369,7 +369,7 @@ describe('admin', () => {
   })
 })
 
-describe('isolation and seams', () => {
+describe('isolation', () => {
   it('a throwing hook is reported and does not stop the loop', async () => {
     const internal: string[] = []
     const a = defineSchedule('a', { everyMs: 1000 }, { handler: async () => {} })
@@ -410,17 +410,5 @@ describe('isolation and seams', () => {
     )
     expect(internal).toContain('loop-failed')
     expect(await runsOf('bad')).toEqual([])
-  })
-
-  it('a queue target is a seam until the mq target lands', async () => {
-    const q = defineSchedule('q', { everyMs: 1000 }, { queue: { name: 'jobs' } })
-    const enqueuer = { queue: () => ({ send: async () => ({ id: 1n, deduplicated: false }) }) }
-    await expect(make({ schedules: [q], enqueuer }).start()).rejects.toThrow(
-      'queue target not implemented',
-    )
-    const plain = make({ schedules: [q] })
-    await plain.start()
-    await expect(plain.trigger('q')).rejects.toBeInstanceOf(UsageError)
-    await expect(make().trigger('q')).rejects.toBeInstanceOf(UsageError)
   })
 })
