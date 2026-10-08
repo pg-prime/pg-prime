@@ -8,9 +8,8 @@ A PostgreSQL-only, type-safe TypeScript ORM with first-class migrations and zero
 > shadow clone, and is green on Pagila, Northwind, AdventureWorks and Chinook. The query builder and
 > the session layer are built (design/12 round A): joins including laterals, relational projection,
 > CTEs, `Db`/`Tx`/`Session`, savepoints, serialization retry, `SET LOCAL`, LISTEN/NOTIFY, COPY and
-> the pooler profiles. Both packages build (unbundled ESM + `.d.ts`), pass `publint --strict` and
-> `attw --profile esm-only`, and install from a `pnpm pack` tarball into a fresh project. Both are
-> still at `0.0.0` and **not published to npm**, and the API will change. Current state, decisions
+> the pooler profiles. All four packages are published to npm at `0.1.0` (unbundled ESM + `.d.ts`,
+> `publint --strict` and `attw --profile esm-only` clean), and the API will change. Current state, decisions
 > and next steps: [`design/00-overview.md`](./design/00-overview.md).
 
 ## Why

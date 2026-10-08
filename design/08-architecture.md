@@ -118,8 +118,7 @@ punctuation-equivalent (`pg-prime` ≡ `pgprime` ≡ `pg_prime` ≡ `pg.prime`, 
 unpublished 2026-08-04, and npm forbids reuse of unpublished names.
 
 **Status:** `pgormjs@0.0.0` (the pre-rename placeholder) is published and will be deprecated.
-`pg-prime`, `@pg-prime/kit`, `@pg-prime/testing` and `@pg-prime/create` are unclaimed — placeholders
-are free and the names are not.
+`pg-prime`, `@pg-prime/kit`, `@pg-prime/testing` and `@pg-prime/create` are published at `0.1.0`.
 
 ### 1.4 Monorepo tooling
 
@@ -140,7 +139,7 @@ are free and the names are not.
   - `pg-prime` and `@pg-prime/kit` are a **`fixed` version group** — they always publish the same version.
     Version skew between an ORM and its CLI is a permanent support tax (it is the top confusion in
     Drizzle's tracker); we design it away.
-  - `@pg-prime/testing` and `@pg-prime/create` version independently.
+  - `@pg-prime/create` is in that group too (`.changeset/config.json`); `@pg-prime/testing` versions independently.
   - CI enforces `changeset status --since=origin/main` on every PR touching `packages/`.
 - **`pkg-pr-new`** on every PR → installable preview builds
   (`pnpm add https://pkg.pr.new/pg-prime@<sha>`). For a migration tool, "try my fix against your real
