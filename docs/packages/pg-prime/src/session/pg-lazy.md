@@ -23,7 +23,7 @@ optional peer dependency and is never loaded by `pool:` / `driver:` users. `pgPr
 3. `session.applicationName` fills `application_name` only when the connection did not set it
    (`packages/pg-prime/src/session/pg-lazy.ts:136`).
 4. `connectSettings` is ignored (`packages/pg-prime/src/session/pg-lazy.ts:141`); session GUCs are applied
-   per physical connection by `applyConnectSettings` in `packages/pg-prime/src/session/runner.ts:757`.
+   per physical connection by `applyConnectSettings` in `packages/pg-prime/src/session/runner.ts:805`.
 5. Pool config is the base plus `max`, `min`, `idleTimeoutMillis`, `connectionTimeoutMillis`,
    `maxLifetimeSeconds`, `allowExitOnIdle` (defaults from `POOL_DEFAULTS`) and `maxUses` when given
    (`packages/pg-prime/src/session/pg-lazy.ts:143`).

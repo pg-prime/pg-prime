@@ -55,7 +55,7 @@ through `src/codec/index.ts` by `src/compile/*`, `src/query/*`, `src/sql/fragmen
 - `encode` must throw `PgEncodeError` for values outside `TIn`; decode failures are `PgDecodeError`.
   Callers distinguish the two (`packages/pg-prime/src/codec/types.ts:211`).
 - `CodecRegistry.generation` is the cache key for derived views (`metaOf` in `src/query/meta.ts`,
-  the decode-plan memo in `packages/pg-prime/src/query/executor.ts:403`); a cache that ignores it keeps pre-resolve
+  the decode-plan memo in `packages/pg-prime/src/query/executor.ts:410`); a cache that ignores it keeps pre-resolve
   codecs with `oid: undefined` (`packages/pg-prime/src/codec/types.ts:285`).
 
 ## Tests

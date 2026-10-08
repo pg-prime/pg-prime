@@ -321,6 +321,30 @@ export class IndeterminateCommitError extends PgPrimeError {
   }
 }
 
+/**
+ * An `.ifVersion()` statement matched no row: the row changed or is gone. Never retried unless
+ * `retry.on` names `'VERSION_CONFLICT'`. `expected` is set only under `errors.includeParams`.
+ */
+export class VersionConflictError extends PgPrimeError {
+  declare readonly code: 'VERSION_CONFLICT'
+  declare readonly context: ErrorContext
+  readonly table: string
+  declare readonly expected?: unknown
+
+  constructor(
+    message: string,
+    init: ErrorInit & {
+      readonly context: ErrorContext
+      readonly table: string
+      readonly expected?: unknown
+    },
+  ) {
+    super('VERSION_CONFLICT', message, init)
+    this.table = init.table
+    if (init.expected !== undefined) this.expected = init.expected
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Timeouts and aborts
 // ─────────────────────────────────────────────────────────────────────────────

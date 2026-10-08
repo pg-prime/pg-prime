@@ -2,7 +2,7 @@
 
 ## Purpose
 `placeholder(name, codec)` and the `PreparedQuery` artifact returned by every builder's `.prepare()`. A prepared query is client-side only: the frozen `Compiled` (SQL, bind plan with holes, decode plan, meta); executing it re-encodes parameters and does nothing else. Server-side named statements are a separate opt-in (`{ statement: 'named' }`).
-Callers: `.prepare()` in `src/query/select.ts`, `src/query/insert.ts`, `src/query/update.ts`, `src/query/delete.ts` via `prepareFrom`; `placeholder` and the types are on the package barrel (`packages/pg-prime/src/index.ts:547`). Callees: `assertNoExtraPlaceholders` in `src/query/executor.ts`, and `runnerOf`, `streamWith`, `explainWith`, `toSQLOf`, `mergeRun`, `withRunOption`, `takeFirst` in `src/query/terminals.ts`.
+Callers: `.prepare()` in `src/query/select.ts`, `src/query/insert.ts`, `src/query/update.ts`, `src/query/delete.ts` via `prepareFrom`; `placeholder` and the types are on the package barrel (`packages/pg-prime/src/index.ts:548`). Callees: `assertNoExtraPlaceholders` in `src/query/executor.ts`, and `runnerOf`, `streamWith`, `explainWith`, `toSQLOf`, `mergeRun`, `withRunOption`, `takeFirst` in `src/query/terminals.ts`.
 
 ## Public API
 - `placeholder(name, codec)` — a named hole typed by `codec`, returned as `Expr<CodecOut<C>, C['name']>`; throws `BuilderError` for an empty or non-string name.
@@ -23,8 +23,8 @@ Callers: `.prepare()` in `src/query/select.ts`, `src/query/insert.ts`, `src/quer
 ## Gotchas
 - Mode precedence: a `statement` from run options (`withExecMode`, or inherited from the builder) wins over `.prepare(name, { statement })` (`packages/pg-prime/src/query/prepared.ts:190`).
 - `execute`, `executeTakeFirst` and `explain` are `async`, so a bad `params` object rejects rather than throwing synchronously (`packages/pg-prime/src/query/prepared.ts:195`).
-- Extra keys fail in `#run` before the runner; a missing key fails later, inside `bindsToParams` (`packages/pg-prime/src/query/executor.ts:172`).
-- A key present with value `null` or `undefined` binds SQL NULL (`packages/pg-prime/src/query/executor.ts:179`).
+- Extra keys fail in `#run` before the runner; a missing key fails later, inside `bindsToParams` (`packages/pg-prime/src/query/executor.ts:179`).
+- A key present with value `null` or `undefined` binds SQL NULL (`packages/pg-prime/src/query/executor.ts:186`).
 - `P` is written by hand at `.prepare<P>()` and is not linked to the placeholders in the query; only the runtime check enforces it.
 - `toSQL(params?)` never throws on an unfilled hole.
 - `name` is the JS-side label for logs; it is never used as the server-side statement name.

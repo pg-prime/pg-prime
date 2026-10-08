@@ -59,6 +59,9 @@ import {
   NO_LEFT_JOINS,
   sourceOf,
   toExprNode,
+  VERSION_WITH_VALUES,
+  versioned,
+  versionOf,
   writeTargetMessage,
 } from './scope.js'
 import { checkAlias, derivedRuntime, rebuildScope } from './select.js'
@@ -148,6 +151,12 @@ export class UpdateBuilder {
     return this.#next({ where: this.s.where === undefined ? pred : andNode(this.s.where, pred) })
   }
 
+  /** `and <expr> = $expected`; executing it throws `VersionConflictError` when no row matched. */
+  ifVersion(f: Lambda<unknown>, expected: unknown): UpdateBuilder {
+    if (this.s.valuesAlias !== undefined) throw new BuilderError(VERSION_WITH_VALUES)
+    return this.#next({ version: versionOf(this.s.version, call(f, this.s.scope), expected) })
+  }
+
   /** `update … from (values …) as "v"("id","price")` (03 §2.6). */
   fromValues(
     rows: readonly Record<string, unknown>[],
@@ -157,6 +166,7 @@ export class UpdateBuilder {
     if (rows.length === 0) {
       throw new BuilderError('pg-prime: fromValues([]) would match no rows; nothing to update.')
     }
+    if (this.s.version !== undefined) throw new BuilderError(VERSION_WITH_VALUES)
     const alias = checkAlias(opts.alias ?? 'v')
     if (this.s.scope[alias] !== undefined) {
       throw new BuilderError(
@@ -223,14 +233,17 @@ export class UpdateBuilder {
           `(a .$if(...) that did not fire is the usual cause).`,
       )
     }
-    this.#ast ??= updateNode(
+    if (this.#ast !== undefined) return this.#ast
+    const v = versioned(this.s.where, this.s.version, this.s.target.table.name)
+    this.#ast = updateNode(
       compact({
         with: this.s.ctes.length > 0 ? this.s.ctes : undefined,
         target: this.s.target,
         set: this.#withOnUpdate(),
         from: this.s.from.length > 0 ? this.s.from : undefined,
-        where: this.s.where,
+        where: v.where,
         returning: this.s.returning,
+        versionCheck: v.versionCheck,
       }) as Omit<UpdateNode, 'k'>,
     )
     return this.#ast
@@ -291,10 +304,14 @@ export class UpdateBuilder {
     return runnerOf(this.s.ctx).run(this.compile(), this.s.run)
   }
 
-  /** `rows[0]` of the RETURNING list. See `terminals.ts` for why this is not `maxRows: 1` — on a
-   *  write it is not merely wasteful, it would STOP the statement at the cap. */
+  /** `rows[0]` of the RETURNING list. See `terminals.ts` for why this is not `maxRows: 1`. */
   async executeTakeFirst(): Promise<unknown> {
     return takeFirst(await this.execute())
+  }
+
+  /** The command tag's count (`UPDATE n`), with or without RETURNING. */
+  async executeRowCount(): Promise<number> {
+    return (await runnerOf(this.s.ctx).runCounted(this.compile(), this.s.run)).rowCount
   }
 
   prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
@@ -386,6 +403,7 @@ export function makeUpdate(
     sources,
     scope: rebuildScope(sources, ctx),
     allRows: false,
+    version: undefined,
     run: undefined,
   })
 }

@@ -990,6 +990,75 @@ required here too.
 A bulk delete is `inList(t.id, ids)`, which compiles to `= any($1)` and not to an `IN (…)` list: one
 parameter, one plan-cache entry, and no dependence on the list's length.
 
+## Row counts and optimistic locking
+
+`executeRowCount()` on an update or a delete resolves with the command tag's count — `UPDATE 3` is
+`3` — with or without `RETURNING`. `.ifVersion(f, expected)` ANDs `<f> = $expected` into the `WHERE`,
+and executing the statement throws `VersionConflictError` when no row matched:
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="if-version.ts"
+import { VersionConflictError, eq } from 'pg-prime'
+
+const [post] = await db
+  .from(db.h.posts, 'p')
+  .select((t) => ({ id: t.p.id, title: t.p.title }))
+  .orderBy((t) => t.p.id)
+  .limit(1)
+  .execute()
+
+const rename = (title: string) =>
+  db
+    .update(db.h.posts)
+    .set(() => ({ title }))
+    .where((t) => eq(t.posts.id, post!.id))
+    .ifVersion((t) => t.posts.title, post!.title)
+
+console.log(await rename('Hello, again').executeRowCount()) // 1
+
+try {
+  await db.transaction(async (db) => {
+    await db.update(db.h.posts).set(() => ({ published: true })).allRows().execute()
+    // still holding the old title: the row moved on, so this throws and the batch rolls back
+    await db.run(rename('Hello, third time'))
+  })
+} catch (e) {
+  console.log(e instanceof VersionConflictError, (e as VersionConflictError).table) // true posts
+}
+```
+
+The library never bumps the version for you — write `rev: add(t.blocks.rev, 1)` in `.set()`
+yourself. `.ifVersion()` is not a `.where()`: the no-`WHERE` guard still wants one, or `.allRows()`.
+The check is enforced by the runner, so `execute()`, `executeTakeFirst()`, `executeRowCount()`,
+`db.run(q)`, `db.run(q.compile())` and `prepare().execute()` all throw; `stream()`, `streamBatches()`,
+`explain({ analyze: true, rollback: false })` and use as a CTE body are refused because they could not
+check. `VersionConflictError` is not retried unless `retry: { on: ['VERSION_CONFLICT'] }` asks, and
+that only helps when the callback re-reads the version.
+
+`.ifVersion()` means "at least one row matched", so it cannot be combined with `fromValues`. For a
+batch with per-row versions, compare `executeRowCount()` with the number of rows and throw inside the
+transaction to roll it back:
+
+{/* docs: use=blog,blog-ddl,seed */}
+```ts title="batch-versions.ts"
+import { and, eq, int8Codec, textCodec } from 'pg-prime'
+
+const seen = await db
+  .from(db.h.posts, 'p')
+  .select((t) => ({ id: t.p.id, title: t.p.title }))
+  .execute()
+
+await db.transaction(async (db) => {
+  const n = await db
+    .update(db.h.posts)
+    .fromValues(seen, { id: int8Codec, title: textCodec })
+    .set(() => ({ published: true }))
+    .where((t, v) => and(eq(t.posts.id, v.id), eq(t.posts.title, v.title)))
+    .executeRowCount()
+  if (n !== seen.length) throw new Error(`${seen.length - n} rows changed underneath us`)
+})
+```
+
 ## Prepared statements
 
 `.prepare()` caches **our** work: the SQL text, the bind plan with its holes, and the decode plan.

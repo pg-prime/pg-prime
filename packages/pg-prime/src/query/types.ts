@@ -1595,6 +1595,15 @@ export interface UpdateQuery<H extends AnyHandle, O, V> extends RowSource<O> {
    */
   allRows(): UpdateQuery<H, O, V>
   /**
+   * Optimistic locking: ANDs `<expr> = $expected` into the WHERE, and executing it throws
+   * `VersionConflictError` when no row matched. Still needs `.where()` or `.allRows()`. Not
+   * combinable with `fromValues` — compare `executeRowCount()` with the row count there.
+   */
+  ifVersion<T>(
+    f: (t: SelfScope<H>) => ExprOf<T>,
+    expected: NoInfer<NonNullable<T>>,
+  ): UpdateQuery<H, O, V>
+  /**
    * Bulk update by key: `update … from (values …) as "v"(…)` (03 §2.6).
    *
    * The rows are typed by the codecs, not by `unknown`: a `VALUES` list is encoded column-by-column
@@ -1614,6 +1623,8 @@ export interface UpdateQuery<H extends AnyHandle, O, V> extends RowSource<O> {
   compile(): Compiled<O>
   execute(): Promise<O[]>
   executeTakeFirst(): Promise<O | undefined>
+  /** The command tag's row count (`UPDATE n`), with or without `returning`. */
+  executeRowCount(): Promise<number>
   prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
   /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE UPDATE` updates (07 §7.5). */
   explain(opts?: ExplainOptions): Promise<ExplainResult>
@@ -1643,6 +1654,11 @@ export interface DeleteQuery<
   where(f: (t: ScopeOf<S>) => Expr<boolean>): DeleteQuery<H, O, S>
   /** "Yes, every row." The opt-in an unconditional `DELETE` needs (`03` §2.5). */
   allRows(): DeleteQuery<H, O, S>
+  /** See {@link UpdateQuery.ifVersion}. */
+  ifVersion<T>(
+    f: (t: ScopeOf<S>) => ExprOf<T>,
+    expected: NoInfer<NonNullable<T>>,
+  ): DeleteQuery<H, O, S>
   /** `delete … using other where …` — the join form. */
   using<H2 extends AnyHandle, A extends string>(
     t: H2,
@@ -1657,6 +1673,8 @@ export interface DeleteQuery<
   compile(): Compiled<O>
   execute(): Promise<O[]>
   executeTakeFirst(): Promise<O | undefined>
+  /** The command tag's row count (`DELETE n`), with or without `returning`. */
+  executeRowCount(): Promise<number>
   prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
   /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE DELETE` deletes (07 §7.5). */
   explain(opts?: ExplainOptions): Promise<ExplainResult>

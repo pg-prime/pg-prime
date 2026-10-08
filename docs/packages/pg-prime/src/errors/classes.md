@@ -32,6 +32,8 @@ throw the usage, commit and timeout classes directly. Re-exported by `src/index.
 - `IndeterminateCommitError` — `code 'INDETERMINATE_COMMIT'`; a direct `PgPrimeError` subclass.
 - `TimeoutError` (`code 'TIMEOUT'`) — leaves `QueryTimeoutError`, `TransactionTimeoutError`.
 - `AbortError` — `code 'ABORT'`.
+- `VersionConflictError(message, init)` — `code 'VERSION_CONFLICT'`; `table`, `context`, and `expected` only
+  when passed (the runner passes it under `errors.includeParams`). A direct `PgPrimeError` subclass.
 - `UsageError` leaves — `HandleMisuseError`, `TransactionClosedError`, `TransactionAbandonedError`,
   `DbClosedError`, `UnsupportedInPoolerModeError`, `TransactionRollback`.
 
@@ -51,7 +53,7 @@ throw the usage, commit and timeout classes directly. Re-exported by `src/index.
   retry logic does not catch it (`packages/pg-prime/src/errors/classes.ts:316`).
 - `QueryCanceledError` (`57014`) covers both `statement_timeout` and a delivered cancel, distinguished by
   `context.reason`; `QueryTimeoutError` is the client-side timer (`packages/pg-prime/src/errors/classes.ts:237`).
-- `TransactionRollback` is a `UsageError`, not a `TransactionError` (`packages/pg-prime/src/errors/classes.ts:369`).
+- `TransactionRollback` is a `UsageError`, not a `TransactionError` (`packages/pg-prime/src/errors/classes.ts:393`).
 - Names deviating from the design: `SchemaObjectError` (because `SchemaError` is the `sql/errors.ts` schema
   declaration error) and `SqlSyntaxError` (to avoid shadowing the global `SyntaxError`).
 - Literal `code` types are only declared on `UniqueViolationError` (`'23505'`), `InFailedTransactionError`
@@ -59,6 +61,8 @@ throw the usage, commit and timeout classes directly. Re-exported by `src/index.
 - `params` exists on `QueryError` only when the mapper was told to include them; `paramCount` is always set.
 - No code in `packages/pg-prime/src` constructs `TransactionTimeoutError`; only `errors/map.ts` and
   `session/runner.ts` construct `QueryTimeoutError`.
+- `VersionConflictError` is thrown only by `BaseRunner` in `session/runner.ts`; its 16-char `code` means it
+  never poisons a transaction and is retried only when `retry.on` names it (`packages/pg-prime/src/errors/classes.ts:328`).
 - The `ErrorResponse` fields are copied unredacted; redaction applies only to `sql`, `params`, `detail`.
 
 ## Tests
@@ -68,4 +72,5 @@ throw the usage, commit and timeout classes directly. Re-exported by `src/index.
 - `packages/pg-prime/test/live/session.test.ts` and `packages/pg-prime/test/pg/session.test.ts` assert classes
   against a real backend.
 - Run: `pnpm --filter pg-prime exec vitest run test/session/session.test.ts`.
+- `packages/pg-prime/test/query/version.test.ts` — `VersionConflictError` shape and `expected` redaction.
 - Uncovered: `TransactionTimeoutError` is never thrown, so nothing exercises it.

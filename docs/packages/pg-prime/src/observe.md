@@ -43,17 +43,17 @@ per-hook failure isolation, the slow-query log, and a dependency-free OpenTeleme
 3. `add` replaces the registration array (copy-on-write) and sets `enabled`
    (`packages/pg-prime/src/observe/bus.ts:49`).
 4. Per statement, the runner checks `observed()` — `hooks.enabled || logAllQueries || slowQueryMs !== null`
-   (`packages/pg-prime/src/session/runner.ts:678`); with nothing observing no event object or clock read exists.
+   (`packages/pg-prime/src/session/runner.ts:726`); with nothing observing no event object or clock read exists.
 5. When observed it builds a `QueryStartEvent` with `nextQueryId()` and emits `queryStart`
-   (`packages/pg-prime/src/session/runner.ts:860`), then `queryEnd` or `queryError`.
+   (`packages/pg-prime/src/session/runner.ts:908`), then `queryEnd` or `queryError`.
 6. `#emit` returns immediately when `enabled` is false, else calls each registration's member with
    `this` bound to the hook object (`packages/pg-prime/src/observe/bus.ts:61`).
 7. A member that throws is added to that registration's `disabled` set and reported via every other
    registration's `onInternal` plus `console.error` (`packages/pg-prime/src/observe/bus.ts:82`).
 8. After `queryEnd`, `logQuery` sinks a `slowQueryRecord` when `durationMs >= slowQueryMs` (level `warn`) or
-   when `logAllQueries` is on (level `debug`), gated by `shouldLog` (`packages/pg-prime/src/session/runner.ts:914`).
+   when `logAllQueries` is on (level `debug`), gated by `shouldLog` (`packages/pg-prime/src/session/runner.ts:962`).
 9. After `queryError`, a `queryErrorRecord` is sunk when `shouldLog(log, 'error')`
-   (`packages/pg-prime/src/session/runner.ts:902`).
+   (`packages/pg-prime/src/session/runner.ts:950`).
 10. The default sink writes JSON (with `logger: 'pg-prime'`) or a multi-line pretty form to
     `console.error`/`warn`/`log` by level (`packages/pg-prime/src/observe/log.ts:144`).
 11. Tracing integrations call `spanAttributes`/`spanName` themselves from hooks; core never creates spans.
@@ -66,7 +66,7 @@ per-hook failure isolation, the slow-query log, and a dependency-free OpenTeleme
 - The failing registration's own `onInternal` is skipped; an `onInternal` that throws while reporting is
   disabled silently (`packages/pg-prime/src/observe/bus.ts:87`, `packages/pg-prime/src/observe/bus.ts:93`).
 - `logAllQueries` records are `debug`, but the default level is `'warn'`, so `logAllQueries: true` alone
-  emits nothing (`packages/pg-prime/src/session/runner.ts:927`, `packages/pg-prime/src/observe/log.ts:80`).
+  emits nothing (`packages/pg-prime/src/session/runner.ts:975`, `packages/pg-prime/src/observe/log.ts:80`).
 - `logAllQueries` is forced off when `production` is true unless `force: true`, with one `warn` call
   (`packages/pg-prime/src/observe/log.ts:70`). `run.ts` suppresses that warning when `level` is `'silent'`.
 - Default `format` is `'pretty'` only when `process.stdout.isTTY === true`, read via `globalThis`
@@ -74,7 +74,7 @@ per-hook failure isolation, the slow-query log, and a dependency-free OpenTeleme
 - `InternalEvent` kinds `'downgrade'`, `'cache-flush'` and `'self-heal'`, and `PoolEvent` kinds `'create'`
   and `'destroy'`, are declared but no code in `packages/pg-prime/src` emits them.
 - `acquire`/`timeout` pool events fire only when observed; `release` fires only when hooks are registered
-  (`packages/pg-prime/src/session/runner.ts:709`, `packages/pg-prime/src/session/runner.ts:727`).
+  (`packages/pg-prime/src/session/runner.ts:757`, `packages/pg-prime/src/session/runner.ts:775`).
 - `spanAttributes` tells event kinds apart structurally: `error !== undefined` means error, numeric
   `rowCount` means end (`packages/pg-prime/src/observe/semconv.ts:44`). Hand-built events must match.
 - `db.response.status_code` is omitted when `error.code` is `''` (`packages/pg-prime/src/observe/semconv.ts:86`);

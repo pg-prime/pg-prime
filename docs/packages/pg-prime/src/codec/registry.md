@@ -6,7 +6,7 @@
 `builtinCodecs`/`ALTERNATE_CODECS`/`unknownCodec` (`src/codec/builtins.ts`) and `EXTENSION_CODECS`
 (`src/codec/extensions.ts`). `pgPrime()` in `packages/pg-prime/src/query/run.ts:219` builds one per instance;
 `metaOf` (`packages/pg-prime/src/query/meta.ts:106`), `packages/pg-prime/src/compile/decode.ts:104` and `packages/pg-prime/src/query/run.ts:628` fall
-back to `defaultRegistry()`; `packages/pg-prime/src/query/executor.ts:644` calls `planFor`.
+back to `defaultRegistry()`; `packages/pg-prime/src/query/executor.ts:651` calls `planFor`.
 
 ## Public API
 - `Registry(codecs = builtinCodecs())` — class; `register`s each codec, then adds alternates,

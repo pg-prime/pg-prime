@@ -35,6 +35,7 @@ export type PgPrimeErrorCode =
   | 'CODEC_MISMATCH'
   | 'CONFIG'
   | 'USAGE'
+  | 'VERSION_CONFLICT'
 
 /** Which handle a statement was issued on. `07` §4.3, and the `handle` attribute of every event. */
 export type HandleKind = 'db' | 'tx' | 'session'

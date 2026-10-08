@@ -118,4 +118,21 @@ expectTypeOf<RowOf<typeof del>>().toEqualTypeOf<{ id: string; email: string }>()
 // @ts-expect-error — `using` widened the scope under `u`, so `users` is not a key
 db.deleteFrom(schema.h.posts).using(schema.h.users, 'u').where((t) => isNull(t.users.birthday))
 
+// ── ifVersion / executeRowCount ──────────────────────────────────────────────
+
+const ver = db
+  .update(schema.h.users)
+  .set(() => ({ displayName: 'x' }))
+  .where((t) => eq(t.users.email, 'a@b.c'))
+  .ifVersion((t) => t.users.views, 3n)
+expectTypeOf(ver.executeRowCount()).toEqualTypeOf<Promise<number>>()
+// A nullable column still takes a non-null expected.
+db.deleteFrom(schema.h.users).allRows().ifVersion((t) => t.users.age, 1)
+expectTypeOf(db.deleteFrom(schema.h.users).allRows().executeRowCount()).toEqualTypeOf<Promise<number>>()
+
+// @ts-expect-error — `views` is int8: a string is the wrong type
+ver.ifVersion((t) => t.users.views, 'x')
+// @ts-expect-error — `null` never matches `=`; use isNull()
+db.deleteFrom(schema.h.users).allRows().ifVersion((t) => t.users.age, null)
+
 export type _Unused = [typeof returned, typeof all, typeof bulk, typeof upsert, DateString, typeof int8Codec]

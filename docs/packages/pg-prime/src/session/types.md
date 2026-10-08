@@ -49,11 +49,11 @@ every other file in `packages/pg-prime/src/session/` consumes them.
 - Doc comments that disagree with the runtime: `SessionDefaults.timeZone` says `DateStyle` is pinned to
   `ISO, MDY` (`packages/pg-prime/src/session/types.ts:208`), but nothing sets it; `StreamCallOptions.statementTimeoutMs`
   says "Default `null`" (`packages/pg-prime/src/session/types.ts:247`), but omitting it sends nothing, so the
-  session `statement_timeout` still bounds a stream (`packages/pg-prime/src/session/runner.ts:799`).
+  session `statement_timeout` still bounds a stream (`packages/pg-prime/src/session/runner.ts:847`).
 - `CopyOptions.highWaterMark` is documented as bytes; `encodeCopyRows` compares it to string length
   (`packages/pg-prime/src/session/copy.ts:194`).
 - `CallOptions.timeoutStrategy` values `'auto'` and `'client'` behave identically at runtime; only
-  `'transaction'` is tested for (`packages/pg-prime/src/session/runner.ts:415`).
+  `'transaction'` is tested for (`packages/pg-prime/src/session/runner.ts:470`).
 - `NoHandleEscape` catches only a handle returned directly, not one nested in an object or array.
 
 ## Tests

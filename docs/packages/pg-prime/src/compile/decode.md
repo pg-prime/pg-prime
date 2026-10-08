@@ -5,7 +5,7 @@ Turns a `ResultShape` decode plan into a function that maps driver array rows (`
 
 ## Public API
 - `buildDecoder<Row>(shape, ctx = defaultDecodeContext(), mode = 'closure')` — returns `(rows) => Row[]`; throws `DecodePlanError` for a malformed plan at build time.
-- `DecoderMode` — `'closure' | 'codegen'`; re-exported from `packages/pg-prime/src/index.ts:563`.
+- `DecoderMode` — `'closure' | 'codegen'`; re-exported from `packages/pg-prime/src/index.ts:564`.
 - `assertCodegenAvailable()` — probes `new Function`; throws `DecodePlanError` naming the option when the runtime forbids it.
 - `defaultDecodeContext()` — `{ typmod: -1, registry: defaultRegistry(), serverParameters: {} }` for decoding without an executor.
 
@@ -25,7 +25,7 @@ Turns a `ResultShape` decode plan into a function that maps driver array rows (`
 - `json` fields are excluded from the fallback witness set because `coalesce(json_agg(…), '[]')` is never NULL; no leaf columns means the group is never null (`packages/pg-prime/src/compile/decode.ts:157`).
 - `undefined` (missing cell) is treated like SQL NULL everywhere.
 - Codegen source names only positional parameters (`c0`, `x0`, `f0`); keys go through `jsString` (escapes U+2028/U+2029) and indexes through `assertPlanIndex` (`packages/pg-prime/src/compile/decode.ts:289`, `packages/pg-prime/src/compile/decode.ts:296`).
-- The closure builder is the default because CSP-restricted runtimes forbid `new Function`; `pgPrime({ decoder: 'codegen' })` calls `assertCodegenAvailable` up front (`packages/pg-prime/src/query/executor.ts:133`).
+- The closure builder is the default because CSP-restricted runtimes forbid `new Function`; `pgPrime({ decoder: 'codegen' })` calls `assertCodegenAvailable` up front (`packages/pg-prime/src/query/executor.ts:140`).
 - `ctx` is bound once per plan, with `column` set per field; the `scalar` shape uses the context without a column name (`packages/pg-prime/src/compile/decode.ts:415`).
 
 ## Tests

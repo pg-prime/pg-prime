@@ -289,6 +289,7 @@ interface UpdateQuery<H extends AnyHandle, O, V> extends RowSource<O> {
   set(f: (t: SelfScope<H>, v: V) => SetPatch<TableAt<H>>): UpdateQuery<H, O, V>
   where(f: (t: SelfScope<H>, v: V) => Expr<boolean>): UpdateQuery<H, O, V>
   allRows(): UpdateQuery<H, O, V>
+  ifVersion<T>(f: (t: SelfScope<H>) => ExprOf<T>, expected: NoInfer<NonNullable<T>>): UpdateQuery<H, O, V>
   fromValues<C extends Record<string, AnyCodec>>(
     rows: readonly NoInfer<{ [K in keyof C]: CodecIn<C[K]> }>[],
     codecs: C,
@@ -298,6 +299,7 @@ interface UpdateQuery<H extends AnyHandle, O, V> extends RowSource<O> {
   returningAll(): UpdateQuery<H, SelectAt<H>, V>
   execute(): Promise<O[]>
   executeTakeFirst(): Promise<O | undefined>
+  executeRowCount(): Promise<number>
   prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
@@ -313,6 +315,15 @@ the codecs rather than by `unknown`, so `{ id: 'not-a-bigint' }` against `{ id: 
 compile error here rather than a `PgEncodeError` at execute time, and `V` becomes the
 [`ValueRefs`](#ValueRefs) the `set` and `where` callbacks read as their second argument.
 
+`executeRowCount()` resolves with the command tag's count (`UPDATE n`), with or without `returning`.
+`ifVersion(f, expected)` is optimistic locking: it ANDs `<f> = $expected` into the `WHERE`, and every
+execute path — `execute`, `executeTakeFirst`, `executeRowCount`, `db.run(q)`, `db.run(q.compile())`,
+`prepare().execute()` — throws [`VersionConflictError`](/pg-prime/reference/errors/#VersionConflictError)
+when no row matched. It does not count as a `where` for the guard above, `null` is rejected, and it
+cannot be combined with `fromValues`. `stream`, `streamBatches`, `explain({ analyze: true, rollback:
+false })` and use as a CTE body refuse it, because none of them could check the count. The
+[queries guide](/pg-prime/guides/queries/#row-counts-and-optimistic-locking) has the worked example.
+
 ### `DeleteQuery`
 
 {/* docs: signature */}
@@ -324,11 +335,13 @@ interface DeleteQuery<
 > extends RowSource<O> {
   where(f: (t: ScopeOf<S>) => Expr<boolean>): DeleteQuery<H, O, S>
   allRows(): DeleteQuery<H, O, S>
+  ifVersion<T>(f: (t: ScopeOf<S>) => ExprOf<T>, expected: NoInfer<NonNullable<T>>): DeleteQuery<H, O, S>
   using<H2 extends AnyHandle, A extends string>(t: H2, alias: A): DeleteQuery<H, O, S & Record<A, H2>>
   returning<P extends Projection>(f: (t: ScopeOf<S>) => P): DeleteQuery<H, Project<P>, S>
   returningAll(): DeleteQuery<H, SelectAt<H>, S>
   execute(): Promise<O[]>
   executeTakeFirst(): Promise<O | undefined>
+  executeRowCount(): Promise<number>
   prepare<P = Record<string, never>>(name?: string, opts?: PrepareOptions): PreparedQuery<P, O>
   explain(opts?: ExplainOptions): Promise<ExplainResult>
   toSQL(): SqlSnapshot
@@ -339,7 +352,7 @@ interface DeleteQuery<
 `S` is the scope, which `using(…)` widens exactly as `innerJoin` widens a select's — a
 `DELETE … USING … RETURNING` may name the USING relations, so `returning` reads the same scope. `S`
 defaults to the target table under its own name. `allRows()` is the same opt-in an unconditional
-`DELETE` needs.
+`DELETE` needs. `executeRowCount()` and `ifVersion()` behave as on [`UpdateQuery`](#UpdateQuery).
 
 ### `ConflictBuilder`
 

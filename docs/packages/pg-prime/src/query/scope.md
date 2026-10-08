@@ -14,27 +14,32 @@ Resolves anything that can sit in a FROM clause (table, view, CTE, derived table
 - `writeTargetMessage(verb, source)` — the error text for a non-table write target (view-specific wording for views).
 - `scopeFor(handle, alias, ctx, visible?)` — cached scope: refs, relation accessors (tables only), and `$all`.
 - `allOf(scope)` — the scope's column refs only, as a projection record (`selectAll`, `returningAll`).
+- `versionOf(current, expr, expected)` — `.ifVersion()`'s state `{ expr, expected }`; throws `BuilderError` when already set, `NullOperandError` for `null`/`undefined`.
+- `versioned(where, version, table)` — `{ where, versionCheck }`: the WHERE with `<expr> = $expected` (bound with the expression's codec) ANDed in, and the node mark; unchanged when `version` is undefined.
+- `VERSION_WITH_VALUES` — the `BuilderError` text for `.ifVersion()` combined with `fromValues`.
 - Re-exports from `projection.ts`: `assertSafeKey`, `compileProjection`, `isGroup`, `isNested`, `makeNested`, `nest`, `nestNullable`, `NO_LEFT_JOINS`, `omit`, `outputColumn`, `projectionItem`, `registryOr`, `toExprList`, `toExprNode`, `toOrderItems`.
 
 ## Flow
-1. `sourceOf` checks the nominal `SOURCES` `WeakMap` (CTE/derived/raw), then the `TABLE_SOURCES` memo (`packages/pg-prime/src/query/scope.ts:195`).
-2. Otherwise a handle with a string `$.name` is a table, or a view when `$.view` is set; its name is the schema key (`NAME` symbol) when present, else `$.name` (`packages/pg-prime/src/query/scope.ts:205`).
-3. `scopeFor` looks up `SCOPE_CACHE` by registry, resetting the entry when `registry.generation` changes (`packages/pg-prime/src/query/scope.ts:273`).
-4. The cache key is the alias plus the avoid-list (`visible`, with `alias` prepended if missing) (`packages/pg-prime/src/query/scope.ts:301`).
-5. On a miss, `source.refs(alias, registry)` builds refs; for `kind === 'table'` `mergeAccessors` adds relation accessors whose child aliases avoid every visible alias (`packages/pg-prime/src/query/scope.ts:311`).
-6. `withAll` freezes the scope with `$all` pointing at the ref record (`packages/pg-prime/src/query/scope.ts:328`).
+1. `sourceOf` checks the nominal `SOURCES` `WeakMap` (CTE/derived/raw), then the `TABLE_SOURCES` memo (`packages/pg-prime/src/query/scope.ts:206`).
+2. Otherwise a handle with a string `$.name` is a table, or a view when `$.view` is set; its name is the schema key (`NAME` symbol) when present, else `$.name` (`packages/pg-prime/src/query/scope.ts:216`).
+3. `scopeFor` looks up `SCOPE_CACHE` by registry, resetting the entry when `registry.generation` changes (`packages/pg-prime/src/query/scope.ts:284`).
+4. The cache key is the alias plus the avoid-list (`visible`, with `alias` prepended if missing) (`packages/pg-prime/src/query/scope.ts:312`).
+5. On a miss, `source.refs(alias, registry)` builds refs; for `kind === 'table'` `mergeAccessors` adds relation accessors whose child aliases avoid every visible alias (`packages/pg-prime/src/query/scope.ts:322`).
+6. `withAll` freezes the scope with `$all` pointing at the ref record (`packages/pg-prime/src/query/scope.ts:339`).
 
 ## Gotchas
-- Source membership is nominal (`WeakMap`): a structurally similar plain object (e.g. from `JSON.parse`) is not a CTE or derived source (`packages/pg-prime/src/query/scope.ts:60`).
-- A table column whose TS key is `$all` throws when its scope is built (`packages/pg-prime/src/query/scope.ts:329`).
-- Avoid-list order is part of the cache key; two chains reaching the same alias set in different orders build the scope twice (a cost, not a wrong answer) (`packages/pg-prime/src/query/scope.ts:283`).
-- Views have `kind: 'view'`, get no relation accessors, and are refused by the write builders via `writeTargetMessage` (`packages/pg-prime/src/query/scope.ts:229`).
-- `fieldsOfQuery` omits `nest({...})` keys, so such a key read off a CTE/derived scope is `undefined` (`packages/pg-prime/src/query/scope.ts:75`).
-- Derived/CTE refs carry a synthetic `ColumnRuntime` with `pgType: 'unknown'` and `notNull: false`, so they never witness `nestNullable` (`packages/pg-prime/src/query/scope.ts:99`).
+- Source membership is nominal (`WeakMap`): a structurally similar plain object (e.g. from `JSON.parse`) is not a CTE or derived source (`packages/pg-prime/src/query/scope.ts:71`).
+- A table column whose TS key is `$all` throws when its scope is built (`packages/pg-prime/src/query/scope.ts:340`).
+- Avoid-list order is part of the cache key; two chains reaching the same alias set in different orders build the scope twice (a cost, not a wrong answer) (`packages/pg-prime/src/query/scope.ts:294`).
+- Views have `kind: 'view'`, get no relation accessors, and are refused by the write builders via `writeTargetMessage` (`packages/pg-prime/src/query/scope.ts:240`).
+- `fieldsOfQuery` omits `nest({...})` keys, so such a key read off a CTE/derived scope is `undefined` (`packages/pg-prime/src/query/scope.ts:86`).
+- Derived/CTE refs carry a synthetic `ColumnRuntime` with `pgType: 'unknown'` and `notNull: false`, so they never witness `nestNullable` (`packages/pg-prime/src/query/scope.ts:110`).
 - Scope callbacks run at call time, once; nothing here defers them.
+- `versioned` is called by `UpdateBuilder.toAst` / `DeleteBuilder.toAst` after the no-WHERE guard, so the version predicate never satisfies it (`packages/pg-prime/src/query/scope.ts:411`).
 
 ## Tests
 - No dedicated spec. Covered through `packages/pg-prime/test/query/select.test.ts` (`$all`, `omit`, aliasing, relation scopes), `packages/pg-prime/test/query/cte.test.ts` (CTE/raw sources), `packages/pg-prime/test/query/relations.test.ts` and `packages/pg-prime/test/query/guards.test.ts` (`__proto__`, alias collisions).
 - Views as sources and the write refusal: `packages/pg-prime/test/live-query/views.test.ts`.
+- `.ifVersion()` helpers: `packages/pg-prime/test/query/version.test.ts`.
 - Run: `pnpm --filter pg-prime exec vitest run test/query/select.test.ts test/query/cte.test.ts`.
 - Uncovered: no test targets the registry-generation reset of `SCOPE_CACHE` (`packages/pg-prime/test/query/meta.test.ts` covers the analogous `metaOf` memo).

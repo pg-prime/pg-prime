@@ -54,6 +54,8 @@ export interface CompiledMeta {
   readonly placeholders: readonly string[]
   /** True iff `sql.unsafeRaw` text reached the output. Powers the lint rule + audit. */
   readonly usedUnsafeRaw: boolean
+  /** Present iff the statement came from `.ifVersion()`; the runner enforces it. */
+  readonly versionCheck?: { readonly table: string; readonly expected: unknown }
 }
 
 /**

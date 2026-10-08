@@ -2,7 +2,7 @@
 
 ## Purpose
 The query layer's diagnostics: template-literal string types used as type-error sentences (wrapped in `OrmTypeError<...>` at the use site in `src/query/types.ts`), and the runtime `CodecMismatchError` thrown by `assertShape` in `src/query/executor.ts`.
-Callers: `src/query/types.ts` (message types), `src/query/executor.ts` (`CodecMismatchError`); `CodecMismatchError` and `CodecMismatch` are on the package barrel (`packages/pg-prime/src/index.ts:566`). Callee: `PgPrimeError` (`src/sql/errors.ts`).
+Callers: `src/query/types.ts` (message types), `src/query/executor.ts` (`CodecMismatchError`); `CodecMismatchError` and `CodecMismatch` are on the package barrel (`packages/pg-prime/src/index.ts:567`). Callee: `PgPrimeError` (`src/sql/errors.ts`).
 
 ## Public API
 - `SetOpMissingColumnMsg<B, K>`, `SetOpExtraColumnMsg<B, K>`, `SetOpColumnTypeMismatchMsg<B, K>` — union branch column mismatches; `B` is the 1-based branch index.
@@ -17,7 +17,7 @@ Callers: `src/query/types.ts` (message types), `src/query/executor.ts` (`CodecMi
 - `CodecMismatchError` — `PgPrimeError` with `code: 'CODEC_MISMATCH'` and `mismatch: CodecMismatch`.
 
 ## Flow
-1. `assertShape` finds a declared OID that differs from `RowDescription.dataTypeID` and constructs `CodecMismatchError` (`packages/pg-prime/src/query/executor.ts:283`).
+1. `assertShape` finds a declared OID that differs from `RowDescription.dataTypeID` and constructs `CodecMismatchError` (`packages/pg-prime/src/query/executor.ts:290`).
 2. The constructor calls `renderCodecMismatch` for the message (`packages/pg-prime/src/query/errors.ts:229`).
 3. Lines 1–2 name the column, declared codec and OID, and what Postgres returned (or "an unregistered type") (`packages/pg-prime/src/query/errors.ts:188`).
 4. With `origin.column` (a schema column) it reports schema drift and suggests running the pending migration (`packages/pg-prime/src/query/errors.ts:193`).
@@ -27,7 +27,7 @@ Callers: `src/query/types.ts` (message types), `src/query/executor.ts` (`CodecMi
 - Messages are exported as string types, not `OrmTypeError<...>` aliases: TypeScript prints a named generic alias unexpanded and would hide the sentence.
 - Every sentence is one line, under 300 characters, and says what to do.
 - The rendered sentences are committed goldens under `tools/type-errors/`; changing wording without updating them fails `type-errors.test.ts`.
-- A `json` relation column mismatch reports `declared: 'json'` with `declaredOid: 3802` (jsonb), although `json` (114) is also accepted (`packages/pg-prime/src/query/executor.ts:255`).
+- A `json` relation column mismatch reports `declared: 'json'` with `declaredOid: 3802` (jsonb), although `json` (114) is also accepted (`packages/pg-prime/src/query/executor.ts:262`).
 - The `Fix: use codecs.<actual>` hint names `codecs.<registry name>`, but the barrel exports no `codecs` object; built-in codecs are individual exports such as `numericCodec` (`packages/pg-prime/src/query/errors.ts:209`, `packages/pg-prime/src/index.ts:284`).
 
 ## Tests

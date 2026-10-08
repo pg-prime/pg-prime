@@ -1462,6 +1462,7 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
   }
 
   if (em.binds.length > MAX_PARAMS) throw new TooManyParametersError(em.binds.length, kind)
+  const versionCheck = stmt.k === 'update' || stmt.k === 'delete' ? stmt.versionCheck : undefined
 
   return Object.freeze({
     sql: em.sql(),
@@ -1474,6 +1475,7 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
       writes: Object.freeze(em.writes),
       placeholders: Object.freeze(em.placeholders),
       usedUnsafeRaw: em.usedUnsafeRaw,
+      ...(versionCheck === undefined ? {} : { versionCheck }),
     }),
   }) as Compiled<Row>
 }

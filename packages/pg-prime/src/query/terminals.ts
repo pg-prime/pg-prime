@@ -13,7 +13,14 @@ import type { PgParam } from '../driver/index.js'
 import { BuilderError } from '../sql/errors.js'
 import type { BuilderCtx, QueryRunOptions, Runner } from './builder-state.js'
 import type { ExplainOptions, ExplainResult, RunOptions, StreamOptions } from './executor.js'
-import { bindsToParams, explainOn, makeResult, needsRollbackRail, streamOn } from './executor.js'
+import {
+  assertUnversioned,
+  bindsToParams,
+  explainOn,
+  makeResult,
+  needsRollbackRail,
+  streamOn,
+} from './executor.js'
 
 /** An unfilled `.prepare()` hole, as `toSQL()` reports it. */
 export interface PlaceholderRef {
@@ -66,8 +73,7 @@ export function toSQLOf(
  * and it is worth stating the three that survive:
  *
  *  1. **It would report the wrong count.** `CommandComplete` says `INSERT 0 1` for five inserted
- *     rows. Nothing in this library surfaces `rowCount` yet, and a decision that becomes wrong the
- *     day it does is not a decision.
+ *     rows, and `executeRowCount()` / `.ifVersion()` read that count.
  *  2. **A chunked bulk insert compiles to N statements** (`03` §2.6). "Cap the first one" runs a
  *     fraction of the batch; `executeTakeFirst` has to mean *exactly* what `execute()` means, and
  *     then take a row.
@@ -144,6 +150,9 @@ export async function explainWith(
   run?: RunOptions | undefined,
 ): Promise<ExplainResult> {
   const runner = runnerOf(ctx)
+  if (opts?.analyze === true && opts.rollback === false) {
+    assertUnversioned(compiled.meta, 'explain({ analyze: true, rollback: false })')
+  }
   if (!needsRollbackRail(compiled, opts)) {
     return runner.use((conn) => explainOn(conn, compiled, runner.env, opts, run))
   }

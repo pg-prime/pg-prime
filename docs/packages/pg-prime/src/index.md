@@ -19,7 +19,7 @@ observability. Applications import from it; inside the repo `@pg-prime/testing`
   `toServerErrorData`, and the `Pg*` driver contract types.
 - From `query/run.ts` — `pgPrime`, `compileOnly`, `statementStats`, `DbConfig` and related types.
 - Session layer — `presets`, `MAX_NOTIFY_PAYLOAD_BYTES`, transaction/listen/copy option types.
-- From `errors/index.ts` — every runtime error class, `ConfigError`, `UsageError`, `SQLSTATE_MAP`,
+- From `errors/index.ts` — every runtime error class (incl. `VersionConflictError`), `ConfigError`, `UsageError`, `SQLSTATE_MAP`,
   `SQLSTATE_CLASS_FALLBACK`, `classForSqlState`, the four `is*Violation` predicates, and error types.
 - From `pooler/index.ts` — `POOLER_MODES`, `POOLER_PROFILES`, `profileOf`, and diagnosis types.
 - From `observe/index.ts` — `SEMCONV`, `spanAttributes`, `spanName`, hook event and log types.

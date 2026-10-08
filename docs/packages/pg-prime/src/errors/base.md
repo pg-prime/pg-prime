@@ -17,14 +17,15 @@ can extend these classes without an import cycle. `ConfigError` is thrown by `se
 - `ErrorContext` — all optional: `label`, `attempt`, `durationMs`, `handle`, `reason`
   (`'statement_timeout' | 'lock_timeout' | 'cancel'`), `queryId`, `txId`, `depth`.
 - `HandleKind` — `'db' | 'tx' | 'session'`.
-- `PgPrimeErrorCode` — the builder/compiler discriminator union (`'INVALID_IDENTIFIER'` … `'USAGE'`).
+- `PgPrimeErrorCode` — the discriminator union for errors without a SQLSTATE (`'INVALID_IDENTIFIER'` …
+  `'USAGE'`, `'VERSION_CONFLICT'`).
 
 ## Flow
 1. `PgPrimeError` calls `super(message)` with `{ cause }` only when `options.cause` is defined
-   (`packages/pg-prime/src/errors/base.ts:74`).
-2. It sets `name` from `new.target.name` and stores `code` (`packages/pg-prime/src/errors/base.ts:75`).
-3. `callSite` and `context` are assigned only when provided (`packages/pg-prime/src/errors/base.ts:77`).
-4. `UsageError` passes `options.code ?? 'USAGE'` up (`packages/pg-prime/src/errors/base.ts:96`).
+   (`packages/pg-prime/src/errors/base.ts:75`).
+2. It sets `name` from `new.target.name` and stores `code` (`packages/pg-prime/src/errors/base.ts:76`).
+3. `callSite` and `context` are assigned only when provided (`packages/pg-prime/src/errors/base.ts:78`).
+4. `UsageError` passes `options.code ?? 'USAGE'` up (`packages/pg-prime/src/errors/base.ts:97`).
 
 ## Gotchas
 - The file must stay import-free; adding an import risks the cycle through `sql/ident.ts` described in its
@@ -32,7 +33,7 @@ can extend these classes without an import cycle. `ConfigError` is thrown by `se
 - `code` is typed `string`, not `PgPrimeErrorCode`: it holds a SQLSTATE for server errors and runtime codes
   such as `'TIMEOUT'`, `'ABORT'`, `'INDETERMINATE_COMMIT'` or `'08000'` that the union does not list.
 - `callSite` and `context` are absent as own properties when not supplied, so `'context' in e` is false for
-  builder errors (`packages/pg-prime/src/errors/base.ts:77`).
+  builder errors (`packages/pg-prime/src/errors/base.ts:78`).
 - `name` follows the runtime class name, so a consumer bundler that renames classes changes `e.name`.
 - `UsageError` subclasses that already published a discriminator keep it via `code`, e.g.
   `TooManyParametersError` uses `'TOO_MANY_PARAMETERS'` (`packages/pg-prime/src/sql/errors.ts:89`).

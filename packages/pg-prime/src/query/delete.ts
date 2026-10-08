@@ -32,6 +32,8 @@ import {
   NO_LEFT_JOINS,
   sourceOf,
   toExprNode,
+  versioned,
+  versionOf,
   writeTargetMessage,
 } from './scope.js'
 import { checkAlias, rebuildScope } from './select.js'
@@ -70,6 +72,11 @@ export class DeleteBuilder {
   where(f: Lambda<unknown>): DeleteBuilder {
     const pred = toExprNode(call(f, this.s.scope), 'where()')
     return this.#next({ where: this.s.where === undefined ? pred : andNode(this.s.where, pred) })
+  }
+
+  /** See `UpdateBuilder.ifVersion`. */
+  ifVersion(f: Lambda<unknown>, expected: unknown): DeleteBuilder {
+    return this.#next({ version: versionOf(this.s.version, call(f, this.s.scope), expected) })
   }
 
   /** `delete from t using other where …` — the join form. */
@@ -122,13 +129,16 @@ export class DeleteBuilder {
           `(a .$if(...) that did not fire is the usual cause).`,
       )
     }
-    this.#ast ??= deleteNode(
+    if (this.#ast !== undefined) return this.#ast
+    const v = versioned(this.s.where, this.s.version, this.s.from.table.name)
+    this.#ast = deleteNode(
       compact({
         with: this.s.ctes.length > 0 ? this.s.ctes : undefined,
         from: this.s.from,
         using: this.s.using.length > 0 ? this.s.using : undefined,
-        where: this.s.where,
+        where: v.where,
         returning: this.s.returning,
+        versionCheck: v.versionCheck,
       }) as Omit<DeleteNode, 'k'>,
     )
     return this.#ast
@@ -162,10 +172,14 @@ export class DeleteBuilder {
     return runnerOf(this.s.ctx).run(this.compile(), this.s.run)
   }
 
-  /** `rows[0]` of the RETURNING list. See `terminals.ts` for why this is not `maxRows: 1` — on a
-   *  write it is not merely wasteful, it would STOP the statement at the cap. */
+  /** `rows[0]` of the RETURNING list. See `terminals.ts` for why this is not `maxRows: 1`. */
   async executeTakeFirst(): Promise<unknown> {
     return takeFirst(await this.execute())
+  }
+
+  /** The command tag's count (`DELETE n`), with or without RETURNING. */
+  async executeRowCount(): Promise<number> {
+    return (await runnerOf(this.s.ctx).runCounted(this.compile(), this.s.run)).rowCount
   }
 
   prepare(name?: string, opts?: PrepareOptions): PreparedQueryImpl<unknown> {
@@ -205,6 +219,7 @@ export function makeDelete(
     sources,
     scope: rebuildScope(sources, ctx),
     allRows: false,
+    version: undefined,
     run: undefined,
   })
 }

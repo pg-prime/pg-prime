@@ -4,7 +4,7 @@
 The dev-mode misuse guard: an `AsyncLocalStorage` stack of open-transaction frames, so a statement on the
 root `Db` handle inside a transaction callback throws `HandleMisuseError`. Also owns `ASYNC_DISPOSE` and the
 concurrent-statements warning text. Used by `packages/pg-prime/src/session/handles.ts:55` (frames, store
-loading), `packages/pg-prime/src/session/runner.ts:46` (the check and the warning),
+loading), `packages/pg-prime/src/session/runner.ts:47` (the check and the warning),
 `packages/pg-prime/src/session/listen.ts:29` and `packages/pg-prime/src/query/run.ts:60` (`ASYNC_DISPOSE`).
 
 ## Public API
@@ -29,11 +29,11 @@ loading), `packages/pg-prime/src/session/runner.ts:46` (the check and the warnin
 3. The transaction callback runs inside `withFrame` (`packages/pg-prime/src/session/handles.ts:508`);
    `db.session()` runs its callback inside `withoutFrames` (`packages/pg-prime/src/session/handles.ts:1019`).
 4. Each root-handle statement calls `PoolRunner.guard`, which skips when the dev guard is off, the handle
-   is not `'db'`, or `outsideTransaction` is set (`packages/pg-prime/src/session/runner.ts:431`).
+   is not `'db'`, or `outsideTransaction` is set (`packages/pg-prime/src/session/runner.ts:486`).
 5. Otherwise `assertNotInsideTransaction` reads `store.getStore()` and throws naming the top frame's
    `txId`, `label` and `openedAt` (`packages/pg-prime/src/session/guard.ts:119`).
 6. `ConnRunner.#enter` emits `concurrentStatementsWarning` once per transaction when more than one
-   statement is in flight (`packages/pg-prime/src/session/runner.ts:598`).
+   statement is in flight (`packages/pg-prime/src/session/runner.ts:646`).
 
 ## Gotchas
 - The guard is inert until the first `transaction()` with `devGuard` on has loaded the store; a

@@ -103,7 +103,7 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime/src/driver/types.md — adapter seam interfaces: PgDriver, PgConnection, PgQuery, errors, capabilities — read when writing an adapter or reading query/result shapes.
 - docs/packages/pg-prime/src/entry/driver.md — published pg-prime/driver subpath export list and subset invariant — read when changing the pg-prime/driver public surface.
 - docs/packages/pg-prime/src/errors/base.md — PgPrimeError, UsageError, ConfigError roots and ErrorContext types — read when adding an error class or a new error code.
-- docs/packages/pg-prime/src/errors/classes.md — runtime error hierarchy: QueryError, ConnectionError, timeouts, usage errors — read when adding, throwing or catching a specific error class.
+- docs/packages/pg-prime/src/errors/classes.md — runtime error hierarchy: QueryError, ConnectionError, timeouts, VersionConflictError, usage errors — read when adding, throwing or catching a specific error class.
 - docs/packages/pg-prime/src/errors/index.md — internal errors barrel re-exporting every errors module — read when importing error helpers inside the package.
 - docs/packages/pg-prime/src/errors/map.md — driver error data to PgPrimeError mapping and connection-leaf routing — read when a database error maps to the wrong class or message.
 - docs/packages/pg-prime/src/errors/predicates.md — isUniqueViolation and sibling constraint predicates over column refs — read when matching constraint violations in application code.
@@ -115,7 +115,7 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime/src/pooler.md — pooler profiles as data, diagnosePooler probes, db.diagnose report — read when changing poolerMode behaviour or debugging pooler detection.
 - docs/packages/pg-prime/src/query/builder-state.md — builder state records, Runner seam, QueryRunOptions, BuilderCtx types — read when changing builder state fields or the Runner interface.
 - docs/packages/pg-prime/src/query/cte.md — ExecutorImpl: from, fromRaw, with, withRecursive, write entry points — read when changing CTEs, fromRaw or the db/tx executor surface.
-- docs/packages/pg-prime/src/query/delete.md — DeleteBuilder with USING, WHERE guard, RETURNING — read when changing DELETE, USING or the allRows guard.
+- docs/packages/pg-prime/src/query/delete.md — DeleteBuilder with USING, WHERE guard, RETURNING, ifVersion, executeRowCount — read when changing DELETE, USING or the allRows guard.
 - docs/packages/pg-prime/src/query/errors.md — type-error sentence types and CodecMismatchError rendering — read when changing a type-error message or codec-mismatch text.
 - docs/packages/pg-prime/src/query/executor.md — statement execution, named statements, self-heal, decoding, streaming, EXPLAIN — read when debugging prepared-statement errors, decode caching, or EXPLAIN output.
 - docs/packages/pg-prime/src/query/fn.md — and/or/not/exists, asc/desc, fn aggregates, window and full-text helpers — read when changing combinators, ordering or `fn.*` aggregates.
@@ -136,7 +136,7 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime/src/query/symbols.md — phantom symbol keys INV, ROW, PRJ for query types — read when adding a unique symbol or hitting TS2527.
 - docs/packages/pg-prime/src/query/terminals.md — shared toSQL, executeTakeFirst, stream, explain rollback rail helpers — read when changing terminal behaviour shared by all builders.
 - docs/packages/pg-prime/src/query/types.md — Query, GroupedQuery, SetQuery, write builders, Db/Tx/Session types, re-export hub — read when changing builder or handle type signatures.
-- docs/packages/pg-prime/src/query/update.md — UpdateBuilder, set merging, fromValues bulk update, $onUpdate — read when changing UPDATE, fromValues or $onUpdate behaviour.
+- docs/packages/pg-prime/src/query/update.md — UpdateBuilder, set merging, fromValues bulk update, $onUpdate, ifVersion, executeRowCount — read when changing UPDATE, fromValues, $onUpdate or optimistic locking.
 - docs/packages/pg-prime/src/query/window.md — over(), window spec builder, frames, oneOf keyword guard — read when changing window functions, frames or keyword validation.
 - docs/packages/pg-prime/src/schema/column.md — column factories, ColumnBuilder modifiers, pgEnum, column kit, ColumnDdl IR — read when adding a column type or modifier, or debugging a SchemaError from a column chain.
 - docs/packages/pg-prime/src/schema/ddl.md — FK/check/unique specs, referential actions, fragmentDdlText rendering — read when a CHECK/index/view body throws "interpolates a bind parameter".
@@ -156,7 +156,7 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime/src/session/handles.md — Db/Tx/Session handles, transaction retry loop, savepoints, sessions, COPY — read when changing transaction(), session(), savepoints or handle methods.
 - docs/packages/pg-prime/src/session/listen.md — dedicated LISTEN connection hub, reconnect with gap event, NOTIFY limit — read when changing db.listen, reconnect behaviour or payload checks.
 - docs/packages/pg-prime/src/session/pg-lazy.md — lazy optional pg import and pool construction for connection — read when changing how `connection:` builds its pg.Pool.
-- docs/packages/pg-prime/src/session/runner.md — PoolRunner/ConnRunner statement path: hooks, timeouts, error mapping, acquire — read when changing per-statement execution, timeouts or connection disposal.
+- docs/packages/pg-prime/src/session/runner.md — PoolRunner/ConnRunner statement path: hooks, timeouts, error mapping, acquire, row counts and the ifVersion check — read when changing per-statement execution, timeouts or connection disposal.
 - docs/packages/pg-prime/src/session/transaction.md — pure BEGIN/savepoint/set_config SQL, advisory keys, retry schedule — read when changing BEGIN text, retry defaults or advisory-lock helpers.
 - docs/packages/pg-prime/src/session/types.md — session-layer option/result types for handles, pool, COPY, LISTEN — read when adding or changing public session option types.
 - docs/packages/pg-prime/src/sql.md — sql tag, fragments, ident/lit/unsafeRaw/join, identifier quoting, builder errors — read when touching the sql template tag or identifier quoting.

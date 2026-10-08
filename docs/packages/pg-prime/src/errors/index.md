@@ -9,7 +9,7 @@ The public surface is the curated subset that `src/index.ts` re-exports, not thi
 - From `errors/base.ts`: `PgPrimeError`, `UsageError`, `ConfigError`; types `ErrorContext`, `ErrorInit`,
   `HandleKind`, `PgPrimeErrorCode`, `UsageErrorInit`.
 - From `errors/classes.ts`: every error class (`QueryError` tree, `ConnectionError` tree, timeouts, aborts,
-  `UsageError` leaves, `IndeterminateCommitError`); types `PoolStats`, `QueryErrorInit`.
+  `UsageError` leaves, `IndeterminateCommitError`, `VersionConflictError`); types `PoolStats`, `QueryErrorInit`.
 - From `errors/sqlstate.ts`: `SQLSTATE_MAP`, `SQLSTATE_CLASS_FALLBACK`, `classForSqlState`; types
   `QueryErrorCtor`, `SqlState`.
 - From `errors/map.ts`: `mapError`, `mapDriverError`, `driverDataOf`, `sqlStateOfError`; type `MapOptions`.

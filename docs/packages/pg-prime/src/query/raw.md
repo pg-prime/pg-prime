@@ -22,7 +22,7 @@ Caller: `makeRaw` from the executor's `sql` member in `src/query/cte.ts` (`packa
 ## Gotchas
 - Rows are keyed by field name, so two columns with the same name (`select u.id, p.id`) collapse to one; alias them.
 - A `placeholder()` spliced into a raw fragment is sent as NULL: every non-`value` bind maps to `null` (`packages/pg-prime/src/query/raw.ts:116`, `packages/pg-prime/src/query/raw.ts:172`).
-- The synthetic `Compiled` always says `kind: 'select'` with empty `writes`, so `explain({ analyze: true })` on a raw `UPDATE`/`DELETE` is not wrapped in the rollback rail and really runs (`packages/pg-prime/src/query/raw.ts:78`, `packages/pg-prime/src/query/executor.ts:1036`).
+- The synthetic `Compiled` always says `kind: 'select'` with empty `writes`, so `explain({ analyze: true })` on a raw `UPDATE`/`DELETE` is not wrapped in the rollback rail and really runs (`packages/pg-prime/src/query/raw.ts:78`, `packages/pg-prime/src/query/executor.ts:1056`).
 - `assertShape` has nothing to check (`shape` is `void`); values are only as typed as the registry's codec for each reported OID.
 - Raw statements always run unnamed; the descriptor path does not go through `runOn`'s named-statement logic.
 - The fallback `runner.use` path passes no `signal` to `conn.execute` (`packages/pg-prime/src/query/raw.ts:120`).

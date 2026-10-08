@@ -8,7 +8,7 @@ Type-only declaration of the immutable query AST: a discriminated union tagged b
 - `Statement` — `SelectNode | InsertNode | UpdateNode | DeleteNode | SetOpNode`, the inputs `compile()` accepts.
 - `SelectNode` — `with`, `distinct { on? }`, ordered `projection`, `from`, `joins`, `where`, `groupBy`, `having`, `windows`, `orderBy`, `limit`, `offset`, `locking`.
 - `InsertNode`, `InsertSource` (`values` | `unnest` | `select` | `defaults`), `OnConflictNode` — insert with optional `castFirstRow`, upsert target/action, `returning`.
-- `UpdateNode`, `DeleteNode`, `SetItem` — target table, `set` list, `from` / `using` items, `where`, `returning`.
+- `UpdateNode`, `DeleteNode`, `SetItem` — target table, `set` list, `from` / `using` items, `where`, `returning`, and `versionCheck?: { table, expected }` set by `.ifVersion()`.
 - `SetOpNode`, `CteNode` — `union`/`intersect`/`except` (± `all`) with whole-result `orderBy`/`limit`/`offset`; CTE with `recursive`, `materialized`, column list.
 - `FromItem` — `TableRefNode`, `SubqueryNode` (`lateral`), `ValuesNode`, `FuncNode`, `CteRefNode`, `RawFromNode`; each carries a pre-quoted `qAlias`.
 - `JoinNode` — `inner | left | right | full | cross`; `on: undefined` means `on true`.
@@ -33,12 +33,12 @@ Type-only declaration of the immutable query AST: a discriminated union tagged b
 ## Gotchas
 - Optional members are declared `?: T | undefined` because the repo enables `exactOptionalPropertyTypes` and `hoist.ts` builds nodes by spreading (`packages/pg-prime/src/compile/ast.ts:12`).
 - The `[spike]` markers and the header note that unmarked kinds are rejected are stale: `emitExpr` has a branch for every `Expr` kind (`packages/pg-prime/src/compile/compiler.ts:380`).
-- `BinaryOp` is closed; adding an operator means adding a union member here (`packages/pg-prime/src/compile/ast.ts:302`); the operator table in the design doc is regenerated from the `OPS` manifest (`packages/pg-prime/src/query/ops.manifest.ts`) by `packages/pg-prime/test/query/ops-table.test.ts`.
-- `RawNode` invariant: `chunks.length === parts.length + 1` (`packages/pg-prime/src/compile/ast.ts:540`); `raw()` checks it; for a hand-built node the emitter only throws on a missing part (`packages/pg-prime/src/compile/compiler.ts:731`).
+- `BinaryOp` is closed; adding an operator means adding a union member here (`packages/pg-prime/src/compile/ast.ts:306`); the operator table in the design doc is regenerated from the `OPS` manifest (`packages/pg-prime/src/query/ops.manifest.ts`) by `packages/pg-prime/test/query/ops-table.test.ts`.
+- `RawNode` invariant: `chunks.length === parts.length + 1` (`packages/pg-prime/src/compile/ast.ts:544`); `raw()` checks it; for a hand-built node the emitter only throws on a missing part (`packages/pg-prime/src/compile/compiler.ts:731`).
 - `GroupPlan.sentinel` and `witnesses` index the group's `items`, not the result row; `hoist.ts` translates them and drops non-column members (`packages/pg-prime/src/compile/hoist.ts:1058`).
 - `NestedPlan.alias` may be omitted; `planSelect` then assigns `_r0`, `_r1`, … left to right (`packages/pg-prime/src/compile/hoist.ts:864`).
-- `SubqueryExprNode.hoist` is set only by `packages/pg-prime/src/query/relations.ts`; it may change the plan, never the result (`packages/pg-prime/src/compile/ast.ts:499`).
-- `LiteralNode` never holds a string; strings in a query position are parameters (`packages/pg-prime/src/compile/ast.ts:282`).
+- `SubqueryExprNode.hoist` is set only by `packages/pg-prime/src/query/relations.ts`; it may change the plan, never the result (`packages/pg-prime/src/compile/ast.ts:503`).
+- `LiteralNode` never holds a string; strings in a query position are parameters (`packages/pg-prime/src/compile/ast.ts:286`).
 
 ## Tests
 - No spec targets this file directly (types only). Node shapes are exercised by every suite under `packages/pg-prime/test/compile/` and by `packages/pg-prime/test/query/ast-equivalence.test.ts`, which checks builder output `toStrictEqual` to hand-built trees.

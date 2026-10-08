@@ -135,10 +135,15 @@ const STATEMENTS = new Set(['select', 'setop', 'insert', 'update', 'delete'])
 
 /** Any statement — what a CTE body may be, writable ones included (03 §2.7). */
 export function statementAstOf(q: unknown, where: string): Statement {
-  if (isBuilder(q)) return q.toAst()
-  if (isAstNode(q)) {
-    const n = q as unknown as Statement
-    if (STATEMENTS.has(n.k)) return n
+  let n: Statement
+  if (isBuilder(q)) n = q.toAst()
+  else if (isAstNode(q) && STATEMENTS.has((q as unknown as Statement).k))
+    n = q as unknown as Statement
+  else return reject(where, q)
+  if ((n.k === 'update' || n.k === 'delete') && n.versionCheck !== undefined) {
+    throw new BuilderError(
+      'pg-prime: an .ifVersion() statement cannot be a CTE body; nothing would check its row count.',
+    )
   }
-  return reject(where, q)
+  return n
 }

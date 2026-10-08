@@ -130,6 +130,7 @@ export declare const UnsupportedInPoolerModeError: Unsupported
 export declare const UnsupportedNodeError: Unsupported
 export declare const UsageError: Unsupported
 export declare const VECTOR_MAX_DIMENSIONS: Unsupported
+export declare const VersionConflictError: Unsupported
 export declare const abs: Unsupported
 export declare const add: Unsupported
 export declare const adjacent: Unsupported
@@ -745,6 +746,7 @@ export type Updateable<T0 = any> = Unsupported
 export type UsageError = Unsupported
 export type ValueRefs<T0 = any> = Unsupported
 export type VectorOperand = Unsupported
+export type VersionConflictError = Unsupported
 export type View<T0 = any, T1 = any> = Unsupported
 export type ViewBody<T0 = any, T1 = any> = Unsupported
 export type ViewBuilder<T0 = any> = Unsupported

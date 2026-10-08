@@ -487,6 +487,7 @@ export {
   UnknownQueryError,
   UnsupportedInPoolerModeError,
   UsageError,
+  VersionConflictError,
   classForSqlState,
   isCheckViolation,
   isForeignKeyViolation,

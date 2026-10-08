@@ -2,7 +2,7 @@
 
 ## Purpose
 Builds the relation accessors (`u.posts.many(...)`, `.count()`, `.some(...)`, ...) that appear next to column refs in a builder scope. Each accessor turns a `ResolvedRelation` from `src/schema/relations.ts` into a nested-plan marker (`many`/`one`/`all`), a shared scalar subquery (aggregates), or an `EXISTS` node.
-Caller: `src/query/scope.ts` (`mergeAccessors`, `packages/pg-prime/src/query/scope.ts:312`). Callees: `resolveRelations` (`src/schema/`), AST constructors in `src/compile/nodes.ts`, `codecOf` (`src/compile/hoist.ts`), `fn` (`src/query/fn.ts`), `compileProjection`/`makeNested`/`toExprNode`/`toOrderItems` (`src/query/projection.ts`), `refsOf` (`src/query/ref.ts`), `metaOf` (`src/query/meta.ts`).
+Caller: `src/query/scope.ts` (`mergeAccessors`, `packages/pg-prime/src/query/scope.ts:323`). Callees: `resolveRelations` (`src/schema/`), AST constructors in `src/compile/nodes.ts`, `codecOf` (`src/compile/hoist.ts`), `fn` (`src/query/fn.ts`), `compileProjection`/`makeNested`/`toExprNode`/`toOrderItems` (`src/query/projection.ts`), `refsOf` (`src/query/ref.ts`), `metaOf` (`src/query/meta.ts`).
 
 ## Public API
 - `RelOpts` — `{ variant?: 'json' | 'jsonb', strategy?: 'lateral' | 'subquery' }`, the per-projection options for `many`/`one`/`all`.

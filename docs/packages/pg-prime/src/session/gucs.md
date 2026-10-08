@@ -4,7 +4,7 @@
 Resolves the session GUC defaults (`SessionDefaults` plus built-in defaults) against the pooler profile
 into `[name, value]` pairs to apply per physical connection, or a list of skipped names under a transaction
 pooler. Its only caller is `pgPrime` (`packages/pg-prime/src/query/run.ts:225`), which filters the result
-into `SessionState.connectSettings`; `applyConnectSettings` in `packages/pg-prime/src/session/runner.ts:757`
+into `SessionState.connectSettings`; `applyConnectSettings` in `packages/pg-prime/src/session/runner.ts:805`
 sends it.
 
 ## Public API

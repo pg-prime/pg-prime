@@ -30,11 +30,12 @@ import {
   QueryTimeoutError,
   TransactionAbandonedError,
   TransactionClosedError,
+  VersionConflictError,
   captureCallSite,
   mapError,
   sqlStateOfError,
 } from '../errors/index.js'
-import type { PoolStats, ResolvedErrorOptions } from '../errors/index.js'
+import type { ErrorContext, PoolStats, ResolvedErrorOptions } from '../errors/index.js'
 import type { HookBus, QueryOperation, ResolvedLogOptions, SpanContext } from '../observe/index.js'
 import { nextQueryId, queryErrorRecord, shouldLog, slowQueryRecord } from '../observe/index.js'
 import type { QueryStartEvent } from '../observe/index.js'
@@ -190,6 +191,21 @@ export function compiledStatement<Row>(compiled: Compiled<Row>): StatementDescri
   return new CompiledStatement(compiled)
 }
 
+/** Also records the command tag's count; events still report `rows.length`. */
+class CountedStatement<Row> extends CompiledStatement<Row> {
+  readonly count = { rowCount: 0 }
+
+  override perform(
+    conn: PgConnection,
+    env: ExecEnv,
+    opts: RunOptions,
+  ): Promise<StatementResult<Row>> {
+    return runOn(conn, this.compiled, env, opts, this.paramTypes, this.count).then(
+      asStatementResult,
+    )
+  }
+}
+
 /** What the two runners share. Not exported: `Runner` is the seam, this is the implementation. */
 abstract class BaseRunner implements Runner {
   readonly state: SessionState
@@ -210,8 +226,46 @@ abstract class BaseRunner implements Runner {
 
   abstract use<T>(f: (conn: PgConnection) => Promise<T>): Promise<T>
   abstract scope<T>(f: (conn: PgConnection) => AsyncIterable<T>): AsyncIterable<T>
-  abstract run<Row>(compiled: Compiled<Row>, opts?: RunOptions): Promise<Row[]>
+  abstract runRaw<Row>(desc: StatementDescriptor<Row>, opts?: RunOptions): Promise<Row[]>
   abstract runChunked<Row>(all: readonly Compiled<Row>[], opts?: RunOptions): Promise<Row[]>
+  /** What a runtime error raised outside the driver carries as `context`. */
+  protected abstract context(): ErrorContext
+
+  async run<Row>(compiled: Compiled<Row>, opts?: RunOptions): Promise<Row[]> {
+    if (compiled.meta.versionCheck === undefined) {
+      return this.runRaw(compiledStatement(compiled), opts)
+    }
+    return (await this.#counted(compiled, opts)).rows
+  }
+
+  runCounted<Row>(
+    compiled: Compiled<Row>,
+    opts?: RunOptions,
+  ): Promise<{ rows: Row[]; rowCount: number }> {
+    return this.#counted(compiled, opts)
+  }
+
+  /** The one path that reads the command tag, and so the one place `.ifVersion()` is enforced. */
+  async #counted<Row>(
+    compiled: Compiled<Row>,
+    opts: RunOptions | undefined,
+  ): Promise<{ rows: Row[]; rowCount: number }> {
+    const desc = new CountedStatement(compiled)
+    const rows = await this.runRaw(desc, opts)
+    const { rowCount } = desc.count
+    const check = compiled.meta.versionCheck
+    if (check !== undefined && rowCount === 0) {
+      throw new VersionConflictError(
+        `pg-prime: version conflict on "${check.table}": no row matched .ifVersion().`,
+        {
+          context: this.context(),
+          table: check.table,
+          ...(this.state.errors.includeParams ? { expected: check.expected } : {}),
+        },
+      )
+    }
+    return { rows, rowCount }
+  }
 
   protected merged(opts: RunOptions | undefined): StatementOptions {
     const o = opts as (RunOptions & CallOptions) | undefined
@@ -317,8 +371,9 @@ export class PoolRunner extends BaseRunner {
     }
   }
 
-  async run<Row>(compiled: Compiled<Row>, opts?: RunOptions): Promise<Row[]> {
-    return this.runRaw(compiledStatement(compiled), opts)
+  protected context(): ErrorContext {
+    const label = this.defaults.label
+    return label === undefined ? { handle: this.handle } : { handle: this.handle, label }
   }
 
   async #timedInTransaction<Row>(
@@ -439,10 +494,7 @@ export class PoolRunner extends BaseRunner {
 
   private mapped(e: unknown, sql: string | undefined): unknown {
     return mapError(e, {
-      context: {
-        handle: this.handle,
-        ...(this.defaults.label === undefined ? {} : { label: this.defaults.label }),
-      },
+      context: this.context(),
       errors: this.state.errors,
       sql,
       schema: this.state.schema,
@@ -558,10 +610,6 @@ export class ConnRunner extends BaseRunner {
     return f(this.conn)
   }
 
-  async run<Row>(compiled: Compiled<Row>, opts?: RunOptions): Promise<Row[]> {
-    return this.runRaw(compiledStatement(compiled), opts)
-  }
-
   /** See `PoolRunner.runRaw`. Same statement path, the transaction's own connection. */
   async runRaw<Row>(desc: StatementDescriptor<Row>, opts?: RunOptions): Promise<Row[]> {
     this.#assertUsable()
@@ -642,15 +690,15 @@ export class ConnRunner extends BaseRunner {
     return this.state.configured.has(this.conn.serverParameters as object) ? value : null
   }
 
+  protected context(): ErrorContext {
+    const { attempt, depth, txId, label } = this.tx
+    const base = { handle: this.#handle, attempt, depth, txId }
+    return label === undefined ? base : { ...base, label }
+  }
+
   #mapped(e: unknown, sql: string | undefined): unknown {
     return mapError(e, {
-      context: {
-        handle: this.#handle,
-        attempt: this.tx.attempt,
-        depth: this.tx.depth,
-        txId: this.tx.txId,
-        ...(this.tx.label === undefined ? {} : { label: this.tx.label }),
-      },
+      context: this.context(),
       errors: this.state.errors,
       sql,
       schema: this.state.schema,

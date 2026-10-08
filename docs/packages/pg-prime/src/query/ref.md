@@ -2,7 +2,7 @@
 
 ## Purpose
 Runtime column references: `u.email` is a compiler `ColumnNode` with the schema's `RefRuntime` attached at `$`. `refsOf` builds and caches one frozen record of refs per (registry, table, alias), so scopes and lambdas allocate nothing per query.
-Callers: `src/query/scope.ts` (`packages/pg-prime/src/query/scope.ts:210`), `src/query/insert.ts`, `src/query/relations.ts`; `RefNode`/`RefScope` types are used by `src/query/builder-state.ts`, `projection.ts`, `select.ts`, `update.ts`, `delete.ts`. Callees: `metaOf` (`src/query/meta.ts`), `col` and `mkNode` (`src/compile/nodes.ts`).
+Callers: `src/query/scope.ts` (`packages/pg-prime/src/query/scope.ts:221`), `src/query/insert.ts`, `src/query/relations.ts`; `RefNode`/`RefScope` types are used by `src/query/builder-state.ts`, `projection.ts`, `select.ts`, `update.ts`, `delete.ts`. Callees: `metaOf` (`src/query/meta.ts`), `col` and `mkNode` (`src/compile/nodes.ts`).
 
 ## Public API
 - `RefNode` — `ColumnNode` plus `readonly $: RefRuntime`.

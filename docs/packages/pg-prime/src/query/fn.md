@@ -3,7 +3,7 @@
 ## Purpose
 Boolean combinators (`and`/`or`/`not`/`exists`), `ORDER BY` items (`asc`/`desc`) and the `fn`
 namespace of aggregates, ranking window functions, `now()` and full-text helpers. Re-exported by
-`packages/pg-prime/src/query/types.ts:1688` and `packages/pg-prime/src/index.ts`; `fn` is also
+`packages/pg-prime/src/query/types.ts:1706` and `packages/pg-prime/src/index.ts`; `fn` is also
 used by `packages/pg-prime/src/query/relations.ts` for relation aggregates. It builds AST nodes
 with `packages/pg-prime/src/compile/nodes.ts`, reads codecs via `codecOf`
 (`packages/pg-prime/src/compile/hoist.ts`) and coerces operands with `toExprNode`

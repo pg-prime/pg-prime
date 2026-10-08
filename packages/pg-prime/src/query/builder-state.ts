@@ -61,6 +61,11 @@ import type { RefScope } from './ref.js'
 export interface Runner {
   /** Execute and decode. `Compiled` already carries the decode plan and its codecs. */
   run<Row>(compiled: Compiled<Row>, opts?: RunOptions): Promise<Row[]>
+  /** `run`, plus the command tag's row count (`UPDATE n`), which `rows.length` is not without RETURNING. */
+  runCounted<Row>(
+    compiled: Compiled<Row>,
+    opts?: RunOptions,
+  ): Promise<{ rows: Row[]; rowCount: number }>
   /**
    * Execute several statements atomically, concatenating their rows. Opens a transaction unless
    * {@link inTransaction} is already true — nesting `BEGIN` is a 25001 warning and, worse, a
@@ -188,6 +193,11 @@ export interface BulkOpts {
   readonly chunkSize?: number
 }
 
+export interface VersionState {
+  readonly expr: Expr
+  readonly expected: unknown
+}
+
 export interface UpdateState {
   readonly ctx: BuilderCtx
   readonly ctes: readonly CteNode[]
@@ -204,6 +214,8 @@ export interface UpdateState {
   readonly scope: Readonly<Record<string, RefScope>>
   /** `03` §2.5 has no unconditional UPDATE; `.allRows()` is the opt-in. */
   readonly allRows: boolean
+  /** `.ifVersion()`'s check, kept out of `where` so it never satisfies the no-WHERE guard. */
+  readonly version: VersionState | undefined
   /** `07` §6.1/§6.2's builder-level options, threaded into the same `RunOptions` the handle path uses. */
   readonly run: QueryRunOptions | undefined
 }
@@ -220,6 +232,8 @@ export interface DeleteState {
   readonly scope: Readonly<Record<string, RefScope>>
   /** `03` §2.5 has no unconditional DELETE; `.allRows()` is the opt-in. */
   readonly allRows: boolean
+  /** See {@link UpdateState.version}. */
+  readonly version: VersionState | undefined
   /** `07` §6.1/§6.2's builder-level options, threaded into the same `RunOptions` the handle path uses. */
   readonly run: QueryRunOptions | undefined
 }

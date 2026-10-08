@@ -18,6 +18,7 @@ The single-pass SQL emitter: one recursive descent over a planned AST that appen
 8. `param` goes through `Emitter.bindValue`, which encodes non-null values and pushes `$n`; `ph` goes through `bindSlot` (`packages/pg-prime/src/compile/compiler.ts:173`).
 9. `emitFromItem` records each table in `reads`; statement targets are recorded in `writes` (`packages/pg-prime/src/compile/compiler.ts:786`, `packages/pg-prime/src/compile/compiler.ts:1076`).
 10. After emission, more than 65535 binds throws `TooManyParametersError`; the result and its arrays are frozen (`packages/pg-prime/src/compile/compiler.ts:1464`).
+11. An update/delete node's `versionCheck` is copied to `meta.versionCheck`; the key is absent otherwise (`packages/pg-prime/src/compile/compiler.ts:1465`).
 
 ## Gotchas
 - Injection audit surface: only `IdentPart.quoted` (`packages/pg-prime/src/compile/compiler.ts:743`), `unsafeRaw` text (`packages/pg-prime/src/compile/compiler.ts:748`, sets `usedUnsafeRaw`) and `quoteStringLiteral` for `jsonBuild` keys (`packages/pg-prime/src/compile/compiler.ts:605`) splice non-`$n` text from nodes; identifiers elsewhere go through `quoteIdentPart`.
@@ -32,7 +33,7 @@ The single-pass SQL emitter: one recursive descent over a planned AST that appen
 - A set-op branch is parenthesized when it is itself a set op or carries `with`, `orderBy`, `limit`, `offset` or `locking` (`packages/pg-prime/src/compile/compiler.ts:1248`).
 - `select distinct` whose ORDER BY item is not in the projection throws `BuilderError`; expressions with a `null` digest pass through (`packages/pg-prime/src/compile/compiler.ts:968`).
 - Module-level caches are shared across compiles: `ALIAS_CACHE` (capped at 4096, cleared wholesale) and the `$n` / newline string tables; none holds per-statement state (`packages/pg-prime/src/compile/compiler.ts:63`, `packages/pg-prime/src/compile/compiler.ts:101`).
-- `compileExpr` returns unfrozen `binds` and does not enforce the 65535 cap (`packages/pg-prime/src/compile/compiler.ts:1488`).
+- `compileExpr` returns unfrozen `binds` and does not enforce the 65535 cap (`packages/pg-prime/src/compile/compiler.ts:1490`).
 
 ## Tests
 - `packages/pg-prime/test/compile/select.test.ts`, `insert.test.ts` — golden SQL, predicates, ordering, locking, fragments, RETURNING.

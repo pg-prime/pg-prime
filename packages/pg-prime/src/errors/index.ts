@@ -69,6 +69,7 @@ export {
   UniqueViolationError,
   UnknownQueryError,
   UnsupportedInPoolerModeError,
+  VersionConflictError,
 } from './classes.js'
 export type { PoolStats, QueryErrorInit } from './classes.js'
 

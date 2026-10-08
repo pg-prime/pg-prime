@@ -34,9 +34,10 @@ run,window}.ts`, and most tests under `packages/pg-prime/test/query/` as `import
 - Handles: `Queryable<Sc>` (`h`, `kind`, `run`, `explain`, `stream`, `streamBatches`, `notify`,
   `withOptions`, `refreshMaterializedView`, `copyFrom`/`copyTo`), `Db`, `Tx`, `Session`, `SchemaExecutor` (deprecated alias).
 - Writes: `InsertQuery<H, O, C>`, `InsertPatch<T>`, `BulkOpts`, `ConflictBuilder<H>`,
-  `UpdateQuery<H, O, V>`, `SetPatch<T>`, `ValueRefs<C>`, `FromValuesOpts`, `DeleteQuery<H, O, S>`.
+  `UpdateQuery<H, O, V>`, `SetPatch<T>`, `ValueRefs<C>`, `FromValuesOpts`, `DeleteQuery<H, O, S>`; update and
+  delete carry `executeRowCount(): Promise<number>` and `ifVersion(f, expected: NoInfer<NonNullable<T>>)`.
 - Operator re-exports: `sql` and fragment types; all of `./ops.js` and `./fn.js`; operand types from
-  `./ops.types.js`; `OPS`, `CONFIRMABLE`, `OpClass`, `OpSpec` (`packages/pg-prime/src/query/types.ts:1687`).
+  `./ops.types.js`; `OPS`, `CONFIRMABLE`, `OpClass`, `OpSpec` (`packages/pg-prime/src/query/types.ts:1705`).
 - Runtime re-exports: `nest`, `nestNullable`, `omit`, `over`, `pgPrime`, `compileOnly`, `statementStats`,
   `placeholder`, describe-cache helpers, `CodecMismatchError`, session/executor/prepared/raw/window types.
 
