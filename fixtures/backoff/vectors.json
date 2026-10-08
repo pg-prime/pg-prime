@@ -1,0 +1,155 @@
+{
+  "_formula": "ceiling = min(maxDelayMs, baseDelayMs * 2^(attempt - 1)); none: ceiling; equal: ceiling/2 + random * ceiling/2; full: random * ceiling. `random` is the value the injected random() returns; delayMs is exact (no rounding).",
+  "vectors": [
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 60000,
+        "jitter": "none"
+      },
+      "attempt": 1,
+      "random": 0.5,
+      "delayMs": 1000
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 60000,
+        "jitter": "none"
+      },
+      "attempt": 2,
+      "random": 0.5,
+      "delayMs": 2000
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 60000,
+        "jitter": "none"
+      },
+      "attempt": 3,
+      "random": 0,
+      "delayMs": 4000
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 60000,
+        "jitter": "none"
+      },
+      "attempt": 7,
+      "random": 0.5,
+      "delayMs": 60000
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 60000,
+        "jitter": "none"
+      },
+      "attempt": 100,
+      "random": 0.5,
+      "delayMs": 60000
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 300000,
+        "jitter": "full"
+      },
+      "attempt": 1,
+      "random": 0,
+      "delayMs": 0
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 300000,
+        "jitter": "full"
+      },
+      "attempt": 1,
+      "random": 0.25,
+      "delayMs": 250
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 300000,
+        "jitter": "full"
+      },
+      "attempt": 4,
+      "random": 0.75,
+      "delayMs": 6000
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 300000,
+        "jitter": "full"
+      },
+      "attempt": 10,
+      "random": 0.5,
+      "delayMs": 150000
+    },
+    {
+      "policy": {
+        "baseDelayMs": 100,
+        "maxDelayMs": 30000,
+        "jitter": "full"
+      },
+      "attempt": 20,
+      "random": 0.999,
+      "delayMs": 29970
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 60000,
+        "jitter": "equal"
+      },
+      "attempt": 1,
+      "random": 0,
+      "delayMs": 500
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 60000,
+        "jitter": "equal"
+      },
+      "attempt": 1,
+      "random": 1,
+      "delayMs": 1000
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 60000,
+        "jitter": "equal"
+      },
+      "attempt": 3,
+      "random": 0.5,
+      "delayMs": 3000
+    },
+    {
+      "policy": {
+        "baseDelayMs": 1000,
+        "maxDelayMs": 60000,
+        "jitter": "equal"
+      },
+      "attempt": 8,
+      "random": 0.25,
+      "delayMs": 37500
+    },
+    {
+      "policy": {
+        "baseDelayMs": 250,
+        "maxDelayMs": 10000,
+        "jitter": "equal"
+      },
+      "attempt": 5,
+      "random": 0.75,
+      "delayMs": 3500
+    }
+  ]
+}

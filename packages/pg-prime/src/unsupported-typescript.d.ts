@@ -258,6 +258,7 @@ export declare const lte: Unsupported
 export declare const macaddr8Codec: Unsupported
 export declare const macaddrCodec: Unsupported
 export declare const matches: Unsupported
+export declare const migrateOwnedSchema: Unsupported
 export declare const mod: Unsupported
 export declare const moneyCodec: Unsupported
 export declare const mul: Unsupported
@@ -283,6 +284,7 @@ export declare const or: Unsupported
 export declare const over: Unsupported
 export declare const overlaps: Unsupported
 export declare const overlapsNet: Unsupported
+export declare const ownedSchemaSql: Unsupported
 export declare const parseArrayLiteral: Unsupported
 export declare const partitionBy: Unsupported
 export declare const partitionOf: Unsupported
@@ -548,6 +550,9 @@ export type OrderArg = Unsupported
 export type OrderBy = Unsupported
 export type OrmTypeError<T0 = any> = Unsupported
 export type OutOfMemoryError = Unsupported
+export type OwnedMigration = Unsupported
+export type OwnedSchemaFile = Unsupported
+export type OwnedSchemaOptions = Unsupported
 export type PartitionOfOptions = Unsupported
 export type PgAcquireOptions = Unsupported
 export type PgArrayLiteral = Unsupported

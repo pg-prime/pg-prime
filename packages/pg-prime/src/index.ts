@@ -415,6 +415,8 @@ export type {
   TxOptionsBase,
 } from './session/types.js'
 export { MAX_NOTIFY_PAYLOAD_BYTES } from './session/listen.js'
+export { migrateOwnedSchema, ownedSchemaSql } from './session/owned-schema.js'
+export type { OwnedMigration, OwnedSchemaFile, OwnedSchemaOptions } from './session/owned-schema.js'
 
 /**
  * The error hierarchy (`07` §4.2), the SQLSTATE table as data (§4.5), the redaction policy (§4.3)

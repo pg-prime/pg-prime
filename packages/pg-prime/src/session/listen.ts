@@ -49,8 +49,12 @@ export function assertPayloadSize(payload: string): void {
   )
 }
 
-type Handlers = Set<(payload: string, ctx: { channel: string; processId: number }) => void>
+type Handler = (payload: string, ctx: { channel: string; processId: number }) => void
 type Emitter = Map<'reconnect' | 'gap' | 'error', Set<(info: never) => void>>
+interface Sub {
+  readonly handler: Handler
+  readonly emitter: Emitter
+}
 
 export interface ListenerHost {
   /** Opens a connection the pool does not own (`PgDriver.connect`). */
@@ -74,8 +78,7 @@ export class ListenHub {
   #conn: PgConnection | undefined
   #opening: Promise<PgConnection> | undefined
   #unsubscribe: (() => void) | undefined
-  readonly #channels = new Map<string, Handlers>()
-  readonly #emitters = new Map<string, Emitter>()
+  readonly #channels = new Map<string, Set<Sub>>()
   #closed = false
   #reconnecting = false
 
@@ -94,7 +97,7 @@ export class ListenHub {
 
   async subscribe(
     channel: string,
-    handler: (payload: string, ctx: { channel: string; processId: number }) => void,
+    handler: Handler,
     signal: AbortSignal | undefined,
   ): Promise<Subscription> {
     assertChannel(channel)
@@ -102,17 +105,15 @@ export class ListenHub {
       throw new UsageError('pg-prime: db.listen() was called after db.end().')
     }
     const conn = await this.#connection()
-    let handlers = this.#channels.get(channel)
-    if (handlers === undefined) {
-      handlers = new Set()
-      this.#channels.set(channel, handlers)
+    let subs = this.#channels.get(channel)
+    if (subs === undefined) {
+      subs = new Set()
+      this.#channels.set(channel, subs)
       await conn.execute({ text: `listen ${quoteChannel(channel)}`, params: [], mode: 'simple' })
     }
-    handlers.add(handler)
-
-    const emitter: Emitter = new Map()
-    this.#emitters.set(channel, emitter)
-    const sub = this.#makeSubscription(channel, handler, emitter)
+    const s: Sub = { handler, emitter: new Map() }
+    subs.add(s)
+    const sub = this.#makeSubscription(channel, s)
     if (signal !== undefined) {
       if (signal.aborted) await sub.close()
       else signal.addEventListener('abort', () => void sub.close(), { once: true })
@@ -120,17 +121,11 @@ export class ListenHub {
     return sub
   }
 
-  #makeSubscription(
-    channel: string,
-    handler: (payload: string, ctx: { channel: string; processId: number }) => void,
-    emitter: Emitter,
-  ): Subscription {
+  #makeSubscription(channel: string, s: Sub): Subscription {
     const close = async (): Promise<void> => {
-      const handlers = this.#channels.get(channel)
-      handlers?.delete(handler)
-      if (handlers !== undefined && handlers.size === 0) {
+      const subs = this.#channels.get(channel)
+      if (subs?.delete(s) === true && subs.size === 0) {
         this.#channels.delete(channel)
-        this.#emitters.delete(channel)
         const conn = this.#conn
         if (conn !== undefined) {
           await conn
@@ -141,10 +136,10 @@ export class ListenHub {
       if (this.#channels.size === 0) await this.#drop()
     }
     const on = (event: 'reconnect' | 'gap' | 'error', h: (info: never) => void): (() => void) => {
-      let set = emitter.get(event)
+      let set = s.emitter.get(event)
       if (set === undefined) {
         set = new Set()
-        emitter.set(event, set)
+        s.emitter.set(event, set)
       }
       set.add(h)
       return () => void set?.delete(h)
@@ -185,13 +180,11 @@ export class ListenHub {
       )
     }
     const offNotification = on.call(conn, 'notification', ((n: PgNotification) => {
-      const handlers = this.#channels.get(n.channel)
-      if (handlers === undefined) return
-      for (const h of handlers) {
+      for (const s of this.#channels.get(n.channel) ?? []) {
         try {
-          h(n.payload, { channel: n.channel, processId: n.processId })
+          s.handler(n.payload, { channel: n.channel, processId: n.processId })
         } catch (e) {
-          this.#emit(n.channel, 'error', e)
+          emit(s, 'error', e)
         }
       }
     }) as never)
@@ -267,15 +260,7 @@ export class ListenHub {
   }
 
   #emit(channel: string, event: 'reconnect' | 'gap' | 'error', info: unknown): void {
-    const set = this.#emitters.get(channel)?.get(event)
-    if (set === undefined) return
-    for (const h of set) {
-      try {
-        ;(h as (i: unknown) => void)(info)
-      } catch {
-        // A throwing 'error' handler must not recurse into itself.
-      }
-    }
+    for (const s of this.#channels.get(channel) ?? []) emit(s, event, info)
   }
 
   async #drop(): Promise<void> {
@@ -290,8 +275,17 @@ export class ListenHub {
   async close(): Promise<void> {
     this.#closed = true
     this.#channels.clear()
-    this.#emitters.clear()
     await this.#drop()
+  }
+}
+
+function emit(s: Sub, event: 'reconnect' | 'gap' | 'error', info: unknown): void {
+  for (const h of s.emitter.get(event) ?? []) {
+    try {
+      ;(h as (i: unknown) => void)(info)
+    } catch {
+      // A throwing 'error' handler must not recurse into itself.
+    }
   }
 }
 

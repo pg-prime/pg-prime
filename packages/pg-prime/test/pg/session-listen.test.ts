@@ -148,6 +148,31 @@ describe('LISTEN owns a dedicated connection (07 §6.5)', () => {
     },
     90_000,
   )
+
+  requiresConcurrency()(
+    'two subscribers on one channel both get gap after pg_terminate_backend',
+    async () => {
+      const killer = await client()
+      try {
+        const gaps: string[] = []
+        const a = await db.listen('chan_two', () => {})
+        const b = await db.listen('chan_two', () => {})
+        a.on('gap', () => gaps.push('a'))
+        b.on('gap', () => gaps.push('b'))
+        await sleep(150)
+        const listener = (await backends(killer)).find((r) => /^\s*listen /i.test(r.query))
+        await killer.query('select pg_terminate_backend($1)', [listener!.pid])
+        const deadline = Date.now() + 20_000
+        while (gaps.length < 2 && Date.now() < deadline) await sleep(100)
+        expect(gaps.sort()).toStrictEqual(['a', 'b'])
+        await a.close()
+        await b.close()
+      } finally {
+        await killer.end()
+      }
+    },
+    90_000,
+  )
 })
 
 describe('notify is pg_notify($1,$2) and works everywhere (07 §6.5)', () => {

@@ -69,6 +69,7 @@
     "node_modules/pg-prime/dist/session/gucs.js",
     "node_modules/pg-prime/dist/session/handles.js",
     "node_modules/pg-prime/dist/session/listen.js",
+    "node_modules/pg-prime/dist/session/owned-schema.js",
     "node_modules/pg-prime/dist/session/pg-lazy.js",
     "node_modules/pg-prime/dist/session/runner.js",
     "node_modules/pg-prime/dist/session/transaction.js",
