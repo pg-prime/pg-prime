@@ -672,3 +672,85 @@ emit-parity, check:dts, pack-smoke, create-smoke ✓. **Size-only failures (inte
 - docs/packages/pg-prime/src/schema/trigger.md — updatedAtTrigger table extra and its refusals — read when declaring an updated_at trigger or it throws.
 - docs/packages/pg-prime/src/session/setting.md — setting()/SettingKey: typed GUC set() records and current() SQL — read when a setting reads NULL, 22P02, or setLocal names misbehave.
 - Updated summaries: `compile/compiler.md` — add "compileDdlExpr"; `session/guard.md` — add "inTransactionFrame".
+
+#### R3 — RESULT
+
+Branch `worktree-agent-a54434ee7ab41b7e0` on `a8c1e75`. Commits: `0bc2c73` feat (src + module docs +
+`reference/hazard-codes.mdx`), `412b169` tests, then this RESULT. No new public kit exports.
+
+**Contract for R2** (all in `src/catalog/extract.ts`; types `LaneState`, `TableRlsState`, `PolicyState`,
+`CoverageLoss`, `RlsCommand`, `RLS_COMMANDS`):
+- `readLaneState(client, schemas, reverse?: ReadonlyMap<shadow, user>): Promise<LaneState>`: one
+  read-only snapshot under `search_path = pg_catalog` (call it outside a transaction). It returns tables
+  `{schema, name, enabled, forced, owner}`, policies `{schema, table, name, command: 'all'|…,
+  permissive, roles (sorted, 'public' for PUBLIC), using, withCheck (pg_get_expr|null), marker (the
+  'pg-prime:declared …' comment|null), dependsOn (encoded table/column ids)}`,
+  `updatedAtTriggers [{schema, table, column}]` (marked `pgprime_set_<col>`), `memberOf` and `bypass`.
+- `afterLaneState(target, shadow): LaneState`: D25. It takes the shadow's tables and policies, plus
+  unmarked target policies the shadow lacks. Owners, `memberOf` and `bypass` come from the target.
+- `covers(state, schema, table, role, command): boolean`.
+- `coverageLost(before, after, emptyTables): CoverageLoss[]`: it returns `{code: 'RL101'|'RL108',
+  schema, table, role, command, subject: 'schema.table:role:command'}`. Tables that are disabled after,
+  absent before or proven empty are skipped. For an enabling table, `public` loses all four commands
+  when the table has no permissive policy at all. For a table enabled before, each role named by a
+  permissive policy before is checked, excluding the owner and bypassing roles. RL108 covers the owner
+  of a table FORCE'd after; an unforced or not-yet-enabled table counts as covered before.
+- `BuildOptions.lane?: { before, after }` turns on four checks. On ENABLE: RL101 as `error`
+  diagnostics with the subject above, and RL102 as a statement hazard. On drops and retypes a policy
+  on a surviving table depends on: RL106. Before a column drop or rename that carries a marked
+  trigger: `DROP TRIGGER IF EXISTS "pgprime_set_<col>"`, plus an `updated_at_trigger_dropped` info.
+  RL103 rides every DISABLE, with or without `lane`. The statement path reports RL101 only for tables
+  this plan enables, so the lane path should report the losses where `before` was already enabled,
+  and every RL108. RL101–RL108 are in `HAZARD_SEVERITY`.
+
+**Built:**
+- `rls.*()` emits one `ENABLE ROW LEVEL SECURITY`. `updatedAtTrigger` leaves `unsupported_extra`
+  without emitting SQL. FORCE stays out of the IR, and the fingerprint is pinned by a test.
+- `probeEmptiness` sets `row_security = off` and resets it afterwards.
+- The runner (two touches in `src/runner/run.ts`):
+  - It sets `set_config('row_security','off')` before step 6.
+  - `rlsDataFiles` adds an RL107 diagnostic and a `pre-flight:` warning for each pending data or
+    batch file that names an RLS table, when the role is neither superuser nor `BYPASSRLS`.
+- `pull`:
+  - It writes `rls.enable()` / `rls.force()`.
+  - Each policy becomes an exported `definePolicy` whose clauses are `() => sql.unsafeRaw(<pg_get_expr>)`.
+  - A marked trigger on a timestamptz column becomes `updatedAtTrigger(t.<col>)`, and its trigger
+    and function are dropped from `sql/`.
+  - `tier-r.ts` no longer writes `040_rls/` or `050_policies/`.
+
+**Deviations:**
+- Statement-path RL101 is an error diagnostic (plan hazard `statement: -1`) rather than a statement
+  hazard code, so each loss has its own ackable subject.
+- Pulled clauses use `sql.unsafeRaw("…")` (the CHECK escaper) instead of a `` sql`…` `` template.
+- RL103 is not gated on emptiness.
+- A marked trigger on a `timestamp without time zone` column stays in `sql/`: pull has no
+  `timestamp` builder, so `t.raw(...)` fails `updatedAtTrigger`'s type check.
+- `updated_at_on_update_overlap`, and the RL104/RL105/RL108 emission, stay with R2's lane.
+
+**Tests (docker superusers PG 17.11 :5447 and 18.6 :5448; pg_dump oracle via `docker exec`):**
+- New files:
+  - `test/kinds/rls-coverage.test.ts` (8 tests)
+  - `test/kinds/rls.test.ts` (9)
+  - `test/runner/row-security.test.ts` (2)
+  - `test/pull/rls.test.ts` (3; it imports the pulled file, applies its policies to a fresh database
+    and reads them back identical)
+  - The role tests skip loudly without `CREATE ROLE`.
+- Kit `test:pg`: 63 files passed and 1 skipped, 477 tests passed and 6 skipped, on both PG 17 and PG 18.
+- Chain on PG 17, all green:
+  - `lint` (oxlint warnings pre-existing only), `format:check`, `typecheck`, `build`
+  - `test`: core 1159, plus the other packages
+  - `test:live`: core 1993 / 12 skipped
+  - `test:pg`: all packages; core 2067 / 41 skipped
+  - `bench:compile`, `docs:check` (50/50 hazard codes, 100 % API coverage), `docs:examples:pg`
+  - `package:check`: no size failures; kit 1875.6 KB unpacked
+- `bench:compile` rewrites `bench/runtime/report.json`; that file was reverted, not committed.
+
+**Follow-ups:** `guides/adopting.mdx` (R4) still quotes the old pull header ("triggers, policies,")
+and the `040_rls` layout.
+
+**INDEX lines** (summaries to update):
+- `catalog/extract.md`: add "readLaneState/afterLaneState/coverageLost (RLS lane state, RL101/RL108)".
+- `diff/ddl.md`: add "RL101–RL103/RL106, updatedAt trigger pre-drop".
+- `pull/emit-ts.md`: add "rls/definePolicy/updatedAtTrigger".
+- `pull/tier-r.md`: drop "RLS, policies".
+- `runner/run.md`: add "row_security = off, RL107 pre-flight".
