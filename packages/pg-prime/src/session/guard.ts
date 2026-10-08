@@ -27,7 +27,8 @@
  * per-call opt-out (`outsideTransaction`) rather than an argument about it.
  */
 
-import { HandleMisuseError, captureCallSite } from '../errors/index.js'
+import { HandleMisuseError, UsageError, captureCallSite } from '../errors/index.js'
+import type { Tx } from '../query/types.js'
 
 /**
  * `Symbol.asyncDispose`, or the registry key every polyfill uses when the runtime has none.
@@ -94,6 +95,21 @@ export function withFrame<R>(frame: GuardFrame, fn: () => R): R {
   if (store === undefined) return fn()
   const next = [...(store.getStore() ?? []), frame]
   return store.run(next, fn)
+}
+
+/** The frame each `Tx` handle pushes, keyed by the handle. */
+export const txFrames = new WeakMap<object, GuardFrame>()
+
+/**
+ * Run `fn` as if inside `tx`'s callback: a captured root `Db` then throws `HandleMisuseError`.
+ * For code that keeps a transaction open across callbacks (a pinned test transaction).
+ */
+export function inTransactionFrame<R>(tx: Tx, fn: () => R): R {
+  const frame = txFrames.get(tx)
+  if (frame === undefined) {
+    throw new UsageError('pg-prime: inTransactionFrame() takes a Tx handle from db.transaction().')
+  }
+  return withFrame(frame, fn)
 }
 
 /**
