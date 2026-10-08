@@ -20,7 +20,6 @@ The `@pg-prime/mq` queue target (plan 18 §6): a queue-target tick or manual run
 - Claim and send commit together: a crash before COMMIT leaves neither, and the tick is claimed again on a later loop (within `misfireGraceMs`).
 - Without an `enqueuer`, queue-target schedules are synced but never claimed by that instance (C-D9), and `trigger()` throws `UsageError`.
 - `running` never moves for a queue target: overlap is mq's dedup, decided on mq's locked dedup row.
-- mq rejects a `null` payload (its `messages.payload` is `not null`), so a queue-target schedule needs a payload.
 
 ## Tests
 - `packages/pg-prime-cron/test/unit/queue-target.test.ts` — `pgMq(...)` satisfies `CronEnqueuer`.
