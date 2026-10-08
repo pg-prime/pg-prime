@@ -201,7 +201,7 @@ non-obvious reason, workaround or trap; no history or ticket ids in comments.
 | E-D3 | **Cursor = position `(last_xid, last_id)` plus `pending`: the transactions below the position that were still running at a read, each with its own progress `after_id`** (§3.3). Not a bare `xmin` watermark. The whole cursor is exposed as an opaque `cursor` string on every delivered entry | Exact even with per-entry commits inside a late transaction, and **not delayed by unrelated long transactions**, which an `xmin` watermark is. An opaque cursor is the only correct replay handle, because ids follow neither xid order nor commit order |
 | E-D4 | `entries` is **append-only** (never updated); retention is a range delete; no partitioning in v0 | No update bloat; E-Q2 covers time partitions |
 | E-D5 | Payload `jsonb`, typed by the declaration (`defineTopic<T>` or inferred from a Standard Schema validator; the interface is copied as a type, no dependency); optional `codec`; default 1 MiB limit; `\u0000` refused with path | typed with zero deps |
-| E-D6 | Engine channels `ev_` + 24 hex chars of `sha256(schema '/' topic)` (same in SQL and TS). **User channels use their literal name** | Fixed-length, schema-isolated engine names; a SQL trigger can `pg_notify('cache-bust', …)` into a typed channel |
+| E-D6 | Engine channels `ev_` + 24 hex chars of `sha256(schema '/' kind '/' name)` (same in SQL and TS; topics use kind `t`). **User channels use their literal name** | Fixed-length, schema-isolated engine names; a SQL trigger can `pg_notify('cache-bust', …)` into a typed channel |
 | E-D7 | **Building blocks exported for sibling packages**: `waker()`, `engineChannel()`/`engineChannelSql()`, the subscription API. Documented and in the API golden | mq reuses them instead of duplicating (0.1) |
 
 ---
@@ -275,12 +275,14 @@ retention skips ids present in `parked`.
 ```sql
 with e as (
   insert into pgprime_events.entries (topic, type, key, payload, headers)
-  select $t, type, key, payload, headers
-  from jsonb_to_recordset($rows) as r(type text, key text, payload jsonb, headers jsonb)
+  select $t, r.type, r.key, r.payload, r.headers
+  from rows from (jsonb_to_recordset($rows) as (type text, key text, payload jsonb, headers jsonb))
+       with ordinality as r(type, key, payload, headers, n)
+  order by r.n
   returning id
 )
-select array_agg(id) as ids,
-       (select pg_notify($chan, '') where exists (select from e)) is null as woke
+select array_agg(id order by id) as ids,
+       (select pg_notify($chan, '') where exists (select from e)) is not null as woke
 from e
 ```
 
@@ -332,6 +334,8 @@ order by x.xid, x.id
 ```
 
 There is always exactly one row from `m`; the entry columns are null when nothing matched.
+`pg_snapshot_xip` lists only running xids below the snapshot's `xmax`; a running xid at or above it
+is above every visible entry, so no position can step over it (as built: verified on PG 15–18).
 
 Entries are delivered in result order: `late` units first, then `next`.
 
@@ -368,8 +372,10 @@ Why nothing is lost or duplicated:
    bounded by the number of concurrent transactions.
 
 **Ordering contract:** each entry is delivered once per cursor. A producer transaction's entries
-arrive together, in insertion order. There is no total order across concurrent transactions (none
-exists before commit). Every delivered `Entry` carries `cursor`: the opaque, serialized cursor
+arrive in insertion order. As built: they do **not** always arrive together — `next`'s limit can
+split a transaction, and a late transaction's entries are then delivered between its parts (the
+property test found it; the plan's "together" was wrong). There is no total order across concurrent
+transactions (none exists before commit). Every delivered `Entry` carries `cursor`: the opaque, serialized cursor
 state right after that entry. That is the only valid replay or resume handle.
 
 ### 3.4 Commit (C1), retry and park
@@ -411,6 +417,10 @@ returning 1                                       -- 0 rows only when the lease 
 - **Isolation.** A multi-entry attempt that throws, or whose marker is found still set at the next
   read or lease takeover (it crashed), switches the reader to **isolation**. That means batch size
   1 for the next `head_size` entries. Nothing is charged for the batch failure.
+- As built: a marker found at takeover isolates `head_size` entries **whatever its size** (also 1),
+  and a failed single-entry attempt keeps the reader isolated until that entry succeeds or is
+  parked. Otherwise the next, larger batch re-marks `head_size > 1`, resets `head_attempts`, and the
+  entry is never parked.
 - **Charging.** In isolation each entry gets its own A1 (`$size = 1`), so `head_attempts` counts
   real attempts of that one entry, crashes included. Before invoking, the reader parks the entry
   (K1) instead when the count A1 returns exceeds `maxAttempts`. With `maxAttempts: 1`, an innocent
@@ -920,3 +930,78 @@ package slots, `a7447bf` tooling, `ac516ec` CI, `451efc4` docs shell.
   only that golden.
 - `installBytes` and the tree-shake `{ delta }` are in `tools/budgets.json`.
 - Tests go in `test/{unit,live,pg}`. `passWithNoTests` is on.
+
+#### A2 — RESULT (2026-10-08)
+
+Branch `worktree-agent-aa8e1eb546293dbda`, from `f2d0a36`. Commits: `11bd6ed` source, `ec67391`
+tier 0/1 tests, `6a77def` isolation fix, `5473c80` tier 2, `45f9632` goldens + pack smoke, `e86d5ec`
+bench, `2a2d402` docs, `df2ce52` plan corrections.
+
+**Built.** `@pg-prime/events` per §1–§6: `defineChannel`, `defineTopic`, `defineSubscription`,
+`pgEvents` (`channels`/`topics`/`subscriptions` registries, `channel`/`topic`/`subscription`,
+`start`, `migrate`, `observe`, `close`), `ChannelHandle`, `TopicHandle` (`publish`, `publishMany`,
+`tail`, `read`), `SubscriptionHandle` (`run`, `reset`, `lag`, `parked`, `discard`, `remove`),
+`Reader`, `ReadContext.commit({ tx })`, `EventsHooks`, the four errors, and the building blocks
+`waker`, `engineChannel`, `engineChannelSql`, `StandardSchemaV1`.
+
+**Gates** (PG 17.11, temporary `postgres:17` + `edoburu/pgbouncer` transaction mode, so the
+PgBouncer test ran). Full chain green. Events: unit 33, live 49 (PGlite), pg 59 (all tiers on a
+real server, incl. the §7 tier-2 table). The tier-2 files also passed on PG 15.19, 16.15 and 18.6
+(E-Q1 holds on all four). Bun 1.4.2: unit 33, pg 10, none skipped. Cursor property test: 3 000
+runs of up to 150 ops (lazy xids, aborts, `types`, prefix acks, per-entry commits, crashes,
+`Entry.cursor` resumes, `from: 'now'`); four mutations of `cursor.ts` each fail it. docs:check
+(110 examples), docs:examples:pg (10). package:check: 27/27 size gates.
+
+**Measured.** Unpacked 132.3 KB (budget 150 KB); install footprint 148.7 KB (200 KB); tree-shake
+`events-basic` delta 8 403 B min+gz (12 288 B), 25 modules. Bench (shared laptop PG 17, noisy):
+publish 977/s single, 20 632/s at 100 per tx; reader 39 979 entries/s at batch 1000; max `pending`
+29 under 200 producers on a 40-connection pool.
+
+**Deviations.**
+- Plan bugs fixed in code and text: P1's `woke` was inverted (`is not null`) and insert order is
+  now `rows from … with ordinality`; "a transaction's entries arrive together" is false (a read
+  limit splits a transaction and a late one can land between its parts), contract corrected;
+  `pg_snapshot_xip` omits running xids ≥ `xmax` (harmless, documented); isolation now also applies
+  to a size-1 marker at takeover and persists after a failed single entry, else a poison entry was
+  never parked (found by the tier-2 crash test).
+- API supersets: `waker()` returns `Waker` (`AsyncIterable` + `wait(ms)` + `close()`) and takes
+  `onInternal`; `tail` takes `pollMs`; `InternalKind` adds `reader-failed`; `PayloadError.path`;
+  `parked()` returns `Omit<Entry, 'cursor'>` (a parked entry has no cursor). Subscription `from`
+  defaults to `'now'`; retry defaults `{ 3, 1000, 60 000, 'full' }`.
+- `engineChannel` hashes `schema/kind/name` with `node:crypto`; `tsconfig.build.json` types `node`.
+- Retention runs from readers (once a minute per topic, CAS-gated); unread topics are not trimmed.
+- The process-killing poison test simulates the kill by ending the reader's pool inside the handler
+  (no statement after the crash point, lease left to expire), not a child process.
+- No vendorable events SQL is exported (`MIGRATIONS` is internal); `migrate()` is the path.
+
+**For A5 (mq).** `waker(db, engineChannel(schema, 'q', queue), { pollMs, signal, onInternal })`;
+use `wait(Math.min(pollMs, timerMs))` to race your own timers; the first reason is `'gap'` once
+LISTEN is up. `engineChannelSql(schema, kind, sql\`m.queue\`)` binds the prefix and splices the
+name. `bind`: `events.subscription(def).run({ batch }, …)` with `ctx.commit({ tx })` in the same
+transaction as `sendMany`; a `{ tx }` publish needs `events.start()` first (`NotStartedError`).
+
+**For the integrator.**
+- `bench/events` is a deps-free workspace package; `pnpm install` adds `bench/events: {}` to
+  `pnpm-lock.yaml` (frozen install still passes). Please add it.
+- knip hints: drop events' `ignoreDependencies`.
+- `@pg-prime/testing` bridge bug: a non-owner socket's exempt `Sync`/`Terminate` reassigns
+  `txOwner`, and that socket's close then rolls back the real owner's transaction (seen as tier-1
+  migrations vanishing while earlier tests' pools were still open). Events' tier 1 ends its pools
+  after each test and polls (`poolerMode: 'transaction'`) to stay clear of it.
+- Ratchet: events `unpackedBytes` 136 KB, `installBytes` 153 KB, `events-basic` delta 9 216.
+
+**INDEX lines:**
+- `- docs/packages/pg-prime-events/src/channel.md — typed LISTEN/NOTIFY channels and the engineChannel/engineChannelSql name scheme — read when changing channel encoding, listen errors or engine channel names.`
+- `- docs/packages/pg-prime-events/src/define.md — defineChannel/defineTopic/defineSubscription declarations, defaults and PayloadOf — read when adding a declaration option or changing defaults.`
+- `- docs/packages/pg-prime-events/src/errors.md — EventsLeaseLostError, PayloadError, SchemaVersionError, NotStartedError codes — read when an events error code or message changes.`
+- `- docs/packages/pg-prime-events/src/events.md — pgEvents registries, schema ensure, declaration upserts, start/migrate/close — read when changing start-up, autoMigrate or NotStartedError behaviour.`
+- `- docs/packages/pg-prime-events/src/hooks.md — EventsHooks bus, InternalKind values, hook-failed isolation — read when adding a hook or an onInternal kind.`
+- `- docs/packages/pg-prime-events/src/index.md — @pg-prime/events entry exports and the building blocks mq uses — read when adding or renaming an events export.`
+- `- docs/packages/pg-prime-events/src/log/cursor.md — exact (position + pending) cursor, advance/advanceTo, seeding, correctness argument — read when changing cursor logic or delivery is lost or duplicated.`
+- `- docs/packages/pg-prime-events/src/log/migrations.md — events schema v1: topics, entries, subscriptions, parked — read when changing the events schema or adding a migration.`
+- `- docs/packages/pg-prime-events/src/log/sql.md — every log statement: publish, lease, read, marker, commit, park, retention — read when editing events SQL or a guarded write returns 0 rows.`
+- `- docs/packages/pg-prime-events/src/log/subscription.md — leased reader, retry, isolation, parking, ctx.commit, subscription admin — read when a reader stalls, redelivers, or never parks an entry.`
+- `- docs/packages/pg-prime-events/src/log/topic.md — publish in the caller's transaction, tails, admin browse — read when changing publish or tail behaviour.`
+- `- docs/packages/pg-prime-events/src/payload.md — Standard Schema validation, codec, NUL and size checks — read when a payload is refused or schema validation misbehaves.`
+- `- docs/packages/pg-prime-events/src/util.md — sleep, ASYNC_DISPOSE and backoffMs fixed-vector copy — read when retry delays differ from the family vectors.`
+- `- docs/packages/pg-prime-events/src/waker.md — NOTIFY/gap/poll wake-up loop with pooler fallback — read when wake-ups are late or LISTEN is unavailable.`

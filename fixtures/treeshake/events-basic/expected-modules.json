@@ -1,4 +1,31 @@
 {
-  "_why": "Seeded slot: @pg-prime/events does not export this API yet, so the gate reports it as pending. The workstream that builds it records the real set with `node tools/treeshake-check.mjs --update --case events-basic`.",
-  "modules": null
+  "_why": "design/08 §2.4 step 3 — the exact set of input modules esbuild pulled into this fixture, bundled through the published export map. A diff here on a PR is the signal; `node tools/treeshake-check.mjs --update` re-records it and the diff goes in the review.",
+  "_bundler": "esbuild --bundle --format=esm --minify --platform=node --metafile",
+  "modules": [
+    "events-basic/entry.ts",
+    "node_modules/@pg-prime/events/dist/channel.js",
+    "node_modules/@pg-prime/events/dist/define.js",
+    "node_modules/@pg-prime/events/dist/errors.js",
+    "node_modules/@pg-prime/events/dist/events.js",
+    "node_modules/@pg-prime/events/dist/hooks.js",
+    "node_modules/@pg-prime/events/dist/log/cursor.js",
+    "node_modules/@pg-prime/events/dist/log/migrations.js",
+    "node_modules/@pg-prime/events/dist/log/sql.js",
+    "node_modules/@pg-prime/events/dist/log/subscription.js",
+    "node_modules/@pg-prime/events/dist/log/topic.js",
+    "node_modules/@pg-prime/events/dist/payload.js",
+    "node_modules/@pg-prime/events/dist/util.js",
+    "node_modules/@pg-prime/events/dist/waker.js",
+    "node_modules/pg-prime/dist/codec/array.js",
+    "node_modules/pg-prime/dist/codec/builtins.js",
+    "node_modules/pg-prime/dist/codec/types.js",
+    "node_modules/pg-prime/dist/compile/nodes.js",
+    "node_modules/pg-prime/dist/errors/base.js",
+    "node_modules/pg-prime/dist/errors/classes.js",
+    "node_modules/pg-prime/dist/session/owned-schema.js",
+    "node_modules/pg-prime/dist/session/transaction.js",
+    "node_modules/pg-prime/dist/sql/errors.js",
+    "node_modules/pg-prime/dist/sql/fragment.js",
+    "node_modules/pg-prime/dist/sql/ident.js"
+  ]
 }

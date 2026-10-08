@@ -1,0 +1,183 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`statements > match the golden SQL, labelled events.<op> 1`] = `
+"-- events.publish
+with e as ( insert into "pgprime_events"."entries" (topic, type, key, payload, headers) select $1, r.type, r.key, r.payload, r.headers from rows from (jsonb_to_recordset($2::jsonb) as (type text, key text, payload jsonb, headers jsonb)) with ordinality as r(type, key, payload, headers, n) order by r.n returning id ) select array_agg(id order by id) as ids, (select pg_notify($3, '') where exists (select from e)) is not null as woke from e
+
+-- events.seed
+select pg_snapshot_xmax(s)::text as xmax, array(select pg_snapshot_xip(s))::text[] as xip from pg_current_snapshot() s
+
+-- events.topic
+insert into "pgprime_events"."topics" (name, keep_ms, keep_until_consumed) values ($1, $2::bigint, $3) on conflict (name) do update set keep_ms = excluded.keep_ms, keep_until_consumed = excluded.keep_until_consumed
+
+-- events.subscription
+insert into "pgprime_events"."subscriptions" (topic, name, types, last_xid, last_id, pending, pending_after) values ($1, $2, $3::text[], $4::xid8, $5::bigint, $6::xid8[], $7::bigint[]) on conflict (topic, name) do update set types = excluded.types
+
+-- events.lease
+update "pgprime_events"."subscriptions" set token = gen_random_uuid()::text, lease_until = now() + $1::bigint * interval '1 ms' where topic = $2 and name = $3 and (token is null or lease_until < now()) returning token, last_xid::text as last_xid, last_id, pending::text[] as pending, pending_after, types, head_id, head_size, greatest(0, extract(epoch from head_retry_at - now()) * 1000)::float8 as retry_in
+
+-- events.heartbeat
+update "pgprime_events"."subscriptions" set lease_until = now() + $1::bigint * interval '1 ms' where topic = $2 and name = $3 and token = $4 returning 1
+
+-- events.release
+update "pgprime_events"."subscriptions" set token = null, lease_until = null where topic = $1 and name = $2 and token = $3
+
+-- events.read
+with late as ( select e.* from "pgprime_events"."entries" e join unnest($1::xid8[], $2::bigint[]) as p(xid, after) on e.xid = p.xid and e.id > p.after where e.topic = $3 ), next as ( select * from "pgprime_events"."entries" where topic = $4 and (xid, id) > ($5::xid8, $6::bigint) order by xid, id limit $7::int ), pos as ( select xid, id from next order by xid desc, id desc limit 1 ) select (select xid from pos)::text as pos_xid, (select id from pos) as pos_id, array(select pg_snapshot_xip(pg_current_snapshot()))::text[] as running, x.id, x.xid::text as xid, x.type, x.key, x.payload, x.headers, x.at from (select) m left join (select * from late union all select * from next) x on $8::text[] is null or x.type = any($9::text[]) order by x.xid, x.id
+
+-- events.attempt
+update "pgprime_events"."subscriptions" set head_id = $1::bigint, head_size = $2::int, head_attempts = case when $3::int > 1 then 0 when head_id = $4::bigint and head_size = 1 then head_attempts + 1 else 1 end where topic = $5 and name = $6 and token = $7 returning head_attempts
+
+-- events.commit
+update "pgprime_events"."subscriptions" set last_xid = $1::xid8, last_id = $2::bigint, pending = $3::xid8[], pending_after = $4::bigint[], head_id = null, head_size = 0, head_attempts = 0, head_retry_at = null, updated_at = now() where topic = $5 and name = $6 and token = $7 returning 1
+
+-- events.nack
+update "pgprime_events"."subscriptions" set head_retry_at = now() + $1::float8 * interval '1 ms' where topic = $2 and name = $3 and token = $4 returning 1
+
+-- events.park
+with c as ( update "pgprime_events"."subscriptions" set last_xid = $1::xid8, last_id = $2::bigint, pending = $3::xid8[], pending_after = $4::bigint[], head_id = null, head_size = 0, head_attempts = 0, head_retry_at = null, updated_at = now() where topic = $5 and name = $6 and token = $7 returning topic, name ) insert into "pgprime_events"."parked" (topic, subscription, entry, attempts, error) select topic, name, $8::bigint, $9::int, $10::text from c on conflict (topic, subscription, entry) do update set attempts = excluded.attempts, error = excluded.error, parked_at = clock_timestamp() returning 1
+
+-- events.maintain
+update "pgprime_events"."topics" set maint_at = now() where name = $1 and keep_ms is not null and maint_at < now() - $2::bigint * interval '1 ms' returning keep_ms, keep_until_consumed
+
+-- events.reset
+update "pgprime_events"."subscriptions" set last_xid = $1::xid8, last_id = $2::bigint, pending = $3::xid8[], pending_after = $4::bigint[], head_id = null, head_size = 0, head_attempts = 0, head_retry_at = null, token = null, lease_until = null, updated_at = now() where topic = $5 and name = $6 returning 1
+
+-- events.lag
+select count(e.id)::int as n, min(e.at) as oldest from "pgprime_events"."subscriptions" s join "pgprime_events"."entries" e on e.topic = s.topic and ((e.xid, e.id) > (s.last_xid, s.last_id) or exists (select from unnest(s.pending, s.pending_after) p(xid, after) where p.xid = e.xid and e.id > p.after)) and (s.types is null or e.type = any(s.types)) where s.topic = $1 and s.name = $2
+
+-- events.parked
+select id, xid::text as xid, type, key, payload, headers, at, p.attempts, p.error from "pgprime_events"."parked" p join "pgprime_events"."entries" e on e.id = p.entry where p.topic = $1 and p.subscription = $2 order by p.entry limit $3::int
+
+-- events.discard
+delete from "pgprime_events"."parked" where topic = $1 and subscription = $2 and entry = any($3::bigint[]) returning 1
+
+-- events.remove
+delete from "pgprime_events"."subscriptions" where topic = $1 and name = $2
+
+-- events.browse
+select id, xid::text as xid, type, key, payload, headers, at from "pgprime_events"."entries" where topic = $1 and id > $2::bigint order by id limit $3::int"
+`;
+
+exports[`statements > match the golden SQL, labelled events.<op> 2`] = `
+[
+  [
+    "orders",
+    "[{"type":"t","key":null,"headers":{"h":"1"},"payload":{"a":1}}]",
+    "ev_x",
+  ],
+  [],
+  [
+    "orders",
+    "1000",
+    "t",
+  ],
+  [
+    "orders",
+    "billing",
+    "{t}",
+    "100",
+    "0",
+    "{90,95}",
+    "{0,0}",
+  ],
+  [
+    "30000",
+    "orders",
+    "billing",
+  ],
+  [
+    "30000",
+    "orders",
+    "billing",
+    "tok",
+  ],
+  [
+    "orders",
+    "billing",
+    "tok",
+  ],
+  [
+    "{90,95}",
+    "{0,0}",
+    "orders",
+    "orders",
+    "100",
+    "0",
+    "100",
+    null,
+    null,
+  ],
+  [
+    "5",
+    "3",
+    "3",
+    "5",
+    "orders",
+    "billing",
+    "tok",
+  ],
+  [
+    "100",
+    "0",
+    "{90,95}",
+    "{0,0}",
+    "orders",
+    "billing",
+    "tok",
+  ],
+  [
+    "250",
+    "orders",
+    "billing",
+    "tok",
+  ],
+  [
+    "100",
+    "0",
+    "{90,95}",
+    "{0,0}",
+    "orders",
+    "billing",
+    "tok",
+    "5",
+    "3",
+    "boom",
+  ],
+  [
+    "orders",
+    "60000",
+  ],
+  [
+    "100",
+    "0",
+    "{90,95}",
+    "{0,0}",
+    "orders",
+    "billing",
+  ],
+  [
+    "orders",
+    "billing",
+  ],
+  [
+    "orders",
+    "billing",
+    "10",
+  ],
+  [
+    "orders",
+    "billing",
+    "{5}",
+  ],
+  [
+    "orders",
+    "billing",
+  ],
+  [
+    "orders",
+    "0",
+    "10",
+  ],
+]
+`;
