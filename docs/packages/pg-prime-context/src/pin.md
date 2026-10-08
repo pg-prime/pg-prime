@@ -2,15 +2,15 @@
 
 ## Purpose
 The two statements of a pinned savepoint: capture the session's settings before it, restore them
-before `RELEASE`.
+before `RELEASE`. A `propagation: 'savepoint'` with settings uses them for its own keys only.
 
 ## Public API
-- Internal: `capture(tx, keys)` (`packages/pg-prime-context/src/pin.ts:6`), `restore(tx, before,
-  keys)` (`:14`).
+- Internal: `capture(tx, keys, builtins = true)` (`packages/pg-prime-context/src/pin.ts:6`),
+  `restore(tx, before, keys)` (`:14`).
 
 ## Flow
 1. `capture`: one `select jsonb_object_agg(name, current_setting(name, true))` over
-   `pg_settings where context = 'user'` ∪ the host's keys (a JSON array bind).
+   `pg_settings where context = 'user'` (unless `builtins` is false) ∪ `keys` (a JSON array bind).
 2. `restore`: keys learned since the capture are added as `null`; one statement runs
    `set_config(key, coalesce(value, ''), true)` for each entry whose `current_setting` differs.
 

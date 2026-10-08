@@ -30,6 +30,8 @@ interface Store {
   readonly tx?: Tx
   /** Under a pin: the request savepoint that stands in for the pool. */
   readonly base?: Tx
+  /** The options `tx` was opened with: under a pin it reports the pin's, and `Tx` has no deferrable. */
+  readonly mode?: TxOptions
   readonly settings: Record<string, Setting>
 }
 
@@ -53,8 +55,8 @@ export class TransactionHost<Sc extends AnySchema = AnySchema> {
   readonly #storage: AsyncStorage<Store>
   readonly #strict: boolean
   readonly #propagation: Propagation
-  /** Transactions with a host savepoint in flight: their names are depth-derived per connection. */
-  readonly #busy = new WeakSet<Tx>()
+  /** The last host savepoint queued on a transaction: their names are depth-derived per connection. */
+  readonly #busy = new WeakMap<Tx, Promise<void>>()
   /** Every setting name the host has applied, so a pinned savepoint can restore it. */
   readonly #keys = new Set<string>()
   #pin: Tx | undefined
@@ -152,7 +154,7 @@ export class TransactionHost<Sc extends AnySchema = AnySchema> {
     const s = this.#storage.getStore()
     const settings = s?.settings ?? {}
     if (hasKeys(settings)) await tx.setLocal(settings)
-    return this.#storage.run({ ...s, settings, tx: tx as Tx }, fn)
+    return this.#storage.run({ settings, tx: tx as Tx }, fn)
   }
 
   async transaction<T>(
@@ -171,14 +173,16 @@ export class TransactionHost<Sc extends AnySchema = AnySchema> {
           'a join cannot set timeoutMs, lockTimeoutMs or localSettings; use propagation savepoint or new.',
         )
       }
-      if (
-        (o.isolation ?? outer.isolation) !== outer.isolation ||
-        (o.accessMode ?? outer.accessMode) !== outer.accessMode
-      ) {
-        fail(
-          'CONTEXT_OPTIONS',
-          `cannot join a ${outer.isolation}, ${outer.accessMode} transaction with ${o.isolation ?? outer.isolation}, ${o.accessMode ?? outer.accessMode}.`,
-        )
+      const m = s!.mode
+      const has = [
+        m?.isolation ?? outer.isolation,
+        m?.accessMode ?? outer.accessMode,
+        !!m?.deferrable,
+      ]
+      const want = [o.isolation ?? has[0], o.accessMode ?? has[1], o.deferrable ?? has[2]]
+      if (want.some((v, i) => v !== has[i])) {
+        const show = (x: unknown[]) => `${x[0]}, ${x[1]}${x[2] ? ', deferrable' : ''}`
+        fail('CONTEXT_OPTIONS', `cannot join a ${show(has)} transaction with ${show(want)}.`)
       }
       return run(outer)
     }
@@ -189,16 +193,33 @@ export class TransactionHost<Sc extends AnySchema = AnySchema> {
           'a savepoint cannot set isolation, accessMode, deferrable or retry.',
         )
       }
-      return this.#nest(outer, () =>
-        outer.savepoint((sp) => this.#enter(s, sp, run), o),
-      ) as Promise<NoHandleEscape<T>>
+      const keys = Object.keys(o.localSettings ?? {})
+      if (o.timeoutMs !== undefined) keys.push('statement_timeout')
+      if (o.lockTimeoutMs !== undefined) keys.push('lock_timeout')
+      return this.#nest(outer, async () => {
+        // RELEASE keeps SET LOCAL values, so put back what this savepoint set.
+        const before = keys.length > 0 ? await capture(outer, keys, false) : undefined
+        return outer.savepoint(async (sp) => {
+          const v = await this.#enter(s, sp, run)
+          if (before) await restore(sp, before, keys)
+          return v
+        }, o)
+      }) as Promise<NoHandleEscape<T>>
     }
     if (this.#pin) return this.#pinned(outer ?? s?.base ?? this.#pin, s, run, o)
     const settings = s?.settings ?? {}
-    return this.root.transaction((tx) => this.#enter(s, tx, run, settings), {
-      ...o,
-      localSettings: { ...settings, ...o.localSettings },
-    } as TxOptions) as Promise<NoHandleEscape<T>>
+    const sent = { ...settings }
+    return this.root.transaction(
+      (tx) => {
+        // A retry starts from the settings it re-sends; the failed attempt's setLocal rolled back.
+        if (tx.attempt > 1) {
+          for (const k in settings) delete settings[k]
+          Object.assign(settings, sent)
+        }
+        return this.#enter(s, tx, run, { settings, mode: o })
+      },
+      { ...o, localSettings: { ...sent, ...o.localSettings } } as TxOptions,
+    ) as Promise<NoHandleEscape<T>>
   }
 
   #learn(settings: Settings | undefined): Settings {
@@ -206,24 +227,28 @@ export class TransactionHost<Sc extends AnySchema = AnySchema> {
     return settings ?? NONE
   }
 
-  #enter<T>(s: Store | undefined, tx: Tx, fn: Fn<T>, settings = s?.settings ?? {}): Promise<T> {
-    return this.#storage.run({ ...s, settings, tx }, () => fn(tx))
+  #enter<T>(s: Store | undefined, tx: Tx, fn: Fn<T>, store: Partial<Store> = {}): Promise<T> {
+    return this.#storage.run({ ...s, settings: s?.settings ?? {}, ...store, tx }, () => fn(tx))
   }
 
-  async #nest<T>(on: Tx, open: () => Promise<T>): Promise<T> {
-    if (this.#busy.has(on)) {
+  /** One host savepoint on `on` at a time: a pinned one waits its turn, any other is refused. */
+  async #nest<T>(on: Tx, open: () => Promise<T>, wait = false): Promise<T> {
+    const prev = this.#busy.get(on)
+    if (prev && !wait) {
       fail(
         'CONTEXT_CONCURRENT_SAVEPOINT',
-        on === this.#pin
-          ? 'the pinned test transaction is already running a request; await it first.'
-          : 'another host savepoint is in flight on this transaction; await it first.',
+        'another host savepoint is in flight on this transaction; await it first.',
       )
     }
-    this.#busy.add(on)
+    let done!: () => void
+    const mine = new Promise<void>((r) => (done = r))
+    this.#busy.set(on, mine)
     try {
+      await prev
       return await open()
     } finally {
-      this.#busy.delete(on)
+      if (this.#busy.get(on) === mine) this.#busy.delete(on)
+      done()
     }
   }
 
@@ -236,8 +261,9 @@ export class TransactionHost<Sc extends AnySchema = AnySchema> {
       return base.savepoint(
         async (r) => {
           if (readOnly) await r.setLocal('transaction_read_only', 'on')
-          const store = asBase ? { ...s, settings, base: r } : { ...s, settings, tx: r }
-          const v = await this.#storage.run(store, () => fn(r))
+          const v = await (asBase
+            ? this.#storage.run({ ...s, settings, base: r }, () => fn(r))
+            : this.#enter(s, r, fn, { mode: o }))
           if (readOnly) return r.rollbackWith(v)
           await restore(r, before, this.#keys)
           return v
@@ -248,6 +274,6 @@ export class TransactionHost<Sc extends AnySchema = AnySchema> {
         },
       ) as Promise<T>
     }
-    return inTransactionFrame(this.#pin!, () => this.#nest(base, open))
+    return inTransactionFrame(this.#pin!, () => this.#nest(base, open, true))
   }
 }

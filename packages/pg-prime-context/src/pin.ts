@@ -3,9 +3,9 @@ import type { Tx } from 'pg-prime'
 type Snapshot = Record<string, string | null>
 
 /** User-settable built-ins plus the host's keys: placeholders never appear in `pg_settings`. */
-export async function capture(tx: Tx, keys: Iterable<string>): Promise<Snapshot> {
+export async function capture(tx: Tx, keys: Iterable<string>, builtins = true): Promise<Snapshot> {
   const row = await tx.sql`select jsonb_object_agg(name, current_setting(name, true))::text as s
-    from (select name from pg_settings where context = 'user'
+    from (select name from pg_settings where ${builtins} and context = 'user'
           union select jsonb_array_elements_text(${JSON.stringify([...keys])}::jsonb)) n`.executeTakeFirst()
   return JSON.parse(row!['s'] as string) as Snapshot
 }
