@@ -28,5 +28,7 @@ mq.queues.emails.work(async (m) => sendEmail(m.payload.to), { concurrency: 10 })
 - **One dependency.** `@pg-prime/events` provides wake-ups and bindings; `pg-prime` is the peer.
 - **PostgreSQL 15–18**, PgBouncer transaction mode (by polling), Node and Bun.
 
-Docs: [guide](https://pg-prime.dev/guides/queues/), [concepts](https://pg-prime.dev/concepts/work-queues/),
-[operations](https://pg-prime.dev/operations/queues/), [reference](https://pg-prime.dev/reference/mq/).
+Docs: [guide](https://pg-prime.github.io/pg-prime/guides/queues/) ·
+[concepts](https://pg-prime.github.io/pg-prime/concepts/work-queues/) ·
+[operations](https://pg-prime.github.io/pg-prime/operations/queues/) ·
+[reference](https://pg-prime.github.io/pg-prime/reference/mq/).
