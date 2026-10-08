@@ -26,7 +26,7 @@ by mode, a request transaction.
   response: streaming/SSE routes need `'never'`.
 - `@RequestTransaction` is ignored while `request` is unset, pinned or not.
 - Under a pin a streaming route holds the request savepoint until the stream ends or the client
-  hangs up; a request in the meantime gets `CONTEXT_CONCURRENT_SAVEPOINT`.
+  hangs up; a request in the meantime waits for it.
 - GraphQL `@ResolveField` resolvers run outside the parent's scope unless
   `fieldResolverEnhancers: ['interceptors']`, which gives each field its own scope and transaction.
 - Guards run before the interceptor, on the root.

@@ -357,9 +357,9 @@ afterAll(() => app.close())
 
 - Requests are isolated from each other's settings, and a failed request rolls back only itself, so
   a 409 does not break the next one.
-- One request at a time: a second concurrent request throws `CONTEXT_CONCURRENT_SAVEPOINT`. Test
-  real concurrency without a pin. A streaming route keeps streaming and holds its savepoint until
-  the stream ends or the client hangs up.
+- One request at a time: concurrent requests queue and run in call order. Test real concurrency
+  without a pin. A streaming route keeps streaming and holds the queue until the stream ends or the
+  client hangs up.
 - Code that needs a real `COMMIT` (`NOTIFY`, deferred constraints, a second connection) needs a
   scratch database. The [pin's caveats](/pg-prime/guides/ambient-transactions/#rollback-per-test)
   apply unchanged.

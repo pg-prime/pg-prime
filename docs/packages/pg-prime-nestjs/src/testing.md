@@ -14,8 +14,9 @@ The `@pg-prime/nestjs/testing` entry: `rollbackScopeFor(app)`, rollback-per-test
    `@RequestTransaction` says).
 
 ## Gotchas
-- One request at a time under a pin (`CONTEXT_CONCURRENT_SAVEPOINT`); test concurrency unpinned.
-  A streaming route counts until its stream ends or the client hangs up.
+- One request at a time under a pin: concurrent requests queue in call order; test real
+  concurrency unpinned. A streaming route holds the queue until its stream ends or the client hangs
+  up.
 - The pin's caveats (raw `set_config` keys, test-body statements on the pin) are context's; see
   `docs/packages/pg-prime-context/src/testing.md`.
 

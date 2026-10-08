@@ -269,9 +269,7 @@ describe('rollbackScopeFor', () => {
 
   it("a 'never' route streams, and hanging up ends its request", async () => {
     expect(await events(s, '/notes/live', 3)).toEqual(STREAM)
-    await vi.waitFor(async () =>
-      expect(await s.call('/notes/a', 't1', 'POST')).toEqual({ status: 201, body: ['a'] }),
-    )
+    expect(await s.call('/notes/a', 't1', 'POST')).toEqual({ status: 201, body: ['a'] })
   }, 5000)
 
   it('a second app in the process keeps its own, unpinned host', async () => {
