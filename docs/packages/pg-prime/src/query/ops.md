@@ -27,7 +27,7 @@ All return `Expr<boolean, 'bool'>` unless noted; right operands are values (boun
 - `regex`, `iregex`, `notRegex`, `notIRegex`, `similarTo(a, p)` — `p` bound as `text`.
 - `concat(a, b)` — `a || b`, `Expr<string | null-of-a, 'text'>`.
 - `similarity(a, b)`, `wordSimilarity(needle, haystack)` — pg_trgm, `Expr<number | null-of-operands, 'float4'>`;
-  `trgmSimilar(a, b)` — `a % b`, `Expr<boolean | null-of-operands, 'bool'>`. Strings bound as `text`.
+  `trgmSimilar(a, b)` — `a % b`, `Expr<boolean, 'bool'>` like every predicate. Strings bound as `text`.
 - `tupleGt`, `tupleLt`, `tupleGte`, `tupleLte(cols, vals)` — `row(a, b) > row($1, $2)`; `vals` is a
   tuple of the same length, each bound with its column's codec.
 - `overlaps`, `arrayContains`, `arrayContainedBy`, `hasAll(a, b)` — `&&`, `@>`, `<@`, `@>` on `ArrayOperand<E>`.
@@ -84,8 +84,7 @@ All return `Expr<boolean, 'bool'>` unless noted; right operands are values (boun
   (`packages/pg-prime/src/query/ops.ts:322`).
 - `rangeUnion` raises SQLSTATE `22000` server-side when the union is not contiguous.
 - `RANGE_ELEMENT` falls back to `unknownCodec` for an unrecognised range codec (`packages/pg-prime/src/query/ops.ts:862`).
-- `trgmSimilar` on a nullable operand is `Expr<boolean | null>`, which `.where()` refuses without
-  `isTrue(…)`; the pg_trgm functions bind strings as `text` even for `citext` (`packages/pg-prime/src/query/ops.ts:476`).
+- The pg_trgm functions bind strings as `text` even for `citext` (`packages/pg-prime/src/query/ops.ts:476`).
 - `jsonbSet` turns a JS `null` value into `$n::jsonb` with `'null'`, since an SQL NULL argument nulls
   the whole result (`packages/pg-prime/src/query/ops.ts:647`); its `unknown` result needs a cast to write back into a `$type<T>()` column.
 - `tsHeadline` options are one `text` bind: fixed key order, integers enforced (`BuilderError`),

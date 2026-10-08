@@ -771,9 +771,8 @@ has no `citext ~ citext`, only `text ~ text`, so those pass `text` explicitly.
 | <a id="concat"/> `concat` | `a \|\| b` | `NULL \|\| 'x'` is NULL, so the operand's nullability survives into the result type. |
 
 The three trigram functions need the `pg_trgm` extension (`create extension pg_trgm`). It declares
-`text` signatures only, so a string argument is bound as `text`. A nullable operand makes the result
-nullable — `trgmSimilar(u.note, 'x')` is `Expr<boolean | null>`, which `.where()` takes through
-`isTrue(…)`.
+`text` signatures only, so a string argument is bound as `text`. A nullable operand makes
+`similarity` and `wordSimilarity` nullable; `trgmSimilar` is a predicate like `like`, typed `boolean`.
 
 | Function | SQL | Notes |
 |---|---|---|

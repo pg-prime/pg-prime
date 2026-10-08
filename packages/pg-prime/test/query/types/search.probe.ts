@@ -7,7 +7,6 @@ import { expectTypeOf } from 'expect-type'
 import { jsonbCodec, tsqueryCodec, tsvectorCodec } from '../../../src/codec/index.js'
 import type { Executor, Expr, RowOf } from '../../../src/query/types.js'
 import {
-  isTrue,
   jsonbSet,
   similarity,
   sql,
@@ -56,10 +55,7 @@ const trgm = db.from(h.blocks, 'b').select((t) => ({
 }))
 expectTypeOf<RowOf<typeof trgm>>().toEqualTypeOf<{ s: number; n: number | null; w: number }>()
 db.from(h.blocks, 'b').where((t) => trgmSimilar(t.b.text, 'helo'))
-// A nullable operand makes `%` nullable, so it needs `isTrue` to be a WHERE predicate.
-db.from(h.blocks, 'b').where((t) => isTrue(trgmSimilar(t.b.note, 'helo')))
-// @ts-expect-error `note % …` is `boolean | null`
-db.from(h.blocks, 'b').where((t) => trgmSimilar(t.b.note, 'helo'))
+db.from(h.blocks, 'b').where((t) => trgmSimilar(t.b.note, t.b.text))
 // @ts-expect-error pg_trgm takes text, not an integer column
 db.from(h.blocks, 'b').select((t) => ({ s: similarity(t.b.rev, 'x') }))
 // @ts-expect-error same for `%`

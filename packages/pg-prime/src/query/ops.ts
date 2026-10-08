@@ -499,14 +499,8 @@ export function wordSimilarity<A extends TrgmArg, B extends TrgmArg>(
   ) as unknown as Expr<number | NullOf<A> | NullOf<B>, 'float4'>
 }
 /** `a % b` — similarity above `pg_trgm.similarity_threshold`; index-backed by `gin_trgm_ops`. */
-export function trgmSimilar<A extends TextOperand, B extends TrgmArg>(
-  a: A,
-  b: B,
-): Expr<boolean | NullOf<A> | NullOf<B>, 'bool'> {
-  return pred('%', a, nonNull(b, 'trgmSimilar'), textCodec) as unknown as Expr<
-    boolean | NullOf<A> | NullOf<B>,
-    'bool'
-  >
+export function trgmSimilar(a: TextOperand, b: TrgmArg): Expr<boolean, 'bool'> {
+  return pred('%', a, nonNull(b, 'trgmSimilar'), textCodec) as unknown as Expr<boolean, 'bool'>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
