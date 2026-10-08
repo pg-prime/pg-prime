@@ -19,7 +19,7 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime-cron/src/sql/maintenance.md — lease expiry, counter reconcile, retention, maintenance gate — read when running counters drift or history grows.
 - docs/packages/pg-prime-cron/src/sql/runs.md — heartbeat, F1 finish, X1 cancel statements — read when finishing or cancelling a run misbehaves.
 - docs/packages/pg-prime-cron/src/sql/schedules.md — schedule upsert/sync, admin statements, row decoders — read when sync or admin calls write the wrong row.
-- docs/packages/pg-prime-cron/src/target/queue.md — queue-target seam for the mq target (C4) — read when implementing or calling the cron queue target.
+- docs/packages/pg-prime-cron/src/target/queue.md — mq queue target: claim and send in one transaction, overlap → dedup keys, manual trigger — read when a queue-target tick sends twice, never, or under the wrong key.
 - docs/packages/pg-prime-cron/src/ticks.md — next-tick module: croner patterns, every grid, at, DST — read when a pattern, time zone or DST tick is wrong.
 - docs/packages/pg-prime-cron/src/wake.md — LISTEN-or-poll sleep for the cron loop — read when cron reacts slowly to triggers or behind PgBouncer.
 - docs/packages/pg-prime-events/src/channel.md — typed LISTEN/NOTIFY channels and the engineChannel/engineChannelSql name scheme — read when changing channel encoding, listen errors or engine channel names.
