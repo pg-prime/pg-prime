@@ -635,3 +635,52 @@ test "a queue target is a seam until the mq target lands" in `test/live/cron.tes
 
 **Integrator also:** knip's `ignoreDependencies` for cron (`croner`, `pg-prime`, `@pg-prime/testing`)
 can be dropped; the cron tier-2 test bundles a child process with the root `esbuild`.
+
+#### C4 — RESULT (2026-10-09)
+
+Branch `worktree-agent-a55448851fe0ded55`, from `ba9ec1e`. Commits: `3072ffb` queue target, tests,
+guide and module docs, plus this RESULT.
+
+**As built.** `src/target/queue.ts` replaces the seam. `startQueues` awaits
+`enqueuer.queue(def).start?.()` per declared queue target. `queueTick` runs K1 with
+`decided: plan.decided ?? 'enqueued'` and, for an `enqueued` claim, `send(storedPayload, { tx, key })`
+in the same `db.transaction`; a third statement records `message_id` and `finished_at`, and a
+deduplicated send turns the run `skipped` (holder's id recorded). `queueTrigger` inserts a manual
+`enqueued` run (caller's payload, else the stored one) and sends in one transaction; never `pending`.
+Keys: `overlap: 'skip'` → `cron:<name>` + `dedup: 'until-done'`; `'allow'` → `cron:<name>:<tick ms>`
+or `cron:<name>:manual:<run id>`. Only `CronEnqueuer` is used; `dist` names no `@pg-prime/mq`.
+
+**Gates.** All green on PG 17.11:
+- cron: unit 60 (adds the `pgMq` ⇒ `CronEnqueuer` type test); live 83 (5 queue-target tests on
+  PGlite: `start()` starts a bare `pgMq`, one message per tick, `skip` dedup until mq completes,
+  misfire `skip` sends nothing, manual trigger sends once with no `pending` run, C-D9 refusals);
+  pg 92 on the shared PG 17, 101 with PgBouncer. Tier 2 "one message per tick": 3 instances,
+  12 s, ~30 % of transactions throw after mq's insert (a crash before COMMIT); oracle: no tick gaps,
+  every run `enqueued`, messages = runs one-to-one with key `cron:q:<tick>`. Sending outside the
+  transaction fails it. Bun 1.4.2: unit 60, pg 9.
+- Full chain, test:pg on a temporary `postgres:17` + `edoburu/pgbouncer` (transaction mode), kit's
+  pg_dump through `docker exec`: unit (pg-prime 1 122, create 35, testing 23, outbox 51, events 33,
+  mq 17, cron 60); live (pg-prime 1 949 +12 skipped, testing 28, events 49, outbox 68, mq 75,
+  cron 83); pg (pg-prime 2 031 +29 skipped, create 42, testing 36, kit 461, events 59, outbox 77,
+  mq 95, cron 101); package:check ok, cron pack smoke installs without mq; docs:check 122 examples,
+  coverage 100 %; docs:examples:pg 10; bench:types, bench:compile.
+
+**Measured.** cron unpacked 145.6 KB in 71 files (tarball 35.6 KB); install footprint 313.0 KB of
+350 KB; `cron-define` 18 186 B delta (20 480), 27 modules, golden unchanged.
+
+**Deviations and plan corrections.**
+- A manual queue-target trigger follows overlap like a handler trigger: under `skip` it uses the
+  held `cron:<name>` key and returns `skipped` while a message is unfinished (§3.5 fixed).
+- An `enqueued`/`skipped` queue run gets `finished_at`; `started_at` stays null.
+- The seam test in `test/live/cron.test.ts` was removed (its C-D9 refusals moved to
+  `queue-target.test.ts`) and the describe renamed `isolation`; `docs/packages/pg-prime-cron/src/cron.md`
+  lost its two "seam" mentions.
+
+**For the integrator — mq defect.** `send(null)` (or `undefined`) fails with a not-null violation
+on `messages.payload`: `toJson` yields `'null'`, and `jsonb_to_recordset` turns a JSON `null` into
+SQL NULL. A queue-target schedule without a payload therefore fails every tick (`loop-failed`).
+Fix in mq (e.g. `coalesce(s.payload, 'null'::jsonb)` in S1); the cron tests give every schedule a
+payload until then, and `target/queue.md` Gotchas records it.
+
+**INDEX line (replace A4's):**
+- `- docs/packages/pg-prime-cron/src/target/queue.md — mq queue target: claim and send in one transaction, overlap → dedup keys, manual trigger — read when a queue-target tick sends twice, never, or under the wrong key.`
