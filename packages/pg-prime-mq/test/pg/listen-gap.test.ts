@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { engineChannel } from '@pg-prime/events'
 import { requiresConcurrency } from '@pg-prime/testing'
+import { sql } from 'pg-prime'
 import { defineQueue, pgMq } from '../../src/index.js'
 import { freshSchema, p95, sleep, until, useServer } from '../_db.js'
 
@@ -36,17 +37,22 @@ describe('wake-ups', () => {
     const def = defineQueue<P>('gap')
     const db = server.db(3, quiet)
     const seen: number[] = []
+    // Every other way to wake up is a minute away.
+    const slow = { pollMs: 60_000, expireScanMs: 60_000, maintenanceMs: 60_000 }
     const w = pgMq({ db, schema })
       .queue(def)
-      .work(async (m) => void seen.push(m.payload.n), { pollMs: 60_000 })
+      .work(async (m) => void seen.push(m.payload.n), slow)
     const admin = server.db(1, quiet)
-    const listen = `listen "${engineChannel(schema, 'q', 'gap')}"`
-    const kill = () =>
-      admin.sql`select pg_terminate_backend(pid) as ok from pg_stat_activity
-        where datname = current_database() and query = ${listen}`.execute()
-    await until(async () => (await kill()).length === 1)
+    const listener = sql`from pg_stat_activity where datname = current_database()
+      and query = ${`listen "${engineChannel(schema, 'q', 'gap')}"`}`
+    await until(async () => (await admin.sql`select pid ${listener}`.execute()).length === 1)
+    await sleep(300)
+    // No wake-up NOTIFY: the message stays unseen until the gap.
+    await pgMq({ db: admin, schema, notify: false }).queue(def).send({ n: 1, at: 0 })
+    await sleep(500)
+    expect(seen).toStrictEqual([])
     const at = Date.now()
-    await pgMq({ db: admin, schema }).queue(def).send({ n: 1, at })
+    await admin.sql`select pg_terminate_backend(pid) ${listener}`.execute()
     await until(() => seen.length === 1, 30_000)
     await w.close()
     expect(Date.now() - at).toBeLessThan(30_000)
