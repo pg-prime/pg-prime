@@ -855,3 +855,68 @@ first step is verifying M-Q4 on PG 15–18; the full chain.
   package's barrel by mistake.
 - Apply INDEX lines and ratchet `tools/budgets.json` from the RESULT numbers.
 - Re-run the full chain on the merged tree; then push and watch CI and the nightly.
+
+#### A1 — RESULT (2026-10-08)
+
+Branch `worktree-agent-ab93be06a181d48f6`, from `4fcd413`. Commits: `6a7ed8e` S0 core, `ab7b6b4`
+package slots, `a7447bf` tooling, `ac516ec` CI, `451efc4` docs shell.
+
+**S0 as built.**
+- `migrateOwnedSchema(db, { schema, migrations, apply? })` → `{ from, to }`. A migration is
+  `{ version, name, minClient?, up(quotedSchema) => string[] }`: one statement per element, because
+  pg-prime runs extended protocol. Each missing version runs in its own transaction under
+  `tx.advisoryLock('pgprime-owned:' + schema)`. A checksum mismatch or a ledger `min_client` above
+  the client's latest version throws `ConfigError`; packages wrap it in their `SchemaVersionError`.
+  `apply: false` only reads and checks (`to === from`), which is what `autoMigrate: false` needs.
+  The checksum is the 64-bit FNV-1a (`advisoryKey`) of the rendered statements.
+- `ownedSchemaSql({ schema, migrations })` → `{ version, name, sql }[]`: lock, bootstrap, DDL and an
+  `on conflict do nothing` ledger row. It converges with the runtime path when vendored first.
+- ListenHub: one `{ handler, emitter }` per subscription. `gap`, `reconnect` and `error` fan out,
+  a throwing handler reports to its own subscription, and close removes only its own entry.
+- `fixtures/backoff/vectors.json`: 15 vectors `{ policy, attempt, random, delayMs }`, exact, checked
+  against core's `retryDelayMs`.
+
+**Gates.** All green on PG 17.11:
+- `vitest run test/session`: 180 tests.
+- tier 2 listen + owned-schema: 9 tests, on Node and on Bun 1.4.2.
+- full chain, with test:pg on a temporary `postgres:17-alpine` plus `edoburu/pgbouncer` in
+  transaction mode, so the PgBouncer tests ran:
+  - unit: pg-prime 1 122, create 35, testing 23, 4 × 1 slot;
+  - live: pg-prime 1 943 (+18 skipped), testing 28;
+  - pg: pg-prime 2 031 (+29 skipped), kit 461, create 42, testing 36, 4 × 1;
+  - package:check 27/27 size gates; tree-shake: 4 core ok, 4 add-ons pending; pack smoke ok;
+    create smoke ok;
+  - bench:types, bench:compile;
+  - docs:check: 633 blocks, 103 examples; docs:examples:pg: 10.
+
+**Re-baselined** (core grew, ceil-to-1 KB): pg-prime jsBytes 993 280 → 997 376; treeshake
+`root-import-all` 87 040 → 88 064, golden +`session/owned-schema.js`; bench/types packageDtsBytes
+612 352 → 613 376.
+
+**Empty-slot measurements:**
+- unpacked: 3.7–3.9 KB;
+- install footprint (pnpm pack adds the 16 KB LICENSE): events 20.1 KB, outbox 20.1 KB, mq 40.3 KB
+  (events included), cron 171.3 KB (croner included).
+
+**Deviations and decisions:**
+- The tree-shake delta is the fixture bundled with `pg-prime` external.
+- A golden of `{ "modules": null }` reports "pending" while the entry fails to bundle. Once the
+  entry bundles, the golden must be recorded.
+- Add-on pack-smoke projects install with `--legacy-peer-deps`: the peer `>=0.2.0` is not met by
+  the in-tree 0.1.0, and size-budget asserts peers instead. `changeset status` logs "must depend on
+  the current version" for those peers and exits 0 (RELEASING notes it).
+- `fast-check` added to events' devDependencies for E1's property test.
+- `@pg-prime/{events,outbox,mq,cron}` added to `docs/package.json` devDependencies.
+- knip `ignoreDependencies` lists each slot's dependencies until code uses them. The integrator
+  drops them.
+
+**INDEX lines (integrator):**
+- `- docs/packages/pg-prime/src/session/owned-schema.md — versioned DDL for an add-on's own schema: migrateOwnedSchema (advisory-locked ledger, checksum, min_client) and vendorable ownedSchemaSql — read when changing add-on migrations or the ledger rules.`
+- Replace the listen line with: `- docs/packages/pg-prime/src/session/listen.md — dedicated LISTEN connection hub, one emitter per subscription, reconnect with gap event, NOTIFY limit — read when changing db.listen, reconnect behaviour or payload checks.`
+
+**For A2–A4:**
+- Your pack-smoke consumer body is `packages/pg-prime-<p>/test/pack-smoke.ts`.
+- To record a golden, run `node tools/treeshake-check.mjs --update --case <fixture>` and commit
+  only that golden.
+- `installBytes` and the tree-shake `{ delta }` are in `tools/budgets.json`.
+- Tests go in `test/{unit,live,pg}`. `passWithNoTests` is on.
