@@ -249,7 +249,8 @@ test-body code.
   mode opens a request tx, `R` is the ALS `tx` (joins and strict behave as in production);
   otherwise `R` is only the `base` (strict still fires, `@Transactional` nests a savepoint on `R`,
   tx-less `host.db` runs on `R`). A failed request rolls back only `R`; core's savepoint runner
-  catches `rollbackWith`.
+  catches `rollbackWith`. A streaming request holds `R` until its stream ends or its client hangs
+  up.
 - **Protocol** of a pinned savepoint (`host.transaction` without ALS tx, or `R`):
   1. run inside `inTransactionFrame(pin.tx, …)` (core, §8.1), so a captured root `Db` throws
      `HandleMisuseError` as in an unpinned dev run instead of committing for real or hanging on the
@@ -388,7 +389,7 @@ Per `forRoot` call, keyed by `name` (default `'default'`):
 | `getDbToken(name)` | `useFactory: o => o.db ?? pgPrime(o.config)` | `ConfigError` if both or neither. Lazy: no socket until the first query |
 | `getHostToken(name)` | `useFactory: db => new TransactionHost(db, { propagation, strict })` + `register(name, host)` | the default name provides the `TransactionHost` class, so `constructor(host: TransactionHost)` resolves through `emitDecoratorMetadata` |
 | `LIFECYCLE(name)` | factory returning `{ onApplicationShutdown }` | `end !== false` → `db.end()`; unregisters the host |
-| `APP_INTERCEPTOR` | factory over options + host + `Reflector` | when `request` is unset, returns `next.handle()` untouched (zero per-request cost), except under a pin, where it still opens `R` (§3.7) |
+| `APP_INTERCEPTOR` | factory over options + host + `Reflector` | when `request` is unset, returns `next.handle()` untouched (zero per-request cost), except under a pin, where it still opens `R`, as the base only (§3.7) |
 
 - `global: true`; exports the db and host tokens. **Shutdown order:** `provideAddOn` handles close
   in `beforeApplicationShutdown`, the db ends in `onApplicationShutdown` (Nest runs it after every
@@ -886,8 +887,12 @@ docs and goldens; then this RESULT.
   two apps registers two hosts.
 - `RequestOptions` is exported (the `request` option's type). `rollbackScopeFor` also re-exports
   `RollbackScope`. `forRoot`/`forRootAsync` are generic over the schema.
-- Without a request transaction (and no pin) the handler's observable is subscribed inside
-  `host.run`, so streaming routes keep streaming; with one it goes through `host.request` (C1).
+- Without a request transaction the handler's observable is subscribed inside
+  `host.request({ settings })`, which settles when the stream completes, errors or is
+  unsubscribed: streaming routes keep streaming, pinned or not. With one it is collapsed by
+  `lastValueFrom` (C1).
+- Without `request`, a pinned request ignores `@RequestTransaction` as production does: `R` is
+  only the base.
 - RPC is covered by a unit test on a hand-built `rpc` `ExecutionContext`: `@nestjs/microservices`
   is not a dev dependency.
 - Reference signature blocks name Nest types through block-local aliases

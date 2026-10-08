@@ -288,12 +288,14 @@ describe('request interceptor', () => {
     expect(pool.texts).toEqual(['begin', 'select set_config($1,$2,true)', 'commit'])
   })
 
-  it('precedence: handler > class > global predicate > default', async () => {
-    const { run } = setup({ transaction: async (ctx) => ctx.getHandler().name === 'plain' })
-    expect((await run(Routes, 'plain')).tx).toBe(true)
-    expect((await run(Routes, 'never')).tx).toBe(false)
-    expect((await run(AlwaysRoutes, 'plain')).tx).toBe(true)
-    expect((await run(AlwaysRoutes, 'never')).tx).toBe(false)
+  it('precedence: handler > class > global > default', async () => {
+    const yes = setup({ transaction: async () => true })
+    expect((await yes.run(Routes, 'plain')).tx).toBe(true)
+    expect((await yes.run(Routes, 'never')).tx).toBe(false)
+    expect((await yes.run(AlwaysRoutes, 'never')).tx).toBe(false)
+    const no = setup({ transaction: 'never' })
+    expect((await no.run(Routes, 'always')).tx).toBe(true)
+    expect((await no.run(AlwaysRoutes, 'plain')).tx).toBe(true)
     const dflt = setup({})
     expect((await dflt.run(Routes, 'plain')).tx).toBe(false)
     expect((await dflt.run(Routes, 'always')).tx).toBe(true)

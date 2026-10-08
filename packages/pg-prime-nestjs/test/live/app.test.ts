@@ -1,8 +1,9 @@
-import { Controller, Get, Inject, Injectable, Param, Post, UseGuards } from '@nestjs/common'
+import { Controller, Get, Inject, Injectable, Param, Post, Sse, UseGuards } from '@nestjs/common'
 import { startPglite } from '@pg-prime/testing'
 import type { PgliteServer } from '@pg-prime/testing'
 import { defineSchema, pgPrime } from 'pg-prime'
 import type { Db } from 'pg-prime'
+import { interval, map } from 'rxjs'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   PgPrimeModule,
@@ -69,6 +70,11 @@ class NotesController {
       return { settings, code: (e as ContextError).code }
     }
   }
+  @Sse('live')
+  @RequestTransaction('never')
+  live() {
+    return interval(1).pipe(map((n) => ({ data: { n } })))
+  }
   @Get('serializable')
   async serializable() {
     return {
@@ -121,6 +127,22 @@ const app = (opts: Omit<PgPrimeModuleOptions, 'db'> = { request: { settings: ten
     providers: [Notes],
   })
 type App = Awaited<ReturnType<typeof app>>
+const STREAM = [0, 1, 2].map((n) => `data: {"n":${n}}`)
+
+/** The first `n` events of an SSE route; then hangs up. */
+async function events({ app }: App, path: string, n: number) {
+  const ac = new AbortController()
+  const res = await fetch((await app.getUrl()) + path, { signal: ac.signal })
+  const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader()
+  let text = ''
+  while ((text.match(/^data:/gm)?.length ?? 0) < n) {
+    const { value, done } = await reader.read()
+    if (done) break
+    text += value
+  }
+  ac.abort()
+  return text.match(/^data:.*$/gm)!.slice(0, n)
+}
 
 describe('lifecycle', () => {
   it('forRootAsync over config boots, and close ends its db', async () => {
@@ -164,8 +186,9 @@ describe('request context', () => {
   })
 
   it('a global predicate decides where no decorator does', async () => {
-    const p = await app({ request: { transaction: (ctx) => ctx.getHandler().name === 'setting' } })
+    const p = await app({ request: { transaction: (ctx) => ctx.getHandler().name !== 'tx' } })
     expect(await p.get('/notes/setting')).toEqual({ tenant: null, tx: true })
+    expect(await p.get('/always')).toEqual({ tx: true })
     expect(await p.get('/always/never')).toEqual({ tx: false })
     await p.app.close()
   })
@@ -196,10 +219,23 @@ describe('request context', () => {
     expect(seen).toEqual(Array.from({ length: 20 }, (_, i) => ({ tenant: `t${i}`, tx: true })))
   })
 
-  it('is a pass-through without request options', async () => {
+  it("a 'never' route streams", async () => {
+    expect(await events(s, '/notes/live', 3)).toEqual(STREAM)
+  })
+
+  it('is a pass-through without request options, pinned or not', async () => {
     const p = await app({})
-    expect(await p.get('/notes/setting', 't1')).toEqual({ tenant: null, tx: false })
-    expect(await p.get('/always')).toEqual({ tx: false })
+    const check = async () => {
+      expect(await p.get('/notes/setting', 't1')).toEqual({ tenant: null, tx: false })
+      expect(await p.get('/always')).toEqual({ tx: false })
+    }
+    await check()
+    const pin = await rollbackScopeFor(p.app)
+    try {
+      await check()
+    } finally {
+      await pin.rollback()
+    }
     await p.app.close()
   })
 })
@@ -230,6 +266,11 @@ describe('rollbackScopeFor', () => {
     expect(await s.call('/notes/a', 't1', 'POST')).toMatchObject({ status: 409 })
     expect(await s.call('/notes/b', 't1', 'POST')).toEqual({ status: 201, body: ['a', 'b'] })
   })
+
+  it("a 'never' route streams, and hanging up ends its request", async () => {
+    expect(await events(s, '/notes/live', 3)).toEqual(STREAM)
+    expect(await s.call('/notes/a', 't1', 'POST')).toEqual({ status: 201, body: ['a'] })
+  }, 5000)
 
   it('a second app in the process keeps its own, unpinned host', async () => {
     const other = await app()

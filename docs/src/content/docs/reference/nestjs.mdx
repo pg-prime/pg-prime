@@ -92,8 +92,9 @@ interface RequestOptions {
 Per request, after guards: resolve `settings(ctx)`, then the mode (`@RequestTransaction` on the
 handler, then on the class, then `transaction`, then `'whenSettings'`). With a transaction the
 handler runs in `host.request({ settings, transaction: { retry: false, label } })`, collapsed to its
-last value and committed before the response; without one it runs in `host.run({ settings })` with
-its observable intact. Under a pin every request runs in one savepoint.
+last value and committed before the response; without one it runs in `host.request({ settings })`
+with its observable intact, until the observable ends. Under a pin every request runs in one
+savepoint.
 
 ### `RequestTxMode`
 
