@@ -4,6 +4,192 @@ description: Every export of @pg-prime/context.
 apiEntry:
   - "@pg-prime/context#."
   - "@pg-prime/context#./testing"
+  - "pg-prime#."
 ---
 
-`@pg-prime/context` is being built; this page is written with it. The design is [plan 19](https://github.com/pg-prime/pg-prime/blob/main/design/19-context-nestjs.md).
+Ambient transactions on `AsyncLocalStorage`. [Ambient transactions](/pg-prime/guides/ambient-transactions/)
+is the guide; this page is the surface.
+
+```sh
+pnpm add @pg-prime/context
+```
+
+`pg-prime` is the only peer. The package imports `node:async_hooks` statically and targets server
+runtimes: Node ≥ 22.12 and Bun are tested.
+
+## The host
+
+### `TransactionHost`
+
+{/* docs: signature */}
+```ts
+class TransactionHost<Sc extends AnySchema = AnySchema> {
+  readonly root: Db<Sc>
+  get db(): Queryable<Sc>
+  current(): Queryable<Sc>
+  tx(): Tx<Sc>
+  get inTransaction(): boolean
+  get attempt(): number
+  get settings(): Settings
+  get pinned(): boolean
+  outside(): Queryable<Sc>
+  run<T>(scope: { readonly settings?: Settings }, fn: () => T): T
+  request<T>(scope: RequestScope, fn: () => Promise<T>): Promise<T>
+  setLocal(name: string, value: Setting): Promise<void>
+  setLocal(settings: Settings): Promise<void>
+  within<T>(tx: Tx<Sc>, fn: () => Promise<T>): Promise<T>
+  transaction<T>(fn: (db: Tx<Sc>) => Promise<T>, opts?: HostTxOptions): Promise<NoHandleEscape<T>>
+  // …
+}
+```
+
+`new TransactionHost(root, opts?)` wraps a `Db`. Each member reads the current async context:
+
+| Member | Returns |
+|---|---|
+| `db`, `current()` | The active transaction, else `root`. In strict mode, a scope with settings but no transaction throws `CONTEXT_UNSCOPED_QUERY`. Under a pin, it falls back to the request savepoint or the pinned transaction |
+| `tx()` | The active transaction; `CONTEXT_NO_TRANSACTION` outside one |
+| `inTransaction`, `attempt`, `settings` | Whether a host transaction is active, its `attempt` (0 outside one) and the scope's settings |
+| `pinned` | Whether `rollbackScope` holds the host |
+| `outside()` | `root.outsideTransaction()`: a deliberate root statement the dev guard lets through |
+| `run(scope, fn)` | Runs `fn` in a settings scope that inherits the parent's. `CONTEXT_NESTED_SCOPE` inside a transaction |
+| `request(scope, fn)` | `run(scope, …)`, inside `transaction(fn, scope.transaction)` when `transaction` is set. Under a pin, a request always runs in one savepoint |
+| `setLocal(…)` | One `set_config(…, true)` batch in a transaction; in a scope, also recorded for later transactions; `CONTEXT_NO_SCOPE` in neither |
+| `within(tx, fn)` | Sends the scope's settings to an explicit `tx`, then runs `fn` with it active |
+| `transaction(fn, opts?)` | Joins, nests or opens a transaction per `opts.propagation` or the host default |
+
+`transaction` with an active host transaction:
+
+| `propagation` | Effect | Refused options (`CONTEXT_OPTIONS`) |
+|---|---|---|
+| `'join'` (default) | `fn(outerTx)`: the real outer handle, nothing sent | `timeoutMs`, `lockTimeoutMs`, `localSettings`, a different `isolation` or `accessMode` |
+| `'savepoint'` | `outerTx.savepoint(fn, opts)`. A second one in flight on the same handle throws `CONTEXT_CONCURRENT_SAVEPOINT` | `isolation`, `accessMode`, `deferrable`, `retry` |
+| `'new'` | `root.transaction(fn, …)` on another connection, with the scope's settings | none |
+
+With no active transaction every mode opens `root.transaction(fn, opts)` and sends the scope's
+settings merged under `opts.localSettings` in the post-`BEGIN` batch, again on every retry.
+
+### `TransactionHostOptions`
+
+{/* docs: signature */}
+```ts
+interface TransactionHostOptions {
+  readonly propagation?: Propagation
+  readonly strict?: boolean
+  readonly storage?: AsyncStorage<unknown>
+}
+```
+
+`propagation` defaults to `'join'`, `strict` to `true` and `storage` to a new `AsyncLocalStorage`.
+
+### `HostTxOptions`
+
+{/* docs: signature */}
+```ts
+type HostTxOptions = TxOptions & { readonly propagation?: Propagation }
+```
+
+### `RequestScope`
+
+{/* docs: signature */}
+```ts
+interface RequestScope {
+  readonly settings?: Settings
+  readonly transaction?: boolean | HostTxOptions
+}
+```
+
+### `Propagation`
+
+{/* docs: signature */}
+```ts
+type Propagation = 'join' | 'savepoint' | 'new'
+```
+
+### `Setting`
+
+{/* docs: signature */}
+```ts
+type Setting = string | number | boolean
+```
+
+### `Settings`
+
+{/* docs: signature */}
+```ts
+type Settings = Readonly<Record<string, Setting>>
+```
+
+### `AsyncStorage`
+
+{/* docs: signature */}
+```ts
+interface AsyncStorage<T> {
+  getStore(): T | undefined
+  run<R>(store: T, fn: () => R): R
+}
+```
+
+The two members of `AsyncLocalStorage` the host uses. Pass any implementation as `storage`.
+
+## Errors
+
+### `ContextError`
+
+{/* docs: signature */}
+```ts
+class ContextError extends UsageError {
+  readonly code: ContextErrorCode
+}
+```
+
+A `UsageError`, so core never retries a transaction over one.
+
+### `ContextErrorCode`
+
+{/* docs: signature */}
+```ts
+type ContextErrorCode =
+  | 'CONTEXT_NO_TRANSACTION'
+  | 'CONTEXT_UNSCOPED_QUERY'
+  | 'CONTEXT_NO_SCOPE'
+  | 'CONTEXT_NESTED_SCOPE'
+  | 'CONTEXT_OPTIONS'
+  | 'CONTEXT_CONCURRENT_SAVEPOINT'
+  | 'CONTEXT_NOT_REGISTERED'
+  | 'CONTEXT_DUPLICATE_HOST'
+```
+
+| Code | When |
+|---|---|
+| `CONTEXT_NO_TRANSACTION` | `host.tx()` with no active transaction |
+| `CONTEXT_UNSCOPED_QUERY` | strict mode: `db`/`current()` in a scope with settings and no transaction |
+| `CONTEXT_NO_SCOPE` | `setLocal` outside both a scope and a transaction |
+| `CONTEXT_NESTED_SCOPE` | `run()` inside a host transaction |
+| `CONTEXT_OPTIONS` | a join or savepoint given an option it cannot honour (table above) |
+| `CONTEXT_CONCURRENT_SAVEPOINT` | a second host savepoint in flight on one transaction, including a second request under a pin |
+| `CONTEXT_NOT_REGISTERED`, `CONTEXT_DUPLICATE_HOST` | thrown by `@pg-prime/nestjs` |
+
+## `@pg-prime/context/testing`
+
+### `rollbackScope`
+
+{/* docs: signature */}
+```ts
+function rollbackScope<Sc extends AnySchema>(host: TransactionHost<Sc>): Promise<RollbackScope<Sc>>
+```
+
+Opens a root transaction the test owns (`retry: false`, `idle_in_transaction_session_timeout: 0`)
+and pins it on `host`. Until `rollback()`, every transaction the host would open is a savepoint on
+it that restores the session's settings before `RELEASE`, runs inside the pin's dev-guard frame and
+refuses a concurrent sibling. See [rollback per test](/pg-prime/guides/ambient-transactions/#rollback-per-test).
+
+### `RollbackScope`
+
+{/* docs: signature */}
+```ts
+interface RollbackScope<Sc extends AnySchema = AnySchema> {
+  readonly tx: Tx<Sc>
+  rollback(): Promise<void>
+}
+```

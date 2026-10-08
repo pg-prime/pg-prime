@@ -27,4 +27,18 @@
 
 type Unsupported<Message = { ERROR: '@pg-prime/context requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' }> = Message
 
+export declare const ContextError: Unsupported
+export declare const TransactionHost: Unsupported
+export declare const rollbackScope: Unsupported
 
+export type AsyncStorage<T0 = any> = Unsupported
+export type ContextError = Unsupported
+export type ContextErrorCode = Unsupported
+export type HostTxOptions = Unsupported
+export type Propagation = Unsupported
+export type RequestScope = Unsupported
+export type RollbackScope<T0 = any> = Unsupported
+export type Setting = Unsupported
+export type Settings = Unsupported
+export type TransactionHost<T0 = any> = Unsupported
+export type TransactionHostOptions = Unsupported

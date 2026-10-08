@@ -250,14 +250,19 @@ test-body code.
   1. run inside `inTransactionFrame(pin.tx, …)` (core, §8.1), so a captured root `Db` throws
      `HandleMisuseError` as in an unpinned dev run instead of committing for real or hanging on the
      pin's locks;
-  2. on entry, capture `select jsonb_object_agg(name, setting) from pg_settings where context =
-     'user' and (name like '%.%' or name in ('statement_timeout', 'lock_timeout'))`, then apply the
-     scope settings;
+  2. on entry, capture `current_setting(k, true)` in one statement for every user-settable built-in
+     in `pg_settings` (`context = 'user'`) and every key the host knows (scope settings,
+     `localSettings`, `host.setLocal`, so every `SettingKey` it has seen), then apply the scope
+     settings. Placeholder GUCs never appear in `pg_settings`, `SHOW ALL` or
+     `pg_show_all_settings()` (PG 17, 18, PGlite; N0 spike 6), so the host's keys are the only way
+     to find them;
   3. on success, **before** `RELEASE` (which keeps `SET LOCAL` values), restore every changed entry
-     to its captured value in one `set_config(…, true)` statement; `''` only for dotted placeholders
-     created during the request, never for built-ins. Reading the session (not the host's writes)
-     covers `tx.setLocal`, `localSettings` and `timeoutMs` too. A failed restore aborts only `R`; on
-     error `ROLLBACK TO` restores everything itself.
+     to its captured value in one `set_config(…, true)` statement; `''` only for keys captured as
+     unset (placeholders), never for built-ins. Built-ins changed by `tx.setLocal`, `localSettings`
+     or `timeoutMs` are restored too. **Caveat:** a dotted key set only by a raw `tx.setLocal` or
+     `set_config`, which the host never saw, is not restored and can leak into the next request of
+     the same pinned test (guide: set request keys through the scope or `host.setLocal`). A failed
+     restore aborts only `R`; on error `ROLLBACK TO` restores everything itself.
 - **Options:** a savepoint cannot change `isolation`/`deferrable` and serializable retry cannot occur
   on one connection, so those and `retry` are ignored under a pin (documented; §6.3 covers them
   unpinned). `accessMode: 'read only'` → `set_config('transaction_read_only', 'on', true)` inside the
