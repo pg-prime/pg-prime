@@ -63,7 +63,7 @@ function matrix(): [string, Fragment<unknown>][] {
     { kind: 'token', token: 'tok' },
     { kind: 'expired' },
     { kind: 'blocked' },
-    { kind: 'idle' },
+    { kind: 'idle', queue: 'jobs' },
   ]
   for (const to of ['completed', 'failed', 'cancelled'] as const) {
     for (const guard of guards) {

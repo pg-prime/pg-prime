@@ -316,7 +316,7 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
         core,
         { id, queue: name },
         'cancelled',
-        { kind: 'idle' },
+        { kind: 'idle', queue: name },
         { error },
       )
       if (r === undefined) await flagCancel(core.db, t, name, id, reason ?? null)

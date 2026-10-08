@@ -12,7 +12,7 @@ export type Guard =
   | { readonly kind: 'token'; readonly token: string }
   | { readonly kind: 'expired' }
   | { readonly kind: 'blocked' }
-  | { readonly kind: 'idle' }
+  | { readonly kind: 'idle'; readonly queue: string }
 
 export interface FinishArgs {
   readonly id: bigint
@@ -43,7 +43,7 @@ function guardSql(g: Guard): F {
     case 'blocked':
       return sql`m.state = 'blocked'`
     case 'idle':
-      return sql`m.state in ('ready', 'delayed', 'blocked')`
+      return sql`m.state in ('ready', 'delayed', 'blocked') and m.queue = ${g.queue}`
   }
 }
 

@@ -325,6 +325,14 @@ describe('admin', () => {
     expect(reason).toBeInstanceOf(CancelledError)
   })
 
+  it('cancel never reaches a message of another queue', async () => {
+    const { mq, q } = setup()
+    const other = mq.queue(defineQueue<P>('other'))
+    const ref = await other.send({ n: 1 })
+    await q.cancel(ref.id)
+    expect((await other.get(ref))?.state).toBe('ready')
+  })
+
   it('retry: finished → ready, clearing expire_at, error and cancel (T15)', async () => {
     const { q } = setup({ retry: { maxAttempts: 1 } })
     const a = await q.send({ n: 1 })

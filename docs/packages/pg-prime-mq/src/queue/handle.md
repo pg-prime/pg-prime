@@ -16,7 +16,7 @@
 3. Two statements without `{ tx }` share one transaction.
 4. `claim` promotes, then S3/S4, then S5 for the rest from the handle's own round-robin cursor; undecodable payloads are failed (packages/pg-prime-mq/src/queue/handle.ts:177).
 5. `result` opens a waker on the watch channel first, then re-reads the row on every wake (packages/pg-prime-mq/src/queue/handle.ts:260).
-6. `cancel` finishes an idle message (`guard: idle`), else flags an active one (packages/pg-prime-mq/src/queue/handle.ts:312).
+6. `cancel` finishes an idle message of this queue (`guard: idle`), else flags an active one (packages/pg-prime-mq/src/queue/handle.ts:312).
 7. `remove` locks the tree without waiting, refuses active members, deletes, and resolves the root's dependency as ignored (packages/pg-prime-mq/src/queue/handle.ts:341).
 
 ## Gotchas
