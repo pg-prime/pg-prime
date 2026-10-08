@@ -99,7 +99,7 @@ The schema as migration files to vendor into a kit project; they converge with `
 | `send(payload, opts?)` | one message; `opts` is a `SendOptions`; returns a `MessageRef` |
 | `sendMany(items, { tx? })` | `items` are `{ payload, opts? }`; one statement per dedup mode |
 | `work(handler, opts?)` | starts a `Worker` |
-| `claim({ token?, leaseMs?, limit? })` | manual consumption: active `Message`s with their `token` |
+| `claim({ token?, leaseMs?, limit? })` | manual consumption: active `Message`s with their `token`; first recovers expired leases, at most once per 15 s per queue |
 | `complete(m, result, { tx? })`, `fail(m, err, { tx?, final? })`, `extend(m, leaseMs)` | settle a claimed message; a lost lease is a `LeaseLostError`; `{ tx }` is refused on a queue with a global `concurrency` |
 | `get(ref)`, `list({ state?, limit?, after? })`, `counts()` | reads; `ref` is a `MessageRef`, an id or `{ key }` |
 | `result(ref, { timeoutMs?, signal?, pollMs? })` | the result; rejects with `MessageFailedError`; needs `watch: true` |

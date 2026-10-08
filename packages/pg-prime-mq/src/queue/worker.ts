@@ -8,7 +8,7 @@ import type { Core } from '../mq.js'
 import { decodePayload } from '../payload.js'
 import { claim, claimGroups, promote } from '../sql/claim.js'
 import type { ClaimOptions } from '../sql/claim.js'
-import { expire, expiryGate, heartbeat } from '../sql/lease.js'
+import { heartbeat } from '../sql/lease.js'
 import {
   dedupBatch,
   expireBatch,
@@ -23,7 +23,7 @@ import { move } from '../sql/settle.js'
 import { ASYNC_DISPOSE, limiter } from '../util.js'
 import { isDeferral, message, workContext } from './context.js'
 import type { Deferral, Message, Running, WorkContext } from './context.js'
-import { completeMessage, failMessage, finishMessage, settleSafely } from './settle.js'
+import { completeMessage, failMessage, recoverExpired, settleSafely } from './settle.js'
 
 export type Handler<T, R> = (msg: Message<T>, ctx: WorkContext<T, R>) => Promise<R | Deferral>
 
@@ -288,21 +288,7 @@ export function startWorker<T, R>(
   }
 
   const expireScan = async (): Promise<void> => {
-    if (!(await expiryGate(ctl, t, queue, expireScanMs))) return
-    const r = await expire(ctl, t, queue)
-    for (const id of r.exhausted) {
-      await finishMessage(
-        core,
-        { id, queue },
-        'failed',
-        { kind: 'expired' },
-        { error: 'lease-expired' },
-      )
-    }
-    if (r.requeued.length + r.exhausted.length > 0) {
-      promoteAt = 0
-      hooks.emit('onLeaseExpired', { queue, ids: [...r.requeued, ...r.exhausted] })
-    }
+    if ((await recoverExpired(core, ctl, queue, expireScanMs)) > 0) promoteAt = 0
   }
 
   const maintain = async (): Promise<void> => {

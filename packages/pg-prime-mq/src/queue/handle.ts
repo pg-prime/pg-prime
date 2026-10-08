@@ -28,7 +28,7 @@ import { assertTxSettle, message } from './context.js'
 import type { Message } from './context.js'
 import { newRow } from './flow.js'
 import type { MessageRef, SendOptions } from './flow.js'
-import { completeMessage, failMessage, finishMessage } from './settle.js'
+import { completeMessage, failMessage, finishMessage, recoverExpired } from './settle.js'
 import { startWorker } from './worker.js'
 import type { Handler, Worker, WorkerOptions } from './worker.js'
 
@@ -44,7 +44,7 @@ export interface QueueHandle<T, R> {
   work(handler: Handler<T, R>, opts?: WorkerOptions): Worker
   /**
    * Manual consumption: settle each with `complete`, `fail` or `extend` before its lease ends.
-   * Groups are served round-robin, probing at most `4 × limit` per call: an empty result can
+   * Expired leases are recovered first, at most once per 15 s per queue. Groups are served round-robin, probing at most `4 × limit` per call: an empty result can
    * mean only paused or full groups were probed, and the next call goes on after them.
    */
   claim(opts?: { token?: string; leaseMs?: number; limit?: number }): Promise<Message<T>[]>
@@ -182,6 +182,7 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
 
     async claim(opts = {}) {
       await ready()
+      await recoverExpired(core, core.db, name, 15_000)
       await promote(core.db, t, name)
       const o = {
         queue: name,

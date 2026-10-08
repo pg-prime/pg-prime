@@ -3,6 +3,7 @@ import type { QueueDef } from '../define.js'
 import { NonRetryableError } from '../errors.js'
 import type { Core } from '../mq.js'
 import { MAX_PAYLOAD, toJson } from '../payload.js'
+import { expire, expiryGate } from '../sql/lease.js'
 import { holder } from '../sql/read.js'
 import type { MsgRow } from '../sql/read.js'
 import { finish, lockAncestors, move } from '../sql/settle.js'
@@ -135,6 +136,22 @@ export async function failMessage(
     stack,
   })
   return ok ? 'retry' : undefined
+}
+
+/** S9 at most once per queue per `everyMs`: re-queues or fails expired leases; returns how many. */
+export async function recoverExpired(
+  core: Core,
+  q: Queryable<any>,
+  queue: string,
+  everyMs: number,
+): Promise<number> {
+  if (!(await expiryGate(q, core.t, queue, everyMs))) return 0
+  const r = await expire(q, core.t, queue)
+  for (const id of r.exhausted)
+    await finishMessage(core, { id, queue }, 'failed', { kind: 'expired' }, { error: 'lease-expired' })
+  const ids = [...r.requeued, ...r.exhausted]
+  if (ids.length > 0) core.hooks.emit('onLeaseExpired', { queue, ids })
+  return ids.length
 }
 
 /**

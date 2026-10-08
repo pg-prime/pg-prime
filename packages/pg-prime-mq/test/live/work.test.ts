@@ -162,6 +162,17 @@ describe('leases', () => {
     await expect(q.fail(again, new Error('late'))).rejects.toBeInstanceOf(LeaseLostError)
   })
 
+  it('a manual claim recovers expired leases first', async () => {
+    const { db, schema, q } = setup({ retry: { baseDelayMs: 0 } })
+    const ref = await q.send({ n: 1 })
+    await q.claim({ leaseMs: 20 })
+    await sleep(40)
+    // As if the last scan were long ago.
+    await db.sql`update ${sql.ident(schema, 'queues')} set expire_at = '-infinity'`.execute()
+    const [m] = await q.claim()
+    expect([m?.id, m?.attempts]).toStrictEqual([ref.id, 1])
+  })
+
   it('progress is stored while the lease is held', async () => {
     const { q } = setup()
     const ref = await q.send({ n: 1 })
