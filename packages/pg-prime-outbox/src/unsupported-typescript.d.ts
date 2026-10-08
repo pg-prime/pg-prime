@@ -27,4 +27,42 @@
 
 type Unsupported<Message = { ERROR: '@pg-prime/outbox requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' }> = Message
 
+export declare const NonRetryableSinkError: Unsupported
+export declare const NotStartedError: Unsupported
+export declare const OutboxLeaseLostError: Unsupported
+export declare const PayloadError: Unsupported
+export declare const SchemaVersionError: Unsupported
+export declare const defineOutbox: Unsupported
+export declare const functionSink: Unsupported
+export declare const migrationSql: Unsupported
+export declare const pgOutbox: Unsupported
+export declare const webhookSink: Unsupported
 
+export type DeliveryContext = Unsupported
+export type DeliveryResult = Unsupported
+export type InternalKind = Unsupported
+export type NonRetryableSinkError = Unsupported
+export type NotStartedError = Unsupported
+export type Outbox<T0 = any> = Unsupported
+export type OutboxCodec<T0 = any> = Unsupported
+export type OutboxConfig<T0 = any> = Unsupported
+export type OutboxDef<T0 = any> = Unsupported
+export type OutboxDefOptions<T0 = any> = Unsupported
+export type OutboxHooks = Unsupported
+export type OutboxLeaseLostError = Unsupported
+export type OutboxRecord<T0 = any> = Unsupported
+export type OutboxSink<T0 = any> = Unsupported
+export type OutboxStats = Unsupported
+export type OutboxTopic<T0 = any> = Unsupported
+export type ParkedRecord<T0 = any> = Unsupported
+export type PartitionStats = Unsupported
+export type PayloadError = Unsupported
+export type PayloadOf<T0 = any> = Unsupported
+export type Relay = Unsupported
+export type RelayOptions = Unsupported
+export type RetryOptions = Unsupported
+export type SchemaVersionError = Unsupported
+export type StandardSchemaV1<T0 = any, T1 = any> = Unsupported
+export type WebhookSinkOptions<T0 = any> = Unsupported
+export type WriteOptions = Unsupported
+export type WriteResult = Unsupported

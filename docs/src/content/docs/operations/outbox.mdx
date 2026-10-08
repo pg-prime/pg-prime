@@ -3,4 +3,122 @@ title: "Outbox in production"
 description: Partitions, parking, stats and PgBouncer for @pg-prime/outbox.
 ---
 
-`@pg-prime/outbox` is being built; this page is written with it. The design is [plan 16](https://github.com/pg-prime/pg-prime/blob/main/design/16-outbox.md).
+import { Aside } from '@astrojs/starlight/components'
+
+What to know when `@pg-prime/outbox` runs on more than one process. The writing side is in
+[Transactional outbox](/pg-prime/guides/outbox/).
+
+## The schema
+
+Everything lives in one schema, `pgprime_outbox` by default (`pgOutbox({ schema })` to change it),
+with its own ledger at `pgprime_outbox.migrations`. `outbox.start()` migrates it when needed
+(`autoMigrate: true`, the default) under a transaction-scoped advisory lock, so many processes may
+start at once.
+
+With `autoMigrate: false`, `start()` only checks and throws `SchemaVersionError` on an old schema.
+Apply the DDL yourself with `outbox.migrate()` from a deploy step, or vendor it into your kit
+migrations:
+
+{/* docs: use=blog */}
+```ts
+import { migrationSql } from '@pg-prime/outbox'
+
+for (const file of migrationSql()) {
+  console.log(`${String(file.version).padStart(4, '0')}_outbox_${file.name}.sql`, file.sql.length)
+}
+```
+
+Both paths write the same ledger rows, so a vendored file applied first is skipped at runtime.
+Uninstalling is `drop schema pgprime_outbox cascade`. Do not list the schema in kit's `schemas`.
+
+## Partitions
+
+Each topic has `partitions` (default 16), fixed when the topic is created. A keyed record goes to
+partition `hash(key) mod P`; an unkeyed one to a random partition. A relay **leases whole
+partitions** and delivers each one in `id` order, so one partition (and therefore one key) is never
+delivered by two relays at once while their leases are valid.
+
+`P` caps a topic's parallelism: with 16 partitions, a 17th relay owns nothing. It is immutable:
+`start()` fails with a `ConfigError` when a declaration's `partitions` differs from the stored
+topic, and changing it means a new topic.
+
+## Relays and leases
+
+Every relay heartbeats every `leaseMs / 3` (`leaseMs` defaults to 30 s): it refreshes its
+membership row and extends its leases. Each relay aims for `ceil(P / live relays)` partitions,
+counting relays that own nothing, so a new process gets its share within one heartbeat and an
+incumbent above its share releases the extra partitions after its current batch.
+
+- `close()` (or the relay's `signal`, or `await using`) stops leasing, lets in-flight waves finish
+  for up to `graceMs` (10 s), then releases its partitions so peers take them at once.
+- A crashed relay's partitions are taken after its lease expires. The batch it was delivering is
+  redelivered with the **same `idem`** and a **higher `epoch`**.
+- A relay that loses a lease while its sink call is in flight sees `ctx.signal` abort with
+  `OutboxLeaseLostError`; its settle is refused, so the new owner redelivers.
+
+## Parking
+
+A record that fails `retry.maxAttempts` times (10 by default), or fails with
+`NonRetryableSinkError`, is **parked**. Its key stays blocked, so later records of that key wait
+behind it: per-key order is never skipped silently. Inspect and resolve:
+
+{/* docs: use=blog */}
+```ts
+import { defineOutbox, pgOutbox } from '@pg-prime/outbox'
+
+const outbox = pgOutbox({ db, define: { orders: defineOutbox<{ id: string }>('orders') } })
+const orders = outbox.topics.orders
+
+for (const r of await orders.parked({ limit: 50 })) {
+  console.log(r.id, r.key, r.attempts, r.error)
+}
+await orders.replay([42n]) // back to pending with a fresh attempt count; unblocks the key
+await orders.discard([43n]) // gone for good; the key's next record goes next
+```
+
+Parked records are never deleted automatically.
+
+## Retention
+
+Delivered records stay for `keepDeliveredMs` (24 h by default) so that a retried write with the same
+`idempotencyKey` is still recognized, then a relay deletes them in batches (one relay at a time,
+via a compare-and-set on the topic row). `keepDeliveredMs: 0` deletes on delivery and gives up
+write-side deduplication after delivery.
+
+## Stats and pausing
+
+`topic.stats()` returns the pending count and the oldest pending record per partition, its owner,
+epoch and lease, plus the parked count and the number of blocked keys:
+
+{/* docs: use=blog */}
+```ts
+import { defineOutbox, pgOutbox } from '@pg-prime/outbox'
+
+const outbox = pgOutbox({ db, define: { orders: defineOutbox<{ id: string }>('orders') } })
+const s = await outbox.topics.orders.stats()
+const lagMs = Math.max(0, ...s.partitions.map((p) => (p.oldestAt ? Date.now() - p.oldestAt.getTime() : 0)))
+console.log({ pending: s.pending, parked: s.parked, blocked: s.blockedKeys, lagMs })
+```
+
+`pause()` stops every relay of the topic from reading (writes continue); `resume()` wakes them.
+
+## Hooks
+
+`pgOutbox({ hooks })` reports `onWrite`, `onDeliver` (with `durationMs`), `onFail`, `onPark`,
+`onLease` (acquired and released partitions) and `onInternal` (`listen-unavailable`,
+`heartbeat-failed`, `relay-failed`, `hook-failed`). A hook that throws is reported as `hook-failed`
+and never breaks delivery.
+
+## PgBouncer and other transaction poolers
+
+Writes, the relay's statements and the migrations all work in transaction mode: every transition is
+one statement or one short transaction, and every advisory lock is transaction-scoped.
+
+Wake-ups use `LISTEN`, which a transaction pooler cannot carry. Without a `directConnection` the
+relay reports `listen-unavailable` once and polls every `pollMs` (1 s by default); with one,
+`LISTEN` goes there and a commit wakes the relay at once.
+
+<Aside>
+The relay reads the database clock for every lease and backoff decision, so clock skew between
+application servers does not matter.
+</Aside>

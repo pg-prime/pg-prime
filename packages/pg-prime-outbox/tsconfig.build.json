@@ -8,7 +8,7 @@
     "sourceMap": true,
     "isolatedDeclarations": true,
     "noEmit": false,
-    "types": [],
+    "types": ["node"],
     "paths": {}
   },
   "include": ["src"]
