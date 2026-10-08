@@ -27,4 +27,24 @@
 
 type Unsupported<Message = { ERROR: '@pg-prime/cron requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' }> = Message
 
+export declare const CronLeaseLostError: Unsupported
+export declare const ScheduleError: Unsupported
+export declare const SchemaVersionError: Unsupported
+export declare const defineSchedule: Unsupported
+export declare const pgCron: Unsupported
 
+export type Cron = Unsupported
+export type CronConfig = Unsupported
+export type CronEnqueuer = Unsupported
+export type CronHooks = Unsupported
+export type CronLeaseLostError = Unsupported
+export type RunContext<T0 = any> = Unsupported
+export type RunInfo = Unsupported
+export type RunState = Unsupported
+export type ScheduleDef<T0 = any> = Unsupported
+export type ScheduleError = Unsupported
+export type ScheduleInfo = Unsupported
+export type ScheduleOptions<T0 = any> = Unsupported
+export type ScheduleTarget<T0 = any> = Unsupported
+export type ScheduleWhen = Unsupported
+export type SchemaVersionError = Unsupported

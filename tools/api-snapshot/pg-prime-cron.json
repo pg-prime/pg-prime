@@ -3,9 +3,47 @@
   "package": "@pg-prime/cron",
   "entries": {
     ".": {
-      "values": [],
-      "types": [],
-      "_arity": {}
+      "values": [
+        "CronLeaseLostError",
+        "ScheduleError",
+        "SchemaVersionError",
+        "defineSchedule",
+        "pgCron"
+      ],
+      "types": [
+        "Cron",
+        "CronConfig",
+        "CronEnqueuer",
+        "CronHooks",
+        "CronLeaseLostError",
+        "RunContext",
+        "RunInfo",
+        "RunState",
+        "ScheduleDef",
+        "ScheduleError",
+        "ScheduleInfo",
+        "ScheduleOptions",
+        "ScheduleTarget",
+        "ScheduleWhen",
+        "SchemaVersionError"
+      ],
+      "_arity": {
+        "CronLeaseLostError": 0,
+        "ScheduleError": 0,
+        "SchemaVersionError": 0,
+        "Cron": 0,
+        "CronConfig": 0,
+        "CronEnqueuer": 0,
+        "CronHooks": 0,
+        "RunContext": 1,
+        "RunInfo": 0,
+        "RunState": 0,
+        "ScheduleDef": 1,
+        "ScheduleInfo": 0,
+        "ScheduleOptions": 1,
+        "ScheduleTarget": 1,
+        "ScheduleWhen": 0
+      }
     }
   }
 }
