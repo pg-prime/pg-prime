@@ -316,7 +316,7 @@ export async function loadSchema(paths: string | readonly string[], base: string
   if (list.length === 0) throw new ConfigError("`schema` names no file");
 
   const tables: Record<string, { $: unknown }> = {};
-  const declared: Record<string, Map<string, unknown>> = {
+  const declared: Record<string, Map<unknown, unknown>> = {
     enum: new Map(),
     domain: new Map(),
     sequence: new Map(),
@@ -348,18 +348,16 @@ export async function loadSchema(paths: string | readonly string[], base: string
     // The standalone declarations always come off the MODULE, never off a registry:
     // `defineSchema(...)` takes tables and relations only, so a `pgDomain` can be reached
     // in exactly one way — the export that names it. Keyed by `schema.name` for the same
-    // reason tables are: one object exported twice under two names is one object.
+    // reason tables are: one object exported twice under two names is one object. A policy is
+    // keyed by the object, so two that share an identity both reach renderDeclared's conflict check.
     let declarations = 0;
     for (const [key, value] of Object.entries(mod)) {
       if (key === "default") continue;
       const kind = declarationOf(value);
       if (kind === null) continue;
       const decl = value as { name: string; schema?: string };
-      const runtime = (value as { $?: { schema?: string; table?: { name: string; schema?: string } } }).$;
-      const owner = kind === "view" ? runtime : kind === "policy" ? runtime?.table : decl;
-      const ns = owner?.schema ?? "public";
-      const id = kind === "policy" ? `${ns}.${runtime?.table?.name ?? ""}.${decl.name}` : `${ns}.${decl.name}`;
-      declared[kind]!.set(kind === "schema" ? decl.name : id, value);
+      const ns = (kind === "view" ? (value as { $?: { schema?: string } }).$ : decl)?.schema ?? "public";
+      declared[kind]!.set(kind === "policy" ? value : kind === "schema" ? decl.name : `${ns}.${decl.name}`, value);
       declarations += 1;
     }
     // A file of nothing but views (or domains, or enums) is a real way to organize a schema, and

@@ -318,7 +318,7 @@ export function buildPlan(input: BuildPlanInput): Plan {
       : {
           dataLoss: acknowledgedSubjects,
           by: ack.by ?? input.by ?? osUser(),
-          reason: ack.reason ?? (blanket ? "--allow-data-loss" : "hints-file acknowledgement"),
+          reason: ack.reason ?? (blanket ? "--allow-data-loss" : "acknowledge.dataLoss"),
           at: new Date().toISOString(),
           blanket,
         };

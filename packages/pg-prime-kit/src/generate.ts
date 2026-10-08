@@ -33,12 +33,14 @@ import { join } from "node:path";
 import {
   afterLaneState,
   coverageLost,
+  covers,
   extractCatalog,
   probeEmptiness,
   readLaneState,
   type Diagnostic,
   type ExtractResult,
   type LaneState,
+  type RlsCommand,
 } from "./catalog/extract.js";
 import { GUC_BATCH_SIZE, GUC_WATERMARK } from "./data/batch.js";
 import { HISTORY_SCHEMA } from "./history/schema.js";
@@ -220,8 +222,6 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
   const schemas = [...new Set(input.schemas ?? ["public"])].sort();
   const admin = adminFor(input.target, input.admin);
 
-  const defaultSchema = schemas[0] ?? "public";
-
   /* ---- target reads first (design/20 D22): on tier 3 the shadow lives in the target ---- */
   const current = await withClient(input.target, (c) => extractCatalog(c, { schemas, observe: true }));
   const emptyTables = await withClient(input.target, (c) =>
@@ -230,7 +230,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       current.ir.factsOfKind("table").map((f) => f.id),
     ),
   );
-  const declaredViews = declaredViewIdentities(input.schema, defaultSchema);
+  const declaredViews = declaredViewIdentities(input.schema);
   const currentViews: ViewCensus =
     declaredViews.length === 0
       ? NO_VIEWS
@@ -264,7 +264,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
     const laneResult = lane === null ? null : laneHazardsOf(input, lane, before, after, emptyTables);
 
     /* ---- renames: annotation first, then the hints file, then candidates ---- */
-    const annotations = annotationHints(input.schema, defaultSchema);
+    const annotations = annotationHints(input.schema);
     const hints = acceptHints([...annotations, ...(input.hints ?? [])], current.ir, desired.ir);
 
     const extractorDiagnostics = [
@@ -283,7 +283,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       extractorDiagnostics.filter((d) => d.code === "volatile_default").map((d) => d.subject ?? ""),
     );
 
-    const noConcurrentIndexes = nonConcurrentIndexes(input.schema, defaultSchema);
+    const noConcurrentIndexes = nonConcurrentIndexes(input.schema);
     const buildOptions: BuildOptions = {
       volatileDefaults,
       emptyTables,
@@ -317,8 +317,10 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       lane === null ? [] : [...lane.hand, ...laneFiles.map((f) => asRepeatable(lane.dir, f))].sort(scanOrder);
     const laneHazards = laneResult?.hazards ?? [];
     const writeLane = async (): Promise<void> => {
-      if (lane !== null && input.outDir !== undefined)
-        await syncDeclared(lane.dir, laneFiles, { write: true, dirs: LANE_DIRS });
+      if (lane === null || input.outDir === undefined) return;
+      const synced = await syncDeclared(lane.dir, laneFiles, { write: true, dirs: LANE_DIRS });
+      const errors = synced.diagnostics.filter((d) => d.severity === "error");
+      if (errors.length > 0) throw new LaneRefusedError(errors, []);
     };
 
     const diagnostics: Diagnostic[] = [
@@ -514,12 +516,8 @@ export function shadowRepeatables(
   schemaMap: ReadonlyMap<string, string>,
   schemas: readonly string[],
 ): RepeatableFile[] {
-  const defaultSchema = schemas[0] ?? "public";
-  const rendered = renderDeclared(schema, { defaultSchema, schemas, schemaOf: (s) => schemaMap.get(s) ?? s });
-  const own = [
-    ...renderViewRepeatables(schema, { defaultSchema }).files,
-    ...rendered.files.filter((f) => f.path !== PRUNE_FILE),
-  ];
+  const rendered = renderDeclared(schema, { schemas, schemaOf: (s) => schemaMap.get(s) ?? s });
+  const own = [...renderViewRepeatables(schema).files, ...rendered.files.filter((f) => f.path !== PRUNE_FILE)];
   return [...hand, ...own.map((f) => asRepeatable(dir, f))].sort(scanOrder);
 }
 
@@ -548,36 +546,16 @@ async function readLane(
   dir: string,
   before: LaneState,
 ): Promise<Lane> {
-  const defaultSchema = schemas[0] ?? "public";
   const onDisk = await scanRepeatables(dir);
   const prune = onDisk.find((f) => isDeclared(f) && f.directives[0]!.value === "prune");
   const acks = prune === undefined ? [] : parseAcks(prune.directives);
-  const renderOptions: RenderDeclaredOptions = { defaultSchema, schemas, existingPrune: prune !== undefined };
+  const renderOptions: RenderDeclaredOptions = { schemas, existingPrune: prune !== undefined };
   const declared = renderDeclared(input.schema, { ...renderOptions, acks });
   const hand = onDisk.filter((f) => !isDeclared(f));
-  const views = renderViewRepeatables(input.schema, { defaultSchema });
+  const views = renderViewRepeatables(input.schema);
   const owned = [...declared.files, ...views.files.map((f) => ({ ...f, objects: [] }))];
-  const found = [...declared.diagnostics, ...laneConflicts(hand, owned, defaultSchema)];
+  const found = [...declared.diagnostics, ...laneConflicts(hand, owned)];
   const lane = { dir, hand, views, declared, renderOptions, acks };
-  const objects = declared.files.flatMap((f) => f.objects);
-  if (objects.length === 0 && prune === undefined) {
-    return {
-      ...lane,
-      diagnostics: [...views.diagnostics, ...found],
-      active: false,
-      currentCensus: {},
-      desiredCensus: {},
-    };
-  }
-
-  const ids = new Set(objects.map((o) => `${o.kind} ${o.identity}`));
-  const marks = await withClient(input.target, (c) =>
-    readMarks(
-      c,
-      schemas,
-      objects.map((o) => o.identity),
-    ),
-  );
   for (const p of input.schema.policies ?? []) {
     for (const role of p.$.roles) {
       if (ROLE_KEYWORDS.has(role) || before.memberOf.has(role)) continue;
@@ -592,11 +570,25 @@ async function readLane(
   const errors = found.filter((d) => d.severity === "error");
   if (errors.length > 0) throw new LaneRefusedError(errors, []);
 
+  const diagnostics = [...views.diagnostics, ...found];
+  const objects = declared.files.flatMap((f) => f.objects);
+  if (objects.length === 0 && prune === undefined) {
+    return { ...lane, diagnostics, active: false, currentCensus: {}, desiredCensus: {} };
+  }
+
+  const ids = new Set(objects.map((o) => `${o.kind} ${o.identity}`));
+  const marks = await withClient(input.target, (c) =>
+    readMarks(
+      c,
+      schemas,
+      objects.map((o) => o.identity),
+    ),
+  );
   const count = (kinds: readonly string[]): Record<string, number> =>
     Object.fromEntries(["policy", "trigger", "function"].map((k) => [k, kinds.filter((x) => x === k).length]));
   return {
     ...lane,
-    diagnostics: [...views.diagnostics, ...found],
+    diagnostics,
     active: true,
     currentCensus: count(marks.filter((m) => m.hash !== null && ids.has(`${m.kind} ${m.identity}`)).map((m) => m.kind)),
     desiredCensus: count(objects.map((o) => o.kind)),
@@ -625,7 +617,10 @@ function afterState(before: LaneState, shadow: LaneState, lane: Lane | null): La
   };
 }
 
-/** RL101/RL103/RL105/RL108 on the lane path; refuses unless every error is acknowledged (D23). */
+/**
+ * RL101/RL103/RL105/RL108 on the lane path; refuses unless every error is acknowledged (D23).
+ * Recorded acks are kept only while the loss they approved still stands in `after`.
+ */
 function laneHazardsOf(
   input: GenerateInput,
   lane: Lane,
@@ -668,9 +663,20 @@ function laneHazardsOf(
             : `FORCE on ${l.schema}.${l.table} filters its owner ${l.role}, which has no ${l.command.toUpperCase()} policy`,
       })),
   ];
+  const stillLost = (a: LaneAck): boolean => {
+    if (a.code === "RL105") return !declaredPolicies.has(a.subject);
+    if (a.code === "RL103") return declaredForce.get(a.subject) !== true;
+    const t = after.tables.find((x) => a.subject.startsWith(`${x.schema}.${x.name}:`));
+    if (t === undefined) return false;
+    const rest = a.subject.slice(`${t.schema}.${t.name}:`.length);
+    const i = rest.lastIndexOf(":");
+    const lost = !covers(after, t.schema, t.name, rest.slice(0, i), rest.slice(i + 1) as RlsCommand);
+    return (a.code === "RL108" ? t.forced : t.enabled) && lost;
+  };
+  const acks = lane.acks.filter(stillLost);
   const ack = input.acknowledge;
   const recorded = (h: { code: string; subject: string }): boolean =>
-    lane.acks.some((a) => a.code === h.code && a.subject === h.subject);
+    acks.some((a) => a.code === h.code && a.subject === h.subject);
   const hazards: PlanHazard[] = raw.map((h) => ({
     ...h,
     severity: "error",
@@ -690,9 +696,9 @@ function laneHazardsOf(
   return {
     hazards,
     files:
-      fresh.length === 0
+      fresh.length === 0 && acks.length === lane.acks.length
         ? lane.declared.files
-        : renderDeclared(input.schema, { ...lane.renderOptions, acks: [...lane.acks, ...fresh] }).files,
+        : renderDeclared(input.schema, { ...lane.renderOptions, acks: [...acks, ...fresh] }).files,
   };
 }
 
@@ -983,7 +989,7 @@ function unresolvedDecisions(
         kind: h.code,
         entity: h.subject,
         reason: h.message,
-        fix: "re-run with --allow-data-loss, or record the acknowledgement in a --hints-file",
+        fix: "re-run with --allow-data-loss --reason <text>, or list the subject in acknowledge.dataLoss",
       });
     }
   }

@@ -94,9 +94,10 @@ the only command that needs a shadow database, and the only one that writes file
 
 It also renders the declared lane — views, `definePolicy` exports, `rls.*()` FORCE state and
 `updatedAtTrigger` — into `sql/`, including on a run whose structural diff is empty. A
-`declared_conflict`, a `policy_unknown_role` or an unacknowledged RL101/RL103/RL105/RL108 refuses
-the whole run with status `lane_refused` and exit 2, and nothing is written; `--allow-data-loss
---reason <text>` records the acknowledgement in `sql/990_declared_prune.sql`.
+`declared_conflict`, a `declared_invalid`, a `policy_unknown_role` or an unacknowledged
+RL101/RL103/RL105/RL108 refuses the whole run with status `lane_refused` and exit 2, and nothing is
+written; `--allow-data-loss --reason <text>` records the acknowledgement in
+`sql/990_declared_prune.sql`, where it lapses once the declarations give back what it gave up.
 
 {/* docs: cli="migrate generate --help" */}
 ```text frame="terminal"

@@ -15,8 +15,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readLaneState, type PolicyState } from "../../src/catalog/extract.js";
 import { runSqlScript, withClient, type ConnInfo } from "../../src/db/pg.js";
 import { pullSchema } from "../../src/pull/pull.js";
+import { PRUNE_FILE, renderDeclared } from "../../src/schema/declared.js";
 import { emitSchema } from "../../src/schema/emit.js";
-import type { TableLike } from "../../src/schema/types.js";
+import type { PolicyLike, SchemaLike, TableLike } from "../../src/schema/types.js";
 import { destroyDatabase, makeDatabase, serverAvailable, withAdmin } from "../support/db.js";
 
 const T = 180_000;
@@ -174,6 +175,30 @@ describe.skipIf(!canCreateRoles)("pull writes policies, RLS flags and updatedAt 
       expect(comparable(got.policies)).toEqual(comparable(want.policies));
       expect(got.tables.map((t) => [t.name, t.enabled])).toEqual(want.tables.map((t) => [t.name, t.enabled]));
       expect(tables.tables["documents"]?.$.extras).toContainEqual({ node: "rls", force: true });
+    },
+    T,
+  );
+
+  it(
+    "a marked updatedAt function left in sql/ sheds its marker, so the declared prune keeps it",
+    async () => {
+      const r = await pull();
+      const file = join(dir, "kept.ts");
+      await writeFile(file, r.ts, "utf8");
+      const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+      const schema: SchemaLike = {
+        tables: (mod["default"] as { tables: Record<string, TableLike> }).tables,
+        policies: Object.values(mod).filter(
+          (v): v is PolicyLike => (v as { kind?: unknown } | null)?.kind === "policy",
+        ),
+      };
+      const prune = renderDeclared(schema).files.find((f) => f.path === PRUNE_FILE)!;
+      await withClient(a, async (c) => {
+        for (const o of r.repeatables.filter((x) => x.identity.includes("edited_at"))) await c.query(o.sql);
+        await c.query(prune.sql);
+        const left = await c.query("SELECT tgname FROM pg_trigger WHERE tgrelid = 'public.notes'::regclass ORDER BY 1");
+        expect(left.rows.map((x) => x["tgname"])).toEqual(["notes_touch", "pgprime_set_edited_at"]);
+      });
     },
     T,
   );

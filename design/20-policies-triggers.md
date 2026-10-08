@@ -689,6 +689,8 @@ Branch `worktree-agent-a54434ee7ab41b7e0` on `a8c1e75`. Commits: `0bc2c73` feat 
   permissive, roles (sorted, 'public' for PUBLIC), using, withCheck (pg_get_expr|null), marker (the
   'pg-prime:declared …' comment|null), dependsOn (encoded table/column ids)}`,
   `updatedAtTriggers [{schema, table, column}]` (marked `pgprime_set_<col>`), `memberOf` and `bypass`.
+  `memberOf` covers every role, predefined ones included, and uses `pg_has_role(…, 'USAGE')`: a
+  policy applies through inherited privileges, so a membership granted without INHERIT is not coverage.
 - `afterLaneState(target, shadow): LaneState`: D25. It takes the shadow's tables and policies, plus
   unmarked target policies the shadow lacks. Owners, `memberOf` and `bypass` come from the target.
 - `covers(state, schema, table, role, command): boolean`.
@@ -727,7 +729,9 @@ Branch `worktree-agent-a54434ee7ab41b7e0` on `a8c1e75`. Commits: `0bc2c73` feat 
 - Pulled clauses use `sql.unsafeRaw("…")` (the CHECK escaper) instead of a `` sql`…` `` template.
 - RL103 is not gated on emptiness.
 - A marked trigger on a `timestamp without time zone` column stays in `sql/`: pull has no
-  `timestamp` builder, so `t.raw(...)` fails `updatedAtTrigger`'s type check.
+  `timestamp` builder, so `t.raw(...)` fails `updatedAtTrigger`'s type check. Its function file ends
+  with `COMMENT ON FUNCTION … IS NULL` (the trigger file recreates the trigger unmarked), so the
+  declared prune leaves both alone.
 - `updated_at_on_update_overlap`, and the RL104/RL105/RL108 emission, stay with R2's lane.
 
 **Tests (docker superusers PG 17.11 :5447 and 18.6 :5448; pg_dump oracle via `docker exec`):**
@@ -777,9 +781,14 @@ then this RESULT. No adapter is left to swap: `generate`/`verify` import `readLa
   the lane rendered through `schemaMap` from memory, prune excluded (D22); shadow lane state always
   read, so `BuildOptions.lane = { before, after }` rides every run. Lane path: RL105, RL103 (NO FORCE),
   RL101 on tables already enabled (the statement path owns enabling ones) and every RL108; plus
-  `declared_conflict`, `declared_invalid`, `policy_unknown_role` (refused before the shadow). An
-  unacknowledged one throws `LaneRefusedError` and nothing is written; `--allow-data-loss` acks land
-  in the prune header and are carried forward. Lane files are written only on `generated`/`up_to_date`.
+  `declared_conflict`, `declared_invalid` (also a policy on an undeclared table, or a lane table
+  outside `schemas`, which a tier-3 shadow would otherwise run against the live schema),
+  `policy_unknown_role` (refused before the shadow, a views-only lane included). An unacknowledged
+  one throws `LaneRefusedError` and nothing is written; `--allow-data-loss` acks land in the prune
+  header and are carried forward until the declarations give back what they gave up (policy declared
+  again, FORCE back, role covered again), when they lapse. A schema-less table is `public`'s in the
+  lane, its shadow render and `verify`, as in `emitSchema`. Lane files are written only on
+  `generated`/`up_to_date`; a write that `syncDeclared` refuses throws.
 - Runner: `healDeclared` (`repeatables/plan.ts`) in `runRepeatables`, one call; nothing else in `run.ts`.
 - CLI: `generate` → `lane_refused`, exit 2; `check` → `declared_lane_stale`/`declared_conflict`/lane
   hazards exit 3; `verify` → census findings are drift (exit 4), `rls_no_policies` warnings;
@@ -848,4 +857,5 @@ Branch `worktree-agent-a24cebbfd28b21f54` on `9beda8c`. Commit `31436e7` (docs),
 - `reference/hazard-codes.mdx` says RL subjects are acknowledged by a `--hints-file`.
   `zero-downtime.mdx` says a `--hints-file` can list `dataLoss` subjects. `readHintsFile` reads only
   `{ from, to }`, so per-subject acks exist only programmatically (`acknowledge.dataLoss`). Fix
-  either the claims or the hints-file reader.
+  either the claims or the hints-file reader. Done: the claims (and `generate`'s `confirm_data_loss`
+  fix text) now say `--allow-data-loss --reason` or `acknowledge.dataLoss`.

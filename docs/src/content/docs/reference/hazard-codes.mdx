@@ -64,8 +64,9 @@ migrations](/pg-prime/operations/zero-downtime/) is the long version of every fi
 
 ## DS — destructive
 
-Acknowledged with `--allow-data-loss --reason …`, or per-object in a `--hints-file`. Nothing here is
-recoverable by re-running a migration.
+Acknowledged with `--allow-data-loss --reason …`, which covers every hazard in the run, or per
+subject through `acknowledge.dataLoss` when `generate` is called from code; a `--hints-file` carries
+rename hints only. Nothing here is recoverable by re-running a migration.
 
 | Code | Severity | What it is, and what to do |
 |---|---|---|
@@ -151,10 +152,12 @@ The first of these is the bug that motivated writing the differ.
 ## RL — row-level security
 
 Coverage is counted per table, role and command. A role is covered for a command by a permissive
-policy for that command (or `ALL`) whose `TO` list names `PUBLIC`, the role, or a role it is a member
-of. Hand-written and unmanaged policies count, so only a real loss is reported. The subject of
+policy for that command (or `ALL`) whose `TO` list names `PUBLIC`, the role, or a role whose
+privileges it inherits. Hand-written and unmanaged policies count, so only a real loss is reported. The subject of
 `RL101` and `RL108` is `schema.table:role:command`, for example `public.documents:app_user:select`,
-and that is what a `--hints-file` acknowledges. A table proven empty is never reported.
+and that is what `acknowledge.dataLoss` lists; the CLI's `--allow-data-loss --reason` acknowledges
+every lane hazard in the run. A recorded acknowledgement lapses once the declarations give back what
+it gave up, so losing it again is asked again. A table proven empty is never reported.
 
 | Code | Severity | What it is, and what to do |
 |---|---|---|

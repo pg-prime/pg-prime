@@ -1,6 +1,6 @@
 /** design/20 §4/§5.2: the declared lane's files, its sync and its conflict scan. No database. */
 
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { definePolicy, pgTable, rls, updatedAtTrigger } from "pg-prime";
@@ -194,6 +194,19 @@ describe("syncDeclared", () => {
     ]);
     expect(await readdir(dir)).toContain(PRUNE_FILE);
     expect((await syncDeclared(dir, [], { write: true, dirs: DIRS })).pruned).toEqual([]);
+  });
+
+  // root ignores the directory mode
+  it.skipIf(process.getuid?.() === 0)("a file it cannot delete is an error, not a pruned path", async () => {
+    const dir = join(await tempDir("pgprime-r2-locked"), "sql");
+    await syncDeclared(dir, files, { write: true, dirs: DIRS });
+    await chmod(join(dir, POLICIES_DIR), 0o555);
+    try {
+      const none = renderDeclared(schemaWith([], {}), { existingPrune: true }).files;
+      await expect(syncDeclared(dir, none, { write: true, dirs: DIRS })).rejects.toThrow(/EACCES|EPERM/);
+    } finally {
+      await chmod(join(dir, POLICIES_DIR), 0o755);
+    }
   });
 
   it("with write: false reports declared_lane_stale and writes nothing", async () => {

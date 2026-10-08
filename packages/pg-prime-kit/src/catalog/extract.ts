@@ -1285,7 +1285,7 @@ export interface LaneState {
   readonly policies: readonly PolicyState[];
   /** marked `pgprime_set_<column>` triggers */
   readonly updatedAtTriggers: readonly { readonly schema: string; readonly table: string; readonly column: string }[];
-  /** role → every role it is a member of, itself included (`pg_has_role(…, 'MEMBER')`) */
+  /** every role, predefined ones too → the roles whose privileges it has, itself included */
   readonly memberOf: ReadonlyMap<string, readonly string[]>;
   /** superusers and `BYPASSRLS` roles */
   readonly bypass: ReadonlySet<string>;
@@ -1338,10 +1338,11 @@ WHERE n.nspname = ANY($1) AND NOT t.tgisinternal AND t.tgname LIKE 'pgprime\\_se
   AND obj_description(t.oid, 'pg_trigger') LIKE 'pg-prime:declared %'
 ORDER BY 1, 2, 3`;
 
+/** `USAGE`: policies apply through inherited privileges, as `has_privs_of_role` does. */
 const Q_ROLES = `
 SELECT r.rolname AS role, r.rolsuper OR r.rolbypassrls AS bypass,
-       ARRAY(SELECT g.rolname::text FROM pg_roles g WHERE pg_has_role(r.oid, g.oid, 'MEMBER') ORDER BY 1) AS member_of
-FROM pg_roles r WHERE r.rolname NOT LIKE 'pg\\_%'`;
+       ARRAY(SELECT g.rolname::text FROM pg_roles g WHERE pg_has_role(r.oid, g.oid, 'USAGE') ORDER BY 1) AS member_of
+FROM pg_roles r`;
 
 const COMMAND: Readonly<Record<string, PolicyState["command"]>> = {
   r: "select",

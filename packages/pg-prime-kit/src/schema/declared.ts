@@ -80,13 +80,25 @@ interface TableEntry {
 export function renderDeclared(schema: SchemaLike, options: RenderDeclaredOptions = {}): RenderedDeclared {
   const defaultSchema = options.defaultSchema ?? "public";
   const schemaOf = options.schemaOf ?? ((s: string): string => s);
+  const managed = options.schemas ?? [defaultSchema];
   const diagnostics: Diagnostic[] = [];
+  const invalid = (subject: string, message: string): void => {
+    diagnostics.push({ code: "declared_invalid", severity: "error", message, subject });
+  };
   const tables = new Map<string, TableEntry>();
   const entry = (runtime: TableRuntime): TableEntry => {
-    const s = schemaOf(runtime.schema ?? defaultSchema);
+    const declared = runtime.schema ?? defaultSchema;
+    const s = schemaOf(declared);
     const key = `${s}.${runtime.name}`;
     let e = tables.get(key);
     if (e === undefined) {
+      // A shadow maps only the managed schemas; anything else would run against the live one.
+      if (!managed.includes(declared)) {
+        invalid(
+          `${declared}.${runtime.name}`,
+          `${declared}.${runtime.name} is outside the managed schemas (${managed.join(", ")}); add ${declared} to \`schemas\``,
+        );
+      }
       e = { runtime, schema: s, policies: [], triggers: new Set() };
       tables.set(key, e);
     }
@@ -112,8 +124,15 @@ export function renderDeclared(schema: SchemaLike, options: RenderDeclaredOption
       }
     }
   }
+  const qualified = (t: TableRuntime): string => `${t.schema ?? defaultSchema}.${t.name}`;
+  const declaredTables = new Set(Object.values(schema.tables).map((t) => qualified(t.$)));
   const seen = new Set<string>();
   for (const p of schema.policies ?? []) {
+    const on = qualified(p.$.table);
+    if (!declaredTables.has(on)) {
+      invalid(`${on}.${p.name}`, `definePolicy("${p.name}") is on ${on}, which the schema does not declare`);
+      continue;
+    }
     const e = entry(p.$.table);
     const id = `${e.schema}.${e.runtime.name}.${p.name}`;
     if (seen.has(id)) {
@@ -437,7 +456,11 @@ export async function syncDeclared(
       await mkdir(dirname(join(dir, path)), { recursive: true });
       await writeFile(join(dir, path), wanted.get(path)!, "utf8");
     }
-    for (const path of removed) await unlink(join(dir, path)).catch(() => undefined);
+    for (const path of removed) {
+      await unlink(join(dir, path)).catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== "ENOENT") throw err;
+      });
+    }
     return { written: changed, pruned: removed, diagnostics: [] };
   }
 

@@ -208,7 +208,9 @@ How the lane behaves:
   SECURITY` on a table with `rls.*()` warns `rls_declared_twice`.
 - **The shadow.** `generate` loads the hand-written lane plus the rendered declarations into the
   shadow database from memory, so a policy that names a missing column fails at author time. A `to:`
-  role the target does not have is `policy_unknown_role`; roles are never created for you.
+  role the target does not have is `policy_unknown_role`; roles are never created for you. A policy on
+  a table the schema does not declare, or a lane table outside the configured `schemas`, is
+  `declared_invalid`. A table without a schema is `public`'s, as it is for `CREATE TABLE`.
 
 ## Settings per transaction
 
@@ -311,8 +313,9 @@ behind a transaction pooler, reaches the next client. Two packages set the keys 
 
 `generate` plans RLS changes against the target before it writes anything. Coverage is counted per
 table, role and command: a role is covered for a command by a permissive policy for it (or `ALL`)
-whose `TO` names `PUBLIC`, the role, or a role it belongs to. Hand-written and unmanaged policies
-count. Tables proven empty are never reported.
+whose `TO` names `PUBLIC`, the role, or a role whose privileges it inherits (a membership granted
+without `INHERIT` does not count). Hand-written and unmanaged policies count. Tables proven empty are
+never reported.
 
 | Code | Severity | Fires when | Fix |
 |---|---|---|---|
@@ -347,8 +350,10 @@ Acknowledge with the same flags as any destructive change:
 pg-prime migrate generate --allow-data-loss --reason "deletes checked by the service" --by alice
 ```
 
-The acknowledgement is written into the prune file's header and kept on later runs, so it shows up
-in review:
+The acknowledgement is written into the prune file's header, so it shows up in review. It is kept on
+later runs until the declarations give back what it gave up (the policy is declared again, FORCE
+returns, the role is covered again); then it lapses, so losing the same thing a second time is
+refused again:
 
 ```sql
 -- pg-prime:declared prune

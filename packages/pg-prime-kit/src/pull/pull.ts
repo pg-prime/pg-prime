@@ -16,6 +16,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { extractCatalog, readLaneState, type Diagnostic } from "../catalog/extract.js";
 import { withClient, type ConnInfo } from "../db/pg.js";
+import { quoteIdent } from "../sql/ident.js";
 import { observedCounts } from "../catalog/extract.js";
 import { emitTypeScript, type UnsupportedItem } from "./emit-ts.js";
 import { readTierR, type TierRObject } from "./tier-r.js";
@@ -59,8 +60,25 @@ export async function pullSchema(input: PullInput): Promise<PullResult> {
         `function ${t.schema}.pgprime_set_${t.column}()`,
       ]),
     );
+    // The rest stay hand files: their function sheds the marker, or the declared prune drops it.
+    const unmark = new Map(
+      lane.updatedAtTriggers
+        .filter((t) => !updatedAtTriggers.includes(t))
+        .map((t) => [
+          `${t.schema}.pgprime_set_${t.column}()`,
+          `${quoteIdent(t.schema)}.${quoteIdent(`pgprime_set_${t.column}`)}()`,
+        ]),
+    );
     const read = await readTierR(client, schemas, prefix);
-    const tierR = { ...read, objects: read.objects.filter((o) => !declared.has(`${o.kind} ${o.identity}`)) };
+    const tierR = {
+      ...read,
+      objects: read.objects
+        .filter((o) => !declared.has(`${o.kind} ${o.identity}`))
+        .map((o) => {
+          const fn = o.kind === "function" ? unmark.get(o.identity) : undefined;
+          return fn === undefined ? o : { ...o, sql: `${o.sql.trimEnd()}\nCOMMENT ON FUNCTION ${fn} IS NULL;` };
+        }),
+    };
 
     // A Tier-R object with nowhere to go is residue, not a silent loss.
     const orphanTierR: UnsupportedItem[] =

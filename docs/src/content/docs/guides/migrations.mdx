@@ -152,7 +152,7 @@ migrate generate — docs_guides (shadow tier 2: the admin role has CREATEDB)
            fix: add .renamedFrom("name") to full_name in your schema, or pass --hints-file with { "from": "column:public.users.name", "to": "column:public.users.full_name" }
   data loss  column:public.users.name  (DS103)
            DS103 on: ALTER TABLE "public"."users" DROP COLUMN IF EXISTS "name"
-           fix: re-run with --allow-data-loss, or record the acknowledgement in a --hints-file
+           fix: re-run with --allow-data-loss --reason <text>, or list the subject in acknowledge.dataLoss
 ```
 
 A dropped column and an added column are indistinguishable in a catalog diff, so pg-prime never

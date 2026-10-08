@@ -20,13 +20,13 @@ Finds, imports and validates `pg-prime.config.*`, imports the user's TypeScript 
 2. It installs the `.js`→`.ts` resolve hook via `enableTsSpecifiers()` and `import()`s the file URL (`packages/pg-prime-kit/src/config/load.ts:165`).
 3. On failure, `classifyUserImportFailure` maps the four type-stripping codes to `stripTypesAdvice`, else tries `tsSpecifierAdvice`, else rethrows the original (`packages/pg-prime-kit/src/config/load.ts:139`).
 4. The default export must be a non-array object; `validate` type-checks string, number, array and boolean keys and `validateShadow` parses `shadow` (`packages/pg-prime-kit/src/config/load.ts:191`, `:215`).
-5. The CLI calls `resolveConfig`: connection from `--url`, else `config.connection`, else `config.url`/`PG_PRIME_DATABASE_URL`/`DATABASE_URL` via `parseDatabaseUrl` (`packages/pg-prime-kit/src/config/load.ts:491`).
-6. With no connection and `requireConnection === false`, a placeholder `ConnInfo` is used and `hasConnection` is false; otherwise it throws (`packages/pg-prime-kit/src/config/load.ts:498`).
-7. Paths resolve against the config file's directory (or `cwd`); defaults `migrations`, `sql`, `seeds`, `["public"]` (`packages/pg-prime-kit/src/config/load.ts:507`, `:519`).
-8. `production` is `config.production === true` or `PG_PRIME_ENV === "production"` (`packages/pg-prime-kit/src/config/load.ts:525`).
+5. The CLI calls `resolveConfig`: connection from `--url`, else `config.connection`, else `config.url`/`PG_PRIME_DATABASE_URL`/`DATABASE_URL` via `parseDatabaseUrl` (`packages/pg-prime-kit/src/config/load.ts:489`).
+6. With no connection and `requireConnection === false`, a placeholder `ConnInfo` is used and `hasConnection` is false; otherwise it throws (`packages/pg-prime-kit/src/config/load.ts:496`).
+7. Paths resolve against the config file's directory (or `cwd`); defaults `migrations`, `sql`, `seeds`, `["public"]` (`packages/pg-prime-kit/src/config/load.ts:505`, `:517`).
+8. `production` is `config.production === true` or `PG_PRIME_ENV === "production"` (`packages/pg-prime-kit/src/config/load.ts:523`).
 9. `loadSchema` imports each path (after `enableTsSpecifiers`), picks a registry (`default` with `tables`, else any export with `tables`), else scans all exports (`packages/pg-prime-kit/src/config/load.ts:339`).
 10. Table-like values (`$.name`, `$.columns`, `$.extras`, no `$.view`) are keyed `schema.name` (`packages/pg-prime-kit/src/config/load.ts:299`, `:345`).
-11. Standalone declarations (`kind` + `name`) are collected off the module's named exports into per-kind maps (`packages/pg-prime-kit/src/config/load.ts:353`).
+11. Standalone declarations (`kind` + `name`) are collected off the module's named exports into per-kind maps (`packages/pg-prime-kit/src/config/load.ts:354`).
 
 ## Gotchas
 - Only `ERR_UNKNOWN_FILE_EXTENSION` sets `retryWithStripTypes`; the other three strip-types codes produce the same sentence without a re-exec (`packages/pg-prime-kit/src/config/load.ts:79`). The re-exec itself lives in `packages/pg-prime-kit/src/cli/main.ts:426`, guarded by `STRIP_TYPES_MARKER`.
@@ -34,13 +34,13 @@ Finds, imports and validates `pg-prime.config.*`, imports the user's TypeScript 
 - No cache-busting query on `import()`: a second `loadConfig` of the same file in one process returns the cached module.
 - `validate` does not check `connection` or `schema`, and unknown keys are kept, not rejected (`packages/pg-prime-kit/src/config/load.ts:215`).
 - `validateShadow` only parses `shadow`; the raw value is kept. So `shadow: "none"` passes (`parseShadowStrategy` maps it to `offline`, `packages/pg-prime-kit/src/shadow/ladder.ts:175`) but reaches `provisionShadow` as `"none"` where it is parsed as a tier-1 URL and throws `ShadowStrategyError` (`packages/pg-prime-kit/src/shadow/ladder.ts:285`).
-- `--url` beats `config.connection`, but `config.connection` beats `config.url` (`packages/pg-prime-kit/src/config/load.ts:492`).
-- `parseDatabaseUrl` drops all query parameters (e.g. `sslmode`) and reports them in `warnings`; user defaults to `PGUSER` then `postgres`, database to the user, host to `127.0.0.1`, port to 5432; IPv6 brackets are stripped (`packages/pg-prime-kit/src/config/load.ts:415`–`:433`).
-- `replicas` URLs are parsed with `parseDatabaseUrl` and their warnings are discarded (`packages/pg-prime-kit/src/config/load.ts:523`).
-- A registry's `tables` is preferred over the module's other exports for tables, but declarations always come off the module, never the registry; `default` is skipped for declarations (`packages/pg-prime-kit/src/config/load.ts:354`).
+- `--url` beats `config.connection`, but `config.connection` beats `config.url` (`packages/pg-prime-kit/src/config/load.ts:490`).
+- `parseDatabaseUrl` drops all query parameters (e.g. `sslmode`) and reports them in `warnings`; user defaults to `PGUSER` then `postgres`, database to the user, host to `127.0.0.1`, port to 5432; IPv6 brackets are stripped (`packages/pg-prime-kit/src/config/load.ts:413`–`:431`).
+- `replicas` URLs are parsed with `parseDatabaseUrl` and their warnings are discarded (`packages/pg-prime-kit/src/config/load.ts:521`).
+- A registry's `tables` is preferred over the module's other exports for tables, but declarations always come off the module, never the registry; `default` is skipped for declarations (`packages/pg-prime-kit/src/config/load.ts:355`).
 - A view is excluded from tables by `$.view`; without that check it would be emitted as a `CREATE TABLE` (`packages/pg-prime-kit/src/config/load.ts:305`).
-- Duplicates across exports or files collapse by `schema.name` (by bare name for `pgSchema`, by `schema.table.name` for a policy, schema taken from its table), last one wins (`packages/pg-prime-kit/src/config/load.ts:361`).
-- A module throws `ConfigError` only if it has neither tables nor declarations (`packages/pg-prime-kit/src/config/load.ts:368`).
+- Duplicates across exports or files collapse by `schema.name` (by bare name for `pgSchema`), last one wins; policies collapse only when they are the same object, so two distinct ones with one identity reach `renderDeclared`'s `declared_conflict` (`packages/pg-prime-kit/src/config/load.ts:361`).
+- A module throws `ConfigError` only if it has neither tables nor declarations (`packages/pg-prime-kit/src/config/load.ts:366`).
 
 ## Tests
 - `packages/pg-prime-kit/test/cli/config.test.ts` — `loadConfig` (`.ts` and `.mjs`, upward search, no file, missing explicit path, bad default export, mistyped keys, both `shadow` spellings and keywords, invalid `shadow`), `parseDatabaseUrl` (decoding, default port, IPv6, dropped params, bad scheme), `resolveConfig` (URL precedence, paths relative to config file, `PG_PRIME_ENV`, no-connection message), `tsSpecifierAdvice` (message shape and pass-through cases), and the binary loading `.mjs`/`.ts` configs plus the strip-types sentence with and without `STRIP_TYPES_MARKER`.
