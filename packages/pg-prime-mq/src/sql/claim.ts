@@ -220,8 +220,9 @@ export function promoteSql(t: Tables, queue: string, id?: bigint): F {
       wakeCte(t, 'up'),
       watchCte(t, 'up'),
     ],
+    // No `greatest(0, …)` here: it turns NULL (nothing delayed) into 0, due now.
     (refs) => sql`select (select count(*)::int from up) as promoted, ${refs} as fx,
-      greatest(0, extract(epoch from (select min(run_at) from ${t.messages}
+      (extract(epoch from (select min(run_at) from ${t.messages}
         where queue = ${queue} and state = 'delayed' and run_at > now()) - now()) * 1000)::float8 as next_in`,
   )
 }

@@ -555,6 +555,27 @@ describe('worker lifecycle and hooks', () => {
     expect([m?.state, m?.attempts, m?.claims]).toStrictEqual(['ready', 0, 0])
   })
 
+  it('an idle worker with nothing delayed sleeps until pollMs', async () => {
+    const { db, schema } = setup()
+    let promotes = 0
+    const counted = new Proxy(db, {
+      get(o, k) {
+        if (k === 'withOptions')
+          return (opts: { label?: string }) => (
+            opts.label === 'mq.promote' && promotes++,
+            o.withOptions(opts)
+          )
+        const v = Reflect.get(o, k)
+        return typeof v === 'function' ? v.bind(o) : v
+      },
+    })
+    const idle = pgMq({ db: counted, schema }).queue(defineQueue<P>('idle'))
+    const w = idle.work(async () => {}, { pollMs: 5000, expireScanMs: 60_000, maintenanceMs: 60_000 })
+    await sleep(300)
+    await w.close()
+    expect(promotes).toBeLessThanOrEqual(3)
+  })
+
   it('a throwing hook is disabled for that call and reported as hook-failed', async () => {
     const internal: string[] = []
     const { q } = setup(
