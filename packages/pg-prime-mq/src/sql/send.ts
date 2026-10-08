@@ -95,7 +95,7 @@ export function insertSql(t: Tables, rows: readonly NewRow[], o: InsertOptions):
           group_key, retry, dedup_key, parent, on_fail, pending_deps)
         select s.id, s.queue, (case when s.kids > 0 then 'blocked' when s.at > now() then 'delayed'
             else 'ready' end)::${t.msgState},
-          s.payload, s.key, s.priority, case when s.lifo then -s.id else s.id end,
+          coalesce(s.payload, 'null'::jsonb), s.key, s.priority, case when s.lifo then -s.id else s.id end,
           case when s.kids = 0 and s.at > now() then s.at end,
           s.group_key, s.retry, s.dedup, ${o.parent === undefined ? sql`p.id` : sql`${o.parent.id}::bigint`},
           s.on_fail::${t.onFail}, s.kids

@@ -105,6 +105,18 @@ describe('send and order', () => {
     expect((await q.claim()).map((m) => m.payload.n)).toStrictEqual([2])
   })
 
+  it('a null or undefined payload is stored as JSON null', async () => {
+    const pings = defineQueue<null | undefined>('pings')
+    const mq = pgMq({ db: server.db(), schema: freshSchema(), define: { pings } })
+    await mq.start()
+    await mq.queues.pings.send(null)
+    await mq.queues.pings.send(undefined)
+    expect((await mq.queues.pings.claim({ limit: 2 })).map((m) => m.payload)).toStrictEqual([
+      null,
+      null,
+    ])
+  })
+
   it('a send in a rolled-back transaction leaves nothing', async () => {
     const { db, mq, q } = setup()
     await mq.start()
