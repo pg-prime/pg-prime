@@ -1,0 +1,200 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`statements > golden SQL 1`] = `
+{
+  "D1": "
+    with l as (select 1 from "pgprime_outbox".partitions
+    where topic = $1 and p = $2::smallint and token = $3 and lease_until > now()
+    for update), d as (update "pgprime_outbox".records set state = 'delivered', delivered_at = clock_timestamp()
+          where id = any($4::bigint[]) and state = 'pending' and exists (select from l) returning key), ub as (
+      delete from "pgprime_outbox".blocked where topic = $5 and key in (select key from d where key is not null)
+    ), sv as (
+      update "pgprime_outbox".partitions set served_at = clock_timestamp()
+      where topic = $6 and p = $7::smallint and exists (select from l)
+    )
+    select count(*) as n from d",
+  "D1 (keepDeliveredMs: 0)": "
+    with l as (select 1 from "pgprime_outbox".partitions
+    where topic = $1 and p = $2::smallint and token = $3 and lease_until > now()
+    for update), d as (delete from "pgprime_outbox".records
+          where id = any($4::bigint[]) and state = 'pending' and exists (select from l) returning key), ub as (
+      delete from "pgprime_outbox".blocked where topic = $5 and key in (select key from d where key is not null)
+    ), sv as (
+      update "pgprime_outbox".partitions set served_at = clock_timestamp()
+      where topic = $6 and p = $7::smallint and exists (select from l)
+    )
+    select count(*) as n from d",
+  "F1": "
+    with l as (select 1 from "pgprime_outbox".partitions
+    where topic = $1 and p = $2::smallint and token = $3 and lease_until > now()
+    for update), r as (
+      update "pgprime_outbox".records set attempts = attempts + 1, error = $4,
+             next_at = case when key is null then now() + $5::float8 * interval '1 ms' else next_at end
+      where id = $6::bigint and state = 'pending' and exists (select from l) returning key, attempts
+    ), b as (
+      insert into "pgprime_outbox".blocked (topic, key, until, attempts, error)
+      select $7, key, now() + $8::float8 * interval '1 ms', attempts, $9 from r where key is not null
+      on conflict (topic, key) do update set until = excluded.until, attempts = excluded.attempts, error = excluded.error
+    )
+    select count(*) as n from r",
+  "K1": "
+    with l as (select 1 from "pgprime_outbox".partitions
+    where topic = $1 and p = $2::smallint and token = $3 and lease_until > now()
+    for update), r as (
+      update "pgprime_outbox".records set state = 'parked', attempts = attempts + 1, error = $4
+      where id = $5::bigint and state = 'pending' and exists (select from l) returning key
+    ), b as (
+      insert into "pgprime_outbox".blocked (topic, key, until, attempts, error)
+      select $6, key, 'infinity', 0, $7 from r where key is not null
+      on conflict (topic, key) do update set until = 'infinity', error = excluded.error
+    )
+    select count(*) as n from r",
+  "L1": "
+    with live as (
+      select count(*) as n from "pgprime_outbox".relays
+      where topic = $1 and seen_at > now() - $2::float8 * interval '1 ms'
+    ), mine as (
+      select count(*) as n from "pgprime_outbox".partitions
+      where topic = $3 and owner = $4 and lease_until > now()
+    ), free as (
+      select p from "pgprime_outbox".partitions
+      where topic = $5 and (token is null or lease_until < now())
+      order by served_at
+      limit greatest(0, ceil($6::numeric / greatest((select n from live), 1))::int - (select n from mine))
+      for update skip locked
+    ), up as (
+      update "pgprime_outbox".partitions x set owner = $7, token = gen_random_uuid()::text,
+             epoch = x.epoch + 1, lease_until = now() + $8::float8 * interval '1 ms'
+      from free where x.topic = $9 and x.p = free.p
+      returning x.p, x.token, x.epoch
+    )
+    select (select n from live) as live, coalesce(array_agg(p), '{}') as ps,
+           coalesce(array_agg(token), '{}') as tokens, coalesce(array_agg(epoch), '{}') as epochs
+    from up",
+  "R1": "
+    select r.id, r.key, r.idem, r.payload, r.headers, r.attempts, r.created_at
+    from "pgprime_outbox".records r
+    where r.topic = $1 and r.partition = $2::smallint and r.state = 'pending' and r.next_at <= now()
+      and (r.key is null or not exists (
+            select from "pgprime_outbox".blocked b where b.topic = $3 and b.key = r.key and b.until > now()))
+      and not (select paused from "pgprime_outbox".topics where name = $4)
+    order by r.id
+    limit $5::int",
+  "W1": "
+      with src as (
+        select r.* from jsonb_to_recordset($1::jsonb)
+          as r(key text, idem text, payload jsonb, headers jsonb)
+      ), lk as (
+        select pg_advisory_xact_lock(hashtextextended($2::text || '/' || key, 0))
+        from (select distinct key from src where key is not null and $3::boolean order by key) k
+      ), ins as (
+        insert into "pgprime_outbox".records (topic, key, partition, idem, payload, headers)
+        select $4, key,
+               case when key is null then floor(random() * p.n)::smallint
+                    else abs(hashtextextended(key, 0) % p.n)::smallint end,
+               idem, payload, headers
+        from src, (select count(*) from lk) as locked,
+             (select (select partitions from "pgprime_outbox".topics where name = $5) as n) as p
+        on conflict (topic, idem) do nothing
+        returning id, idem
+      )
+      select ins.id, ins.idem,
+             (select pg_notify($6, '') where exists (select from ins)) is null as woke
+      from ins",
+  "W1 #2": "
+            select id, idem from "pgprime_outbox".records
+            where topic = $1 and idem = any($2::text[])",
+  "discard": "
+    with d as (
+      delete from "pgprime_outbox".records
+      where topic = $1 and id = any($2::bigint[]) and state = 'parked'
+      returning key
+    ), b as (
+      delete from "pgprime_outbox".blocked where topic = $3 and key in (select key from d where key is not null)
+    )
+    select count(*) as n, (select pg_notify($4, '') where exists (select from d)) is null as woke
+    from d",
+  "heartbeat": "
+    with me as (
+      insert into "pgprime_outbox".relays (topic, owner) values ($1, $2)
+      on conflict (topic, owner) do update set seen_at = now()
+    ), gone as (
+      delete from "pgprime_outbox".relays
+      where topic = $3 and owner <> $4 and seen_at < now() - $5::float8 * interval '1 ms'
+    ), ext as (
+      update "pgprime_outbox".partitions x set lease_until = now() + $6::float8 * interval '1 ms'
+      from unnest($7::smallint[], $8::text[]) as h(p, tok)
+      where x.topic = $9 and x.p = h.p and x.token = h.tok
+      returning x.p
+    )
+    select coalesce((select array_agg(p) from ext), '{}') as kept,
+           (select count(*) from "pgprime_outbox".relays
+            where topic = $10 and seen_at > now() - $11::float8 * interval '1 ms') as live",
+  "parked": "
+    select id, key, idem, payload, headers, attempts, created_at, error from "pgprime_outbox".records
+    where topic = $1 and state = 'parked' and id > $2::bigint
+    order by id limit $3::int",
+  "pause": "
+    with u as (update "pgprime_outbox".topics set paused = $1::boolean where name = $2 returning 1)
+    select (select pg_notify($3, '') where not $4::boolean and exists (select from u))
+      is null as woke",
+  "release": "
+    with r as (
+      update "pgprime_outbox".partitions x set owner = null, token = null, lease_until = null
+      from unnest($1::smallint[], $2::text[]) as h(p, tok)
+      where x.topic = $3 and x.p = h.p and x.token = h.tok
+      returning x.p
+    ), d as (
+      delete from "pgprime_outbox".relays where $4::boolean and topic = $5 and owner = $6
+    )
+    select (select pg_notify($7, '') where exists (select from r)) is null as woke",
+  "replay": "
+    with r as (
+      update "pgprime_outbox".records set state = 'pending', attempts = 0, next_at = '-infinity', error = null
+      where topic = $1 and id = any($2::bigint[]) and state = 'parked'
+      returning key
+    ), b as (
+      delete from "pgprime_outbox".blocked where topic = $3 and key in (select key from r where key is not null)
+    )
+    select count(*) as n, (select pg_notify($4, '') where exists (select from r)) is null as woke
+    from r",
+  "retention": "
+    with gate as (
+      update "pgprime_outbox".topics set maint_at = now()
+      where name = $1 and ($2::boolean or maint_at < now() - $3::float8 * interval '1 ms')
+      returning keep_delivered_ms
+    ), del as (
+      delete from "pgprime_outbox".records where id in (
+        select id from "pgprime_outbox".records
+        where topic = $4 and state = 'delivered'
+          and delivered_at < now() - (select keep_delivered_ms from gate) * interval '1 ms'
+        order by delivered_at
+        limit $5::int)
+      returning 1
+    )
+    select count(*) as n from del",
+  "start": "
+    with t as (
+      insert into "pgprime_outbox".topics (name, partitions, keep_delivered_ms)
+      values ($1, $2::smallint, $3::bigint)
+      on conflict (name) do update set keep_delivered_ms = excluded.keep_delivered_ms
+      returning partitions
+    ), p as (
+      insert into "pgprime_outbox".partitions (topic, p)
+      select $4, generate_series(0, (select partitions from t) - 1)
+      on conflict do nothing
+    )
+    select partitions from t",
+  "stats": "
+    select p.p, p.owner, p.epoch, p.lease_until, c.pending, c.oldest_at,
+           (select count(*) from "pgprime_outbox".records where topic = $1 and state = 'parked') as parked,
+           (select count(*) from "pgprime_outbox".blocked where topic = $2 and until > now()) as blocked,
+           (select paused from "pgprime_outbox".topics where name = $3) as paused
+    from "pgprime_outbox".partitions p
+    cross join lateral (
+      select count(*) as pending, min(created_at) as oldest_at from "pgprime_outbox".records r
+      where r.topic = p.topic and r.partition = p.p and r.state = 'pending'
+    ) c
+    where p.topic = $4 order by p.p",
+}
+`;
