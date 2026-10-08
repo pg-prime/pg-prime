@@ -42,16 +42,16 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime-events/src/payload.md — Standard Schema validation, codec, NUL and size checks — read when a payload is refused or schema validation misbehaves.
 - docs/packages/pg-prime-events/src/util.md — sleep, ASYNC_DISPOSE and backoffMs fixed-vector copy — read when retry delays differ from the family vectors.
 - docs/packages/pg-prime-events/src/waker.md — NOTIFY/gap/poll wake-up loop with pooler fallback — read when wake-ups are late or LISTEN is unavailable.
-- docs/packages/pg-prime-kit/src/catalog/extract.md — pg_catalog extraction into SchemaIR, Tier-O observation, census diagnostics — read when changing what the extractor reads, excludes or diagnoses.
+- docs/packages/pg-prime-kit/src/catalog/extract.md — pg_catalog extraction into SchemaIR, Tier-O observation, census diagnostics, RLS lane state (readLaneState/afterLaneState/coverageLost, RL101/RL108) — read when changing what the extractor reads, excludes or diagnoses.
 - docs/packages/pg-prime-kit/src/catalog/payloads.md — Tier-M fact payload shapes, GENERATED_NAME, ObservedObject — read when adding or changing a payload field.
 - docs/packages/pg-prime-kit/src/checkpoint/checkpoint.md — checkpoint build/write/list, IR read-back, naming drifted objects — read when touching `migrate checkpoint` or fingerprint-mismatch drift messages.
 - docs/packages/pg-prime-kit/src/cli.md — pg-prime binary entry point, shebang, exitCode flush — read when changing how the binary starts or exits.
 - docs/packages/pg-prime-kit/src/cli/args.md — dependency-free long-flag parser, durations, help option rendering — read when adding a CLI flag or debugging argv parsing.
 - docs/packages/pg-prime-kit/src/cli/commands/apply.md — `migrate apply`/`deploy` flag mapping, envelope and text over `applyPending` — read when changing apply flags, timeouts or the apply envelope.
 - docs/packages/pg-prime-kit/src/cli/commands/baseline.md — `migrate baseline`: write `0000_baseline` or `--at` mark files baselined — read when adopting an existing database or debugging baseline refusals.
-- docs/packages/pg-prime-kit/src/cli/commands/check.md — `migrate check` CI gate: schema drift, checksums, pending, exit precedence — read when check exits 4/5 unexpectedly or editing CI gating.
+- docs/packages/pg-prime-kit/src/cli/commands/check.md — `migrate check` gate: schema drift, stale declared lane, checksums, pending, exit precedence — read when check exits 3/4/5 unexpectedly or editing CI gating.
 - docs/packages/pg-prime-kit/src/cli/commands/checkpoint.md — `migrate checkpoint`: writes full-schema checkpoint `.sql`/`.plan.json`/`.ir.json`, records nothing — read when creating checkpoints or debugging checkpoint refusals.
-- docs/packages/pg-prime-kit/src/cli/commands/doctor.md — `migrate doctor` read-only health findings: invalid indexes, drift, stale leases, orphans — read when doctor exits 4 or adding a health check.
+- docs/packages/pg-prime-kit/src/cli/commands/doctor.md — `migrate doctor` read-only health findings: invalid indexes, drift, stale leases, orphans, declared markers — read when doctor exits 4 or adding a health check.
 - docs/packages/pg-prime-kit/src/cli/commands/generate.md — `migrate generate` CLI: flags, `--empty`/`--data`, status-to-exit mapping, `shadowStrategy` — read when changing generate flags, exit codes or `--interactive` renames.
 - docs/packages/pg-prime-kit/src/cli/commands/lint.md — `migrate lint` target selection, synthesized plans, `--fail-on`, sarif refusal — read when lint picks the wrong files or exits 3 unexpectedly.
 - docs/packages/pg-prime-kit/src/cli/commands/pull.md — `pull` verb: introspect database, write TypeScript schema, repeatables, report — read when changing pull flags or output paths.
@@ -59,7 +59,7 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime-kit/src/cli/commands/seed.md — `db seed` CLI: sets, `--list`, production refusal, never records history — read when seeding fails or changing seed flags.
 - docs/packages/pg-prime-kit/src/cli/commands/status.md — `migrate status` envelope and text rendering over `migrationStatus` — read when changing status output or its exit codes.
 - docs/packages/pg-prime-kit/src/cli/commands/unlock.md — `migrate unlock` lease inspection and `--force` lease-row deletion — read when a deploy lock is stuck or unlock exits 6.
-- docs/packages/pg-prime-kit/src/cli/commands/verify.md — `migrate verify`: replay migrations into an ephemeral database and diff — read when verify fails, drifts, or `--from-checkpoint`/`--to` misbehave.
+- docs/packages/pg-prime-kit/src/cli/commands/verify.md — `migrate verify`: replay migrations into an ephemeral database, diff, declared-lane census — read when verify fails, drifts, or `--from-checkpoint`/`--to` misbehave.
 - docs/packages/pg-prime-kit/src/cli/exit.md — EXIT code table and RUNNER_EXIT runner-status mapping — read when choosing or changing a command's exit code.
 - docs/packages/pg-prime-kit/src/cli/interactive.md — generate --interactive rename confirmations rendered as renamedFrom patch — read when changing how confirmed renames become a patch.
 - docs/packages/pg-prime-kit/src/cli/main.md — CLI routing, help/version, config resolution, envelopes, strip-types re-exec — read when adding a command or changing CLI routing/errors.
@@ -71,13 +71,13 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime-kit/src/data.md — batched resumable data migrations and replica-lag readers — read when debugging `-- pg-prime:batch` backfills, watermarks or max-replica-lag waits.
 - docs/packages/pg-prime-kit/src/db/pg.md — ConnInfo, withClient, guarded CREATE/DROP DATABASE and shadow-name gate — read when changing connection handling or database provisioning.
 - docs/packages/pg-prime-kit/src/diff/candidates.md — unannotated rename candidates: unambiguous, ambiguous, near-miss verdicts — read when generate exits missing_hints or proposes a wrong rename.
-- docs/packages/pg-prime-kit/src/diff/ddl.md — delta-to-DDL emission, lock-safe rewrites and hazard codes per object kind — read when generated SQL, a hazard code, or a CONCURRENTLY rewrite looks wrong.
+- docs/packages/pg-prime-kit/src/diff/ddl.md — delta-to-DDL emission, lock-safe rewrites and hazard codes per object kind, RL101–RL103/RL106, updatedAt trigger pre-drop — read when generated SQL, a hazard code, or a CONCURRENTLY rewrite looks wrong.
 - docs/packages/pg-prime-kit/src/diff/delta.md — Delta union, RenameHint and RenameRecord types — read when adding a delta op or rename source.
 - docs/packages/pg-prime-kit/src/diff/diff.md — diffIR fact comparison, enum label appends, adopted partitions, retained extensions — read when a schema change produces a missing or phantom delta.
 - docs/packages/pg-prime-kit/src/diff/order.md — statement topological ordering, transaction segments, concurrent stage splitting — read when statements apply in the wrong order or a split is declined.
 - docs/packages/pg-prime-kit/src/diff/rename.md — applying rename hints and cascading auto-named index/constraint renames — read when a rename plans DROP+CREATE instead of RENAME.
 - docs/packages/pg-prime-kit/src/diff/statement.md — Statement record, lock class, transactionality, stage, PHASE ranks — read when adding a statement field or changing ordering tie-breaks.
-- docs/packages/pg-prime-kit/src/generate.md — migrate generate pipeline, statuses, stub templates, hints, generateFromDatabases — read when changing how migrations are generated, proven or written.
+- docs/packages/pg-prime-kit/src/generate.md — migrate generate pipeline, declared-lane refusals, statuses, stub templates, hints, generateFromDatabases — read when changing how migrations or lane files are generated, proven or written.
 - docs/packages/pg-prime-kit/src/history/schema.md — pgprime history DDL and idempotent ensureHistory — read when changing history tables or debugging history creation races.
 - docs/packages/pg-prime-kit/src/history/store.md — reads/writes of migration rows, lease, checkpoints, data progress, repeatables — read when changing what the runner records in pgprime tables.
 - docs/packages/pg-prime-kit/src/index.md — @pg-prime/kit public barrel, export groups, types@<5.9 stub — read when adding, removing or renaming a kit export.
@@ -89,20 +89,21 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime-kit/src/prove/pg-dump.md — pg_dump oracle: launcher resolution, schema dumps, multiset comparison — read when the dump oracle skips, fails or reports reordered tables.
 - docs/packages/pg-prime-kit/src/prove/prove.md — shadow-clone proof: clone, apply stages, re-extract, fingerprint, oracle — read when a generate proof fails or clone provisioning misbehaves.
 - docs/packages/pg-prime-kit/src/prove/temp-schema.md — tier-3 proof inside target via temp schemas, re-derived plan — read when a NOCREATEDB generate fails its proof.
-- docs/packages/pg-prime-kit/src/pull/emit-ts.md — IR to deterministic DSL TypeScript file, unsupported residue block — read when pull output or its residue list is wrong.
+- docs/packages/pg-prime-kit/src/pull/emit-ts.md — IR to deterministic DSL TypeScript file incl. rls/definePolicy/updatedAtTrigger, unsupported residue block — read when pull output or its residue list is wrong.
 - docs/packages/pg-prime-kit/src/pull/parse.md — recognisers for pg_get_constraintdef and pg_get_indexdef output — read when pull reports a constraint or index as unsupported.
 - docs/packages/pg-prime-kit/src/pull/pull.md — pg-prime pull orchestration, file writing, pull.report.json — read when changing pull inputs, outputs or report shape.
-- docs/packages/pg-prime-kit/src/pull/tier-r.md — catalog read of functions, views, policies, triggers into sql/ repeatables — read when pulled sql/ files are wrong or not idempotent.
-- docs/packages/pg-prime-kit/src/repeatables.md — Tier R sql/ scan order, hash plan, one-transaction apply, idempotence check — read when repeatables re-apply unexpectedly or TX201 flags a statement.
+- docs/packages/pg-prime-kit/src/pull/tier-r.md — catalog read of functions, views and triggers into sql/ repeatables — read when pulled sql/ files are wrong or not idempotent.
+- docs/packages/pg-prime-kit/src/repeatables.md — Tier R sql/ scan order, hash plan, declared self-heal, one-transaction apply, idempotence check — read when repeatables re-apply unexpectedly or TX201 flags a statement.
 - docs/packages/pg-prime-kit/src/runner/apply.md — segment execution, timeout GUCs, advisory lock key, pooler probes — read when changing transaction framing, timeouts or pooler detection.
 - docs/packages/pg-prime-kit/src/runner/files.md — migrations directory discovery, directives, stmt markers, plan/file merge — read when a migration file parses wrong or orders unexpectedly.
-- docs/packages/pg-prime-kit/src/runner/run.md — `migrate apply` run: lock, gates, checkpoints, retries, resume, repeatables — read when debugging apply exit codes, retries or crash resume.
+- docs/packages/pg-prime-kit/src/runner/run.md — `migrate apply` run: lock, gates, row_security off, RL107 pre-flight, checkpoints, retries, resume, repeatables — read when debugging apply exit codes, retries or crash resume.
 - docs/packages/pg-prime-kit/src/runner/status.md — read-only `migrate status` report and exit code — read when status shows wrong pending, drift or exit code.
+- docs/packages/pg-prime-kit/src/schema/declared.md — RLS policies, FORCE and updatedAt triggers as marked sql/ repeatables, prune, census — read when declared lane files, markers, `declared_*` findings or the prune misbehave.
 - docs/packages/pg-prime-kit/src/schema/emit.md — DSL registry to schema-qualified DDL, names, ordering, diagnostics — read when generated desired DDL fails to load or diffs.
 - docs/packages/pg-prime-kit/src/schema/load.md — loadDesired: emit into shadow, extract, remap to user schemas — read when IR(desired) loading fails or shows phantom deltas.
 - docs/packages/pg-prime-kit/src/schema/remap.md — shadow-to-user schema rename over IR, diagnostics, observations — read when tier-3 fingerprints diverge or names leak.
-- docs/packages/pg-prime-kit/src/schema/types.md — type-only SchemaLike/TableLike/ViewLike view of the pg-prime DSL — read when the kit's input schema shape changes.
-- docs/packages/pg-prime-kit/src/schema/views.md — declared views rendered into sql/020_views, sync, census adjustment — read when declared view files or the view census are wrong.
+- docs/packages/pg-prime-kit/src/schema/types.md — type-only SchemaLike/TableLike/ViewLike/PolicyLike view of the pg-prime DSL — read when the kit's input schema shape changes.
+- docs/packages/pg-prime-kit/src/schema/views.md — declared views rendered into sql/020_views, sync via syncDeclared, per-kind census adjustment — read when declared view files or the view census are wrong.
 - docs/packages/pg-prime-kit/src/seed/db.md — dynamic pg-prime import building the typed Db for .ts seeds — read when a .ts seed cannot get `db` or the peer import fails.
 - docs/packages/pg-prime-kit/src/seed/run.md — `db seed` scan, sets, production refusal, per-file transactions — read when seeds run in the wrong order, refuse, or fail.
 - docs/packages/pg-prime-kit/src/shadow/ladder.md — shadow tiers 1–3 provisioning, strategy parsing, tier-4 refusal — read when generate picks the wrong shadow tier or leaves shadow objects.
@@ -207,10 +208,12 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime/src/schema/extras.md — table extras: primaryKey, indexes, unique/check/exclude, foreignKey, partitioning — read when declaring table-level constraints or indexes in pgTable's third argument.
 - docs/packages/pg-prime/src/schema/index.md — pg-prime/schema barrel and which helpers stay internal — read when adding a schema export or checking what pg-prime/schema exposes.
 - docs/packages/pg-prime/src/schema/objects.md — pgDomain, pgSequence, pgExtension standalone declarations — read when declaring domains, sequences or extensions, or pull drops them.
+- docs/packages/pg-prime/src/schema/policy.md — definePolicy, PolicySpec/PolicyRuntime, CREATE POLICY rendering, column qualification — read when a declared policy renders or validates wrongly.
 - docs/packages/pg-prime/src/schema/ref.md — Ref, AnyRef, RefRuntime column-reference shapes — read when touching column references or the [REFS]/cols slot.
 - docs/packages/pg-prime/src/schema/relations.md — defineRelations, defineSchema, relation resolution and FK inference — read when a relation fails to resolve or FK inference is ambiguous.
 - docs/packages/pg-prime/src/schema/symbols.md — phantom unique-symbol slot keys (META, REFS, READONLY, …) — read when adding a slot key or hitting TS2527 on declaration emit.
 - docs/packages/pg-prime/src/schema/table.md — pgTable, pgSchema, TableRuntime, buildColumnRefs, casing — read when changing table construction or debugging duplicate/invalid column names.
+- docs/packages/pg-prime/src/schema/trigger.md — updatedAtTrigger table extra and its refusals — read when declaring an updated_at trigger or it throws.
 - docs/packages/pg-prime/src/schema/types.md — ColMeta, RelMeta, SelectRow/InsertRow/UpdateRow, utility types — read when a row shape's optionality or nullability looks wrong.
 - docs/packages/pg-prime/src/schema/view.md — pgView/pgMaterializedView builders, ViewInfo, read-only view handles — read when declaring a view or debugging view options/dependsOn ordering.
 - docs/packages/pg-prime/src/session/config.md — DbConfig shape, presets, pool defaults, eager construction checks — read when changing pgPrime options or config validation.
@@ -222,6 +225,7 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime/src/session/owned-schema.md — versioned DDL for an add-on's own schema: migrateOwnedSchema (advisory-locked ledger, checksum, min_client) and vendorable ownedSchemaSql — read when changing add-on migrations or the ledger rules.
 - docs/packages/pg-prime/src/session/pg-lazy.md — lazy optional pg import and pool construction for connection — read when changing how `connection:` builds its pg.Pool.
 - docs/packages/pg-prime/src/session/runner.md — PoolRunner/ConnRunner statement path: hooks, timeouts, error mapping, acquire, row counts and the ifVersion check — read when changing per-statement execution, timeouts or connection disposal.
+- docs/packages/pg-prime/src/session/setting.md — setting()/SettingKey: typed GUC set() records and current() SQL — read when a setting reads NULL, 22P02, or setLocal names misbehave.
 - docs/packages/pg-prime/src/session/transaction.md — pure BEGIN/savepoint/set_config SQL, advisory keys, retry schedule — read when changing BEGIN text, retry defaults or advisory-lock helpers.
 - docs/packages/pg-prime/src/session/types.md — session-layer option/result types for handles, pool, COPY, LISTEN — read when adding or changing public session option types.
 - docs/packages/pg-prime/src/sql.md — sql tag, fragments, ident/lit/unsafeRaw/join, identifier quoting, builder errors — read when touching the sql template tag or identifier quoting.
