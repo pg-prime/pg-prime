@@ -344,17 +344,29 @@ describe('the §10 tier-2 table', () => {
     const leaseMs = 600
     const lost: string[] = []
     mq.observe({ onInternal: (e) => void lost.push(e.kind) })
+    let holding = false
     const w = q.work(
       async (m, ctx) => {
-        if (m.payload.n !== 0) return (await sleep(3 * leaseMs), m.payload.n)
+        if (m.payload.n !== 0) return (await sleep(4 * leaseMs), m.payload.n)
+        // The row stays locked while it is still in the heartbeat set, then completes in the same tx.
         return db.transaction(async (tx) => {
-          await ctx.complete(0, { tx })
+          await tx.sql`select 1 from ${sql.ident(schema, 'messages')} where id = ${m.id} for update`.execute()
+          holding = true
           await sleep(3 * leaseMs)
+          await ctx.complete(0, { tx })
           return 0
         })
       },
       { concurrency: 3, leaseMs, pollMs: 50 },
     )
+    await until(() => holding)
+    await sleep(2 * leaseMs)
+    const stale = await count(
+      server.db(1),
+      `select count(*)::int as n from ${schema}.messages where state = 'active' and lease_until < now()
+         and payload->>'n' <> '0'`,
+    )
+    expect(stale).toBe(0)
     await until(async () => (await q.counts()).completed === 3, 20_000)
     await Promise.all([w.close(), scanner.close()])
     expect(lost.filter((k) => k === 'lease-lost')).toStrictEqual([])
