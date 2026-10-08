@@ -29,3 +29,9 @@ there.
 
 The collation name is a single identifier and must name a `pg_catalog` collation: migrations run
 under `search_path = pg_catalog`, so a collation created in another schema does not resolve.
+
+**Upgrading a 0.1.0 migration history:** the catalog extractor now records a collation outside
+`pg_catalog` as `"schema"."name"`, so a managed column that already uses one fingerprints
+differently and the next `migrate apply` stops with `fingerprint_mismatch`. If your managed schemas
+use such a collation, re-baseline once after upgrading (`pg-prime migrate baseline --force`).
+Columns with `pg_catalog` collations, or none, are unaffected.
