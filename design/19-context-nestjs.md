@@ -82,7 +82,7 @@ names pass `assertGucName` (`session/transaction.ts`); byte-encoding codecs are 
 export const tenantId = setting('app.tenant_id', uuidCodec)   // one key feeds runtime and policies
 export const userId = setting('app.user_id', uuidCodec)
 host.run({ settings: { ...tenantId.set(t), ...userId.set(u) } }, handler)        // runtime
-pgPolicy('tenant_isolation', { on: projects, using: (p) => eq(p.tenantId, tenantId.current()) })  // design/20
+definePolicy('tenant_isolation', { on: projects, using: (p) => eq(p.tenantId, tenantId.current()) })  // design/20
 ```
 
 ### 2.2 `@pg-prime/context`
@@ -155,12 +155,15 @@ export const createProject = (input: NewProject) =>
 
 ### 3.1 State
 
-- **ALS store** per scope: `{ tx?: Tx, base?: Tx, settings: Record<string, Setting> }`. `base` is set
-  only under a pin (§3.7). `run`, `transaction` and `within` use `storage.run(newStore, …)`, never
+- **ALS store** per scope: `{ tx?: Tx, base?: Tx, mode?: TxOptions, settings: Record<string,
+  Setting> }`. `base` is set only under a pin (§3.7). `mode` is the options `tx` was opened with,
+  which a join compares against: `Tx` has no `deferrable`, and under a pin it reports the pin's
+  isolation and access mode. `run`, `transaction` and `within` use `storage.run(newStore, …)`, never
   `enterWith`.
-- **`busy`:** a host `WeakMap<Tx, boolean>` marking an in-flight host savepoint. It is per `Tx`
-  because savepoint names are depth-derived per connection. A nested savepoint runs on the child
-  `Tx`, so its parent's flag never blocks it.
+- **`busy`:** a host `WeakMap<Tx, Promise>` holding the last host savepoint queued on a `Tx`. It
+  is per `Tx` because savepoint names are depth-derived per connection. A `propagation: 'savepoint'`
+  call on a busy `Tx` is refused; a pinned savepoint (§3.7) waits its turn. A nested savepoint runs
+  on the child `Tx`, so its parent's entry never blocks it.
 - **Hot path** (`db`/`current()`), one `getStore()` and two checks with no scope:
 
   ```ts
@@ -179,8 +182,8 @@ a transaction", and a join is free where a savepoint costs two round trips.
 | Mode | No active tx | Active ALS tx |
 |---|---|---|
 | any | `root.transaction(fn', { ...opts, localSettings: { ...scope.settings, ...opts.localSettings } })`; under a pin, a savepoint on the base (§3.7) | see below |
-| `join` | — | `fn(tx)` with the **real** outer `Tx`; no wrapper and no new store. A join cannot change the transaction: `isolation`/`accessMode`/`deferrable` must equal the outer's, and `timeoutMs`/`lockTimeoutMs`/`localSettings` → `CONTEXT_OPTIONS` (use `savepoint` or `new`). `retry`, `signal` and `label` are ignored |
-| `savepoint` | — | `tx.savepoint(fn', { timeoutMs, lockTimeoutMs, localSettings, label })`; `busy(tx)` → `CONTEXT_CONCURRENT_SAVEPOINT`; `TxOptions`-only keys → `CONTEXT_OPTIONS` |
+| `join` | — | `fn(tx)` with the **real** outer `Tx`; no wrapper and no new store. A join cannot change the transaction: `isolation`/`accessMode`/`deferrable` must equal the outer's (as opened: the store's `mode`), and `timeoutMs`/`lockTimeoutMs`/`localSettings` → `CONTEXT_OPTIONS` (use `savepoint` or `new`). `retry`, `signal` and `label` are ignored |
+| `savepoint` | — | `tx.savepoint(fn', { timeoutMs, lockTimeoutMs, localSettings, label })`; the keys these set are captured before `SAVEPOINT` and restored before `RELEASE`, which would keep them; `busy(tx)` → `CONTEXT_CONCURRENT_SAVEPOINT`; `TxOptions`-only keys → `CONTEXT_OPTIONS` |
 | `new` | — | `root.transaction(fn', …)` on a **second** connection with the scope's settings. Needs `pool.max ≥ 2` per concurrent caller; with `max: 1` it waits `connectionTimeoutMillis`, then throws. Under a pin it is a savepoint (§3.7) |
 
 - `fn'` is `(tx) => storage.run({ settings: scope.settings, tx }, () => fn(tx))`; explicit
@@ -208,9 +211,10 @@ core hook and three extra statements per query).
 ### 3.4 Retry
 
 Only the outermost root tx retries (core's rule). Core calls `fn'` with a new `Tx`, so the store is
-rebuilt, settings re-sent, and joined/savepoint calls re-run as part of `fn`. A nested `new` tx
-committed on attempt 1 runs again on attempt 2 — a side effect like any other, documented with
-`host.attempt`. `ContextError` is a `UsageError`, which core never retries.
+rebuilt, settings re-sent, and joined/savepoint calls re-run as part of `fn`. The scope's settings
+go back to the ones re-sent, dropping what the failed attempt's `host.setLocal` recorded. A nested
+`new` tx committed on attempt 1 runs again on attempt 2 — a side effect like any other, documented
+with `host.attempt`. `ContextError` is a `UsageError`, which core never retries.
 
 ### 3.5 Guard interplay
 
@@ -264,12 +268,15 @@ test-body code.
      the same pinned test (guide: set request keys through the scope or `host.setLocal`). A failed
      restore aborts only `R`; on error `ROLLBACK TO` restores everything itself.
 - **Options:** a savepoint cannot change `isolation`/`deferrable` and serializable retry cannot occur
-  on one connection, so those and `retry` are ignored under a pin (documented; §6.3 covers them
-  unpinned). `accessMode: 'read only'` → `set_config('transaction_read_only', 'on', true)` inside the
-  savepoint, which then ends with `ROLLBACK TO` (restores read-write; it wrote nothing).
-- **One request at a time:** a second pinned savepoint on a busy base is the ordinary
-  `CONTEXT_CONCURRENT_SAVEPOINT` (§3.1), its message naming the pin. Real-concurrency tests (§6.3,
-  §6.4) run unpinned.
+  on one connection, so those and `retry` are not applied under a pin (documented; §6.3 covers them
+  unpinned). A nested join still compares against them (the store's `mode`, §3.1), as in
+  production; `tx.isolation`/`accessMode` report the pin's. `accessMode: 'read only'` →
+  `set_config('transaction_read_only', 'on', true)` inside the savepoint, which then ends with
+  `ROLLBACK TO` (restores read-write; it wrote nothing).
+- **One at a time, in call order:** pinned savepoints on one base queue (§3.1), so concurrent
+  requests, GraphQL sibling fields and `Promise.all` of root transactions in a request run in turn
+  instead of failing. A request awaited inside a test-body `host.transaction` therefore waits
+  forever: await the transaction first. Real-concurrency tests (§6.3, §6.4) run unpinned.
 - **Caveats (guide):** test-body `host.db` outside a request runs on `pin.tx` directly, so a failing
   statement poisons the test (`25P02`) — await requests first; code needing a real `COMMIT`
   (NOTIFY, deferred constraints, a second connection) needs a scratch database; a failing tx-less
@@ -287,7 +294,7 @@ test-body code.
 | `CONTEXT_NO_SCOPE` | `setLocal` outside both a scope and a tx |
 | `CONTEXT_NESTED_SCOPE` | `run()` inside an ALS tx |
 | `CONTEXT_OPTIONS` | `join` with a different isolation/access mode/deferrable, or with `timeoutMs`/`lockTimeoutMs`/`localSettings`; `savepoint` with a `TxOptions`-only key |
-| `CONTEXT_CONCURRENT_SAVEPOINT` | a second in-flight host savepoint on one `Tx`, including a second request under a pin |
+| `CONTEXT_CONCURRENT_SAVEPOINT` | a second in-flight `propagation: 'savepoint'` on one `Tx` (pinned savepoints queue instead) |
 | `CONTEXT_NOT_REGISTERED` | (nestjs) `@Transactional` with no host on the instance and none registered under the name |
 | `CONTEXT_DUPLICATE_HOST` | (nestjs) a second live app registers a host under the same name |
 
@@ -502,12 +509,13 @@ superusers and owners bypass RLS. Keys come from core `setting()`.
 - **Propagation** per §3.2 cell, on recorded SQL: root `BEGIN` + one `set_config` batch (scope ∪
   explicit, explicit wins); `SAVEPOINT "pgprime_sp_1"`; `new` on a second connection; host default
   vs per-call override.
-- **Join:** the callback and `host.tx()` both get the real outer `Tx`; isolation mismatch or any
-  of `timeoutMs`/`lockTimeoutMs`/`localSettings` → `CONTEXT_OPTIONS`; `retry` ignored;
+- **Join:** the callback and `host.tx()` both get the real outer `Tx`; isolation or deferrable
+  mismatch or any of `timeoutMs`/`lockTimeoutMs`/`localSettings` → `CONTEXT_OPTIONS`; `retry` ignored;
   `host.tx().rollbackWith(v)` in a joined `@Transactional` ends the outer tx, which resolves `v`
   (the documented behaviour).
-- **Savepoints:** three nested levels pass; sibling savepoints in `Promise.all` on one `Tx`, or two
-  scopes `within` one `Tx` → `CONTEXT_CONCURRENT_SAVEPOINT`.
+- **Savepoints:** three nested levels pass; `localSettings`/`timeoutMs` restored before `RELEASE`;
+  sibling savepoints in `Promise.all` on one `Tx`, or two scopes `within` one `Tx` →
+  `CONTEXT_CONCURRENT_SAVEPOINT`.
 - **Retry:** `40001` on the first `COMMIT` → `fn` re-runs, `current()` is the new handle, settings
   re-sent, `attempt === 2`; a `ContextError` is not retried.
 - **API:** strict on/off; `tx()`/`inTransaction`/`attempt`/`settings`; `setLocal` in scope / tx /
@@ -518,8 +526,8 @@ superusers and owners bypass RLS. Keys come from core `setting()`.
   (request 2 never sees tenant 1, a settings-less request sees none); restore covers direct
   `tx.setLocal`, `timeoutMs`, `statement_timeout` back to its captured `30s` (never `''`) and a
   placeholder created mid-request; `read only` ends with `ROLLBACK TO` and the next request writes;
-  isolation ignored; a second concurrent request → `CONTEXT_CONCURRENT_SAVEPOINT`; a request error
-  (incl. a 409-mapped `23505`) rolls back only `R`; `rollbackWith` caught; a captured root `Db` →
+  a nested serializable or read-only join passes; concurrent requests and sibling transactions
+  run in turn; a request error (incl. a 409-mapped `23505`) rolls back only `R`; `rollbackWith` caught; a captured root `Db` →
   `HandleMisuseError`; strict fires as in production.
 - **Cost / graph:** with no scope `db` calls `getStore()` exactly once (spy); `storage:` override;
   module graph is `node:async_hooks` + `pg-prime` only.
@@ -704,6 +712,15 @@ slips, C1 waits — it does not add `setting()` itself. RLS tests use raw
 | opus-adv-6: last-wins registry can pick another app's host | `hostOf`: the instance's own host first; the registry refuses duplicates (§4.4, D5) |
 | opus-adv-5: isolation/access mode under the pin unspecified | Isolation, deferrable and retry are ignored under a pin; `read only` becomes `transaction_read_only` and the savepoint ends with `ROLLBACK TO` (§3.7) |
 
+| cnp-03 finding (context) | Fix (rev 4) |
+|---|---|
+| opus-bugs-1: a nested join under a pin compares with the pin's isolation/access mode | The store keeps the options each transaction was opened with (`mode`); joins compare against it (§3.1, §3.7) |
+| opus-arch-1: savepoint `localSettings`/`timeoutMs` survive `RELEASE` | Those keys are captured before `SAVEPOINT` and restored before `RELEASE` (§3.2) |
+| opus-bugs-2: one savepoint at a time also refuses concurrency inside a request | Pinned savepoints queue per base instead of failing (§3.1, §3.7) |
+| astra-bugs-5: a retry reuses the settings the failed attempt mutated | The scope's settings go back to the ones re-sent (§3.4) |
+| opus-arch-4: a join ignores `deferrable` | Compared via `mode`, `CONTEXT_OPTIONS` on mismatch (§3.2) |
+| opus-docs-6, opus-docs-7: deferrable deviation; `pgPolicy` in §2.1 | No deviation left; `definePolicy` |
+
 ---
 
 #### N0 — RESULT (2026-10-09)
@@ -813,7 +830,8 @@ docs and goldens; then this RESULT.
   counting as unset. Capture runs on the base before `SAVEPOINT`, so core applies `timeoutMs` /
   `localSettings` natively. **Caveat** (guide, §3.7): a dotted key set only by a raw
   `tx.setLocal`/`set_config` can leak into the next request of the same pinned test.
-- `'new'` under a pin nests a pinned savepoint on the current transaction. `#busy` is a `WeakSet`.
+- `'new'` under a pin nests a pinned savepoint on the current transaction. `#busy` is a `WeakMap`
+  queue (cnp-03, §11).
 
 **Tests.** unit 24 (mock pool: propagation, join, savepoint, retry, API, guard, cost/graph, pin
 protocol), live 10 (PGlite: settings, savepoints, `within`, `rollbackScope`), pg 8 (RLS via raw
@@ -850,8 +868,8 @@ tree-shake, pack smoke, create smoke).
 - `rollbackScopeFor(app)` wraps `rollbackScope(host)` from `@pg-prime/context/testing`.
 - `@Transactional` calls `host.transaction(fn, { label, ...opts })`; it is `async`, so option
   refusals are rejections. Throw `new ContextError('CONTEXT_NOT_REGISTERED' | 'CONTEXT_DUPLICATE_HOST', msg)`.
-- Join refuses `timeoutMs`/`lockTimeoutMs`/`localSettings` and a different isolation/access mode;
-  `retry`, `signal`, `label` pass through ignored.
+- Join refuses `timeoutMs`/`lockTimeoutMs`/`localSettings` and a different isolation/access
+  mode/deferrable; `retry`, `signal`, `label` pass through ignored.
 
 #### N1 — RESULT (2026-10-09)
 

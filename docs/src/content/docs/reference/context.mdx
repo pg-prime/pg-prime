@@ -62,8 +62,8 @@ class TransactionHost<Sc extends AnySchema = AnySchema> {
 
 | `propagation` | Effect | Refused options (`CONTEXT_OPTIONS`) |
 |---|---|---|
-| `'join'` (default) | `fn(outerTx)`: the real outer handle, nothing sent | `timeoutMs`, `lockTimeoutMs`, `localSettings`, a different `isolation` or `accessMode` |
-| `'savepoint'` | `outerTx.savepoint(fn, opts)`. A second one in flight on the same handle throws `CONTEXT_CONCURRENT_SAVEPOINT` | `isolation`, `accessMode`, `deferrable`, `retry` |
+| `'join'` (default) | `fn(outerTx)`: the real outer handle, nothing sent | `timeoutMs`, `lockTimeoutMs`, `localSettings`, a different `isolation`, `accessMode` or `deferrable` |
+| `'savepoint'` | `outerTx.savepoint(fn, opts)`; the settings and timeouts it sets are restored before `RELEASE`. A second one in flight on the same handle throws `CONTEXT_CONCURRENT_SAVEPOINT` | `isolation`, `accessMode`, `deferrable`, `retry` |
 | `'new'` | `root.transaction(fn, …)` on another connection, with the scope's settings | none |
 
 With no active transaction every mode opens `root.transaction(fn, opts)` and sends the scope's
@@ -167,7 +167,7 @@ type ContextErrorCode =
 | `CONTEXT_NO_SCOPE` | `setLocal` outside both a scope and a transaction |
 | `CONTEXT_NESTED_SCOPE` | `run()` inside a host transaction |
 | `CONTEXT_OPTIONS` | a join or savepoint given an option it cannot honour (table above) |
-| `CONTEXT_CONCURRENT_SAVEPOINT` | a second host savepoint in flight on one transaction, including a second request under a pin |
+| `CONTEXT_CONCURRENT_SAVEPOINT` | a second `'savepoint'` in flight on one transaction |
 | `CONTEXT_NOT_REGISTERED`, `CONTEXT_DUPLICATE_HOST` | thrown by `@pg-prime/nestjs` |
 
 ## `@pg-prime/context/testing`
@@ -182,7 +182,7 @@ function rollbackScope<Sc extends AnySchema>(host: TransactionHost<Sc>): Promise
 Opens a root transaction the test owns (`retry: false`, `idle_in_transaction_session_timeout: 0`)
 and pins it on `host`. Until `rollback()`, every transaction the host would open is a savepoint on
 it that restores the session's settings before `RELEASE`, runs inside the pin's dev-guard frame and
-refuses a concurrent sibling. See [rollback per test](/pg-prime/guides/ambient-transactions/#rollback-per-test).
+waits for a concurrent sibling to finish. See [rollback per test](/pg-prime/guides/ambient-transactions/#rollback-per-test).
 
 ### `RollbackScope`
 

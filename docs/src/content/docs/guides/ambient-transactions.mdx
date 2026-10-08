@@ -76,13 +76,14 @@ await host.transaction(async () => {
 ```
 
 - **A join cannot change the transaction.** `timeoutMs`, `lockTimeoutMs` and `localSettings`, or an
-  `isolation`/`accessMode` other than the outer's, throw `CONTEXT_OPTIONS`: use `'savepoint'` or
-  `'new'`. `retry`, `signal` and `label` are ignored.
+  `isolation`/`accessMode`/`deferrable` other than the outer's, throw `CONTEXT_OPTIONS`: use
+  `'savepoint'` or `'new'`. `retry`, `signal` and `label` are ignored.
 - **`host.tx().rollbackWith(v)` inside a join ends the outer transaction**, which resolves with `v`.
   For a local rollback use `propagation: 'savepoint'`.
 - A savepoint refuses `isolation`, `accessMode`, `deferrable` and `retry`, which PostgreSQL cannot
-  change mid-transaction. Two host savepoints in flight on one transaction (`Promise.all`) throw
-  `CONTEXT_CONCURRENT_SAVEPOINT`: a transaction is one connection.
+  change mid-transaction. Its `localSettings`, `timeoutMs` and `lockTimeoutMs` end with it: the host
+  restores them before `RELEASE`, which would keep them. Two host savepoints in flight on one
+  transaction (`Promise.all`) throw `CONTEXT_CONCURRENT_SAVEPOINT`: a transaction is one connection.
 - `'new'` needs a free connection per concurrent caller. With `max: 1` it waits for
   `connectionTimeoutMillis` and throws `PoolTimeoutError`.
 
@@ -138,7 +139,8 @@ for a `BYPASSRLS` role, every tenant's). `host.root` and `host.outside()` stay a
 
 Only the outermost transaction retries, by core's rules (`40001` at repeatable read or serializable).
 Each attempt gets a new `Tx`, so `host.db` follows it, the settings are sent again, and joined and
-savepoint calls re-run as part of the callback. `host.attempt` is the attempt number (0 outside a
+savepoint calls re-run as part of the callback. `host.settings` goes back to what was sent, without
+the failed attempt's `host.setLocal` calls. `host.attempt` is the attempt number (0 outside a
 transaction). A `'new'` transaction committed on attempt 1 runs again on attempt 2, like any other
 side effect. A `ContextError` is a `UsageError`, which core never retries.
 
@@ -219,10 +221,13 @@ request of the same test. Set request keys through the scope or `host.setLocal`.
 </Aside>
 
 - A savepoint cannot change `isolation` or `deferrable` and a one-connection test cannot produce
-  `40001`, so those and `retry` are ignored under a pin. `accessMode: 'read only'` becomes
+  `40001`, so those and `retry` are not applied under a pin; a nested join still checks them as in
+  production, but `host.tx().isolation` reports the pin's. `accessMode: 'read only'` becomes
   `transaction_read_only` and the savepoint ends with `ROLLBACK TO`.
-- One request at a time: a second concurrent one throws `CONTEXT_CONCURRENT_SAVEPOINT`. Test real
-  concurrency without a pin.
+- One at a time, in call order: concurrent requests, GraphQL sibling fields and `Promise.all` of
+  transactions in a request wait their turn. So a request awaited **inside** a test-body
+  `host.transaction` waits forever: await the transaction first. Test real concurrency without a
+  pin.
 - A pin does not satisfy strict mode, and `host.db` in a request without a transaction runs on the
   request's savepoint.
 - Test-body `host.db` outside a request runs on the pinned transaction itself, so a failing statement

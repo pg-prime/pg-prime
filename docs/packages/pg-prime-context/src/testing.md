@@ -16,6 +16,8 @@ The `@pg-prime/context/testing` entry: `rollbackScope`, the pin behind rollback-
 ## Gotchas
 - A pin, not ALS: `beforeEach`, the test body and server-side requests run in different async
   contexts. Test-body code outside a request runs on `tx` itself.
+- Pinned savepoints on one base run in turn: a request awaited inside a test-body
+  `host.transaction` waits forever.
 - A failing `BEGIN` rejects `rollbackScope` (the open races the transaction's own promise).
 
 ## Tests

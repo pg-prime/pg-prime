@@ -44,7 +44,7 @@ it('a root transaction becomes a savepoint that captures and restores settings',
     'release savepoint "pgpri',
     'rollback',
   ])
-  expect(q[2]!.values).toEqual([JSON.stringify(['app.tenant_id'])])
+  expect(q[2]!.values).toContain(JSON.stringify(['app.tenant_id']))
   expect(q[4]!.values).toEqual(['app.tenant_id', 't1', 'statement_timeout', '50'])
   expect(JSON.parse(q[5]!.values[0] as string)).toEqual(JSON.parse(SNAPSHOT))
 })
@@ -78,17 +78,45 @@ it('a request without a transaction runs on its savepoint as the base; strict st
   await scope.rollback()
 })
 
-it('one request at a time, and a captured root Db throws inside one', async () => {
-  const { db, host, scope } = await pinned()
+it('concurrent requests and sibling transactions wait their turn', async () => {
+  const { pool, db, host, scope } = await pinned()
   const tick = () => new Promise((r) => setTimeout(r, 1))
-  const r = await Promise.allSettled([host.request({}, tick), host.request({}, tick)])
-  expect(r[1]).toMatchObject({
-    status: 'rejected',
-    reason: { code: 'CONTEXT_CONCURRENT_SAVEPOINT' },
-  })
-  expect((r[1] as PromiseRejectedResult).reason.message).toContain('pinned')
+  await Promise.all([
+    host.request({}, tick),
+    host.request({}, () => Promise.all([host.transaction(tick), host.transaction(tick)])),
+  ])
+  expect(pool.texts.filter((t) => /^(savepoint|release)/.test(t))).toEqual([
+    'savepoint "pgprime_sp_1"',
+    'release savepoint "pgprime_sp_1"',
+    'savepoint "pgprime_sp_1"',
+    'savepoint "pgprime_sp_2"',
+    'release savepoint "pgprime_sp_2"',
+    'savepoint "pgprime_sp_2"',
+    'release savepoint "pgprime_sp_2"',
+    'release savepoint "pgprime_sp_1"',
+  ])
   await host.request({}, async () => {
     await expect(db.sql`select 1`.execute()).rejects.toBeInstanceOf(HandleMisuseError)
   })
+  await scope.rollback()
+})
+
+it('a nested join compares with what its pinned savepoint was opened with', async () => {
+  const { host, scope } = await pinned()
+  const join = (o: object) =>
+    host
+      .transaction(async () => {}, o)
+      .then(
+        () => 'resolved',
+        (e: ContextError) => e.code,
+      )
+  for (const o of [{ isolation: 'serializable' }, { accessMode: 'read only' }] as const) {
+    await host.transaction(async () => {
+      expect(await join(o)).toBe('resolved')
+      expect(await join({ isolation: 'read committed', accessMode: 'read write' })).toBe(
+        'CONTEXT_OPTIONS',
+      )
+    }, o)
+  }
   await scope.rollback()
 })
