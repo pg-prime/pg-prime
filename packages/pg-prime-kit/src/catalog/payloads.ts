@@ -112,7 +112,10 @@ export interface ColumnPayload extends Payload {
   readonly identity: string | null;
   /** `pg_attribute.attgenerated`: `s` stored, `v` virtual (PG 18), null = not generated */
   readonly generated: string | null;
-  /** `pg_collation.collname`, only when it differs from the type's own collation */
+  /**
+   * `pg_collation.collname`, only when it differs from the type's own collation. Outside
+   * `pg_catalog` it is the quoted qualified name, `"schema"."name"`.
+   */
   readonly collation: string | null;
 }
 

@@ -7,7 +7,7 @@ Type definitions for the Tier-M fact payloads the catalog extractor produces and
 - `SchemaPayload` — `{ kind: "schema" }`.
 - `TablePayload` — `relkind` (`r`/`p`), `persistence`, `rowSecurity`, `partitionStrategy`, `partitionKey`, `partitionOf` (encoded parent table id), `partitionBound`, `clusterOn` (bare index name).
 - `GENERATED_NAME` — constant `"%GENERATED%"`, stands in for a server-generated NOT NULL constraint name.
-- `ColumnPayload` — `type` (`format_type`), `notNull`, `notNullConstraint`, `notNullValidated`, `generationExpr`, `identity` (`a`/`d`), `generated` (`s`/`v`), `collation`.
+- `ColumnPayload` — `type` (`format_type`), `notNull`, `notNullConstraint`, `notNullValidated`, `generationExpr`, `identity` (`a`/`d`), `generated` (`s`/`v`), `collation` (bare `collname` for a `pg_catalog` collation, `"schema"."name"` otherwise).
 - `DefaultPayload` — `{ kind: "default", expression }`, `pg_get_expr` spelling of a column DEFAULT.
 - `ConstraintPayload` — `contype` (`p`/`f`/`u`/`c`/`x`), `definition` (without ` NOT VALID`), `validated`, `deferrable`.
 - `IndexPayload` — `definition` (`pg_get_indexdef` with own name replaced by `%ID%`), `unique`, `valid`.
@@ -21,9 +21,9 @@ Type definitions for the Tier-M fact payloads the catalog extractor produces and
 - `ObservedObject` — Tier-O `{ kind, name, detail }`, strings only; carried on `ExtractResult.observed`, never a fact.
 
 ## Flow
-1. `extractCatalog` fills one payload per fact with `satisfies <Payload>` (`packages/pg-prime-kit/src/catalog/extract.ts:688` onward).
+1. `extractCatalog` fills one payload per fact with `satisfies <Payload>` (`packages/pg-prime-kit/src/catalog/extract.ts:691` onward).
 2. Payloads are hashed into fact content hashes and the fingerprint (`ir/hash.ts`'s `Payload` base); `ordinal` and the id are outside the payload.
-3. `diff/ddl.ts` reads payload fields to render DDL; `GENERATED_NAME` is resolved back to `defaultNotNullName(table, column)` (`packages/pg-prime-kit/src/diff/ddl.ts:162`).
+3. `diff/ddl.ts` reads payload fields to render DDL; `GENERATED_NAME` is resolved back to `defaultNotNullName(table, column)` (`packages/pg-prime-kit/src/diff/ddl.ts:174`).
 4. `diff/rename.ts` relies on `GENERATED_NAME` so a table rename does not change column hashes (`packages/pg-prime-kit/src/diff/rename.ts:447`).
 
 ## Gotchas
@@ -35,7 +35,7 @@ Type definitions for the Tier-M fact payloads the catalog extractor produces and
 - `clusterOn` is on the table, because the clustered index is often a constraint-backing index that is not a fact (`packages/pg-prime-kit/src/catalog/payloads.ts:50`).
 - `ExtensionPayload` deliberately has no `extversion`, so version skew between environments never produces a delta.
 - Domain CHECKs live inside `TypePayload.checks` rather than as `constraint` facts, since a constraint id is `[schema, table, name]`.
-- Sequence numeric fields are strings, read with `::text` (`packages/pg-prime-kit/src/catalog/extract.ts:349`).
+- Sequence numeric fields are strings, read with `::text` (`packages/pg-prime-kit/src/catalog/extract.ts:352`).
 
 ## Tests
 - `packages/pg-prime-kit/test/kinds/payloads.test.ts` — compares each Tier-M payload field (domain, composite attributes, EXCLUDE, comment, extension, default vs generation expression, `notNullValidated`) to a direct catalog read.

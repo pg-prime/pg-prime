@@ -163,6 +163,7 @@ const HAZARD_SEVERITY: Record<string, "error" | "warn"> = {
   MF104: "error",
   MF105: "error",
   MF106: "error",
+  MF107: "error",
   BC101: "warn",
   BC102: "warn",
   BC103: "warn",

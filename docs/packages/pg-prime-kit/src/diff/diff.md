@@ -24,10 +24,10 @@
 - Only payload content hashes are compared; edges and `ordinal` never produce a delta, so `isEmptyDiff` means "no fact payload differs" (`packages/pg-prime-kit/src/diff/diff.ts:129`, `packages/pg-prime-kit/src/diff/diff.ts:217-218`).
 - Enum labels never produce `drop`/`alter`; removal or reorder is only `EN102` (`packages/pg-prime-kit/src/diff/diff.ts:151-157`), and labels of a newly created type ride on `CREATE TYPE` (`packages/pg-prime-kit/src/diff/diff.ts:145`).
 - An adopted partition is skipped on both sides so the shadow proof does not report it as residual drift (`packages/pg-prime-kit/src/diff/diff.ts:75-84`); the same holds for retained extensions (`packages/pg-prime-kit/src/diff/diff.ts:102-109`).
-- The partition test is `partitionOf === null`, so a payload missing the key (`undefined`) is treated as a partition (`packages/pg-prime-kit/src/diff/diff.ts:87`); `packages/pg-prime-kit/src/diff/ddl.ts:1154` guards the same field with `isPartitioned`.
+- The partition test is `partitionOf === null`, so a payload missing the key (`undefined`) is treated as a partition (`packages/pg-prime-kit/src/diff/diff.ts:87`); `packages/pg-prime-kit/src/diff/ddl.ts:1166` guards the same field with `isPartitioned`.
 - The delta sort is by kind rank and id, not dependency order; `diff/order.ts` does real ordering on the emitted statements.
 - `strictUnmodeled` never inspects the IR: without `options.diagnostics` it adds nothing (`packages/pg-prime-kit/src/diff/diff.ts:188`).
-- Error diagnostics (`EN102`, `unmodeled_kind_strict`) become unacknowledged hazards in `buildPlan` (`packages/pg-prime-kit/src/plan/plan.ts:291-301`), which `writePlan` refuses.
+- Error diagnostics (`EN102`, `unmodeled_kind_strict`) become unacknowledged hazards in `buildPlan` (`packages/pg-prime-kit/src/plan/plan.ts:292-302`), which `writePlan` refuses.
 
 ## Tests
 - `packages/pg-prime-kit/test/enum.test.ts` (label append ordering, `addEnumValue` anchors, label renames), `test/evolve.test.ts` (two populated catalogs), `test/kinds/partition.test.ts` (adopted partitions), `test/kinds/extension.test.ts` (never dropped), `test/kinds/observation.test.ts` (`strictUnmodeled` escalation, Tier R left alone), `test/schema.test.ts`, `test/roundtrip.test.ts`, plus the fixture sweep in `test/corpus.test.ts`.

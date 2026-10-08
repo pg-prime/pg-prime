@@ -18,8 +18,14 @@ table is not rewritten. Before this release, a collation-only change was reporte
 type change (`MF105`, an error) together with `LK108` and `BC103`. A change of type keeps those
 three hazards.
 
-`pull` now emits `.collate("C")` for a column with a non-default collation. Before, it listed the
-column under `-- pull: unsupported`.
+When a unique index, a primary key, a unique or exclusion constraint, or a `CHECK` covers the column,
+the statement also carries the new error **`MF107`**: rebuilding the index or re-checking the
+constraint under the new collation can fail on existing rows, such as `'a'` and `'A'` under a
+case-insensitive collation. It is not raised on a table proven empty.
 
-The collation name is a single identifier. A collation in a schema other than `pg_catalog` cannot be
-named yet.
+`pull` now emits `.collate("C")` for a column with a `pg_catalog` collation. Before, it listed the
+column under `-- pull: unsupported`. A column whose collation lives in another schema stays listed
+there.
+
+The collation name is a single identifier and must name a `pg_catalog` collation: migrations run
+under `search_path = pg_catalog`, so a collation created in another schema does not resolve.

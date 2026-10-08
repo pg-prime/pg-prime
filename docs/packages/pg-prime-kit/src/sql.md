@@ -25,7 +25,7 @@ SQL text primitives for the kit: identifier/literal quoting plus ports of Postgr
 ## Flow
 1. `quoteIdent` checks type, emptiness, NUL, lone surrogates, then byte length, in that order (`packages/pg-prime-kit/src/sql/ident.ts:77-98`), and doubles `"` (`packages/pg-prime-kit/src/sql/ident.ts:102`).
 2. `makeObjectName` computes the byte budget, shortens the longer of `name1`/`name2` one byte at a time, clips without splitting a character, and appends `_label` (`packages/pg-prime-kit/src/sql/ident.ts:159-175`).
-3. `chooseConstraintName` tries `label`, `label1`, `label2`, … until `taken` says no (`packages/pg-prime-kit/src/sql/ident.ts:213-216`); `packages/pg-prime-kit/src/diff/ddl.ts:1965` uses it for the PG 15–17 temporary NOT NULL CHECK.
+3. `chooseConstraintName` tries `label`, `label1`, `label2`, … until `taken` says no (`packages/pg-prime-kit/src/sql/ident.ts:213-216`); `packages/pg-prime-kit/src/diff/ddl.ts:1989` uses it for the PG 15–17 temporary NOT NULL CHECK.
 4. `lexSql` walks the text: line-start `\` meta-commands and `--` comments run to end of line (`packages/pg-prime-kit/src/sql/statements.ts:78-94`), `/* */` comments nest (`packages/pg-prime-kit/src/sql/statements.ts:96-112`).
 5. Dollar-quoted bodies, `'…'` strings (backslash escapes only after an `E` prefix) and `"…"` identifiers become `literal` segments (`packages/pg-prime-kit/src/sql/statements.ts:114-165`); everything else accumulates as `code`.
 6. `splitStatements` cuts code segments at each `;` and canonicalizes the pieces (`packages/pg-prime-kit/src/sql/statements.ts:200-222`).

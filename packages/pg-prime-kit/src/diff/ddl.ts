@@ -87,6 +87,9 @@ function evaluatesOf(ir: SchemaIR, subject: StableId): string[] {
 
 /* -------------------------- column clause -------------------------- */
 
+/** A collation outside `pg_catalog` arrives already quoted and qualified. */
+const collationSql = (name: string): string => (name.startsWith('"') ? name : quoteIdent(name));
+
 export function columnClause(
   colId: StableId & { kind: "column" },
   p: ColumnPayload,
@@ -94,7 +97,7 @@ export function columnClause(
   defaultExpr: string | null = null,
 ): string {
   const bits = [quoteIdent(colId.name), p.type];
-  if (p.collation) bits.push(`COLLATE ${quoteIdent(p.collation)}`);
+  if (p.collation) bits.push(`COLLATE ${collationSql(p.collation)}`);
   if (p.generated === "s" && p.generationExpr) {
     bits.push(`GENERATED ALWAYS AS (${p.generationExpr}) STORED`);
   } else if (p.identity) {
@@ -140,6 +143,15 @@ const VOLATILE_BUILTINS =
 
 export function mentionsVolatileFunction(expression: string): boolean {
   return VOLATILE_BUILTINS.test(expression);
+}
+
+/** Literals, then identifiers with any leading `.`, so a qualifier or a string never matches a column. */
+const DEF_TOKENS = /'(?:[^']|'')*'|\.?(?:"(?:[^"]|"")*"|[\w$]+)/g;
+
+/** Whether a constraint or index definition names column `col`: textual, so it can over-report. */
+function namesColumn(definition: string, col: string): boolean {
+  const quoted = quoteIdent(col);
+  return (definition.match(DEF_TOKENS) ?? []).some((t) => t === col || t === quoted);
 }
 
 /** The `default` fact hanging off a column, if the IR has one. */
@@ -1846,7 +1858,7 @@ function alterColumn(
       ...extra,
     });
 
-  const collate = a.collation ? ` COLLATE ${quoteIdent(a.collation)}` : "";
+  const collate = a.collation ? ` COLLATE ${collationSql(a.collation)}` : "";
   if (b.type !== a.type) {
     out.push(
       mk(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${a.type}${collate} USING ${col}::${a.type}`, {
@@ -1855,8 +1867,20 @@ function alterColumn(
       }),
     );
   } else if (b.collation !== a.collation) {
-    // Same type: no table rewrite, but every index on the column is rebuilt.
-    out.push(mk(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${a.type}${collate}`, { hazards: ["LK113"] }));
+    // Same type: no table rewrite, but the column's indexes are rebuilt and its CHECKs re-checked.
+    const tableId = { kind: "table", schema: c.schema, name: c.table } as const;
+    const mayFail =
+      !emptyTables.has(id(tableId)) &&
+      desired.childrenOf(tableId).some((f) => {
+        const p = f.payload as unknown as IndexPayload | ConstraintPayload;
+        const guards = p.kind === "index" ? p.unique : p.kind === "constraint" && "pucx".includes(p.contype);
+        return guards && namesColumn(p.definition, c.name);
+      });
+    out.push(
+      mk(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${a.type}${collate}`, {
+        hazards: mayFail ? ["LK113", "MF107"] : ["LK113"],
+      }),
+    );
   }
   out.push(...notNullTransition(before, after, desired, mk, emptyTables));
   // A generated column cannot be converted in place: PostgreSQL offers only

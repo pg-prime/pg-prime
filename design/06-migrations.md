@@ -633,6 +633,7 @@ Squawk so users can map their existing knowledge. **35 rules in v1.**
 | MF104 | Nullable → `NOT NULL` | `adding-required-field` |
 | MF105 | Narrowing type change (`varchar(n)` shrink, numeric precision drop, `int8→int4`) | `changing-column-type` |
 | MF106 | Add validated CHECK/FK to a populated table | `constraint-missing-not-valid` |
+| MF107 | Collation change on a column covered by a unique index/PK/unique or exclusion constraint/CHECK | — |
 
 Emptiness is established by a `SELECT EXISTS(SELECT 1 FROM t LIMIT 1)` probe against the target
 when one is reachable; offline, MF rules stay at `error` and must be acknowledged.
@@ -717,6 +718,7 @@ Escape hatch: `-- pg-orm:nolint LK101 "index is on a 200-row lookup table"` — 
 > | MF104 nullable → NOT NULL | ✅ | `ddl.ts` `notNullTransition`, on the ADD half of both §3.5 rewrites |
 > | MF105 narrowing type change | ✅ | `ddl.ts` `alterColumn` type branch |
 > | MF106 add validated CHECK/FK to a populated table | ✅ | `ddl.ts` `addConstraint`, on the `NOT VALID` ADD and on the literal form |
+> | MF107 collation change on a unique/checked column | ✅ | `ddl.ts` `alterColumn` collation branch, beside LK113; coverage read textually from the desired IR's index and constraint definitions, suppressed on a proven-empty table |
 > | BC101 rename table | ✅ | `ddl.ts` rename `table` |
 > | BC102 rename column | ✅ | `ddl.ts` rename `column` |
 > | BC103 in-place column type change | ✅ | `ddl.ts` `alterColumn`; also composite `ALTER ATTRIBUTE` |

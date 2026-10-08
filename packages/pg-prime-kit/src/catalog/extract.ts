@@ -140,8 +140,10 @@ SELECT n.nspname AS schema, c.relname AS "table", a.attname AS name, a.attnum,
        pg_get_expr(ad.adbin, ad.adrelid) AS default_expr,
        nullif(a.attidentity, '') AS identity,
        nullif(a.attgenerated, '') AS generated,
-       CASE WHEN a.attcollation <> t.typcollation AND a.attcollation <> 0
-            THEN coll.collname ELSE NULL END AS collation,
+       CASE WHEN a.attcollation = t.typcollation OR a.attcollation = 0 THEN NULL
+            WHEN coll.collnamespace = 'pg_catalog'::regnamespace THEN coll.collname
+            ELSE format('"%s"."%s"', replace(cn.nspname, '"', '""'), replace(coll.collname, '"', '""'))
+       END AS collation,
        ut.typtype AS type_typtype,
        un.nspname AS type_schema,
        ut.typname AS type_name
@@ -152,6 +154,7 @@ JOIN pg_type t ON t.oid = a.atttypid
 LEFT JOIN pg_type ut ON ut.oid = a.atttypid
 LEFT JOIN pg_namespace un ON un.oid = ut.typnamespace
 LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
+LEFT JOIN pg_namespace cn ON cn.oid = coll.collnamespace
 LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
 LEFT JOIN pg_constraint nn ON nn.conrelid = a.attrelid
                           AND nn.contype = 'n' AND nn.conkey = array[a.attnum]

@@ -38,7 +38,7 @@ The schema intermediate representation: stable fact identities (`stable-id.ts`),
 - A fact's own name is in its id, not its payload; a child's name is part of its parent's rollup (`packages/pg-prime-kit/src/ir/fact.ts:162-164`). Renaming a table therefore keeps its rollup, while renaming a column changes the table's rollup.
 - `ordinal` is never hashed (`packages/pg-prime-kit/src/ir/fact.ts:26`), so physical column order cannot produce a diff.
 - Orphans are not roots and are not reached from any root, so they are absent from `fingerprint` (`packages/pg-prime-kit/src/ir/fact.ts:180`); check `orphans()` after a filter.
-- `SchemaIR` uses the explicit `Fact.parent`, not `parentOf`. They differ for indexes: `parentOf` returns the schema (`packages/pg-prime-kit/src/ir/stable-id.ts:153-154`), while `packages/pg-prime-kit/src/catalog/extract.ts:924` parents an index on its table.
+- `SchemaIR` uses the explicit `Fact.parent`, not `parentOf`. They differ for indexes: `parentOf` returns the schema (`packages/pg-prime-kit/src/ir/stable-id.ts:153-154`), while `packages/pg-prime-kit/src/catalog/extract.ts:927` parents an index on its table.
 - `idSchema` returns `""` for extensions so a misuse fails in `quoteIdent` rather than emitting DDL (`packages/pg-prime-kit/src/ir/stable-id.ts:137-141`).
 - A `comment` id stores its target already encoded, so it nests escapes (`comment:column:public\.users\.email`); build it with `commentId`, never by hand.
 - `canonicalize` drops `undefined` object members but renders `undefined` array items (and a top-level `undefined`) as `null` (`packages/pg-prime-kit/src/ir/hash.ts:16-17`, `packages/pg-prime-kit/src/ir/hash.ts:27`).

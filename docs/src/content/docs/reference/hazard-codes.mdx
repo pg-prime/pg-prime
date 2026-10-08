@@ -3,7 +3,7 @@ title: Hazard codes
 description: Every code migrate lint can report, with its default severity.
 ---
 
-pg-prime ships **34 hazard codes** in six families, plus **6 style codes** that are off unless you
+pg-prime ships **36 hazard codes** in six families, plus **6 style codes** that are off unless you
 ask for them. Every code on this page is checked against the kit's own tables on every build, so a
 rule that exists and a rule that is documented are the same set.
 
@@ -89,6 +89,7 @@ data true first.
 | <a id="MF104"/>`MF104` | error | Nullable to `NOT NULL` fails if a single row is null. Backfill, add a `NOT VALID` check constraint, `VALIDATE` it, and only then `SET NOT NULL` — PostgreSQL uses the validated constraint as proof and skips the scan. |
 | <a id="MF105"/>`MF105` | error | A narrowing type change — `varchar(n)` shrunk, numeric precision dropped, `int8` to `int4` — fails on the first value that does not fit, after having already rewritten part of the table. |
 | <a id="MF106"/>`MF106` | error | Adding a validated `CHECK` or `FOREIGN KEY` to a populated table fails on the first violating row. The `NOT VALID` plus `VALIDATE` rewrite is the fix, and the hazard rides on the `ADD` half, where the plan commits to it. |
+| <a id="MF107"/>`MF107` | error | A collation change on a column that a unique index, a primary key, a unique or exclusion constraint, or a `CHECK` covers. The index is rebuilt and the `CHECK` re-checked under the new collation, so rows that were distinct or valid before can collide or fail: `'a'` and `'A'` under a case-insensitive collation, a range check under a different sort order. Check the data under the new collation first. Not raised when the table is proven empty. |
 
 ## BC — backward-incompatible
 
@@ -123,7 +124,7 @@ what you see in a plan is what could not be rewritten, or what you asked for lit
 | <a id="LK110"/>`LK110` | warn | Adding `GENERATED … STORED` or `GENERATED … AS IDENTITY` to an existing column rewrites the table. |
 | <a id="LK111"/>`LK111` | warn | `CREATE TRIGGER` takes `SHARE ROW EXCLUSIVE`, which blocks writes for the duration. Found in hand-written SQL, because triggers are never diffed. |
 | <a id="LK112"/>`LK112` | warn | `SET LOGGED` or `SET UNLOGGED` rewrites the whole table and its indexes under `ACCESS EXCLUSIVE`. |
-| <a id="LK113"/>`LK113` | warn | A collation change on a column (`ALTER COLUMN … TYPE … COLLATE`). The table is not rewritten, but every index on the column is rebuilt under `ACCESS EXCLUSIVE`, and `ORDER BY`, range comparisons and uniqueness on the column follow the new collation from then on. |
+| <a id="LK113"/>`LK113` | warn | A collation change on a column (`ALTER COLUMN … TYPE … COLLATE`). The table is not rewritten, but every index on the column is rebuilt under `ACCESS EXCLUSIVE`, and `ORDER BY`, range comparisons and uniqueness on the column follow the new collation from then on. When a unique index or a `CHECK` covers the column the rebuild can fail on existing rows, and the statement also carries [`MF107`](#MF107). |
 
 ## TX — transaction and robustness
 

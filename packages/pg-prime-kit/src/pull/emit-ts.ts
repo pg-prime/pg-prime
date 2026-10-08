@@ -537,7 +537,14 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       head = builder === undefined ? `t.raw(${lit(base)}, ${lit(dbName)})` : `t.${builder}(${lit(dbName)})`;
     }
     if (arrayMatch !== null) chain.push(".array()");
-    if (p.collation !== null) chain.push(`.collate(${lit(p.collation)})`);
+    // A quoted, qualified collation lives outside pg_catalog, which `.collate()` cannot name.
+    if (p.collation?.startsWith('"')) {
+      drop(
+        "column collation",
+        `${ctx.schema}.${ctx.name}.${dbName}`,
+        `COLLATE ${p.collation} — \`.collate()\` names only pg_catalog collations`,
+      );
+    } else if (p.collation !== null) chain.push(`.collate(${lit(p.collation)})`);
 
     /* modifiers, in the order the DSL's own gates accept them */
     if (p.identity === "a") chain.push(".generatedAlways()");

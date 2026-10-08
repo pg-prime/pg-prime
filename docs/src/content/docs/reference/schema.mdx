@@ -481,9 +481,14 @@ Four modifiers worth reading twice:
 - **`.collate(name)`** emits `COLLATE "<name>"` after the type: `t.text().collate('C')` sorts by
   byte order, which is what a fractional-index `position` column needs. It exists only on `text`,
   `varchar`, `citext`, their arrays and `t.raw()` columns; on any other type it is an
-  [`OrmTypeError`](#OrmTypeError). The name is a single identifier (no schema qualifier). Changing
-  it on an existing column plans `ALTER COLUMN … TYPE … COLLATE`, which rebuilds the column's
-  indexes but not the table — hazard [`LK113`](/pg-prime/reference/hazard-codes/#LK113).
+  [`OrmTypeError`](#OrmTypeError). The name is a single unqualified identifier and must be a
+  collation in `pg_catalog` (`C`, `POSIX`, `default`, the `pg_collation` rows initdb created):
+  migrations run under `search_path = pg_catalog`, so a collation you created in another schema
+  does not resolve, and `pull` lists a column that uses one as unsupported. Changing it on an
+  existing column plans `ALTER COLUMN … TYPE … COLLATE`, which rebuilds the column's indexes but
+  not the table — hazard [`LK113`](/pg-prime/reference/hazard-codes/#LK113), plus
+  [`MF107`](/pg-prime/reference/hazard-codes/#MF107) when a unique index or a `CHECK` covers the
+  column.
 
 ### `GeneratedAlwaysAsOptions`
 
