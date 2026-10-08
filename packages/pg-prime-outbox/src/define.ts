@@ -42,8 +42,6 @@ export interface OutboxDef<T> {
   readonly keepDeliveredMs: number
   readonly schema: StandardSchemaV1<unknown, T> | undefined
   readonly codec: OutboxCodec<T> | undefined
-  /** Phantom: carries the payload type. */
-  readonly '~payload'?: T
 }
 
 export type PayloadOf<D> = D extends OutboxDef<infer T> ? T : never
