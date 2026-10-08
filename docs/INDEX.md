@@ -154,7 +154,8 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime/src/session/guard.md — dev-mode AsyncLocalStorage guard against root-handle use inside transactions — read when debugging HandleMisuseError or the async_hooks import.
 - docs/packages/pg-prime/src/session/gucs.md — session GUC defaults resolved against the pooler profile — read when changing statement_timeout/application_name/TimeZone defaults.
 - docs/packages/pg-prime/src/session/handles.md — Db/Tx/Session handles, transaction retry loop, savepoints, sessions, COPY — read when changing transaction(), session(), savepoints or handle methods.
-- docs/packages/pg-prime/src/session/listen.md — dedicated LISTEN connection hub, reconnect with gap event, NOTIFY limit — read when changing db.listen, reconnect behaviour or payload checks.
+- docs/packages/pg-prime/src/session/listen.md — dedicated LISTEN connection hub, one emitter per subscription, reconnect with gap event, NOTIFY limit — read when changing db.listen, reconnect behaviour or payload checks.
+- docs/packages/pg-prime/src/session/owned-schema.md — versioned DDL for an add-on's own schema: migrateOwnedSchema (advisory-locked ledger, checksum, min_client) and vendorable ownedSchemaSql — read when changing add-on migrations or the ledger rules.
 - docs/packages/pg-prime/src/session/pg-lazy.md — lazy optional pg import and pool construction for connection — read when changing how `connection:` builds its pg.Pool.
 - docs/packages/pg-prime/src/session/runner.md — PoolRunner/ConnRunner statement path: hooks, timeouts, error mapping, acquire, row counts and the ifVersion check — read when changing per-statement execution, timeouts or connection disposal.
 - docs/packages/pg-prime/src/session/transaction.md — pure BEGIN/savepoint/set_config SQL, advisory keys, retry schedule — read when changing BEGIN text, retry defaults or advisory-lock helpers.
