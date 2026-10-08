@@ -39,6 +39,6 @@ Guarantees:
 - Failing entries are retried with backoff and parked after `maxAttempts`, crashes included.
 - Channels are live only; a reconnect reports `gap`. Behind PgBouncer everything polls.
 
-Docs: [Channels](https://pg-prime.dev/guides/channels/),
-[Event log](https://pg-prime.dev/guides/event-log/),
-[reference](https://pg-prime.dev/reference/events/).
+Docs: [Channels](https://pg-prime.github.io/pg-prime/guides/channels/),
+[Event log](https://pg-prime.github.io/pg-prime/guides/event-log/),
+[reference](https://pg-prime.github.io/pg-prime/reference/events/).

@@ -25,15 +25,17 @@ Every entry records the id of its transaction (`xid`, assigned at its first writ
 - **pending**: the transactions below the position that were still running when a read stepped
   over them, each with the last id delivered from it.
 
-One statement reads, under one snapshot, the remaining entries of the pending transactions (the
-*late* part), the next entries above the position (the *next* part, limited by the batch size),
-and the snapshot's list of running transactions.
+One statement reads, under one snapshot, the remaining entries of the pending transactions in
+transaction order (the *late* part), the next entries above the position (the *next* part), and the
+snapshot's list of running transactions. The two parts together are limited by the batch size,
+*late* first, so a large transaction that commits late arrives in batches too.
 
 - Acknowledging a *next* entry moves the position to it, and adds every running transaction below
   it to pending.
 - Acknowledging a *late* entry records it as that transaction's progress.
 - Once a whole read is acknowledged, a pending transaction that is no longer running is dropped:
-  all its entries became visible at once and were in that read.
+  all its entries became visible at once and were in that read. When the batch limit cut *late*
+  off, the transaction it stopped in keeps its progress and the ones after it stay pending.
 
 ## Why nothing is lost or duplicated
 

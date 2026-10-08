@@ -10,9 +10,13 @@ export interface Cursor {
   readonly pending: ReadonlyMap<bigint, bigint>
 }
 
-/** What a read saw: the last unfiltered `next` row, and the snapshot's running xids. */
+/**
+ * What a read saw: the last unfiltered `next` row, the last unfiltered `late` row when `late`
+ * filled the read limit (more may follow), and the snapshot's running xids.
+ */
 export interface ReadView {
   readonly pos: { readonly xid: bigint; readonly id: bigint } | null
+  readonly late: { readonly xid: bigint; readonly id: bigint } | null
   readonly running: readonly bigint[]
 }
 
@@ -39,8 +43,12 @@ export function advanceTo(c: Cursor, read: ReadView): Cursor {
   const pending = new Map(c.pending)
   if (read.pos !== null) addRunning(pending, read.running, read.pos.xid)
   const running = new Set(read.running)
-  // A finished transaction's entries all appeared in this read's `late` at once.
-  for (const x of pending.keys()) if (!running.has(x)) pending.delete(x)
+  // A finished transaction's entries are all visible, and `late` reads them in (xid, id) order.
+  for (const x of pending.keys()) {
+    if (running.has(x) || (read.late !== null && x > read.late.xid)) continue
+    if (x === read.late?.xid) pending.set(x, read.late.id)
+    else pending.delete(x)
+  }
   return read.pos === null
     ? { xid: c.xid, id: c.id, pending }
     : { xid: read.pos.xid, id: read.pos.id, pending }

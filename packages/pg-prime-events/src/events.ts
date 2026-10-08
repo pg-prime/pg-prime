@@ -86,7 +86,7 @@ export function pgEvents<const D extends EventsDefinitions = {}>(
       if (r.to < MIGRATIONS.length) {
         throw new SchemaVersionError(
           `@pg-prime/events: schema ${schema} is at version ${r.to} and this client needs ` +
-            `${MIGRATIONS.length}. Run events.migrate() or vendor ownedSchemaSql's files.`,
+            `${MIGRATIONS.length}. Run events.migrate().`,
         )
       }
       ensured = true

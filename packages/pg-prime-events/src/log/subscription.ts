@@ -15,7 +15,10 @@ export interface ReadContext {
   readonly signal: AbortSignal
   /** 1-based count of attempts at this entry; a multi-entry batch reports 1. */
   readonly attempt: number
-  /** Commits the offset inside your transaction: exactly-once effects for same-database sinks. */
+  /**
+   * Commits the offset inside your transaction: exactly-once effects for same-database sinks.
+   * Once that transaction commits, a later throw does not redeliver what it covered.
+   */
   commit(opts: { tx: Queryable<any> }): Promise<void>
 }
 export type EntryHandler<T> = (e: Entry<T>, ctx: ReadContext) => Promise<void>
@@ -39,9 +42,13 @@ export interface SubscriptionHandle<T> {
   /** Moves the cursor and drops the current lease; `after` takes an `Entry.cursor`. */
   reset(to: 'beginning' | 'now' | { after: string }): Promise<void>
   lag(): Promise<{ entries: number; oldestAt: Date | null }>
-  parked(opts?: {
-    limit?: number
-  }): Promise<{ entry: Omit<Entry<T>, 'cursor'>; attempts: number; error: string | null }[]>
+  parked(opts?: { limit?: number }): Promise<
+    {
+      entry: Omit<Entry<T>, 'cursor'>
+      attempts: number
+      error: string | null
+    }[]
+  >
   discard(entryIds: readonly bigint[]): Promise<number>
   remove(): Promise<void>
 }
@@ -195,6 +202,13 @@ function startReader<T>(
       } catch (error) {
         failure = { error }
       }
+      if (failure !== undefined && committed !== undefined) {
+        // The handler's transaction may or may not have committed; the stored cursor says which.
+        const stored = await sql.stored(db, t, s, token)
+        if (stored === undefined) throw lostError()
+        committed = encodeCursor(stored)
+        done = Math.max(done, cursors.findIndex((c) => encodeCursor(c) === committed) + 1)
+      }
       if (done > 0) {
         const c = cursors[done - 1] as Cursor
         if (encodeCursor(c) === committed) cursor = c
@@ -206,7 +220,7 @@ function startReader<T>(
           durationMs: Date.now() - started,
         })
       }
-      if (failure === undefined) {
+      if (failure === undefined || done === rows.length) {
         isolate = Math.max(0, isolate - done)
         return
       }

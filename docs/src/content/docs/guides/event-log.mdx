@@ -49,7 +49,9 @@ its lease and the rest stand by and take over within the lease time if it dies.
 ## Exactly-once effects in the same database
 
 `ctx.commit({ tx })` writes the offset inside your transaction, so the effect and the
-acknowledgement commit together or not at all.
+acknowledgement commit together or not at all. If the handler throws after that transaction
+committed (an `IndeterminateCommitError` whose commit landed included), the reader checks the
+stored offset and does not redeliver what it covered.
 
 {/* docs: use=blog,blog-ddl */}
 ```ts title="exactly-once.ts"

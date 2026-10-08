@@ -275,7 +275,7 @@ retention skips ids present in `parked`.
 ```sql
 with e as (
   insert into pgprime_events.entries (topic, type, key, payload, headers)
-  select $t, r.type, r.key, r.payload, r.headers
+  select $t, r.type, r.key, coalesce(r.payload, 'null'::jsonb), r.headers
   from rows from (jsonb_to_recordset($rows) as (type text, key text, payload jsonb, headers jsonb))
        with ordinality as r(type, key, payload, headers, n)
   order by r.n
@@ -290,6 +290,8 @@ from e
   1 000 entries sends one wake-up.
 - Topic rows are upserted by `start()` (§0.3), outside any caller transaction, so P1 never takes a
   lock on `topics`.
+- `jsonb_to_recordset` turns a JSON `null` payload into SQL NULL; the `coalesce` stores it as
+  `'null'::jsonb`.
 
 ### 3.2 Subscription lease (L1), heartbeat (L2), release
 
@@ -315,18 +317,25 @@ disagrees (E-Q1).
 
 ```sql
 with late as (                                    -- unread entries of transactions in `pending`
-  select e.* from pgprime_events.entries e
-  join unnest($pending::xid8[], $pending_after::bigint[]) as p(xid, after) on e.xid = p.xid and e.id > p.after
-  where e.topic = $t
+  select e.* from unnest($pending::xid8[], $pending_after::bigint[]) as p(xid, after)
+  cross join lateral (
+    select * from pgprime_events.entries e
+    where e.topic = $t and e.xid = p.xid and e.id > p.after
+    order by e.id limit $n
+  ) e
+  order by e.xid, e.id limit $n
 ), next as (                                      -- unfiltered, so the position advances past other types
   select * from pgprime_events.entries
   where topic = $t and (xid, id) > ($last_xid, $last_id)
-  order by xid, id limit $n
+  order by xid, id limit $n - (select count(*) from late)
 ), pos as (
   select xid, id from next order by xid desc, id desc limit 1
+), cut as (                                       -- the last late row, only when `late` is full
+  select xid, id from late order by xid, id offset $n - 1
 )
-select m.pos_xid, m.pos_id, m.running, x.*
+select m.pos_xid, m.pos_id, m.late_xid, m.late_id, m.running, x.*
 from (select (select xid from pos) as pos_xid, (select id from pos) as pos_id,
+             (select xid from cut) as late_xid, (select id from cut) as late_id,
              array(select pg_snapshot_xip(pg_current_snapshot())) as running) m
 left join (select * from late union all select * from next) x
   on $types::text[] is null or x.type = any($types)
@@ -337,7 +346,10 @@ There is always exactly one row from `m`; the entry columns are null when nothin
 `pg_snapshot_xip` lists only running xids below the snapshot's `xmax`; a running xid at or above it
 is above every visible entry, so no position can step over it (as built: verified on PG 15–18).
 
-Entries are delivered in result order: `late` units first, then `next`.
+Entries are delivered in result order: `late` units first, then `next`. Together they return at
+most `$n` rows, `late` first, so a large transaction that commits late arrives in batches of `$n`
+and an isolating reader (`$n = 1`) reads one row per step. The lateral bounds each pending
+transaction's index scan to `$n` rows as well.
 
 **The cursor after acknowledging an entry `e`** is a pure function `advance(cursor, read, e)`
 (`log/cursor.ts`, property-tested):
@@ -351,8 +363,11 @@ Entries are delivered in result order: `late` units first, then `next`.
   `types`):
   1. position = `(pos_xid, pos_id)` when `next` was non-empty;
   2. add every `running` xid below `pos_xid` that is not pending, with `after = 0`;
-  3. prune: a pending xid not in `running` had all its entries in `late` (a transaction's entries
-     appear atomically), so it is dropped; pending xids still in `running` keep their `after`.
+  3. prune: a pending xid not in `running` is finished, so all its entries are visible, and `late`
+     reads them in `(xid, id)` order. When `late` was not full (`late_xid` null), every such xid had
+     all its entries in it and is dropped. When it was full, xids below `late_xid` are dropped,
+     `late_xid` keeps `after = late_id`, and xids above it keep their `after` for the next read.
+     Pending xids still in `running` keep their `after`.
 
   The result is persisted with C1, so a filtered-out batch moves the subscription forward without
   stepping over open transactions.
@@ -412,6 +427,13 @@ select topic, name, $entry, $attempts, $err from c
 on conflict (topic, subscription, entry) do update set attempts = excluded.attempts, error = excluded.error, parked_at = clock_timestamp()
 returning 1                                       -- 0 rows only when the lease guard failed
 ```
+
+**A throw after `ctx.commit({ tx })`.** The handler's transaction may have committed (a later
+throw, or an `IndeterminateCommitError` whose COMMIT landed) or rolled back. The reader cannot tell
+from memory, so it reads the stored cursor under its token with `for share`, which waits for that
+transaction to end. If the stored cursor is one of the attempt's per-entry cursors, everything up to
+it counts as acknowledged; it is not redelivered and the cursor is never rewound. A failure on an
+entry that is already acknowledged this way is not retried.
 
 **Finding the poison entry.** A failure is never charged to a whole batch:
 - **Isolation.** A multi-entry attempt that throws, or whose marker is found still set at the next
@@ -570,6 +592,7 @@ member; `bench/types` fixture with 100 topics).
 |---|---|---|
 | Producer tx rolls back | no entry, no wake-up | P1 in the caller's tx |
 | Reader crashes mid-batch | redelivered from the last commit (at-least-once) unless committed in the handler's tx | C1 |
+| Handler throws after its `ctx.commit({ tx })` transaction committed | what it committed is not redelivered | stored cursor read under `for share` (§3.4) |
 | Poison entry crashes the process repeatedly | `head_attempts` survives restarts → parked after `maxAttempts` | §3.4 |
 | Two instances, one subscription | one lease; the other's commit or park returns 0 rows → `EventsLeaseLostError`, and nothing is parked | L1/C1/K1 |
 | Long producer tx open during reads | its entries arrive at the first read after commit; nothing else waits on it | E-D3 |
@@ -627,6 +650,8 @@ member; `bench/types` fixture with 100 topics).
 | **unrelated long transaction does not delay readers** | entry-to-handler latency p95 < 200 ms while a `select pg_sleep(30)` tx is open |
 | **one reader per subscription** — 3 instances | the delivery log shows no overlap; failover within `leaseMs` |
 | **exactly-once sink** — `ctx.commit({ tx })`, reader killed mid-tx | sink rows = entries |
+| **throw after `ctx.commit({ tx })`** — per-entry and batch handlers throw after their commit committed, or inside it | sink rows = entries; nothing committed is redelivered, the rolled-back ones are retried |
+| **late transaction larger than `batchSize`** — 50 entries commit after a newer entry was read | every batch ≤ `batchSize`; each entry once, in order |
 | **channel across sessions + gap** — two listeners on one channel, `pg_terminate_backend` the ListenHub backend | both `onGap`s fire (S0 fix); later notifies reach both |
 | **process-killing poison entry** — the handler calls `process.exit` on one entry; the reader is restarted by the test | entry parked after `maxAttempts` restarts; every other entry delivered once |
 | **stale reader cannot park** — steal the lease, then the old reader runs K1 | 0 rows, no `parked` row |

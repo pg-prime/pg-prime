@@ -85,6 +85,50 @@ describe('the exact cursor on a real server', () => {
   )
 
   requiresConcurrency(it)(
+    'a late transaction larger than batchSize arrives in batches of at most batchSize',
+    async () => {
+      const db = server.db(3)
+      const events = pgEvents({ db, schema: freshSchema() })
+      const def = defineSubscription(topic, 'bounded', { from: 'beginning' })
+      await events.start()
+      const work = events.topic(topic)
+      let release = (): void => {}
+      const gate = new Promise<void>((r) => (release = r))
+      let started = false
+      const big = db.transaction(async (tx) => {
+        await work.publish({ id: 'big:0', at: 0 }, { tx })
+        started = true
+        await gate
+        const rest = Array.from({ length: 49 }, (_, k) => ({
+          payload: { id: `big:${k + 1}`, at: 0 },
+        }))
+        await work.publishMany(rest, { tx })
+      })
+      await until(() => started)
+      await work.publish({ id: 'small', at: 0 })
+      const sizes: number[] = []
+      const ids: string[] = []
+      const reader = events.subscription(def).run(
+        {
+          batch: async (es) => {
+            sizes.push(es.length)
+            ids.push(...es.map((e) => e.payload.id))
+          },
+        },
+        { batchSize: 10, pollMs: 50 },
+      )
+      await until(() => ids.length === 1)
+      release()
+      await big
+      await until(() => ids.length === 51)
+      await reader.close()
+      expect(Math.max(...sizes)).toBeLessThanOrEqual(10)
+      expect(ids).toStrictEqual(['small', ...Array.from({ length: 50 }, (_, k) => `big:${k}`)])
+    },
+    30_000,
+  )
+
+  requiresConcurrency(it)(
     'an unrelated long transaction does not delay readers',
     async () => {
       const db = server.db(4, quiet)

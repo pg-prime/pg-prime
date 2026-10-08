@@ -2,7 +2,7 @@ import type { Queryable, Subscription } from 'pg-prime'
 import type { TopicDef } from '../define.js'
 import type { Core } from '../events.js'
 import { decodePayload, encodePayload } from '../payload.js'
-import { ASYNC_DISPOSE } from '../util.js'
+import { ASYNC_DISPOSE, emitAll } from '../util.js'
 import { waker } from '../waker.js'
 import { advance, advanceTo, decodeCursor, encodeCursor, seed } from './cursor.js'
 import type { EntryRow } from './sql.js'
@@ -92,11 +92,10 @@ export function topicHandle<T>(core: Core, def: TopicDef<T>): TopicHandle<T> {
           ? await core.sql.seedNow(core.db).then((s) => seed(s.xmax, s.xip))
           : decodeCursor(from.after)
       const errors = new Set<(e: unknown) => void>()
-      const fail = (e: unknown): void => {
-        for (const h of errors) h(e)
-      }
+      const fail = (e: unknown): void => emitAll(errors, e)
       const stop = new AbortController()
       opts.signal?.addEventListener('abort', () => stop.abort(), { once: true })
+      if (opts.signal?.aborted === true) stop.abort()
       const wake = waker(core.db, channel, {
         pollMs: opts.pollMs ?? 5000,
         signal: stop.signal,
@@ -105,7 +104,7 @@ export function topicHandle<T>(core: Core, def: TopicDef<T>): TopicHandle<T> {
       const loop = (async () => {
         do {
           try {
-            for (;;) {
+            while (!stop.signal.aborted) {
               const { view, rows } = await core.sql.read(
                 core.db,
                 def.name,
@@ -122,7 +121,7 @@ export function topicHandle<T>(core: Core, def: TopicDef<T>): TopicHandle<T> {
                 }
               }
               cursor = advanceTo(cursor, view)
-              if (view.pos === null || stop.signal.aborted) break
+              if (view.pos === null && view.late === null) break
             }
           } catch (e) {
             fail(e)

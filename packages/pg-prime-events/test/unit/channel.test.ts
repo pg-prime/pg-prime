@@ -82,4 +82,22 @@ describe('channel handles', () => {
     await sub.close()
     expect(f.closed()).toBe(1)
   })
+
+  it('a throwing error observer neither escapes nor stops the others', async () => {
+    const f = fakeDb()
+    const errors: unknown[] = []
+    const sub = await channelHandle(f.db, ping).listen(() => {})
+    sub.on('error', () => {
+      throw new Error('observer')
+    })
+    sub.on('error', (e) => void errors.push(e))
+    f.deliver('ping', 'not json')
+    f.deliver('ping', '{"id":"no"}')
+    await tick()
+    expect(errors.map((e) => (e as Error).constructor.name)).toStrictEqual([
+      'SyntaxError',
+      'PayloadError',
+    ])
+    await sub.close()
+  })
 })
