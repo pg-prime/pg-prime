@@ -197,6 +197,74 @@ describe('transactions', () => {
     expect(retried[0]![2]).toBe(tenant(name === 'a' ? 1 : 2))
   })
 
+  test('a savepoint puts back its settings and timeouts before RELEASE', async () => {
+    const host = new TransactionHost(admin)
+    const show = async (k: string) =>
+      (await host.db.sql`select current_setting(${k}, true) as v`.executeTakeFirst())!['v']
+    await host.run({ settings: tenantId.set(tenant(1)) }, () =>
+      host.transaction(async () => {
+        const timeout = await show('statement_timeout')
+        await host.transaction(
+          async () => {
+            expect([await settingOf(host.db), await show('app.role')]).toEqual([tenant(2), 'x'])
+            expect(await show('statement_timeout')).toBe('5s')
+          },
+          {
+            propagation: 'savepoint',
+            localSettings: { ...tenantId.set(tenant(2)), 'app.role': 'x' },
+            timeoutMs: 5000,
+          },
+        )
+        expect([await settingOf(host.db), await show('statement_timeout')]).toEqual([
+          tenant(1),
+          timeout,
+        ])
+        expect(await show('app.role')).toBeOneOf([null, ''])
+      }),
+    )
+  })
+
+  test('the pin: nested serializable and read-only joins run as in production', async () => {
+    const host = new TransactionHost(admin)
+    const scope = await rollbackScope(host)
+    try {
+      for (const o of [{ isolation: 'serializable' }, { accessMode: 'read only' }] as const) {
+        const seen = await host.transaction(() => host.transaction(() => titles(host.db), o), o)
+        expect(seen).toContain('t1')
+      }
+    } finally {
+      await scope.rollback()
+    }
+  })
+
+  test('the pin: concurrent requests and sibling transactions wait their turn', async () => {
+    const host = new TransactionHost(admin)
+    const scope = await rollbackScope(host)
+    const ts = [1, 2, 3]
+    try {
+      const seen = await Promise.all(
+        ts.map((t) =>
+          host.request({ settings: tenantId.set(tenant(t)) }, () =>
+            Promise.all(
+              [1, 2].map((i) =>
+                host.transaction(async () => {
+                  await host.db
+                    .sql`insert into ${docs} values (${tenant(t)}::uuid, ${`q${t}-${i}`})`.execute()
+                  return settingOf(host.db)
+                }),
+              ),
+            ),
+          ),
+        ),
+      )
+      expect(seen).toEqual(ts.map((t) => [tenant(t), tenant(t)]))
+      expect((await titles(scope.tx)).filter((t) => t.startsWith('q'))).toHaveLength(6)
+    } finally {
+      await scope.rollback()
+    }
+    expect((await titles(admin)).filter((t) => t.startsWith('q'))).toEqual([])
+  })
+
   test('new commits when the outer rolls back; on max 1 it times out instead of hanging', async () => {
     const host = new TransactionHost(admin)
     await host.transaction(async () => {

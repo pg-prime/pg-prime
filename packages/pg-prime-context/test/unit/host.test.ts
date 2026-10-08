@@ -122,6 +122,26 @@ describe('join', () => {
     })
   })
 
+  it('refuses a different deferrable', async () => {
+    const { host } = setup()
+    const ro = { isolation: 'serializable', accessMode: 'read only' } as const
+    const join = (o: object) => code(host.transaction(async () => {}, o))
+    await host.transaction(async () => {
+      expect(await join({ ...ro, deferrable: true })).toBe('CONTEXT_OPTIONS')
+      expect(await join({ ...ro, deferrable: false })).toBe('resolved')
+    }, ro)
+    await host.transaction(
+      async () => {
+        expect(await join({ ...ro, deferrable: false })).toBe('CONTEXT_OPTIONS')
+        expect([await join({ ...ro, deferrable: true }), await join({})]).toEqual([
+          'resolved',
+          'resolved',
+        ])
+      },
+      { ...ro, deferrable: true },
+    )
+  })
+
   it('rollbackWith inside a join ends the outer transaction with that value', async () => {
     const { pool, host } = setup()
     const v = await host.transaction(async () => {
@@ -162,6 +182,36 @@ describe('savepoint', () => {
       ])
     })
   })
+
+  it('puts back what its localSettings and timeouts set, before RELEASE', async () => {
+    const before = { 'app.role': 'user', statement_timeout: '0' }
+    const step: MockStep = (q) =>
+      q.text.includes('jsonb_object_agg')
+        ? { rows: [[JSON.stringify(before)]], fields: ['s'] }
+        : { rows: [] }
+    const { pool, host } = setup(
+      {},
+      Array.from({ length: 10 }, () => step),
+    )
+    await host.transaction(() =>
+      host.transaction(async () => {}, {
+        propagation: 'savepoint',
+        localSettings: { 'app.role': 'admin' },
+        timeoutMs: 50,
+      }),
+    )
+    expect(pool.texts.map((t) => t.slice(0, 24))).toEqual([
+      'begin',
+      'select jsonb_object_agg(',
+      'savepoint "pgprime_sp_1"',
+      'select set_config($1,$2,',
+      'select count(set_config(',
+      'release savepoint "pgpri',
+      'commit',
+    ])
+    expect(pool.queries[1]!.values).toContain(JSON.stringify(['app.role', 'statement_timeout']))
+    expect(JSON.parse(pool.queries[4]!.values[0] as string)).toEqual(before)
+  })
 })
 
 describe('retry', () => {
@@ -187,6 +237,32 @@ describe('retry', () => {
     ).toEqual([
       ['app.tenant_id', 't1'],
       ['app.tenant_id', 't1'],
+    ])
+  })
+
+  it('a retry starts from the settings it re-sends, not what the failed attempt set', async () => {
+    let commits = 0
+    const step: MockStep = (q) =>
+      q.text === 'commit' && commits++ === 0 ? { code: '40001' } : { rows: [] }
+    const { host } = setup(
+      {},
+      Array.from({ length: 10 }, () => step),
+    )
+    const seen: unknown[] = []
+    await host.run({ settings: { 'app.tenant_id': 't1' } }, async () => {
+      await host.transaction(
+        async () => {
+          seen.push({ ...host.settings })
+          await host.setLocal({ 'app.tenant_id': 't2', 'app.user_id': 'u' })
+        },
+        { isolation: 'serializable', retry: { baseDelayMs: 0 } },
+      )
+      seen.push({ ...host.settings })
+    })
+    expect(seen).toEqual([
+      { 'app.tenant_id': 't1' },
+      { 'app.tenant_id': 't1' },
+      { 'app.tenant_id': 't2', 'app.user_id': 'u' },
     ])
   })
 
