@@ -6,6 +6,7 @@ The single-pass SQL emitter: one recursive descent over a planned AST that appen
 ## Public API
 - `compile<Row>(stmt: Statement): Compiled<Row>` — emits SQL, binds, decode shape, origins and meta; throws `UnsupportedNodeError`, `BuilderError`, `InvalidFragmentError`, `TooManyParametersError`.
 - `compileExpr(e: Expr)` — emits one expression; returns `{ sql, binds, placeholders, usedUnsafeRaw }` (no shape, no parameter cap).
+- `compileDdlExpr(e, what)` — internal, not on the barrel: one expression as catalog DDL text for `definePolicy`; throws `SchemaError` naming `what` for a placeholder, aggregate, window call or binary bind.
 
 ## Flow
 1. `compile` creates an `Emitter` and switches on `stmt.k` (`packages/pg-prime/src/compile/compiler.ts:1412`).
@@ -35,6 +36,8 @@ The single-pass SQL emitter: one recursive descent over a planned AST that appen
 - Module-level caches are shared across compiles: `ALIAS_CACHE` (capped at 4096, cleared wholesale) and the `$n` / newline string tables; none holds per-statement state (`packages/pg-prime/src/compile/compiler.ts:63`, `packages/pg-prime/src/compile/compiler.ts:101`).
 - `compileExpr` returns unfrozen `binds` and does not enforce the 65535 cap (`packages/pg-prime/src/compile/compiler.ts:1490`).
 
+- `compileDdlExpr` uses `DdlEmitter`: a bind becomes `quoteStringLiteral(encoded)::<sqlName>` (bare for `unknownCodec`, `NULL::<sqlName>` for null), and a schema ref passed as data becomes `"<table>"."<col>"` (`packages/pg-prime/src/compile/compiler.ts:1510`).
+
 ## Tests
 - `packages/pg-prime/test/compile/select.test.ts`, `insert.test.ts` — golden SQL, predicates, ordering, locking, fragments, RETURNING.
 - `packages/pg-prime/test/compile/parens.test.ts`, `emit-guards.test.ts` — parenthesization, set-op WITH branches, RETURNING qualification, option whitelists, cross join, case/row/array.
@@ -42,3 +45,4 @@ The single-pass SQL emitter: one recursive descent over a planned AST that appen
 - `packages/pg-prime/test/query/select.test.ts` ("distinct refuses an ORDER BY it cannot satisfy") — `checkDistinctOrder`; `packages/pg-prime/test/live-query/select.test.ts` repeats it against a server; `packages/pg-prime/test/fuzz/compiler-fuzz.test.ts` fuzzes the whole compiler.
 - Run: `pnpm --filter pg-prime exec vitest run test/compile` (unit); `pnpm --filter pg-prime exec vitest run test/live-query test/fuzz` (live, PGlite).
 - Uncovered: no unit test of `ALIAS_CACHE` eviction or the `>65535` branch of `dollarAt`.
+- `packages/pg-prime/test/compile/ddl-expr.test.ts` — `compileDdlExpr` rendering and refusals.

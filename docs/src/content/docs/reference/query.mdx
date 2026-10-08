@@ -1121,7 +1121,7 @@ symbol`s. The aliases below name each class.
 | <a id="Expr"/> `Expr` | `Expr<T, P = string>` | Anything with a known output type and a place in the SQL tree. `T` is the decoded TypeScript type, carried in the phantom `[OUT]` slot; `P` is the PostgreSQL type name the expression *is*, carried in `[META].pg`, so an operator's result can go straight back into a class-gated operator. `P` defaults to `string`, the honest answer for anything whose PostgreSQL type is not tracked, and which no gate accepts. |
 | <a id="ExprOf"/> `ExprOf` | `{ [OUT]: T }` | "Something that yields a `T`", without claiming to be an `Expr`. The structural operand. |
 | <a id="Operand"/> `Operand` | `T \| ExprOf<T>` | A value or anything that yields one — the right-hand side of every binary operator. |
-| <a id="NonNullOperand"/> `NonNullOperand` | `(T \| ExprOf<T>) & {}` | A right-hand operand that may not be the literal `null`. The `& {}` removes `null` and `undefined` from the value half of the union while leaving the expression half untouched, so `eq(u.deletedAt, null)` is a compile error while `eq(u.deletedAt, u.createdAt)` — two nullable columns, three-valued logic understood — is not. |
+| <a id="NonNullOperand"/> `NonNullOperand` | `(T \| ExprOf<T \| null>) & {}` | A right-hand operand that may not be the literal `null`. The `& {}` removes `null` and `undefined` from the value half of the union only, so `eq(u.deletedAt, null)` is a compile error while a nullable expression — `eq(u.deletedAt, u.createdAt)`, `eq(t.orgId, orgId.current())` — is accepted, as it is on the left. |
 | <a id="ClassOperand"/> `ClassOperand` | `ClassOperand<T, P>` | The base: a `T` that PostgreSQL calls `P`. |
 | <a id="AnyOperand"/> `AnyOperand` | `ClassOperand<T, string>` | Anything with a PostgreSQL type at all — the operand of `min`, `max`, `cast`, `asc` and `desc`. |
 | <a id="NumOperand"/> `NumOperand` | `ClassOperand<T, P extends NumPg>` | A number-ish column or expression. |
@@ -1256,6 +1256,49 @@ One conditional per *declared relation*, and only inside a scope that is actuall
 query that projects no relation never asks for these members, and TypeScript computes an
 instantiated interface's property types lazily. That is why a nine-method accessor costs a query
 that ignores it nothing.
+
+## Typed settings
+
+### `setting`
+
+{/* docs: signature */}
+```ts
+function setting(name: string): SettingKey<string, 'text'>
+function setting<C extends AnyCodec>(name: string, codec: C): SettingKey<CodecOut<C>, CodecPg<C>>
+```
+
+Names a custom setting (a GUC such as `app.org_id`) once, for both halves of its life: writing it
+for a transaction and reading it in SQL — in a query or in a [`definePolicy`](/pg-prime/reference/schema/#definepolicy)
+predicate. The name is checked as `setLocal` checks it (at most one dot, no `$`); a bad one is a
+`UsageError`. Without a codec the value is `text`.
+
+```ts
+import { setting, uuidCodec } from 'pg-prime'
+
+const orgId = setting('app.org_id', uuidCodec)
+orgId.set('6f1c2a3b-0000-4000-8000-000000000001') // { 'app.org_id': '6f1c…' }
+```
+
+### `SettingKey`
+
+{/* docs: signature */}
+```ts
+interface SettingKey<T, P extends string = string> {
+  readonly name: string
+  readonly codec: Codec<T, unknown, P>
+  set(value: T): Readonly<Record<string, string>>
+  current(): TypedFragment<T | null, P>
+}
+```
+
+`set(value)` encodes with the codec and returns a record for `tx.setLocal(...)`, `localSettings`
+or `session.set(...)`; it does no I/O, and a codec that encodes to bytes is a `UsageError`.
+
+`current()` is the SQL expression `nullif(current_setting('<name>', true), '')::<type>`, typed
+`T | null`: NULL when the setting is unset, and also when an earlier `SET LOCAL` on a reused
+connection left PostgreSQL's empty placeholder behind (where a bare cast would fail with `22P02`).
+In a policy a NULL makes the predicate false, so a request without the setting sees no rows. It
+carries no bind, so the same text works in a query and in a policy.
 
 ## Metadata and markers
 
