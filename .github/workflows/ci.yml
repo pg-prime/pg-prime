@@ -355,13 +355,18 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter pg-prime --filter @pg-prime/testing --filter @pg-prime/create exec bunx --bun vitest run --project unit
+      - run: pnpm --filter pg-prime --filter @pg-prime/testing --filter @pg-prime/create --filter @pg-prime/events --filter @pg-prime/outbox --filter @pg-prime/mq --filter @pg-prime/cron exec bunx --bun vitest run --project unit
       - name: pg-prime tier 2 on Bun, LISTEN reconnect + gap must not skip
         working-directory: packages/pg-prime
         run: |
           test -n "$PG_PRIME_TEST_URL"
           bunx --bun vitest run --project pg --reporter=default --reporter=json --outputFile.json=pg.json
           jq -e '[.testResults[] | select(.name | endswith("session-listen.test.ts")) | .assertionResults[].status] | length > 0 and all(. == "passed")' pg.json
+      - name: add-ons tier 2 on Bun
+        run: |
+          for p in events outbox mq cron; do
+            (cd "packages/pg-prime-$p" && bunx --bun vitest run --project pg)
+          done
 
   perf:
     # design/08 §5: "On PRs labelled `perf`: the runtime benchmark runs and posts a 3-run-median
