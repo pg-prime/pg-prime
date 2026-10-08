@@ -278,6 +278,21 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
   }, 60_000)
 })
 
+// Claims a tick, says so, then hangs until killed.
+const VICTIM = `
+import { defineSchema, pgPrime } from 'pg-prime'
+import { defineSchedule, pgCron } from '../../src/index.js'
+const [url, schema, pooled] = process.argv.slice(2)
+const db = pgPrime({
+  connection: url,
+  schema: defineSchema({}),
+  ...(pooled === '1' ? { poolerMode: 'pgbouncer-transaction' } : {}),
+})
+const handler = () => (console.log('running'), new Promise(() => {}))
+const victim = defineSchedule('victim', { everyMs: 2000 }, { handler })
+await pgCron({ db, schema, pollMs: 200, leaseMs: 1500, schedules: [victim] }).start()
+`
+
 let bundled: Promise<string> | undefined
 /** The victim as one ESM file, so a plain `node`/`bun` child can run the sources. */
 function victim(): Promise<string> {
@@ -285,7 +300,7 @@ function victim(): Promise<string> {
     const { build } = await import('esbuild')
     const outfile = join(tmpdir(), `pgprime-cron-victim-${process.pid}.mjs`)
     await build({
-      entryPoints: [join(import.meta.dirname, '_victim.ts')],
+      stdin: { contents: VICTIM, resolveDir: import.meta.dirname, loader: 'ts' },
       outfile,
       bundle: true,
       platform: 'node',
