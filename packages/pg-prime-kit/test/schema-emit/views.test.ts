@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { defineSchema, pgMaterializedView, pgTable, pgView, sql } from "pg-prime";
 import { extractCatalog } from "../../src/catalog/extract.js";
 import { withClient } from "../../src/db/pg.js";
-import { generate } from "../../src/generate.js";
+import { generate, LaneRefusedError } from "../../src/generate.js";
 import { applyPending } from "../../src/runner/run.js";
 import type { SchemaLike } from "../../src/schema/types.js";
 import { renderViewRepeatables, syncViewRepeatables, VIEWS_DIR } from "../../src/schema/views.js";
@@ -272,6 +272,30 @@ describe("end to end: generate writes the lane, apply runs it, the census stops 
         (d) => d.code === "unmodeled_kind" && (d.subject === "view" || d.subject === "materializedView"),
       );
       expect(census).toEqual([]);
+    },
+    T,
+  );
+
+  it(
+    "a hand file at a declared view path refuses the run, with nothing else declared",
+    async () => {
+      const dir = join(await tempDir("pgprime-w-conflict"), "sql");
+      await mkdir(join(dir, VIEWS_DIR), { recursive: true });
+      await writeFile(join(dir, VIEWS_DIR, "010_public__active_widgets.sql"), "SELECT 1;\n");
+      const refused = await generate({
+        admin: ADMIN,
+        target: dbConn(database),
+        schema,
+        repeatablesDir: dir,
+        schemas: ["public"],
+        seq: 3,
+        name: "conflict",
+        outDir: join(dir, "..", "migrations"),
+        prove: false,
+      }).catch((e: unknown) => e);
+      expect(refused).toBeInstanceOf(LaneRefusedError);
+      expect((refused as LaneRefusedError).diagnostics.map((d) => d.code)).toEqual(["declared_conflict"]);
+      expect(await readdir(join(dir, VIEWS_DIR))).toEqual(["010_public__active_widgets.sql"]);
     },
     T,
   );

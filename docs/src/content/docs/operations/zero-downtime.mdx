@@ -421,13 +421,15 @@ person who signed and the reason they gave. `--by` defaults to `$USER` and `--re
 the literal string `--allow-data-loss`, which is a worse diff line and is meant to look like one.
 
 `blanket: true` records that the whole plan was acknowledged with one flag rather than
-subject-by-subject; a `--hints-file` can list individual subjects instead, and then `blanket` is
-`false`. Either way `migrate lint` fails on any `DS`-class hazard whose subject is not in
+subject-by-subject; calling `generate` from code with `acknowledge.dataLoss` lists individual
+subjects instead, and then `blanket` is `false` (a `--hints-file` carries rename hints only). Either way `migrate lint` fails on any `DS`-class hazard whose subject is not in
 `acknowledged.dataLoss`, so an acknowledgement that stops matching the plan stops counting.
 
 Lane hazards (RL101 on an already-enabled table, RL103 `NO FORCE`, RL105, RL108) have no plan file
 to land in when only the lane changed, so their acknowledgement goes into the header of
-`sql/990_declared_prune.sql` instead, one line per subject, and is kept on later runs:
+`sql/990_declared_prune.sql` instead, one line per subject. It is kept on later runs until the
+declarations give back what it gave up (the policy is declared again, FORCE returns, the role is
+covered again); then it lapses, and a second loss is asked again:
 
 ```sql
 -- pg-prime:acknowledged RL105 public.documents.author_deletes by yohocx: deletes checked by the service

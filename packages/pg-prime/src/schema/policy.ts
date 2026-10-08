@@ -35,7 +35,10 @@ export interface PolicyRuntime {
   readonly command: PolicyCommand
   readonly permissive: boolean
   readonly roles: readonly string[]
-  /** CREATE POLICY text; evaluates the thunks. `schemaOf` maps a declared schema to the emitted one. */
+  /**
+   * CREATE POLICY text; evaluates the thunks. `schemaOf` maps a declared schema to the emitted one,
+   * for the ON table and every typed FROM table.
+   */
   ddl(schemaOf: (schema: string | undefined) => string): string
 }
 
@@ -94,7 +97,7 @@ export function definePolicy<T extends AnyTable>(name: string, spec: PolicySpec<
     )
   }
 
-  const render = (fn: unknown, key: string): string => {
+  const render = (fn: unknown, key: string, schemaOf: (schema: string) => string): string => {
     const registry = defaultRegistry()
     const refs: Record<string, unknown> = {}
     for (const c of table.columns) {
@@ -104,6 +107,7 @@ export function definePolicy<T extends AnyTable>(name: string, spec: PolicySpec<
     return compileDdlExpr(
       asExpr((fn as (t: unknown) => AnyFragment)(Object.freeze(refs))),
       `${what} ${key}`,
+      { alias: table.name, schemaOf },
     )
   }
 
@@ -119,8 +123,10 @@ export function definePolicy<T extends AnyTable>(name: string, spec: PolicySpec<
       let out =
         `CREATE POLICY ${quoteIdentPart(name)} ON ${on} AS ${as.toUpperCase()} ` +
         `FOR ${command.toUpperCase()} TO ${to.join(', ')}`
-      if (using !== undefined) out += `\n  USING (${render(using, 'using')})`
-      if (withCheck !== undefined) out += `\n  WITH CHECK (${render(withCheck, 'withCheck')})`
+      if (using !== undefined) out += `\n  USING (${render(using, 'using', schemaOf)})`
+      if (withCheck !== undefined) {
+        out += `\n  WITH CHECK (${render(withCheck, 'withCheck', schemaOf)})`
+      }
       return out
     },
   })

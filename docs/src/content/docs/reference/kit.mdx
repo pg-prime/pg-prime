@@ -882,12 +882,13 @@ Every object carries `COMMENT … IS 'pg-prime:declared sha256:<hash of its CREA
 marked objects in the managed schemas that are no longer declared, and is rendered for as long as the
 file exists — only a person deletes it. `generate` loads the lane into the shadow from memory,
 rendered into the shadow's schemas and without the prune, and refuses the whole write on a
-`declared_conflict`, a `policy_unknown_role` or an unacknowledged RL101/RL103/RL105/RL108.
+`declared_conflict`, a `declared_invalid`, a `policy_unknown_role` or an unacknowledged
+RL101/RL103/RL105/RL108.
 
 | Name | Shape | What it is |
 |---|---|---|
-| <a id="renderDeclared"/> `renderDeclared` | `(schema: SchemaLike, options?: RenderDeclaredOptions) => RenderedDeclared` | Pure. Policies sorted by name, each `DROP POLICY IF EXISTS` + `CREATE POLICY` + marker; one trigger function per `(schema, column)`. Diagnostics: `RL104` (policies on a table without `rls.*()`), `declared_conflict`, `declared_invalid`, `updated_at_on_update_overlap`. |
-| <a id="syncDeclared"/> `syncDeclared` | `(dir: string, files: readonly { path; sql }[], options: SyncDeclaredOptions) => Promise<SyncedDeclared>` | Writes changed files and deletes declared files no longer wanted, never the prune file. A non-declared file at a wanted path is `declared_conflict` and nothing is written. With `write: false` it reports `declared_lane_stale` (an error) and, for `020_views/`, `declared_views_stale`. |
+| <a id="renderDeclared"/> `renderDeclared` | `(schema: SchemaLike, options?: RenderDeclaredOptions) => RenderedDeclared` | Pure. Policies sorted by name, each `DROP POLICY IF EXISTS` + `CREATE POLICY` + marker; one trigger function per `(schema, column)`. Diagnostics: `RL104` (policies on a table without `rls.*()`), `declared_conflict`, `declared_invalid` (a predicate that does not render, a policy on a table `schema.tables` lacks, a lane table outside `options.schemas`), `updated_at_on_update_overlap`. |
+| <a id="syncDeclared"/> `syncDeclared` | `(dir: string, files: readonly { path; sql }[], options: SyncDeclaredOptions) => Promise<SyncedDeclared>` | Writes changed files and deletes declared files no longer wanted, never the prune file; a deletion that fails other than with `ENOENT` throws. A non-declared file at a wanted path is `declared_conflict` and nothing is written. With `write: false` it reports `declared_lane_stale` (an error) and, for `020_views/`, `declared_views_stale`. |
 | <a id="declaredCensus"/> `declaredCensus` | `(client: CatalogClient, files: readonly RepeatableFile[], schemas: readonly string[]) => Promise<DeclaredCensus>` | The `-- pg-prime:object` headers of the declared files against the catalog's markers and `relforcerowsecurity`: `declared_missing` (absent, another hash, wrong FORCE state), `declared_unmarked`, `declared_orphan`. One catalog query per kind; nothing at all when no declared file is given. |
 | <a id="DeclaredCensus"/> `DeclaredCensus` | `{ findings; heal: ReadonlySet<string> }` | `heal` is the files `migrate apply` re-applies whatever their checksum says: a restored declaration has the bytes of its old row. Each finding carries the `path` that fixes it. |
 | <a id="DeclaredFile"/> `DeclaredFile` | `{ path; sql; objects: readonly DeclaredObject[] }` | One rendered file. `path` is POSIX and relative to the repeatables root. |
@@ -1093,8 +1094,8 @@ class LaneRefusedError extends GenerateRefusedError {
 }
 ```
 
-The declared lane refused the run and nothing was written: a `declared_conflict` or
-`policy_unknown_role` in `diagnostics`, or an unacknowledged RL101/RL103/RL105/RL108 in `hazards`.
+The declared lane refused the run and nothing was written: a `declared_conflict`,
+`declared_invalid` or `policy_unknown_role` in `diagnostics`, or an unacknowledged RL101/RL103/RL105/RL108 in `hazards`.
 `migrate generate` reports it as `lane_refused` with exit 2; `migrate check` as exit 3.
 
 ### `WriteRefusedError`

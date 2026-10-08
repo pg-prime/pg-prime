@@ -139,8 +139,31 @@ describe.skipIf(!canCreateRoles)("RLS on the structural side", () => {
       );
       expect(s.updatedAtTriggers).toEqual([{ schema: "public", table: "documents", column: "touched_at" }]);
       expect(s.memberOf.get(ADMIN_ROLE)).toEqual([ADMIN_ROLE, APP]);
+      expect(s.memberOf.get("pg_read_all_data")).toEqual(["pg_read_all_data"]);
       expect(s.bypass.has("postgres")).toBe(true);
       expect(s.bypass.has(APP)).toBe(false);
+    },
+    T,
+  );
+
+  it(
+    "a non-inheriting membership is not coverage",
+    async () => {
+      // PG 16+ keeps INHERIT per grant; before that it is the role's flag.
+      const perGrant = await withAdmin(
+        async (c) => Number((await c.query("SHOW server_version_num")).rows[0]?.["server_version_num"]) >= 160000,
+      );
+      const inherit = (on: boolean): string =>
+        perGrant
+          ? `GRANT ${APP} TO ${ADMIN_ROLE} WITH INHERIT ${on ? "TRUE" : "FALSE"}`
+          : `ALTER ROLE ${ADMIN_ROLE} ${on ? "INHERIT" : "NOINHERIT"}`;
+      await withAdmin((c) => c.query(inherit(false)));
+      try {
+        const s = await withClient(cur, (c) => readLaneState(c, ["public"]));
+        expect(s.memberOf.get(ADMIN_ROLE)).toEqual([ADMIN_ROLE]);
+      } finally {
+        await withAdmin((c) => c.query(inherit(true)));
+      }
     },
     T,
   );

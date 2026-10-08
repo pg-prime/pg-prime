@@ -7,7 +7,7 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { definePolicy, eq, pgTable, rls, updatedAtTrigger } from "pg-prime";
+import { definePolicy, eq, pgSchema, pgTable, rls, updatedAtTrigger } from "pg-prime";
 import { withClient } from "../../src/db/pg.js";
 import { generate, LaneRefusedError, type GenerateInput } from "../../src/generate.js";
 import { createRepeatablesPass, scanRepeatables } from "../../src/repeatables/index.js";
@@ -36,7 +36,7 @@ interface Lane {
   query(text: string): Promise<Record<string, unknown>[]>;
 }
 
-async function lane(db: string): Promise<Lane> {
+async function lane(db: string, schemas: readonly string[] = ["public"]): Promise<Lane> {
   await makeDatabase(db);
   const root = await tempDir(`pgprime-r2-${db}`);
   const migrations = join(root, "migrations");
@@ -54,7 +54,7 @@ async function lane(db: string): Promise<Lane> {
         target: dbConn(db),
         schema,
         repeatablesDir: sql,
-        schemas: ["public"],
+        schemas,
         seq: seq++,
         name: "step",
         ...(write ? { outDir: migrations } : {}),
@@ -63,7 +63,7 @@ async function lane(db: string): Promise<Lane> {
       }),
     apply: () =>
       applyPending(dbConn(db), migrations, {
-        schemas: ["public"],
+        schemas,
         repeatablesDir: sql,
         repeatables: createRepeatablesPass(),
       }),
@@ -249,6 +249,21 @@ describe.skipIf(!ok)("the declared lane: generate → apply → change → prune
   );
 
   it(
+    "an acknowledgement lapses once the declaration returns: removing it again is refused again",
+    async () => {
+      const without = registry(tables, [POLICIES[0], POLICIES[2], sharesOrg]);
+      expect((await l.gen(registry(tables, [...POLICIES, sharesOrg]))).status).toBe("up_to_date");
+      expect(await readFile(join(l.sql, PRUNE_FILE), "utf8")).not.toContain("acknowledged");
+      await l.apply();
+      expect(await l.gen(without).catch((e: unknown) => e)).toBeInstanceOf(LaneRefusedError);
+
+      await l.gen(without, { acknowledge: { allowDataLoss: true, reason: "replaced again" } });
+      await l.apply();
+    },
+    T,
+  );
+
+  it(
     "a tier-3 generate leaves the target's policies and markers untouched",
     async () => {
       const marks = (): Promise<unknown> => withClient(dbConn(l.db), (c) => readMarks(c, ["public"], []));
@@ -410,10 +425,19 @@ describe.skipIf(!ok)("lane hazards on the full before/after state (D25)", () => 
   it(
     "a refused run writes nothing: no lane file, no migration",
     async () => {
-      const before = await readdir(l.sql, { recursive: true });
+      const lane = async (): Promise<Record<string, string>> => {
+        const files = (await readdir(l.sql, { recursive: true })).filter((f) => f.endsWith(".sql")).sort();
+        return Object.fromEntries(
+          await Promise.all(files.map(async (f) => [f, await readFile(join(l.sql, f), "utf8")])),
+        );
+      };
+      const before = await lane();
       const migrations = await readdir(l.migrations);
-      await refusal(l.gen(registry({ ...tables, docs: docsUnforced }, [sel, thingsAll, docsAll])));
-      expect(await readdir(l.sql, { recursive: true })).toEqual(before);
+      expect(await refusal(l.gen(registry({ ...tables, docs: docsUnforced }, [sel, thingsAll, docsAll])))).toEqual([
+        "RL103 public.docs",
+        "RL101 public.items:public:insert",
+      ]);
+      expect(await lane()).toEqual(before);
       expect(await readdir(l.migrations)).toEqual(migrations);
     },
     T,
@@ -427,6 +451,55 @@ describe.skipIf(!ok)("lane hazards on the full before/after state (D25)", () => 
       expect((e as LaneRefusedError).diagnostics.map((d) => `${d.code} ${d.subject ?? ""}`)).toEqual([
         "policy_unknown_role pgprime_r2_nobody",
       ]);
+      const readers = definePolicy("readers", { on: things, for: "select", to: ["pg_read_all_data"] });
+      expect((await l.gen(registry(tables, [sel, ins, thingsAll, docsAll, readers]), {}, false)).status).toBe(
+        "up_to_date",
+      );
+    },
+    T,
+  );
+
+  it(
+    "a policy on a table the schema does not manage is refused before a tier-3 shadow touches it",
+    async () => {
+      await l.query("CREATE SCHEMA audit; CREATE TABLE audit.logs (id int)");
+      const logs = pgSchema("audit").table("logs", (t) => ({ id: t.integer() }));
+      const onLogs = definePolicy("logs_all", { on: logs, to: ["public"] });
+      const e = await l
+        .gen(registry(tables, [sel, ins, thingsAll, docsAll, onLogs]), { shadow: "temp-schema" }, false)
+        .catch((x: unknown) => x);
+      expect((e as LaneRefusedError).diagnostics.map((d) => `${d.code} ${d.subject ?? ""}`)).toEqual([
+        "declared_invalid audit.logs.logs_all",
+      ]);
+      expect(await l.query("SELECT polname FROM pg_policy WHERE polrelid = 'audit.logs'::regclass")).toEqual([]);
+    },
+    T,
+  );
+});
+
+describe.skipIf(!ok)("the lane's default schema is public, as emitSchema's is", () => {
+  let l: Lane;
+  beforeAll(async () => {
+    l = await lane("pgprime_r2_default_schema", ["app", "public"]);
+  }, T);
+  afterAll(async () => {
+    await destroyDatabase(l.db).catch(() => undefined);
+  }, T);
+
+  it(
+    "a table without a schema renders, loads and applies as public.<table> when another schema sorts first",
+    async () => {
+      const notes = pgTable(
+        "notes",
+        (t) => ({ id: t.integer().primaryKey() }),
+        () => [rls.enable()],
+      );
+      const schema = registry({ notes }, [definePolicy("notes_all", { on: notes, to: ["public"] })]);
+      const r = await l.gen({ ...schema, schemas: [pgSchema("app")] } as SchemaLike);
+      expect(r.status, JSON.stringify(r.diagnostics)).toBe("generated");
+      expect(await readdir(join(l.sql, "050_policies"))).toEqual(["public__notes.sql"]);
+      expect((await l.apply()).status).toBe("applied");
+      expect(await policyNames(l, "notes")).toEqual(["notes_all"]);
     },
     T,
   );

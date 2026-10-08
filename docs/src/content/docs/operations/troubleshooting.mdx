@@ -273,7 +273,8 @@ Two kinds of unresolved decision, and both need a human answer recorded in the r
   structural candidates are advisory and never apply themselves; the `fix` field names the exact
   annotation to add.
 - **`confirm_data_loss`** — a `DS`-class hazard nobody signed for. Re-run with
-  `--allow-data-loss --reason "…"`, or record the acknowledgement in a `--hints-file`.
+  `--allow-data-loss --reason "…"`, or list the subjects in `acknowledge.dataLoss` when calling
+  `generate` from code.
 
 Neither prompts in CI and neither hangs. See
 [zero-downtime patterns](/pg-prime/operations/zero-downtime/#why-rename-detection-is-a-hint-not-a-guess)
@@ -297,7 +298,8 @@ declare the replacement policy first, or sign for it with `--allow-data-loss --r
 acknowledgement goes into `sql/990_declared_prune.sql`'s header. RL105 subjects name a restrictive
 policy (`schema.table.policy`), RL103 a table.
 
-`declared_conflict` (a hand-written file creates a declared object or sits at a declared path) and
+`declared_conflict` (a hand-written file creates a declared object or sits at a declared path),
+`declared_invalid` (a policy on an undeclared table, or a lane table outside `schemas`) and
 `policy_unknown_role` (a `to:` role does not exist on the target) refuse the same way and are fixed
 in the code, not acknowledged.
 
