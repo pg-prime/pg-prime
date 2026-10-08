@@ -1,0 +1,53 @@
+# packages/pg-prime-kit/src/diff/ddl.ts
+
+## Purpose
+Turns a `DiffResult` into unordered DDL `Statement`s with dependency ids, lock class and hazard codes, including the lock-safe rewrites. Callers: `generate.ts` (both `generate` and `generateFromDatabases`), `checkpoint/checkpoint.ts`, `prove/prove.ts`, `prove/temp-schema.ts`, `cli/commands/baseline.ts`; output goes to `diff/order.ts`. Uses `sql/ident.ts` for all quoting and constraint naming.
+
+## Public API
+- `BuildResult` — `{ statements, diagnostics }`; diagnostics include every `diff.diagnostics` entry plus the builder's own.
+- `BuildOptions.volatileDefaults` — encoded `default` ids the catalog found volatile; else harvested from `volatile_default` diagnostics, else the text fallback.
+- `BuildOptions.noSafeRewrite` — emit literal DDL instead of the lock-safe forms (`--no-safe-rewrite`).
+- `BuildOptions.emptyTables` — encoded table ids proven empty; suppresses MF hazards only, never LK.
+- `BuildOptions.multiFile` — the caller can write a `concurrent` companion file; enables the `CONCURRENTLY` and volatile-default split rewrites.
+- `BuildOptions.noConcurrentIndexes` — encoded index ids opted out of the `CONCURRENTLY` rewrite (`index().concurrently(false)`).
+- `columnClause(colId, payload, defaultExpr?)` — one column definition: type, collation, generated/identity/default, NOT NULL (named only when user-named), `NOT VALID`.
+- `mentionsVolatileFunction(expression)` — regex fallback for LK109 over a fixed list of rewriting built-ins.
+- `buildStatements(diff, desired, options?): BuildResult` — never throws for unsupported changes (reports `unsupported_alter` / `unsupported_rename`); throws only on malformed ids or a comment target with no `COMMENT ON` syntax.
+
+## Flow
+1. Resolve volatility, empty tables, and the created/dropped table, type and column sets from `diff.deltas` (`packages/pg-prime-kit/src/diff/ddl.ts:187-211`).
+2. Emit one `RENAME` per `diff.renames` record, all at `PHASE.rename` (`packages/pg-prime-kit/src/diff/ddl.ts:265-403`).
+3. `addEnumValue` → `ALTER TYPE … ADD VALUE IF NOT EXISTS … BEFORE|AFTER`, `commitBoundaryAfter` (`packages/pg-prime-kit/src/diff/ddl.ts:407-429`).
+4. `create` per kind (`packages/pg-prime-kit/src/diff/ddl.ts:431-744`); `alter` per kind (`packages/pg-prime-kit/src/diff/ddl.ts:746-926`); `drop` per kind (`packages/pg-prime-kit/src/diff/ddl.ts:928-1087`).
+5. Drops carry `releases` from `referencesHeldBy` (outgoing `depends`/`evaluates` targets plus the schema) so referencing objects drop before their referents (`packages/pg-prime-kit/src/diff/ddl.ts:251-262`).
+6. Return statements in delta order; ordering is `orderStatements`' job (`packages/pg-prime-kit/src/diff/ddl.ts:1094`).
+
+## Gotchas
+- **Rewrite gate.** `concurrentOk` needs `multiFile`, no `noSafeRewrite`, and an existing non-partitioned table (`packages/pg-prime-kit/src/diff/ddl.ts:233-238`); `packages/pg-prime-kit/src/generate.ts:276` retries with `multiFile: false` if `splitStages` declines.
+- **Volatility.** An empty `volatileDefaults` set is treated as "not supplied" and falls back to the regex (`packages/pg-prime-kit/src/diff/ddl.ts:190-191`). The catalog test is `provolatile <> 'i'` (`packages/pg-prime-kit/src/catalog/extract.ts:409`), which includes STABLE `now()`; the regex fallback deliberately excludes it (`packages/pg-prime-kit/src/diff/ddl.ts:132-139`).
+- **Renames.** Table → BC101, column → BC102, constraint/index/type/sequence → BC104, enum label → BC105 with `lockClass: "none"`, schema → BC101; any other kind → `unsupported_rename` error (`packages/pg-prime-kit/src/diff/ddl.ts:268-402`).
+- **Schema.** `CREATE SCHEMA IF NOT EXISTS`; drop is `DROP SCHEMA IF EXISTS` with DS101, no `CASCADE` (`packages/pg-prime-kit/src/diff/ddl.ts:434-445`, `packages/pg-prime-kit/src/diff/ddl.ts:1070-1082`).
+- **Extension.** `CREATE EXTENSION IF NOT EXISTS … SCHEMA`; only a schema change alters (`SET SCHEMA`); drop is a no-op because `diffIR` never emits one (`packages/pg-prime-kit/src/diff/ddl.ts:574-591`, `packages/pg-prime-kit/src/diff/ddl.ts:813-833`, `packages/pg-prime-kit/src/diff/ddl.ts:996-1001`).
+- **Sequence.** Created without `OWNED BY`, ownership set by a separate `ALTER SEQUENCE` so a `serial` default can see the sequence (`packages/pg-prime-kit/src/diff/ddl.ts:449-480`); alter rewrites all options (`packages/pg-prime-kit/src/diff/ddl.ts:1433-1439`).
+- **Table.** Columns inline in ordinal order with defaults inline; `PARTITION BY` for a parent, a partition is created standalone then `ATTACH`ed with LK107 (`packages/pg-prime-kit/src/diff/ddl.ts:482-544`, `packages/pg-prime-kit/src/diff/ddl.ts:1325-1343`). Bound change = DETACH + ATTACH; key or `relkind` change = `unsupported_alter`; `SET [UN]LOGGED` → LK112 rewrite (`packages/pg-prime-kit/src/diff/ddl.ts:840-904`). Drop destroys all descendants, DS102 (`packages/pg-prime-kit/src/diff/ddl.ts:1023-1041`).
+- **CLUSTER ON.** Consumes both the `index:` and the `constraint:` spelling of the index name, because a clustered index is usually a constraint's backing index (`packages/pg-prime-kit/src/diff/ddl.ts:1112-1124`).
+- **Column add.** `ADD COLUMN IF NOT EXISTS` with the default inline (a separate `SET DEFAULT` would let NOT NULL fail on existing rows, `packages/pg-prime-kit/src/diff/ddl.ts:692-696`). MF103 for NOT NULL without default/identity/generated on a non-empty table (`packages/pg-prime-kit/src/diff/ddl.ts:599-601`); LK109 for a volatile default (`packages/pg-prime-kit/src/diff/ddl.ts:677`).
+- **Volatile default split.** With `multiFile` and a nullable column: `ADD COLUMN` without default, then `SET DEFAULT`, plus a `volatile_default_split` info that `generate.ts` turns into a `-- pg-prime:data` stub (`packages/pg-prime-kit/src/diff/ddl.ts:622-676`). A NOT NULL volatile default instead warns `volatile_default_not_null` (`packages/pg-prime-kit/src/diff/ddl.ts:678-690`).
+- **Column alter.** Type/collation change → `TYPE … USING col::type`, rewrite, LK108/MF105/BC103 (`packages/pg-prime-kit/src/diff/ddl.ts:1849-1857`). Generated-ness changes and PG 18 `VIRTUAL` columns → `unsupported_alter` (`packages/pg-prime-kit/src/diff/ddl.ts:1863-1872`). Identity add → LK110 (`packages/pg-prime-kit/src/diff/ddl.ts:1873-1887`). Drop → `DROP COLUMN IF EXISTS`, DS103.
+- **SET NOT NULL.** Never a bare `SET NOT NULL` scan. When the desired side catalogues NOT NULL (PG ≥ 18) it is `ADD CONSTRAINT … NOT NULL … NOT VALID` + `VALIDATE` (`packages/pg-prime-kit/src/diff/ddl.ts:1937-1958`); otherwise a temporary `CHECK (col IS NOT NULL) NOT VALID`, `VALIDATE`, `SET NOT NULL`, `DROP CONSTRAINT`, with the temp name from `chooseConstraintName` (`packages/pg-prime-kit/src/diff/ddl.ts:1962-1990`). The choice is read from the catalog payload, not `server_version_num`. MF104 unless proven empty.
+- **NOT NULL rename/validity.** PG 18 name change → `RENAME CONSTRAINT` (BC104); validation → `VALIDATE`; un-validation → DROP + `ADD … NOT VALID` (`packages/pg-prime-kit/src/diff/ddl.ts:2006-2040`).
+- **Default.** Create/alter → `SET DEFAULT`, consuming `evaluates` edges so a new enum label commits first (`packages/pg-prime-kit/src/diff/ddl.ts:1361-1386`); skipped when the table or column is created by this plan (`packages/pg-prime-kit/src/diff/ddl.ts:548-550`). Drop skipped when the column is gone or dropped (`packages/pg-prime-kit/src/diff/ddl.ts:944-945`).
+- **Constraint add.** Validated FK/CHECK → `ADD … NOT VALID` (MF106 unless empty/fresh) + `VALIDATE` under SHARE UPDATE EXCLUSIVE (`packages/pg-prime-kit/src/diff/ddl.ts:1519-1541`). PK/UNIQUE on an existing table with `concurrentOk` and a definition matching `PK_UNIQUE_DEF` → four `concurrent`-stage statements ending in `ADD CONSTRAINT … USING INDEX` (`packages/pg-prime-kit/src/diff/ddl.ts:1557-1617`). Otherwise literal `ADD CONSTRAINT` with LK104/MF101 or, under `noSafeRewrite`, LK105/LK106 (`packages/pg-prime-kit/src/diff/ddl.ts:1619-1644`).
+- **FK ordering.** FKs consume, and their drops release, the referenced table's PK/UNIQUE constraints and unique indexes (`uniquenessProviders`, `packages/pg-prime-kit/src/diff/ddl.ts:1657-1668`).
+- **Constraint alter.** Same definition, newly validated → `VALIDATE` only; anything else → drop + add (`packages/pg-prime-kit/src/diff/ddl.ts:771-788`). Dropping a PK/UNIQUE → DS106 (`packages/pg-prime-kit/src/diff/ddl.ts:1709`).
+- **Index.** `%ID%` in the stored definition is replaced with a function so `$&`-style names are literal (`packages/pg-prime-kit/src/diff/ddl.ts:1748-1752`). Literal `CREATE INDEX` carries LK101 even on a table this plan creates; the concurrent form is `DROP INDEX CONCURRENTLY IF EXISTS` + `CREATE INDEX CONCURRENTLY`, both idempotent, ordered by phase (`packages/pg-prime-kit/src/diff/ddl.ts:1740-1804`). Alter = drop + create, MF102 when becoming unique (`packages/pg-prime-kit/src/diff/ddl.ts:752-769`). Drop → LK102.
+- **Type.** Enum created with all labels; domain with named CHECKs spelled out; composite with ordinal-ordered attributes (`packages/pg-prime-kit/src/diff/ddl.ts:1186-1244`). Only domains alter in place (default, NOT NULL with MF104/LK107, CHECK add MF106/drop) (`packages/pg-prime-kit/src/diff/ddl.ts:1251-1315`). Composite attribute alters report `unsupported_alter` when any column uses the type (`packages/pg-prime-kit/src/diff/ddl.ts:1164-1184`). Drop → DS104.
+- **Comment.** `COMMENT ON … IS text|NULL`, idempotent; skipped when the target is dropped by this plan or already gone (`packages/pg-prime-kit/src/diff/ddl.ts:962-975`). Targets without syntax throw (`packages/pg-prime-kit/src/diff/ddl.ts:1428-1429`).
+
+## Tests
+- `packages/pg-prime-kit/test/ddl.test.ts` — `$`-containing index names (unit goldens) and end-to-end ordering (live).
+- `test/generate/rewrites.test.ts` — the three rewrites needing a second file; `test/kinds/not-null-validity.test.ts`, `test/kinds/emptiness.test.ts`, `test/kinds/partition.test.ts`, `test/kinds/extension.test.ts`, `test/enum.test.ts`, `test/rename.test.ts`, `test/generate/annotations.test.ts`.
+- `test/corpus.test.ts` sweeps `fixtures/diff/*` (domain, composite, cluster, partitioned, name-collision, …) through apply, zero-drift proof and the pg_dump oracle.
+- Run: `pnpm --filter @pg-prime/kit exec vitest run test/ddl.test.ts test/generate/rewrites.test.ts`; nearly all need `PG_PRIME_TEST_URL`.
+- `packages/pg-prime-kit/test/catalog.test.ts:177` asserts `unsupported_alter` for a generated-column change; `packages/pg-prime-kit/test/generate/annotations.test.ts:116` asserts every annotation kind has a rename branch.
+- Uncovered: `mentionsVolatileFunction` and `columnClause` have no direct unit test; composite-in-use reporting is not asserted.

@@ -1,0 +1,162 @@
+# Docs index
+
+One line per doc: path — what it covers — read when.
+
+- docs/packages/pg-prime-create/src/args.md — create-pg-prime flag parser, --help text, package-manager detection — read when adding or changing a create-pg-prime flag.
+- docs/packages/pg-prime-create/src/cli.md — create-pg-prime bin entry: TTY detection, readline, exit code — read when the scaffolder hangs, mis-prompts or exits wrongly.
+- docs/packages/pg-prime-create/src/index.md — @pg-prime/create library exports and generated versions.ts — read when importing the scaffolder programmatically or versions.ts is missing.
+- docs/packages/pg-prime-create/src/main.md — create command flow: help/version, scaffold, git init, install, next steps — read when changing what create-pg-prime prints or runs after writing.
+- docs/packages/pg-prime-create/src/prompts.md — interactive questions, defaults and ProjectPlan resolution for create-pg-prime — read when changing prompts, defaults or non-TTY behaviour.
+- docs/packages/pg-prime-create/src/scaffold.md — template rendering, testing blocks, package.json merge, non-empty refusal — read when editing scaffold templates or the generated project's files.
+- docs/packages/pg-prime-create/src/types.md — @pg-prime/create public types: options, results, versions, package managers — read when changing scaffolder option or result shapes.
+- docs/packages/pg-prime-kit/src/catalog/extract.md — pg_catalog extraction into SchemaIR, Tier-O observation, census diagnostics — read when changing what the extractor reads, excludes or diagnoses.
+- docs/packages/pg-prime-kit/src/catalog/payloads.md — Tier-M fact payload shapes, GENERATED_NAME, ObservedObject — read when adding or changing a payload field.
+- docs/packages/pg-prime-kit/src/checkpoint/checkpoint.md — checkpoint build/write/list, IR read-back, naming drifted objects — read when touching `migrate checkpoint` or fingerprint-mismatch drift messages.
+- docs/packages/pg-prime-kit/src/cli.md — pg-prime binary entry point, shebang, exitCode flush — read when changing how the binary starts or exits.
+- docs/packages/pg-prime-kit/src/cli/args.md — dependency-free long-flag parser, durations, help option rendering — read when adding a CLI flag or debugging argv parsing.
+- docs/packages/pg-prime-kit/src/cli/commands/apply.md — `migrate apply`/`deploy` flag mapping, envelope and text over `applyPending` — read when changing apply flags, timeouts or the apply envelope.
+- docs/packages/pg-prime-kit/src/cli/commands/baseline.md — `migrate baseline`: write `0000_baseline` or `--at` mark files baselined — read when adopting an existing database or debugging baseline refusals.
+- docs/packages/pg-prime-kit/src/cli/commands/check.md — `migrate check` CI gate: schema drift, checksums, pending, exit precedence — read when check exits 4/5 unexpectedly or editing CI gating.
+- docs/packages/pg-prime-kit/src/cli/commands/checkpoint.md — `migrate checkpoint`: writes full-schema checkpoint `.sql`/`.plan.json`/`.ir.json`, records nothing — read when creating checkpoints or debugging checkpoint refusals.
+- docs/packages/pg-prime-kit/src/cli/commands/doctor.md — `migrate doctor` read-only health findings: invalid indexes, drift, stale leases, orphans — read when doctor exits 4 or adding a health check.
+- docs/packages/pg-prime-kit/src/cli/commands/generate.md — `migrate generate` CLI: flags, `--empty`/`--data`, status-to-exit mapping, `shadowStrategy` — read when changing generate flags, exit codes or `--interactive` renames.
+- docs/packages/pg-prime-kit/src/cli/commands/lint.md — `migrate lint` target selection, synthesized plans, `--fail-on`, sarif refusal — read when lint picks the wrong files or exits 3 unexpectedly.
+- docs/packages/pg-prime-kit/src/cli/commands/pull.md — `pull` verb: introspect database, write TypeScript schema, repeatables, report — read when changing pull flags or output paths.
+- docs/packages/pg-prime-kit/src/cli/commands/push.md — `migrate push --dev`: refusal fences and direct diff apply without history — read when push refuses or touching its production guards.
+- docs/packages/pg-prime-kit/src/cli/commands/seed.md — `db seed` CLI: sets, `--list`, production refusal, never records history — read when seeding fails or changing seed flags.
+- docs/packages/pg-prime-kit/src/cli/commands/status.md — `migrate status` envelope and text rendering over `migrationStatus` — read when changing status output or its exit codes.
+- docs/packages/pg-prime-kit/src/cli/commands/unlock.md — `migrate unlock` lease inspection and `--force` lease-row deletion — read when a deploy lock is stuck or unlock exits 6.
+- docs/packages/pg-prime-kit/src/cli/commands/verify.md — `migrate verify`: replay migrations into an ephemeral database and diff — read when verify fails, drifts, or `--from-checkpoint`/`--to` misbehave.
+- docs/packages/pg-prime-kit/src/cli/exit.md — EXIT code table and RUNNER_EXIT runner-status mapping — read when choosing or changing a command's exit code.
+- docs/packages/pg-prime-kit/src/cli/interactive.md — generate --interactive rename confirmations rendered as renamedFrom patch — read when changing how confirmed renames become a patch.
+- docs/packages/pg-prime-kit/src/cli/main.md — CLI routing, help/version, config resolution, envelopes, strip-types re-exec — read when adding a command or changing CLI routing/errors.
+- docs/packages/pg-prime-kit/src/cli/output.md — CommandOutput type, JSON/text render, text formatting helpers — read when changing envelope rendering or command text output.
+- docs/packages/pg-prime-kit/src/config/define.md — PgPrimeConfig shape and the identity defineConfig helper — read when adding or changing a pg-prime.config.ts key.
+- docs/packages/pg-prime-kit/src/config/index.md — config barrel and which config symbols stay internal — read when changing the kit's config exports.
+- docs/packages/pg-prime-kit/src/config/load.md — config discovery, validation, schema-module loading, URL parsing, connection precedence — read when config loading, connection resolution or schema import misbehaves.
+- docs/packages/pg-prime-kit/src/config/ts-specifiers.md — resolve hook redirecting missing relative .js imports to .ts siblings — read when a kit-loaded .ts file fails with ERR_MODULE_NOT_FOUND.
+- docs/packages/pg-prime-kit/src/data.md — batched resumable data migrations and replica-lag readers — read when debugging `-- pg-prime:batch` backfills, watermarks or max-replica-lag waits.
+- docs/packages/pg-prime-kit/src/db/pg.md — ConnInfo, withClient, guarded CREATE/DROP DATABASE and shadow-name gate — read when changing connection handling or database provisioning.
+- docs/packages/pg-prime-kit/src/diff/candidates.md — unannotated rename candidates: unambiguous, ambiguous, near-miss verdicts — read when generate exits missing_hints or proposes a wrong rename.
+- docs/packages/pg-prime-kit/src/diff/ddl.md — delta-to-DDL emission, lock-safe rewrites and hazard codes per object kind — read when generated SQL, a hazard code, or a CONCURRENTLY rewrite looks wrong.
+- docs/packages/pg-prime-kit/src/diff/delta.md — Delta union, RenameHint and RenameRecord types — read when adding a delta op or rename source.
+- docs/packages/pg-prime-kit/src/diff/diff.md — diffIR fact comparison, enum label appends, adopted partitions, retained extensions — read when a schema change produces a missing or phantom delta.
+- docs/packages/pg-prime-kit/src/diff/order.md — statement topological ordering, transaction segments, concurrent stage splitting — read when statements apply in the wrong order or a split is declined.
+- docs/packages/pg-prime-kit/src/diff/rename.md — applying rename hints and cascading auto-named index/constraint renames — read when a rename plans DROP+CREATE instead of RENAME.
+- docs/packages/pg-prime-kit/src/diff/statement.md — Statement record, lock class, transactionality, stage, PHASE ranks — read when adding a statement field or changing ordering tie-breaks.
+- docs/packages/pg-prime-kit/src/generate.md — migrate generate pipeline, statuses, stub templates, hints, generateFromDatabases — read when changing how migrations are generated, proven or written.
+- docs/packages/pg-prime-kit/src/history/schema.md — pgprime history DDL and idempotent ensureHistory — read when changing history tables or debugging history creation races.
+- docs/packages/pg-prime-kit/src/history/store.md — reads/writes of migration rows, lease, checkpoints, data progress, repeatables — read when changing what the runner records in pgprime tables.
+- docs/packages/pg-prime-kit/src/index.md — @pg-prime/kit public barrel, export groups, types@<5.9 stub — read when adding, removing or renaming a kit export.
+- docs/packages/pg-prime-kit/src/ir.md — StableId encoding, canonical hashing, SchemaIR rollups and fingerprint — read when a fingerprint, id encoding, or phantom hash diff is wrong.
+- docs/packages/pg-prime-kit/src/lint/lint.md — lintPlan exit codes, nolint directives, acknowledgement and fail-on gating — read when migrate lint exits 3 unexpectedly or a nolint is ignored.
+- docs/packages/pg-prime-kit/src/lint/rules.md — file-level TX/LK103/LK111/DS105 rules and ST style family — read when a TX, style, or file-level lint finding misfires.
+- docs/packages/pg-prime-kit/src/plan/emit.md — writePlan refusals and .sql/.plan.json file writing — read when generate refuses to write or a migration file is rejected.
+- docs/packages/pg-prime-kit/src/plan/plan.md — Plan artifact, hazard severities, acknowledgement, planId, .sql rendering — read when changing .plan.json fields, header directives, or hazard severity.
+- docs/packages/pg-prime-kit/src/prove/pg-dump.md — pg_dump oracle: launcher resolution, schema dumps, multiset comparison — read when the dump oracle skips, fails or reports reordered tables.
+- docs/packages/pg-prime-kit/src/prove/prove.md — shadow-clone proof: clone, apply stages, re-extract, fingerprint, oracle — read when a generate proof fails or clone provisioning misbehaves.
+- docs/packages/pg-prime-kit/src/prove/temp-schema.md — tier-3 proof inside target via temp schemas, re-derived plan — read when a NOCREATEDB generate fails its proof.
+- docs/packages/pg-prime-kit/src/pull/emit-ts.md — IR to deterministic DSL TypeScript file, unsupported residue block — read when pull output or its residue list is wrong.
+- docs/packages/pg-prime-kit/src/pull/parse.md — recognisers for pg_get_constraintdef and pg_get_indexdef output — read when pull reports a constraint or index as unsupported.
+- docs/packages/pg-prime-kit/src/pull/pull.md — pg-prime pull orchestration, file writing, pull.report.json — read when changing pull inputs, outputs or report shape.
+- docs/packages/pg-prime-kit/src/pull/tier-r.md — catalog read of functions, views, policies, triggers into sql/ repeatables — read when pulled sql/ files are wrong or not idempotent.
+- docs/packages/pg-prime-kit/src/repeatables.md — Tier R sql/ scan order, hash plan, one-transaction apply, idempotence check — read when repeatables re-apply unexpectedly or TX201 flags a statement.
+- docs/packages/pg-prime-kit/src/runner/apply.md — segment execution, timeout GUCs, advisory lock key, pooler probes — read when changing transaction framing, timeouts or pooler detection.
+- docs/packages/pg-prime-kit/src/runner/files.md — migrations directory discovery, directives, stmt markers, plan/file merge — read when a migration file parses wrong or orders unexpectedly.
+- docs/packages/pg-prime-kit/src/runner/run.md — `migrate apply` run: lock, gates, checkpoints, retries, resume, repeatables — read when debugging apply exit codes, retries or crash resume.
+- docs/packages/pg-prime-kit/src/runner/status.md — read-only `migrate status` report and exit code — read when status shows wrong pending, drift or exit code.
+- docs/packages/pg-prime-kit/src/schema/emit.md — DSL registry to schema-qualified DDL, names, ordering, diagnostics — read when generated desired DDL fails to load or diffs.
+- docs/packages/pg-prime-kit/src/schema/load.md — loadDesired: emit into shadow, extract, remap to user schemas — read when IR(desired) loading fails or shows phantom deltas.
+- docs/packages/pg-prime-kit/src/schema/remap.md — shadow-to-user schema rename over IR, diagnostics, observations — read when tier-3 fingerprints diverge or names leak.
+- docs/packages/pg-prime-kit/src/schema/types.md — type-only SchemaLike/TableLike/ViewLike view of the pg-prime DSL — read when the kit's input schema shape changes.
+- docs/packages/pg-prime-kit/src/schema/views.md — declared views rendered into sql/020_views, sync, census adjustment — read when declared view files or the view census are wrong.
+- docs/packages/pg-prime-kit/src/seed/db.md — dynamic pg-prime import building the typed Db for .ts seeds — read when a .ts seed cannot get `db` or the peer import fails.
+- docs/packages/pg-prime-kit/src/seed/run.md — `db seed` scan, sets, production refusal, per-file transactions — read when seeds run in the wrong order, refuse, or fail.
+- docs/packages/pg-prime-kit/src/shadow/ladder.md — shadow tiers 1–3 provisioning, strategy parsing, tier-4 refusal — read when generate picks the wrong shadow tier or leaves shadow objects.
+- docs/packages/pg-prime-kit/src/sql.md — identifier/literal quoting, PostgreSQL auto-naming, SQL lexer and statement splitter — read when quoting rejects a name or SQL splitting/canonicalization misbehaves.
+- docs/packages/pg-prime-testing/src/expect-sql.md — expectSql golden SQL assertion, whitespace normalisation, bind comparison, diffs — read when a SQL golden fails or binds compare unexpectedly.
+- docs/packages/pg-prime-testing/src/guards.md — runner-agnostic skip guards keyed on PG_PRIME_TEST_URL — read when a test needs a real server or second session.
+- docs/packages/pg-prime-testing/src/index.md — @pg-prime/testing entry point exports and peer-dependency layout — read when finding which testing helper to import.
+- docs/packages/pg-prime-testing/src/mock-pool.md — createMockPool recording/scripted PgLikePool, handshake, scripted SQLSTATE errors — read when writing tier-0 tests against a mocked driver.
+- docs/packages/pg-prime-testing/src/pglite-bridge.md — wire-protocol socket bridge in front of PGlite, ReadyForQuery stripping — read when the PGlite tier drops connections or desyncs the pg protocol.
+- docs/packages/pg-prime-testing/src/pglite.md — startPglite tier-1 fixture: UTC pin, version probe, bridge URL — read when booting PGlite in tests or timestamps render off-UTC.
+- docs/packages/pg-prime-testing/src/postgres.md — startPostgres containers, scratch databases, probe, dockerAvailable — read when tests need a real PostgreSQL or a scratch database.
+- docs/packages/pg-prime/src/codec/array.md — PostgreSQL array-literal parser and writer, delimiters, NULL quoting — read when array values parse or encode wrong.
+- docs/packages/pg-prime/src/codec/builtins.md — every built-in codec, arrayCodec/arrayCodecOf, unknownCodec, alternates — read when a built-in type decodes or encodes unexpectedly.
+- docs/packages/pg-prime/src/codec/define.md — definePgType extension-type descriptor and its derived codec fields — read when adding a third-party PostgreSQL type.
+- docs/packages/pg-prime/src/codec/extensions.md — shipped citext and pgvector vector codecs, name-only registration — read when citext or vector columns misbehave.
+- docs/packages/pg-prime/src/codec/index.md — codec barrel and pg-prime/codecs subpath exports — read when adding or finding a public codec export.
+- docs/packages/pg-prime/src/codec/registry.md — Registry lookups, decode plans, resolveDynamic, defaultRegistry/clone — read when enum/domain/extension OIDs resolve wrong or columns stay raw text.
+- docs/packages/pg-prime/src/codec/types.md — Codec/CodecRegistry contracts, branded date strings, PgDecodeError/PgEncodeError — read when writing a codec or handling decode/encode errors.
+- docs/packages/pg-prime/src/compile/ast.md — immutable AST node types: statements, FROM items, expressions, relation/group plans — read when adding a node kind or changing a node's fields.
+- docs/packages/pg-prime/src/compile/compiler.md — single-pass SQL emitter: compile(), compileExpr(), binds, parenthesization, RETURNING scope — read when generated SQL, $n numbering or emit-time errors look wrong.
+- docs/packages/pg-prime/src/compile/contract.md — Compiled output, Bind, ResultShape/FieldPlan/JsonPlan, paramTypesOf — read when consuming compile() output or changing the decode plan shape.
+- docs/packages/pg-prime/src/compile/decode.md — row decoders from ResultShape: closure vs codegen, null and witness rules — read when decoded rows have wrong values, nulls, or codegen/CSP errors.
+- docs/packages/pg-prime/src/compile/hoist.md — planner: lateral relation hoisting, aggregate CSE, nest() expansion, DISTINCT ON alignment — read when relation SQL, _rN laterals, json/jsonb choice or decode indexes misbehave.
+- docs/packages/pg-prime/src/compile/nodes.md — node constructors and the nominal WeakSet registry (isAstNode, inInternalNodes) — read when building AST nodes or debugging a value bound as data instead of SQL.
+- docs/packages/pg-prime/src/driver/copy.md — COPY FROM STDIN / TO STDOUT Submittables, backpressure, abort — read when COPY loads hang, fail or ignore abort.
+- docs/packages/pg-prime/src/driver/errors.md — normaliseError kinds, 57014 split, connectionUnusable, PgDriverError — read when a driver error has the wrong kind or retry behaviour.
+- docs/packages/pg-prime/src/driver/index.md — internal driver barrel including @internal adapter helpers — read when importing driver internals or tracing a driver export.
+- docs/packages/pg-prime/src/driver/pg-adapter.md — node-postgres adapter: acquire/release, execute, stream, maxRows, cancel, listeners — read when pg connections leak, hang, or cancel wrongly.
+- docs/packages/pg-prime/src/driver/pg-like.md — structural pg Pool/Client/Connection shapes and PgDriverConfig — read when passing your own pool or a pg drop-in fails to typecheck.
+- docs/packages/pg-prime/src/driver/submittable.md — pg Submittables for describe, Close(S), single-round-trip maxRows — read when describe, closeStatement or maxRows results look wrong.
+- docs/packages/pg-prime/src/driver/types.md — adapter seam interfaces: PgDriver, PgConnection, PgQuery, errors, capabilities — read when writing an adapter or reading query/result shapes.
+- docs/packages/pg-prime/src/entry/driver.md — published pg-prime/driver subpath export list and subset invariant — read when changing the pg-prime/driver public surface.
+- docs/packages/pg-prime/src/errors/base.md — PgPrimeError, UsageError, ConfigError roots and ErrorContext types — read when adding an error class or a new error code.
+- docs/packages/pg-prime/src/errors/classes.md — runtime error hierarchy: QueryError, ConnectionError, timeouts, usage errors — read when adding, throwing or catching a specific error class.
+- docs/packages/pg-prime/src/errors/index.md — internal errors barrel re-exporting every errors module — read when importing error helpers inside the package.
+- docs/packages/pg-prime/src/errors/map.md — driver error data to PgPrimeError mapping and connection-leaf routing — read when a database error maps to the wrong class or message.
+- docs/packages/pg-prime/src/errors/predicates.md — isUniqueViolation and sibling constraint predicates over column refs — read when matching constraint violations in application code.
+- docs/packages/pg-prime/src/errors/redact.md — error redaction options, DETAIL parsing, call-site capture — read when errors leak values or report the wrong call site.
+- docs/packages/pg-prime/src/errors/refs.md — constraint name to schema table/column resolution index — read when constraint errors lack table/columns or resolve wrongly.
+- docs/packages/pg-prime/src/errors/sqlstate.md — SQLSTATE to error class table and class-prefix fallback — read when adding a SQLSTATE mapping or a code maps unexpectedly.
+- docs/packages/pg-prime/src/index.md — pg-prime root entry: curated public re-exports and TS<5.9 stub — read when adding, removing or renaming a public export.
+- docs/packages/pg-prime/src/observe.md — query hooks, HookBus failure isolation, slow-query log, OTel span attributes — read when wiring db.observe, hooks, log options, or tracing.
+- docs/packages/pg-prime/src/pooler.md — pooler profiles as data, diagnosePooler probes, db.diagnose report — read when changing poolerMode behaviour or debugging pooler detection.
+- docs/packages/pg-prime/src/query/builder-state.md — builder state records, Runner seam, QueryRunOptions, BuilderCtx types — read when changing builder state fields or the Runner interface.
+- docs/packages/pg-prime/src/query/cte.md — ExecutorImpl: from, fromRaw, with, withRecursive, write entry points — read when changing CTEs, fromRaw or the db/tx executor surface.
+- docs/packages/pg-prime/src/query/delete.md — DeleteBuilder with USING, WHERE guard, RETURNING — read when changing DELETE, USING or the allRows guard.
+- docs/packages/pg-prime/src/query/errors.md — type-error sentence types and CodecMismatchError rendering — read when changing a type-error message or codec-mismatch text.
+- docs/packages/pg-prime/src/query/executor.md — statement execution, named statements, self-heal, decoding, streaming, EXPLAIN — read when debugging prepared-statement errors, decode caching, or EXPLAIN output.
+- docs/packages/pg-prime/src/query/fn.md — and/or/not/exists, asc/desc, fn aggregates, window and full-text helpers — read when changing combinators, ordering or `fn.*` aggregates.
+- docs/packages/pg-prime/src/query/insert.md — InsertBuilder, bulk values/unnest strategies, chunking, ConflictSpec upserts — read when changing inserts, bulk strategies or ON CONFLICT.
+- docs/packages/pg-prime/src/query/meta.md — schema column to codec seam, insertable/generated keys, client defaults — read when a column type has no codec or enum OIDs misbehave.
+- docs/packages/pg-prime/src/query/nominal.md — nominal builder/AST checks for sub-query and CTE arguments — read when a sub-query argument is refused as "not a query".
+- docs/packages/pg-prime/src/query/ops.manifest.md — operator vocabulary data rows feeding goldens, OID differential, design table — read when adding an operator row or fixing manifest gates.
+- docs/packages/pg-prime/src/query/ops.md — class-gated operator free functions with exact result codecs — read when adding or changing a SQL operator.
+- docs/packages/pg-prime/src/query/ops.types.md — per-class operand gates, ORDER BY types, sum/avg/range result maps — read when an operator rejects or accepts an operand type.
+- docs/packages/pg-prime/src/query/prepared.md — placeholder() and the client-side PreparedQuery artifact — read when changing .prepare(), placeholders, or prepared execute options.
+- docs/packages/pg-prime/src/query/projection.md — nest/nestNullable markers, witnesses, value-to-expression coercion, order lists — read when changing projections, nest nullability or expression coercion.
+- docs/packages/pg-prime/src/query/raw.md — db.sql fragment-only statements decoded by OID, name-keyed rows — read when a db.sql result has wrong keys or types.
+- docs/packages/pg-prime/src/query/ref.md — runtime column refs and the per-alias ref cache — read when a column ref splices or caches wrongly.
+- docs/packages/pg-prime/src/query/relations.md — relation accessors: many/one/all, aggregates, exists/some/none/every — read when relation SQL, per-parent limits, or aggregates look wrong.
+- docs/packages/pg-prime/src/query/run.md — pgPrime() constructor, lazy driver, db members, compileOnly, statementStats — read when changing pgPrime config handling or db-level methods.
+- docs/packages/pg-prime/src/query/scope.md — FROM sources, cached per-alias scopes, $all, source registration — read when a source, alias scope or relation accessor misbehaves.
+- docs/packages/pg-prime/src/query/select.md — SelectBuilder and SetOpBuilder: clauses, joins, laterals, set ops — read when changing SELECT building, joins or set operations.
+- docs/packages/pg-prime/src/query/symbols.md — phantom symbol keys INV, ROW, PRJ for query types — read when adding a unique symbol or hitting TS2527.
+- docs/packages/pg-prime/src/query/terminals.md — shared toSQL, executeTakeFirst, stream, explain rollback rail helpers — read when changing terminal behaviour shared by all builders.
+- docs/packages/pg-prime/src/query/types.md — Query, GroupedQuery, SetQuery, write builders, Db/Tx/Session types, re-export hub — read when changing builder or handle type signatures.
+- docs/packages/pg-prime/src/query/update.md — UpdateBuilder, set merging, fromValues bulk update, $onUpdate — read when changing UPDATE, fromValues or $onUpdate behaviour.
+- docs/packages/pg-prime/src/query/window.md — over(), window spec builder, frames, oneOf keyword guard — read when changing window functions, frames or keyword validation.
+- docs/packages/pg-prime/src/schema/column.md — column factories, ColumnBuilder modifiers, pgEnum, column kit, ColumnDdl IR — read when adding a column type or modifier, or debugging a SchemaError from a column chain.
+- docs/packages/pg-prime/src/schema/ddl.md — FK/check/unique specs, referential actions, fragmentDdlText rendering — read when a CHECK/index/view body throws "interpolates a bind parameter".
+- docs/packages/pg-prime/src/schema/extras.md — table extras: primaryKey, indexes, unique/check/exclude, foreignKey, partitioning — read when declaring table-level constraints or indexes in pgTable's third argument.
+- docs/packages/pg-prime/src/schema/index.md — pg-prime/schema barrel and which helpers stay internal — read when adding a schema export or checking what pg-prime/schema exposes.
+- docs/packages/pg-prime/src/schema/objects.md — pgDomain, pgSequence, pgExtension standalone declarations — read when declaring domains, sequences or extensions, or pull drops them.
+- docs/packages/pg-prime/src/schema/ref.md — Ref, AnyRef, RefRuntime column-reference shapes — read when touching column references or the [REFS]/cols slot.
+- docs/packages/pg-prime/src/schema/relations.md — defineRelations, defineSchema, relation resolution and FK inference — read when a relation fails to resolve or FK inference is ambiguous.
+- docs/packages/pg-prime/src/schema/symbols.md — phantom unique-symbol slot keys (META, REFS, READONLY, …) — read when adding a slot key or hitting TS2527 on declaration emit.
+- docs/packages/pg-prime/src/schema/table.md — pgTable, pgSchema, TableRuntime, buildColumnRefs, casing — read when changing table construction or debugging duplicate/invalid column names.
+- docs/packages/pg-prime/src/schema/types.md — ColMeta, RelMeta, SelectRow/InsertRow/UpdateRow, utility types — read when a row shape's optionality or nullability looks wrong.
+- docs/packages/pg-prime/src/schema/view.md — pgView/pgMaterializedView builders, ViewInfo, read-only view handles — read when declaring a view or debugging view options/dependsOn ordering.
+- docs/packages/pg-prime/src/session/config.md — DbConfig shape, presets, pool defaults, eager construction checks — read when changing pgPrime options or config validation.
+- docs/packages/pg-prime/src/session/copy.md — COPY column resolution, text/CSV row encoding, capability checks — read when touching copyFrom/copyTo encoding or default columns.
+- docs/packages/pg-prime/src/session/guard.md — dev-mode AsyncLocalStorage guard against root-handle use inside transactions — read when debugging HandleMisuseError or the async_hooks import.
+- docs/packages/pg-prime/src/session/gucs.md — session GUC defaults resolved against the pooler profile — read when changing statement_timeout/application_name/TimeZone defaults.
+- docs/packages/pg-prime/src/session/handles.md — Db/Tx/Session handles, transaction retry loop, savepoints, sessions, COPY — read when changing transaction(), session(), savepoints or handle methods.
+- docs/packages/pg-prime/src/session/listen.md — dedicated LISTEN connection hub, reconnect with gap event, NOTIFY limit — read when changing db.listen, reconnect behaviour or payload checks.
+- docs/packages/pg-prime/src/session/pg-lazy.md — lazy optional pg import and pool construction for connection — read when changing how `connection:` builds its pg.Pool.
+- docs/packages/pg-prime/src/session/runner.md — PoolRunner/ConnRunner statement path: hooks, timeouts, error mapping, acquire — read when changing per-statement execution, timeouts or connection disposal.
+- docs/packages/pg-prime/src/session/transaction.md — pure BEGIN/savepoint/set_config SQL, advisory keys, retry schedule — read when changing BEGIN text, retry defaults or advisory-lock helpers.
+- docs/packages/pg-prime/src/session/types.md — session-layer option/result types for handles, pool, COPY, LISTEN — read when adding or changing public session option types.
+- docs/packages/pg-prime/src/sql.md — sql tag, fragments, ident/lit/unsafeRaw/join, identifier quoting, builder errors — read when touching the sql template tag or identifier quoting.
