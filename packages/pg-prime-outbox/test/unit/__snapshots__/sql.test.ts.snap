@@ -102,8 +102,7 @@ exports[`statements > golden SQL 1`] = `
              (select pg_notify($6, '') where exists (select from ins)) is null as woke
       from ins",
   "W1 #2": "
-            select id, idem from "pgprime_outbox".records
-            where topic = $1 and idem = any($2::text[])",
+      select id, idem from "pgprime_outbox".records where topic = $1 and idem = any($2::text[])",
   "discard": "
     with d as (
       delete from "pgprime_outbox".records

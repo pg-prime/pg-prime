@@ -60,18 +60,15 @@ export async function writeRecords<T>(
     throw e
   }
   const ids = idMap(inserted)
-  const missing = rows.filter((r) => !ids.has(r.idem)).map((r) => r.idem)
-  const existing =
-    missing.length === 0
-      ? ids
-      : idMap(
-          await tx.withOptions({ label: 'outbox.write-duplicates' }).sql`
-            select id, idem from ${s}.records
-            where topic = ${t} and idem = any(${missing}::text[])`.execute(),
-        )
   const fresh = new Set(ids.keys())
+  const missing = rows.filter((r) => !ids.has(r.idem)).map((r) => r.idem)
+  if (missing.length > 0) {
+    const dups = await tx.withOptions({ label: 'outbox.write-duplicates' }).sql`
+      select id, idem from ${s}.records where topic = ${t} and idem = any(${missing}::text[])`.execute()
+    for (const [idem, id] of idMap(dups)) ids.set(idem, id)
+  }
   const results = rows.map(({ idem }) => ({
-    id: ids.get(idem) ?? existing.get(idem) ?? 0n,
+    id: ids.get(idem) ?? 0n,
     idem,
     // The second of two inputs sharing an idem is a duplicate too.
     duplicate: !fresh.delete(idem),
