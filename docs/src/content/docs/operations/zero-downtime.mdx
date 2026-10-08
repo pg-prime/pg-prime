@@ -1,6 +1,6 @@
 ---
 title: Zero-downtime patterns
-description: Expand and contract — the three-migration NOT NULL, renames, drops, type changes and enums.
+description: Expand and contract — the three-migration NOT NULL, renames, drops, type changes, enums and row-level security.
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components'
@@ -361,6 +361,36 @@ with a `CHECK`, both make "add a value" an `INSERT` and "remove a value" a `DELE
 requires a migration at all, and the schema DSL makes the lookup-table form as ergonomic as the
 native enum.
 
+## Row-level security
+
+Policies commit in the declared lane, after the migration's own transaction, and every RLS mistake
+is a role seeing zero rows or every row. Expand and contract applies here too:
+
+<Steps>
+
+1. **Ship the policies first**, without `rls.*()`, together with the code that sets the keys
+   (`tx.setLocal(orgId.set(id))`). They are inert: RL104 warns and nothing changes.
+2. **Enable.** `rls.force()` commits with the policies in the lane, so there is no window.
+   `rls.enable()` alone commits in the migration, before the lane: RL102 names each role that would
+   see zero rows until the lane commits, which step 1 avoids.
+3. **Replace, then remove.** A new policy goes out before the old one is deleted. Removing the only
+   permissive policy a role has for a command is RL101; removing a restrictive one is RL105.
+
+</Steps>
+
+- **A policy reads a column you are about to drop or retype.** PostgreSQL refuses the `ALTER`
+  (RL106). Change or drop the policy in an earlier deploy.
+- **An `updatedAtTrigger` column is dropped or renamed.** `generate` drops the trigger before the column
+  change, in the same migration, so no `UPDATE` fails with `42703`; the lane recreates it for the new name.
+  Updates in between succeed without bumping the column.
+- **Re-applying a policy file takes `ACCESS EXCLUSIVE`** on its table for the lane transaction. Only
+  tables whose declarations changed re-apply, and the runner's `lock_timeout` bounds the wait.
+- **The migration role.** With `BYPASSRLS` or as a superuser, migrations see every row. Without it,
+  the runner's `row_security = off` turns a filtered backfill into `42501` (RL107) rather than a
+  partial one.
+
+See [row-level security](/pg-prime/guides/row-level-security/).
+
 ## What `--allow-data-loss` acknowledges
 
 `--allow-data-loss` does not disable a check. It records a decision.
@@ -395,5 +425,13 @@ subject-by-subject; a `--hints-file` can list individual subjects instead, and t
 `false`. Either way `migrate lint` fails on any `DS`-class hazard whose subject is not in
 `acknowledged.dataLoss`, so an acknowledgement that stops matching the plan stops counting.
 
-The complete hazard list — every `DS`, `MF`, `BC`, `LK`, `TX`, `EN` and `ST` code with its severity —
+Lane hazards (RL101 on an already-enabled table, RL103 `NO FORCE`, RL105, RL108) have no plan file
+to land in when only the lane changed, so their acknowledgement goes into the header of
+`sql/990_declared_prune.sql` instead, one line per subject, and is kept on later runs:
+
+```sql
+-- pg-prime:acknowledged RL105 public.documents.author_deletes by yohocx: deletes checked by the service
+```
+
+The complete hazard list — every `DS`, `MF`, `BC`, `LK`, `TX`, `EN`, `RL` and `ST` code with its severity —
 is in the [hazard-code reference](/pg-prime/reference/hazard-codes/).

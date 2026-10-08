@@ -15,7 +15,7 @@ Exit codes are uniform across every command.
 | Exit | Status | What actually happened | First thing to do |
 |---|---|---|---|
 | **1** | `error` | bad config, a connection failure, a SQL error, or an internal failure. Also the code for a refusal — `apply` over a transaction pooler, `push` against a production tag, `db seed` against a production tag | read `error.message`; it names the specific cause |
-| **2** | `missing_hints` | `generate` found a drop/create pair that looks like a rename, or a destructive change nobody signed for | record the decision in the repository: `.renamedFrom('old')`, `--hints-file`, or `--allow-data-loss --reason` |
+| **2** | `missing_hints`, `lane_refused` | `generate` found a drop/create pair that looks like a rename, a destructive change nobody signed for, or a declared-lane refusal | record the decision in the repository: `.renamedFrom('old')`, `--hints-file`, or `--allow-data-loss --reason`; for `lane_refused`, [read the subjects](#exit-2--the-declared-lane-refused) |
 | **3** | `lint` | a hazard at `error` severity, or a `nolint` directive with no reason | fix it, or suppress it with `-- pg-prime:nolint CODE "reason"` — the reason is mandatory |
 | **4** | `drift` | the catalog does not match what the history records, an applied file's checksum changed, or the schema moved and no migration was generated | `pg-prime migrate doctor` will tell you which of the three |
 | **5** | `pending` | there are migrations on disk that the database has not applied | run `apply`. On a pull-request gate this is normally success |
@@ -37,7 +37,7 @@ wrote about itself.
 pg-prime migrate doctor
 ```
 
-It exits **0** with no findings and **4** with any. Eight kinds of finding, and what each one means:
+It exits **0** with no findings and **4** with any. Ten kinds of finding, and what each one means:
 
 ### `INVALID index public.x — a CREATE INDEX CONCURRENTLY did not finish`
 
@@ -112,10 +112,33 @@ should wait rather than break anything.
 ### `sql/030_views/active.sql is recorded in pgprime.repeatables but is gone from disk`
 
 You deleted a repeatable, and the objects it created are **still in the database**. Removal of a
-Tier-R object is never auto-detected: pg-prime does not diff functions, views, triggers or RLS
-policies, so it cannot know a deletion from a rename or from a file you moved.
+hand-written Tier-R object is never auto-detected: pg-prime does not diff functions, views, triggers
+or RLS policies, so it cannot know a deletion from a rename or from a file you moved.
 
-Drop the object with a migration, then the finding clears.
+Drop the object with a migration, then the finding clears. Declared policies and `updatedAtTrigger`s
+are the exception: `990_declared_prune.sql` drops them when the declaration goes.
+
+### `declared_missing`, `declared_unmarked`, `declared_orphan`
+
+The declared lane's files and the catalog disagree. Each finding names the object and the file that
+fixes it:
+
+- **`declared_missing`** — a declared policy, trigger or function is absent, carries another hash
+  (someone recreated it by hand), or a table's FORCE state is wrong. The next `migrate apply`
+  re-applies the file, whatever its checksum says.
+- **`declared_unmarked`** — the object exists without the `pg-prime:declared` marker: typically an
+  adopted database before its first `apply`. The file will replace it.
+- **`declared_orphan`** — a marked object nothing declares any more. The prune drops it on the next
+  `apply`.
+
+Files not yet applied are skipped. When no marked object is left, `doctor` also says that
+`sql/990_declared_prune.sql` may be deleted.
+
+### `rls_not_forced: public.x has row level security enabled, not FORCE'd, and its owner can log in`
+
+The table's owner bypasses every policy on it, and it is a login role, so an application connecting
+as it sees every row. Use `rls.force()`, or connect the application as a role that does not own the
+table. See [row-level security](/pg-prime/guides/row-level-security/#rlsenable-and-rlsforce).
 
 ## Errors that mean something specific in production
 
@@ -256,6 +279,28 @@ Neither prompts in CI and neither hangs. See
 [zero-downtime patterns](/pg-prime/operations/zero-downtime/#why-rename-detection-is-a-hint-not-a-guess)
 for why this is a hint system rather than a guess.
 
+### Exit 2 — the declared lane refused
+
+Status `lane_refused`. The policies, FORCE state or triggers you declared would lock a role out or
+widen access, and nobody acknowledged it. Nothing was written:
+
+```text frame="terminal"
+REFUSED: the declared lane refused: RL101 public.documents:app_user:select: app_user loses its
+SELECT policy on public.documents and will see or change no rows. Fix the declarations, or
+acknowledge a hazard with --allow-data-loss --reason <text>.
+```
+
+RL101 and RL108 subjects are `schema.table:role:command`: here `app_user` keeps no permissive
+`SELECT` policy on `public.documents`. Coverage counts every permissive policy that names the role,
+`PUBLIC`, or a role it belongs to, hand-written ones included, so the report is a real loss. Either
+declare the replacement policy first, or sign for it with `--allow-data-loss --reason "…"`; the
+acknowledgement goes into `sql/990_declared_prune.sql`'s header. RL105 subjects name a restrictive
+policy (`schema.table.policy`), RL103 a table.
+
+`declared_conflict` (a hand-written file creates a declared object or sits at a declared path) and
+`policy_unknown_role` (a `to:` role does not exist on the target) refuse the same way and are fixed
+in the code, not acknowledged.
+
 ### Exit 7 — the proof failed
 
 `generate` builds the migration, applies it to a throwaway clone, extracts the resulting catalog and
@@ -280,7 +325,8 @@ catalog attribute nobody modelled is silently lost.
 ### Exit 3 — lint
 
 A hazard at `error` severity in the plan that was about to be written. The finding names the code
-and the statement.
+and the statement. `migrate check` also exits 3 on `declared_lane_stale` (the schema changed and
+`generate` was not run) and on `declared_conflict`.
 
 ### Exit 1 — refused with a sentence
 
@@ -295,8 +341,8 @@ Some things are refused rather than attempted, and the message is the documentat
 
 ## Related
 
-- [Hazard codes](/pg-prime/reference/hazard-codes/) — every `DS`, `MF`, `BC`, `LK`, `TX`, `EN` and
-  `ST` code, with its severity and what to do about it.
+- [Hazard codes](/pg-prime/reference/hazard-codes/) — every `DS`, `MF`, `BC`, `LK`, `TX`, `EN`, `RL`
+  and `ST` code, with its severity and what to do about it.
 - [Locks](/pg-prime/operations/locks/) — invalid indexes, `_ccnew` leftovers and resuming a
   concurrent build, in more detail.
 - [Migrations in CI/CD](/pg-prime/operations/ci-cd/) — what a pipeline should do with each exit code.

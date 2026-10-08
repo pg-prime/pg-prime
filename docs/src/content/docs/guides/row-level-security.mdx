@@ -1,0 +1,461 @@
+---
+title: Row-level security
+description: Typed setting keys, definePolicy, rls.enable()/force(), the declared lane, RL hazards, the migration role, per-transaction settings and poolers.
+---
+
+import { Steps } from '@astrojs/starlight/components'
+
+Row-level security (RLS) in pg-prime has five parts:
+
+- a **setting key** names a custom setting once, for writing it and for reading it in SQL;
+- **`rls.enable()` / `rls.force()`** turn RLS on for a table;
+- **`definePolicy`** declares a policy with typed column references;
+- `migrate generate` renders the policies into the `sql/` lane, and `migrate apply` runs them;
+- each transaction sets its keys with `tx.setLocal(key.set(value))`.
+
+Nothing here runs in the query path. A policy is plain SQL that PostgreSQL evaluates, and reading a
+setting in it is a SQL expression, not a round trip. No tenant model, setting name or role is
+assumed: `app.org_id` and `app_user` below are one example.
+
+## Setting keys
+
+```ts
+import { setting, uuidCodec } from 'pg-prime'
+
+export const orgId = setting('app.org_id', uuidCodec) // SettingKey<string, 'uuid'>
+export const userId = setting('app.user_id', uuidCodec)
+export const plan = setting('app.plan') // no codec: text
+
+orgId.set('6f1c2a3b-0000-4000-8000-000000000001') // { 'app.org_id': '6f1c…' }
+orgId.current() // nullif(current_setting('app.org_id', true), '')::uuid
+```
+
+- `set(v)` encodes with the codec and returns a record for `tx.setLocal(...)`, `localSettings` or
+  `session.set(...)`. The value travels as a bind parameter.
+- `current()` is a typed SQL fragment, `T | null`. It is NULL when the setting is unset, and also
+  when an earlier `SET LOCAL` on a reused connection left PostgreSQL's `''` placeholder behind, where
+  a bare `::uuid` cast would fail with `22P02`.
+- The name is checked like `setLocal` checks it: at most one dot, no `$`. A bad one is a
+  `UsageError` at declaration.
+
+A NULL makes a policy predicate false. A request that forgot its setting sees zero rows: never an
+error, never every row.
+
+## Policies
+
+The schema module for the rest of this page:
+
+{/* docs: setup=schema */}
+```ts title="schema.ts" no-run="a schema module: use=schema composes it into the blocks below"
+import { definePolicy, defineSchema, eq, pgTable, rls, setting, updatedAtTrigger, uuidCodec } from 'pg-prime'
+
+export const orgId = setting('app.org_id', uuidCodec)
+export const userId = setting('app.user_id', uuidCodec)
+
+export const documents = pgTable(
+  'documents',
+  (t) => ({
+    id: t.uuid().primaryKey().defaultSql('gen_random_uuid()'),
+    orgId: t.uuid(),
+    authorId: t.uuid(),
+    title: t.text(),
+    updatedAt: t.timestamptz().defaultSql('now()'),
+  }),
+  (t) => [rls.force(), updatedAtTrigger(t.updatedAt)],
+)
+
+export const documentsTenant = definePolicy('tenant', {
+  on: documents,
+  to: ['app_user'],
+  using: (t) => eq(t.orgId, orgId.current()),
+  withCheck: (t) => eq(t.orgId, orgId.current()),
+})
+
+export const documentsAuthorDeletes = definePolicy('author_deletes', {
+  on: documents,
+  for: 'delete',
+  as: 'restrictive',
+  to: ['app_user'],
+  using: (t) => eq(t.authorId, userId.current()),
+})
+
+export const schema = defineSchema({ documents })
+```
+
+`definePolicy(name, spec)` is one `CREATE POLICY`. Export it from a schema module and `migrate
+generate` finds it, as it finds a view.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `on` | | the table |
+| `for` | `'all'` | `'select'`, `'insert'`, `'update'`, `'delete'` or `'all'`; one command per policy |
+| `as` | `'permissive'` | permissive policies are OR'ed; restrictive ones are AND'ed on top |
+| `to` | `PUBLIC` | role names; `public`, `current_user`, `current_role` and `session_user` render bare |
+| `using` | none | `(t) => expr`: which existing rows are visible or affected |
+| `withCheck` | none | `(t) => expr`: which new rows may be written |
+
+The types follow PostgreSQL: `for: 'insert'` takes no `using`, `for: 'select' | 'delete'` takes no
+`withCheck`, and a predicate must be boolean. `eq(t.orgId, orgId.current())` type-checks because
+`current()` is a `uuid` expression. The predicates are thunks, evaluated when the lane renders, so a
+policy may read a table declared later in the file. Any `sql` fragment is a predicate too:
+
+{/* docs: use=schema */}
+```ts
+import { definePolicy, sql } from 'pg-prime'
+import { documents, orgId } from './schema.js'
+
+export const documentsShared = definePolicy('shared', {
+  on: documents,
+  for: 'select',
+  to: ['app_user'],
+  using: (t) => sql`EXISTS (SELECT 1 FROM document_shares s
+                    WHERE s.document_id = ${t.id} AND s.org_id = ${orgId.current()})`,
+})
+```
+
+Every column renders qualified by its table (`"documents"."id"`), so `s.org_id` in the subquery
+cannot capture the outer `org_id`. A subquery over the policy's **own** table must alias it
+(`FROM documents d`), or `"documents"` binds to the inner scan. A value becomes a typed literal
+(`'f'::boolean`); a placeholder, an aggregate, a window call or a `bytea` value is a `SchemaError`.
+
+Omitted predicates are legal, as in PostgreSQL: a permissive policy without one grants nothing, a
+restrictive one restricts nothing.
+
+## `rls.enable()` and `rls.force()`
+
+`rls.enable()` is `ENABLE ROW LEVEL SECURITY`, planned by the migration like any other table fact.
+`rls.force()` implies it and adds `FORCE ROW LEVEL SECURITY`, which applies the policies to the
+table's **owner** too.
+
+- Without FORCE the owner bypasses every policy. Either force the table, or connect the application
+  as a role that does not own it. `migrate doctor` reports `rls_not_forced` for an unforced RLS table
+  whose owner can log in.
+- Superusers and `BYPASSRLS` roles bypass both. Tests on PGlite, whose only user is a superuser,
+  `SET ROLE` to an ordinary role first.
+- FORCE is stated in the table's lane file (`FORCE` or `NO FORCE`), so it commits together with the
+  policies. A table without `rls.*()` is never touched.
+- Removing `rls.*()` makes the migration `DISABLE` RLS: [RL103](#hazards).
+
+## The declared lane
+
+`migrate generate` renders the declarations into `sql/` as ordinary [Tier-R
+repeatables](/pg-prime/concepts/tiers/#tier-r-repeatable), on every run, including one whose
+structural diff is empty:
+
+```text
+sql/
+  050_policies/public__documents.sql   one file per table with policies or rls.*()
+  070_triggers/000_functions.sql       one function per (schema, column) in updatedAtTrigger
+  070_triggers/public__documents.sql   one file per table with a trigger
+  990_declared_prune.sql               drops what is no longer declared
+```
+
+```sql title="sql/050_policies/public__documents.sql"
+-- pg-prime:declared policies public.documents
+-- pg-prime:tier R
+-- pg-prime:object rls public.documents force
+-- pg-prime:object policy public.documents.author_deletes sha256:b872813e…
+-- pg-prime:object policy public.documents.tenant sha256:3f3f3835…
+--
+-- GENERATED by `pg-prime migrate generate` from definePolicy(...) on public.documents.
+-- Edit the TypeScript, not this file. Re-applying it takes ACCESS EXCLUSIVE on the table.
+
+ALTER TABLE "public"."documents" FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "author_deletes" ON "public"."documents";
+
+CREATE POLICY "author_deletes" ON "public"."documents" AS RESTRICTIVE FOR DELETE TO "app_user"
+  USING ("documents"."author_id" = (nullif(current_setting('app.user_id', true), '')::uuid));
+
+COMMENT ON POLICY "author_deletes" ON "public"."documents" IS 'pg-prime:declared sha256:b872813e…';
+
+DROP POLICY IF EXISTS "tenant" ON "public"."documents";
+
+CREATE POLICY "tenant" ON "public"."documents" AS PERMISSIVE FOR ALL TO "app_user"
+  USING ("documents"."org_id" = (nullif(current_setting('app.org_id', true), '')::uuid))
+  WITH CHECK ("documents"."org_id" = (nullif(current_setting('app.org_id', true), '')::uuid));
+
+COMMENT ON POLICY "tenant" ON "public"."documents" IS 'pg-prime:declared sha256:3f3f3835…';
+```
+
+How the lane behaves:
+
+- **Files are repeatables.** `apply` runs them after every migration, in one transaction, only when
+  their bytes changed, and needs no TypeScript to do it. Only the changed table's file re-applies.
+  Re-applying a policy file locks its table `ACCESS EXCLUSIVE` for the lane transaction (the
+  runner's `lock_timeout` applies); a trigger file takes `SHARE ROW EXCLUSIVE`.
+- **Markers.** Every declared object carries `COMMENT … IS 'pg-prime:declared sha256:<hash>'`, the
+  hash of its `CREATE`. The marker scopes the prune and the drift checks to objects pg-prime created.
+  Hand-written objects never carry it.
+- **Prune.** `990_declared_prune.sql` runs last and drops marked policies, then triggers, then
+  functions in the managed schemas that are not in its keep-list. A rename is a new object plus a
+  prune of the old one, in the same transaction. The file is rendered while anything is declared or
+  while it exists, so removing the last declaration still drops it; only a person deletes the file,
+  and `migrate doctor` says when no marked object is left.
+- **Self-heal.** Before the lane runs, `apply` compares each file's `-- pg-prime:object` headers with
+  the catalog. A file whose objects are missing, carry another hash or have the wrong FORCE state is
+  re-applied, whatever its checksum says. A manual `DROP POLICY` is undone by the next deploy, and so
+  is a declaration removed and later restored.
+- **Drift.** The same census runs in `migrate verify` (drift, exit 4), `migrate doctor`
+  (`declared_missing`, `declared_unmarked`, `declared_orphan`) and `migrate check`, which exits 3 when
+  the files are stale (`declared_lane_stale`: the schema changed and `generate` was not run). A hand
+  `ALTER POLICY … USING` that keeps the marker is **not** detected: policy bodies are hashed, not
+  diffed.
+- **One writer.** A hand-written file that creates a declared policy, or any non-declared file at a
+  declared path, is `declared_conflict`: `generate` writes nothing. A hand `ENABLE ROW LEVEL
+  SECURITY` on a table with `rls.*()` warns `rls_declared_twice`.
+- **The shadow.** `generate` loads the hand-written lane plus the rendered declarations into the
+  shadow database from memory, so a policy that names a missing column fails at author time. A `to:`
+  role the target does not have is `policy_unknown_role`; roles are never created for you.
+
+## Settings per transaction
+
+`tx.setLocal(key.set(v))` is a parameterised `set_config(…, true)`: transaction-local, rolled back
+with the transaction. `localSettings` on `db.transaction` sends the same batch right after `BEGIN`.
+The example below applies the migration and the lane by hand, as `migrate apply` would:
+
+{/* docs: setup=migrate use=schema */}
+```ts title="migrate.ts" no-run="a file: the blocks below import it as ./migrate.js"
+import { renderDeclared } from '@pg-prime/kit'
+import pg from 'pg'
+import { documents, documentsAuthorDeletes, documentsTenant } from './schema.js'
+
+export async function migrate(url: string): Promise<void> {
+  const client = new pg.Client({ connectionString: url })
+  await client.connect()
+  // The migration `generate` writes for documents, plus the role and its grants.
+  await client.query(`
+    DO $$ BEGIN CREATE ROLE app_user NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    CREATE TABLE documents (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id uuid NOT NULL,
+      author_id uuid NOT NULL,
+      title text NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+    GRANT USAGE ON SCHEMA public TO app_user;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON documents TO app_user;
+  `)
+  const lane = renderDeclared({ tables: { documents }, policies: [documentsTenant, documentsAuthorDeletes] })
+  for (const file of lane.files) await client.query(file.sql)
+  await client.end()
+}
+```
+
+{/* docs: use=schema,migrate */}
+```ts title="tenant-isolation.ts"
+import { eq, InsufficientPrivilegeError, pgPrime, type Tx } from 'pg-prime'
+import { migrate } from './migrate.js'
+import { orgId, schema, userId } from './schema.js'
+
+await migrate(process.env['DATABASE_URL']!)
+const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema })
+
+const acme = '00000000-0000-4000-8000-00000000000a'
+const globex = '00000000-0000-4000-8000-00000000000b'
+const ada = '00000000-0000-4000-8000-0000000000a1'
+const bob = '00000000-0000-4000-8000-0000000000b1'
+
+// One request: the application role, and this request's settings.
+const asApp = <T>(settings: Readonly<Record<string, string>>, fn: (tx: Tx<typeof schema>) => Promise<T>) =>
+  db.transaction(async (tx) => {
+    await tx.sql`set local role app_user`.execute()
+    await tx.setLocal(settings)
+    return fn(tx)
+  })
+
+const titles = (settings: Readonly<Record<string, string>>) =>
+  asApp(settings, (tx) => tx.from(tx.h.documents).select((d) => ({ t: d.documents.title })).execute())
+
+for (const [org, title] of [[acme, 'Acme plan'], [globex, 'Globex plan']] as const) {
+  await asApp({ ...orgId.set(org), ...userId.set(ada) }, (tx) =>
+    tx.insertInto(tx.h.documents).values({ orgId: org, authorId: ada, title }).execute(),
+  )
+}
+
+console.log(await titles(orgId.set(acme))) // [ { t: 'Acme plan' } ]
+console.log(await titles(orgId.set(globex))) // [ { t: 'Globex plan' } ]
+console.log(await titles({})) // [] — unset reads NULL, and NULL matches nothing
+
+// WITH CHECK: a row for another org is refused, not silently dropped.
+const err = await asApp(orgId.set(acme), (tx) =>
+  tx.insertInto(tx.h.documents).values({ orgId: globex, authorId: ada, title: 'x' }).execute(),
+).catch((e: unknown) => e)
+console.log(err instanceof InsufficientPrivilegeError) // true
+
+// The restrictive policy: only the author deletes.
+const removed = (who: string) =>
+  asApp({ ...orgId.set(acme), ...userId.set(who) }, (tx) =>
+    tx
+      .deleteFrom(tx.h.documents)
+      .where((d) => eq(d.documents.title, 'Acme plan'))
+      .returning((d) => ({ id: d.documents.id }))
+      .execute(),
+  )
+console.log((await removed(bob)).length) // 0
+console.log((await removed(ada)).length) // 1
+```
+
+The setting is set **per transaction**, never per session: a session `SET` outlives the request and,
+behind a transaction pooler, reaches the next client. Two packages set the keys per request for you:
+
+- [`@pg-prime/context`](/pg-prime/guides/ambient-transactions/#scoped-settings):
+  `host.run({ settings: { ...orgId.set(id), ...userId.set(uid) } }, fn)` sends them in every
+  transaction the scope opens, and strict mode refuses a query outside one.
+- [`@pg-prime/nestjs`](/pg-prime/guides/nestjs/) builds the same scope from the request.
+
+## Hazards
+
+`generate` plans RLS changes against the target before it writes anything. Coverage is counted per
+table, role and command: a role is covered for a command by a permissive policy for it (or `ALL`)
+whose `TO` names `PUBLIC`, the role, or a role it belongs to. Hand-written and unmanaged policies
+count. Tables proven empty are never reported.
+
+| Code | Severity | Fires when | Fix |
+|---|---|---|---|
+| [RL101](/pg-prime/reference/hazard-codes/#RL101) | error | a role loses its permissive policy for a command, or a table is enabled with none | add the replacement before removing the old one |
+| [RL102](/pg-prime/reference/hazard-codes/#RL102) | warn | `ENABLE` commits in the migration before the policies commit in the lane | ship the policies one deploy earlier |
+| [RL103](/pg-prime/reference/hazard-codes/#RL103) | error | `DISABLE`, or `NO FORCE` on a forced table: access widens | acknowledge if intended |
+| [RL104](/pg-prime/reference/hazard-codes/#RL104) | warn | a policy on a table without `rls.*()`: inert | normal mid-rollout |
+| [RL105](/pg-prime/reference/hazard-codes/#RL105) | error | a marked restrictive policy is no longer declared: access widens | acknowledge if intended |
+| [RL106](/pg-prime/reference/hazard-codes/#RL106) | error | the migration drops or retypes a column, or drops a table, a policy depends on | change the policy in an earlier deploy |
+| [RL107](/pg-prime/reference/hazard-codes/#RL107) | warn | a data migration touches an RLS table and the migration role lacks `BYPASSRLS` | see [the migration role](#the-migration-role) |
+| [RL108](/pg-prime/reference/hazard-codes/#RL108) | error | a forced table's owner loses a command it had | add an owner policy, or do not force |
+
+RL101 and RL108 subjects read `schema.table:role:command`, e.g. `public.documents:app_user:select`.
+Losing `SELECT` is reported on its own, because `UPDATE` and `DELETE` with a `WHERE` or `RETURNING`
+need it too.
+
+An unacknowledged lane hazard (RL101 on an already-enabled table, RL103 `NO FORCE`, RL105, RL108)
+refuses the whole run with `lane_refused`, exit 2, and nothing is written:
+
+```text frame="terminal"
+migrate generate
+
+REFUSED: the declared lane refused: RL105 public.documents.author_deletes: the restrictive policy
+public.documents.author_deletes is no longer declared; access widens. Fix the declarations, or
+acknowledge a hazard with --allow-data-loss --reason <text>.
+Nothing was written.
+```
+
+Acknowledge with the same flags as any destructive change:
+
+```sh
+pg-prime migrate generate --allow-data-loss --reason "deletes checked by the service" --by alice
+```
+
+The acknowledgement is written into the prune file's header and kept on later runs, so it shows up
+in review:
+
+```sql
+-- pg-prime:declared prune
+-- pg-prime:tier R
+-- pg-prime:acknowledged RL105 public.documents.author_deletes by alice: deletes checked by the service
+```
+
+Statement-path codes (RL101 on a table this migration enables, RL102, RL103 `DISABLE`, RL106) ride
+the migration's plan like any `DS` hazard; the errors among them are acknowledged in its `.plan.json`. Programmatic
+callers can acknowledge single subjects: `generate({ …, acknowledge: { dataLoss:
+['public.documents:app_user:select'] } })`.
+
+### Rollout order
+
+<Steps>
+
+1. Deploy the policies without `rls.*()` (RL104 warns: they are inert), and the application code that
+   sets the keys.
+2. Add `rls.enable()` or `rls.force()`. FORCE commits with the policies; ENABLE alone commits in the
+   migration, before the lane (RL102).
+3. To replace a policy, declare the new one, deploy, then remove the old one. Change a policy before
+   dropping a column it reads (RL106).
+
+</Steps>
+
+## The migration role
+
+Run migrations as a role with `BYPASSRLS`, or as a superuser:
+
+```sql
+ALTER ROLE migrator BYPASSRLS; -- as a superuser
+```
+
+The runner sets `row_security = off` on its session. For a role without `BYPASSRLS`, a statement
+that RLS would filter then fails with `42501` instead of silently touching fewer rows. The emptiness
+probe behind the `MF` hazards and RL101 gets the same treatment, so a filtered table is never
+mistaken for an empty one. `apply`'s pre-flight reports RL107 for each pending data migration on an
+RLS table when the role cannot bypass. If migrations run as the owner of a forced table, RL108 is the
+warning that its own statements would be filtered.
+
+## Poolers
+
+- `setLocal` and `localSettings` are `set_config(…, true)`: transaction-local and safe behind
+  PgBouncer in transaction mode. `session.set(...)` lasts as long as the session, so keep request
+  settings out of it.
+- A pooled connection that served an earlier `SET LOCAL` reads `''` for that setting, not NULL.
+  `current()` maps both to NULL, so the next transaction without the setting sees zero rows, not a
+  `22P02` and not the previous tenant's rows.
+- `current()` carries no bind parameter, so prepared statements and the query cache treat it as
+  constant text.
+
+The application as a login role, on a one-connection pool, so the second transaction reuses the
+first one's connection:
+
+{/* docs: use=schema,migrate */}
+```ts title="login-role.ts" pg-only
+import { pgPrime } from 'pg-prime'
+import { migrate } from './migrate.js'
+import { orgId, schema } from './schema.js'
+
+const url = process.env['DATABASE_URL']!
+await migrate(url)
+const admin = pgPrime({ connection: url, schema })
+await admin.sql`alter role app_user login password 'app-secret'`.execute()
+
+const acme = '00000000-0000-4000-8000-00000000000a'
+await admin.insertInto(admin.h.documents).values({ orgId: acme, authorId: acme, title: 'Acme plan' }).execute()
+
+const asApp = new URL(url)
+asApp.username = 'app_user'
+asApp.password = 'app-secret'
+const db = pgPrime({ connection: asApp.href, schema, poolOptions: { max: 1 } })
+
+const seen = (settings: Readonly<Record<string, string>>) =>
+  db.transaction((tx) => tx.from(tx.h.documents).select((d) => ({ t: d.documents.title })).execute(), {
+    localSettings: settings,
+  })
+
+console.log(await seen(orgId.set(acme))) // [ { t: 'Acme plan' } ]
+console.log(await seen({})) // [] — the connection now reads '' for app.org_id, and current() maps it to NULL
+
+await db.end()
+await admin.sql`alter role app_user nologin password null`.execute()
+await admin.end()
+```
+
+See [poolers](/pg-prime/operations/poolers/).
+
+## `updatedAtTrigger`
+
+`updatedAtTrigger(t.updatedAt)` rides the same lane: a `BEFORE UPDATE` trigger that sets the column
+to `now()` on every update, with the same markers, prune and self-heal. See [the schema
+guide](/pg-prime/guides/schema/#updatedattrigger).
+
+## Pitfalls
+
+- **Owner bypass.** Without FORCE the table owner sees every row: `rls_not_forced`.
+- **Superusers and `BYPASSRLS` bypass FORCE.** Test as an ordinary role.
+- **FORCE filters the owner's own statements**, migrations included: RL107, RL108.
+- **Unset is zero rows.** `current()` is NULL, never an error. `current_setting('x')` without `true`
+  errors on a fresh connection, and `''::uuid` errors on a reused one; `current()` avoids both.
+- **Filtering is not an error.** A policy that hides a row returns zero rows; only `WITH CHECK` and
+  a missing `GRANT` raise `InsufficientPrivilegeError`.
+
+## Reference
+
+[`definePolicy`](/pg-prime/reference/schema/#definepolicy) ·
+[`rls`](/pg-prime/reference/schema/#rls) ·
+[`updatedAtTrigger`](/pg-prime/reference/schema/#updatedattrigger) ·
+[`setting`](/pg-prime/reference/query/#setting) ·
+[the kit's declared lane](/pg-prime/reference/kit/#declared-policies-and-triggers) ·
+[RL hazard codes](/pg-prime/reference/hazard-codes/#rl--row-level-security)

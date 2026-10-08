@@ -681,6 +681,70 @@ targets, one fact kind, and re-wording any of them is a catalog write with no lo
 `pg_index.indisclustered` is a fact the differ models: a fact that is diffed and cannot be declared
 is a fact that gets dropped, and all 68 of AdventureWorks' tables carry one.
 
+### Row-level security
+
+`rls.enable()` and `rls.force()` turn on row-level security for the table; `definePolicy` declares
+its policies. Both are covered in [row-level security](/pg-prime/guides/row-level-security/).
+
+### `updatedAtTrigger`
+
+`updatedAtTrigger(t.updatedAt)` keeps a timestamp column current in the database, whoever writes the
+row: a `BEFORE UPDATE … FOR EACH ROW` trigger sets it to `now()`.
+
+```ts title="updated-at.ts"
+import { defineSchema, eq, pgPrime, pgTable, updatedAtTrigger } from 'pg-prime'
+
+const notes = pgTable(
+  'notes',
+  (t) => ({
+    id: t.bigint().primaryKey().generatedAlways(),
+    body: t.text(),
+    updatedAt: t.timestamptz().defaultSql('now()'),
+  }),
+  (t) => [updatedAtTrigger(t.updatedAt)],
+)
+const db = pgPrime({ connection: process.env['DATABASE_URL']!, schema: defineSchema({ notes }) })
+
+// The migration, then what the kit renders into sql/070_triggers/; by hand so the example runs.
+await db.sql`create table notes (
+  id bigint generated always as identity primary key,
+  body text not null,
+  updated_at timestamptz not null default now())`.execute()
+await db.sql`create or replace function pgprime_set_updated_at() returns trigger
+  language plpgsql as $$
+begin
+  new.updated_at := now();
+  return new;
+end
+$$`.execute()
+await db.sql`create or replace trigger pgprime_set_updated_at before update on notes
+  for each row execute function pgprime_set_updated_at()`.execute()
+
+const old = new Date('2000-01-01T00:00:00Z')
+await db.insertInto(db.h.notes).values({ body: 'draft', updatedAt: old }).execute()
+await db
+  .update(db.h.notes)
+  .set(() => ({ body: 'final', updatedAt: old }))
+  .where((n) => eq(n.notes.body, 'draft'))
+  .execute()
+
+const [note] = await db.from(db.h.notes).select((n) => ({ at: n.notes.updatedAt })).execute()
+console.log(note!.at > old) // true: the trigger overwrote the explicit value
+```
+
+- It rides the declared `sql/` lane, like policies: one static plpgsql function per `(schema,
+  column)`, `pgprime_set_<column>()` in the table's schema, and one trigger of the same name per
+  table. Both carry the `pg-prime:declared` marker, so removing the extra drops them and a manual
+  `DROP` is re-created on the next `apply`.
+- `INSERT` is untouched: give the column a default.
+- It takes a `timestamptz` or `timestamp` column; anything else is a type error and a `SchemaError`.
+- With `.$onUpdate()` on the same column the trigger wins, and `generate` says so
+  (`updated_at_on_update_overlap`).
+- Dropping or renaming the column drops the trigger first, in the same migration, so no `UPDATE`
+  fails in between; the lane recreates it for the new name.
+- `pull` turns a marked `pgprime_set_<column>` trigger on a `timestamptz` column back into
+  `updatedAtTrigger(t.<column>)`.
+
 ### Partitions
 
 `partitionBy(strategy, key)` goes on the parent and `partitionOf(parent, bound, opts?)` on each
