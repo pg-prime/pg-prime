@@ -27,4 +27,27 @@
 
 type Unsupported<Message = { ERROR: '@pg-prime/nestjs requires TypeScript >= 5.9 — see https://pg-prime.dev/ts' }> = Message
 
+export declare const ContextError: Unsupported
+export declare const InjectDb: Unsupported
+export declare const InjectHost: Unsupported
+export declare const PgPrimeModule: Unsupported
+export declare const RequestTransaction: Unsupported
+export declare const TransactionHost: Unsupported
+export declare const Transactional: Unsupported
+export declare const getDbToken: Unsupported
+export declare const getHostToken: Unsupported
+export declare const provideAddOn: Unsupported
+export declare const rollbackScopeFor: Unsupported
 
+export type ContextError = Unsupported
+export type HostTxOptions = Unsupported
+export type PgPrimeModule = Unsupported
+export type PgPrimeModuleAsyncOptions<T0 = any> = Unsupported
+export type PgPrimeModuleOptions<T0 = any> = Unsupported
+export type Propagation = Unsupported
+export type RequestOptions = Unsupported
+export type RequestTxMode = Unsupported
+export type RollbackScope<T0 = any> = Unsupported
+export type Setting = Unsupported
+export type Settings = Unsupported
+export type TransactionHost<T0 = any> = Unsupported

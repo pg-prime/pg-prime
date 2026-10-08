@@ -3,14 +3,55 @@
   "package": "@pg-prime/nestjs",
   "entries": {
     ".": {
-      "values": [],
-      "types": [],
-      "_arity": {}
+      "values": [
+        "ContextError",
+        "InjectDb",
+        "InjectHost",
+        "PgPrimeModule",
+        "RequestTransaction",
+        "TransactionHost",
+        "Transactional",
+        "getDbToken",
+        "getHostToken",
+        "provideAddOn"
+      ],
+      "types": [
+        "ContextError",
+        "HostTxOptions",
+        "PgPrimeModule",
+        "PgPrimeModuleAsyncOptions",
+        "PgPrimeModuleOptions",
+        "Propagation",
+        "RequestOptions",
+        "RequestTxMode",
+        "Setting",
+        "Settings",
+        "TransactionHost"
+      ],
+      "_arity": {
+        "PgPrimeModule": 0,
+        "PgPrimeModuleAsyncOptions": 1,
+        "PgPrimeModuleOptions": 1,
+        "RequestOptions": 0,
+        "RequestTxMode": 0,
+        "ContextError": 0,
+        "TransactionHost": 1,
+        "HostTxOptions": 0,
+        "Propagation": 0,
+        "Setting": 0,
+        "Settings": 0
+      }
     },
     "./testing": {
-      "values": [],
-      "types": [],
-      "_arity": {}
+      "values": [
+        "rollbackScopeFor"
+      ],
+      "types": [
+        "RollbackScope"
+      ],
+      "_arity": {
+        "RollbackScope": 1
+      }
     }
   }
 }
