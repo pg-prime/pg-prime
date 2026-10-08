@@ -1,1 +1,9 @@
-export {}
+export { provideAddOn } from './add-on.js'
+export { PgPrimeModule } from './module.js'
+export type { PgPrimeModuleAsyncOptions, PgPrimeModuleOptions } from './module.js'
+export { RequestTransaction } from './request.js'
+export type { RequestOptions, RequestTxMode } from './request.js'
+export { InjectDb, InjectHost, getDbToken, getHostToken } from './tokens.js'
+export { Transactional } from './transactional.js'
+export { ContextError, TransactionHost } from '@pg-prime/context'
+export type { HostTxOptions, Propagation, Setting, Settings } from '@pg-prime/context'

@@ -852,3 +852,59 @@ tree-shake, pack smoke, create smoke).
   refusals are rejections. Throw `new ContextError('CONTEXT_NOT_REGISTERED' | 'CONTEXT_DUPLICATE_HOST', msg)`.
 - Join refuses `timeoutMs`/`lockTimeoutMs`/`localSettings` and a different isolation/access mode;
   `retry`, `signal`, `label` pass through ignored.
+
+#### N1 — RESULT (2026-10-09)
+
+Branch `worktree-agent-a4e48d737e8e5ab53`, from `da72293`. Commits: `4072643` the package, tests,
+docs and goldens; then this RESULT.
+
+**Built as designed (§4), with these deviations:**
+- **Duplicate host names are refused at lookup, not at boot.** Two live apps may register a host
+  under one name (tests routinely boot several); `hostOf` uses the instance's own injected host
+  first, so both work, and only a class resolving through the registry gets
+  `CONTEXT_DUPLICATE_HOST`. Never last-wins (D5).
+- `@Transactional({ connection })` also looks for an own property holding that connection's host
+  before the registry. Registration lives in the lifecycle provider, so one module class reused by
+  two apps registers two hosts.
+- `RequestOptions` is exported (the `request` option's type). `rollbackScopeFor` also re-exports
+  `RollbackScope`. `forRoot`/`forRootAsync` are generic over the schema.
+- Without a request transaction (and no pin) the handler's observable is subscribed inside
+  `host.run`, so streaming routes keep streaming; with one it goes through `host.request` (C1).
+- RPC is covered by a unit test on a hand-built `rpc` `ExecutionContext`: `@nestjs/microservices`
+  is not a dev dependency.
+- Reference signature blocks name Nest types through block-local aliases
+  (`type DynamicModule = import('@nestjs/common').DynamicModule`); docs-signatures skips them.
+
+**Tests.** unit 16 (mock pool: tokens, `end`, `ConfigError`, `forRootAsync`, named connections,
+add-on start/close-before-end, join/savepoint/module default/label, route metadata, host
+resolution incl. `CONTEXT_NOT_REGISTERED`/`CONTEXT_DUPLICATE_HOST`, interceptor pass-through,
+`'whenSettings'`, precedence, RPC); live 15 (PGlite + express + `fetch`: lifecycle, modes and
+`@RequestTransaction`, global predicate, error rollback, 409 filter, serializable →
+`CONTEXT_OPTIONS`, 20 concurrent requests, `rollbackScopeFor` incl. a second app; GraphQL query vs
+`@ResolveField` with and without `fieldResolverEnhancers`); pg 3 (RLS via raw `create policy` +
+`setting()` on a non-superuser role: 20 concurrent tenants, the pin; `bun test/bun/app.ts`
+metadata-only DI, SIGTERM → `db.end()`). Green on Node (docker PG 17.11 and 18.6), Bun 1.4.2
+(`bunx --bun vitest`, all tiers, `bun-app.test.ts` passed) and Nest 11.2.7 + graphql 13 (the
+`nest11` job simulated: typecheck, `test:live` 31; pg 3 too).
+
+**Chain** (docker PG 17 + PG 18, kit `pg_dump` oracle via `docker exec`; PgBouncer not run): lint ✓
+(knip config hints only), format ✓, typecheck ✓, test ✓, test:live ✓, test:pg ✓ on 17 and 18,
+build ✓, bench:compile ✓, bench:types ✓, docs:check ✓ (778 blocks / 68 pages, 124 examples),
+docs:examples:pg ✓, package:check ✓ (33/33 size gates, no API drift, emit parity, check:dts,
+tree-shake, pack smoke booting `PgPrimeModule`, create smoke).
+
+**Sizes.** `src/` 301 hand-written lines. Unpacked 33.0 KB / 60 KB; install 99.1 KB / 120 KB incl.
+context; `nestjs-module` delta 3 166 B esbuild min+gz (budget 8 192), 68 modules.
+
+**INDEX lines** (for the integrator):
+- docs/packages/pg-prime-nestjs/src/add-on.md — provideAddOn: add-on from the module's Db, start at bootstrap, close before the pool ends — read when an add-on starts, stops or ends in the wrong order.
+- docs/packages/pg-prime-nestjs/src/index.md — @pg-prime/nestjs entry: module, decorators, tokens, provideAddOn, context re-exports — read when changing the nestjs package's exported surface.
+- docs/packages/pg-prime-nestjs/src/module.md — PgPrimeModule forRoot/forRootAsync: db, host, lifecycle and interceptor providers per name — read when module wiring, shutdown or db.end misbehaves.
+- docs/packages/pg-prime-nestjs/src/request.md — request interceptor and @RequestTransaction: settings scope, tx modes, GraphQL field resolvers — read when a request runs without its settings or transaction.
+- docs/packages/pg-prime-nestjs/src/testing.md — rollbackScopeFor, rollback-per-test for a Nest app — read when changing how Nest tests pin the host.
+- docs/packages/pg-prime-nestjs/src/tokens.md — db/host tokens, InjectDb/InjectHost, the host registry and hostOf — read when injection or @Transactional host resolution picks the wrong host.
+- docs/packages/pg-prime-nestjs/src/transactional.md — @Transactional: wrapper, label, metadata copy, propagation — read when a decorated method joins, nests or loses route metadata wrongly.
+
+**For the integrator:** knip hints "Remove from ignoreDependencies" for `pg-prime`,
+`@pg-prime/{context,testing}`, `@nestjs/{testing,graphql,apollo}`, `@apollo/server` and `graphql`
+in `packages/pg-prime-nestjs` (`knip.json`, not N1's). No context change needed.
