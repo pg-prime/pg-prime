@@ -130,6 +130,18 @@ const CASES: Readonly<Record<string, Case>> = {
   coalesce: c(() => q.coalesce(u.name, 'x'), 'coalesce("u"."name", $1)', ['x']),
   cast: c(() => q.cast(u.id, textCodec), '"u"."id"::text'),
   val: c(() => q.val('x', textCodec), '$1', ['x']),
+  tupleGt: c(
+    () => q.tupleGt([u.name, u.id], ['a', 1n]),
+    'row("u"."name", "u"."id") > row($1, $2)',
+    ['a', '1'],
+  ),
+  tupleLt: c(
+    () => q.tupleLt([u.name, u.id], ['a', 1n]),
+    'row("u"."name", "u"."id") < row($1, $2)',
+    ['a', '1'],
+  ),
+  tupleGte: c(() => q.tupleGte([u.n], [1]), 'row("u"."n") >= row($1)', ['1']),
+  tupleLte: c(() => q.tupleLte([u.n], [1]), 'row("u"."n") <= row($1)', ['1']),
 
   // ── text ─────────────────────────────────────────────────────────────────
   like: c(() => q.like(u.name, 'a%'), '"u"."name" like $1', ['a%']),
@@ -143,6 +155,9 @@ const CASES: Readonly<Record<string, Case>> = {
   notIRegex: c(() => q.notIRegex(u.name, '^a'), '"u"."name" !~* $1', ['^a']),
   similarTo: c(() => q.similarTo(u.name, 'a%'), '"u"."name" similar to $1', ['a%']),
   concat: c(() => q.concat(u.name, '!'), '"u"."name" || $1', ['!']),
+  similarity: c(() => q.similarity(u.name, 'a'), 'similarity("u"."name", $1)', ['a']),
+  wordSimilarity: c(() => q.wordSimilarity('a', u.name), 'word_similarity($1, "u"."name")', ['a']),
+  trgmSimilar: c(() => q.trgmSimilar(u.name, 'a'), '"u"."name" % $1', ['a']),
 
   // ── array ────────────────────────────────────────────────────────────────
   overlaps: c(() => q.overlaps(u.tags, ['vip']), '"u"."tags" && $1', ['{vip}']),
@@ -171,6 +186,10 @@ const CASES: Readonly<Record<string, Case>> = {
   jsonConcat: c(() => q.jsonConcat(u.meta, { b: 2 }), '"u"."meta" || $1', ['{"b":2}']),
   jsonDelete: c(() => q.jsonDelete(u.meta, 'a'), '"u"."meta" - $1', ['a']),
   jsonDeletePath: c(() => q.jsonDeletePath(u.meta, ['a', 'b']), '"u"."meta" #- $1', ['{a,b}']),
+  jsonbSet: c(() => q.jsonbSet(u.meta, ['a', 'b'], { c: 1 }), 'jsonb_set("u"."meta", $1, $2)', [
+    '{a,b}',
+    '{"c":1}',
+  ]),
 
   // ── numeric ──────────────────────────────────────────────────────────────
   add: c(() => q.add(u.n, 1), '"u"."n" + $1', ['1']),
@@ -195,6 +214,11 @@ const CASES: Readonly<Record<string, Case>> = {
     () => q.tsRankCd(tsv, tsq),
     `ts_rank_cd(to_tsvector('english', "u"."name"), websearch_to_tsquery('english', $1))`,
     ['x'],
+  ),
+  tsHeadline: c(
+    () => q.tsHeadline('english', u.name, tsq, { maxWords: 9 }),
+    `ts_headline($1::regconfig, "u"."name", websearch_to_tsquery('english', $2), $3)`,
+    ['english', 'x', 'MaxWords=9'],
   ),
 
   // ── range ────────────────────────────────────────────────────────────────
@@ -313,6 +337,9 @@ describe('the manifest is the contract', () => {
     expect(vector.length).toBe(6)
     for (const o of vector) expect(o.deferred).toBeUndefined()
     expect(OPS.filter((o) => o.deferred !== undefined).map((o) => o.name)).toStrictEqual([
+      'similarity',
+      'wordSimilarity',
+      'trgmSimilar',
       'fn.rank',
     ])
   })
@@ -407,3 +434,67 @@ describe('properties', () => {
 function codecName(e: unknown): string {
   return (e as { resultCodec: { name: string } }).resultCodec.name
 }
+
+describe('tsHeadline / jsonbSet / tuple comparisons', () => {
+  it('tsHeadline: no config, no options', () => {
+    expect(render(q.tsHeadline(u.name, tsq))).toStrictEqual({
+      sql: `ts_headline("u"."name", websearch_to_tsquery('english', $1))`,
+      binds: ['x'],
+    })
+    expect(render(q.tsHeadline(u.name, tsq, {})).sql).not.toContain('$2')
+  })
+
+  it('tsHeadline: every option, in a fixed order, strings double-quoted with `"` doubled', () => {
+    const out = render(
+      q.tsHeadline(u.name, tsq, {
+        fragmentDelimiter: ' … ',
+        highlightAll: true,
+        maxFragments: 2,
+        shortWord: 3,
+        minWords: 5,
+        maxWords: 10,
+        stopSel: '</b>',
+        startSel: `<b class="x, y">`,
+      }),
+    )
+    expect(out.binds[1]).toBe(
+      'StartSel="<b class=""x, y"">", StopSel="</b>", MaxWords=10, MinWords=5, ShortWord=3, ' +
+        'HighlightAll=true, MaxFragments=2, FragmentDelimiter=" … "',
+    )
+  })
+
+  it('tsHeadline: a non-integer or mistyped option throws', () => {
+    expect(() => q.tsHeadline(u.name, tsq, { maxWords: 1.5 })).toThrow(
+      /maxWords must be an integer/,
+    )
+    expect(() => q.tsHeadline(u.name, tsq, { startSel: 1 as never })).toThrow(
+      /startSel must be a string/,
+    )
+  })
+
+  it('jsonbSet: createMissing is a literal, a JS null is the JSON null, an expression is used as-is', () => {
+    expect(render(q.jsonbSet(u.meta, ['a'], 1, false))).toStrictEqual({
+      sql: 'jsonb_set("u"."meta", $1, $2, false)',
+      binds: ['{a}', '1'],
+    })
+    expect(render(q.jsonbSet(u.meta, ['a'], null))).toStrictEqual({
+      sql: 'jsonb_set("u"."meta", $1, $2::jsonb)',
+      binds: ['{a}', 'null'],
+    })
+    expect(render(q.jsonbSet(u.meta, u.tags, u.meta))).toStrictEqual({
+      sql: 'jsonb_set("u"."meta", "u"."tags", "u"."meta")',
+      binds: [],
+    })
+  })
+
+  it('tuple comparisons bind each value with its own column codec, and pair up or throw', () => {
+    const out = compileExpr(q.tupleGt([u.name, u.id], ['a', 1n]) as unknown as Expr)
+    expect(out.binds.map((b) => (b.k === 'value' ? b.oid : 0))).toStrictEqual([25, 20])
+    expect(() => q.tupleGt([u.name, u.id], ['a'] as never)).toThrow(/2 columns and 1 values/)
+    expect(() => q.tupleLt([u.name], [null as never])).toThrow(NullOperandError)
+  })
+
+  it('trgmSimilar rejects a null pattern', () => {
+    expect(() => q.trgmSimilar(u.name, null as never)).toThrow(NullOperandError)
+  })
+})

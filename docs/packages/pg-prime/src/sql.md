@@ -76,7 +76,7 @@ the `pg-prime/sql` subpath and re-exported by `src/index.ts`; kit-generated sche
   (`packages/pg-prime/src/sql/ident.ts:55`).
 - `quoteStringLiteral` is only for compile-time keys (`json_build_object`); nothing routes user data to it.
 - `NullOperandError` maps an operator name to its SQL symbol for the message, defaulting to `=`
-  (`packages/pg-prime/src/sql/errors.ts:161`).
+  (`packages/pg-prime/src/sql/errors.ts:166`).
 - `sql/errors.ts` also re-exports `ConfigError` and `UsageError` and their init types from `errors/base.ts`,
   but `sql/index.ts` does not, so they are absent from the `pg-prime/sql` subpath
   (`packages/pg-prime/src/sql/errors.ts:14`).

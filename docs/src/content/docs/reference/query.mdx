@@ -734,6 +734,10 @@ string: a widened `Date | string` would also make `gt(u.createdAt, u.name)` comp
 | <a id="coalesce"/> `coalesce` | `coalesce(a, b)` | The result cannot be null, so the type drops it. |
 | <a id="cast"/> `cast` | `a::<codec.sqlName>` | The cast is spelled from the codec, so the SQL type and the decoder can never disagree. `NULL::text` is still NULL, so the operand's nullability is threaded through rather than dropped. |
 | <a id="val"/> `val` | `$n`, encoded **and declared** with the codec | The missing primitive without which a class-gated operator has no literal operand: a value inside a `sql` template is a `$n` with no declared type, so `int4range && $1` has no unique resolution. `val('[1,5)', int4rangeCodec)` sends `Parse` with OID 3904 and the operator resolves. |
+| <a id="tupleGt"/> `tupleGt` | `row(a, b) > row($1, $2)` | Keyset pagination. One row comparison, never an `or` chain, so a btree on `(a, b)` answers it. Each value is bound with its own column's codec; the two lists must have the same length, at the type level and at run time, and `null` is refused. Every column sorts the same direction — mixed `asc`/`desc` cannot be a row comparison. |
+| <a id="tupleLt"/> `tupleLt` | `row(a, b) < row($1, $2)` | |
+| <a id="tupleGte"/> `tupleGte` | `row(a, b) >= row($1, $2)` | |
+| <a id="tupleLte"/> `tupleLte` | `row(a, b) <= row($1, $2)` | |
 
 ### Boolean
 
@@ -765,6 +769,17 @@ has no `citext ~ citext`, only `text ~ text`, so those pass `text` explicitly.
 | <a id="notIRegex"/> `notIRegex` | `a !~* $1` | |
 | <a id="similarTo"/> `similarTo` | `a similar to $1` | SQL's own pattern language, not POSIX. |
 | <a id="concat"/> `concat` | `a \|\| b` | `NULL \|\| 'x'` is NULL, so the operand's nullability survives into the result type. |
+
+The three trigram functions need the `pg_trgm` extension (`create extension pg_trgm`). It declares
+`text` signatures only, so a string argument is bound as `text`. A nullable operand makes the result
+nullable — `trgmSimilar(u.note, 'x')` is `Expr<boolean | null>`, which `.where()` takes through
+`isTrue(…)`.
+
+| Function | SQL | Notes |
+|---|---|---|
+| <a id="similarity"/> `similarity` | `similarity(a, b)` | `float4`. Either argument may be a string. |
+| <a id="wordSimilarity"/> `wordSimilarity` | `word_similarity(needle, haystack)` | `float4`, in pg_trgm's argument order. |
+| <a id="trgmSimilar"/> `trgmSimilar` | `a % $1` | Similarity above `pg_trgm.similarity_threshold`; the predicate a `gin_trgm_ops` index answers. |
 
 ### Arithmetic
 
@@ -819,6 +834,30 @@ table is `jsonb`-only, and the operand gate is what says so.
 | <a id="jsonConcat"/> `jsonConcat` | `a \|\| $1` | |
 | <a id="jsonDelete"/> `jsonDelete` | `a - $1` | Delete a key, or several with a `text[]`. |
 | <a id="jsonDeletePath"/> `jsonDeletePath` | `a #- $1` | Delete at a path. |
+| <a id="jsonbSet"/> `jsonbSet` | `jsonb_set(a, $1, $2[, false])` | The path is one `text[]` bind or a `text[]` expression; the value is a `jsonb` expression or a [`JsonValue`](#JsonValue) bound as `jsonb`. A JS `null` is the JSON `null` — an SQL NULL would make the whole document NULL. `createMissing` is emitted only when passed. |
+
+`jsonbSet` returns `Expr<unknown, 'jsonb'>`, like `jsonConcat`: nothing checks that the edited
+document still matches a column's `$type<T>()`. Writing it back into such a column is your claim,
+so it takes a cast:
+
+```ts
+import { eq, jsonbSet, type Executor, type Expr } from 'pg-prime'
+import { defineSchema, pgTable } from 'pg-prime/schema'
+
+const blocks = pgTable('blocks', (t) => ({
+  id: t.uuid().primaryKey(),
+  props: t.jsonb().$type<{ title: string }>(),
+}))
+const { h } = defineSchema({ blocks })
+declare const db: Executor
+
+const rename = db
+  .update(h.blocks)
+  .set((t) => ({
+    props: jsonbSet(t.blocks.props, ['title'], 'Draft') as Expr<{ title: string }, 'jsonb'>,
+  }))
+  .where((t) => eq(t.blocks.id, '0b6f3a5e-0000-4000-8000-000000000000'))
+```
 
 ### Ranges
 
@@ -854,6 +893,7 @@ distinguishes them, which is the concrete payoff of typing operands by PostgreSQ
 | <a id="matches"/> `matches` | `a @@ q` | The right operand is a **`tsquery`**, never a string: build it with `fn.toTsquery(config, q)` or one of its siblings. |
 | <a id="tsRank"/> `tsRank` | `ts_rank(a, q)` | Returns `float4` (`real`), not `float8` — confirmed against the server's own OIDs. |
 | <a id="tsRankCd"/> `tsRankCd` | `ts_rank_cd(a, q)` | Cover-density ranking, same result type. |
+| <a id="tsHeadline"/> `tsHeadline` | `ts_headline([$1::regconfig, ]a, q[, $2])` | The document with query matches marked. The configuration is optional and bound like `fn.toTsvector`'s. [`HeadlineOptions`](#HeadlineOptions) is rendered to one bound option string, every string value double-quoted. Result `text`, null when the document is. |
 
 ### Vectors
 
@@ -1084,6 +1124,8 @@ symbol`s. The aliases below name each class.
 | <a id="TsqueryOperand"/> `TsqueryOperand` | `ClassOperand<unknown, 'tsquery'>` | |
 | <a id="VectorOperand"/> `VectorOperand` | `ClassOperand<number[] \| null, 'vector'>` | `l2` / `cosine` / `innerProduct` / `l1`. `halfvec` and `sparsevec` carry the same operators in pgvector and are deliberately **not** members: neither has a codec here, so admitting the name would type-check a query nothing could decode. |
 | <a id="BitOperand"/> `BitOperand` | `ClassOperand<string \| null, 'bit'>` | `hamming` / `jaccard`. `varbit` is not a member — pgvector declares no `varbit` overload. |
+| <a id="JsonValue"/> `JsonValue` | `string \| number \| boolean \| null \| readonly JsonValue[] \| { readonly [k: string]: JsonValue \| undefined }` | A JS value `jsonbSet` binds as `jsonb`. |
+| <a id="HeadlineOptions"/> `HeadlineOptions` | `{ startSel?, stopSel?, maxWords?, minWords?, shortWord?, highlightAll?, maxFragments?, fragmentDelimiter? }` | `tsHeadline`'s `StartSel=…, MaxWords=…` options. Numbers must be integers. |
 
 And the three class tables themselves:
 

@@ -1340,6 +1340,10 @@ type Ref<C extends Codec> = BaseOps<C> & OpsByClass<C>[TypeClassOf<C>]
 |  | `coalesce` | `coalesce(a, $n)` | a's codec |
 |  | `cast` | `a::<codec.sqlName>` | the given codec |
 |  | `val` | `$n` | the given codec |
+|  | `tupleGt` | `row(a, …) > row($n, …)` | bool |
+|  | `tupleLt` | `row(a, …) < row($n, …)` | bool |
+|  | `tupleGte` | `row(a, …) >= row($n, …)` | bool |
+|  | `tupleLte` | `row(a, …) <= row($n, …)` | bool |
 | **text / citext** | `like` | `a like $n` | bool |
 |  | `ilike` | `a ilike $n` | bool |
 |  | `notLike` | `a not like $n` | bool |
@@ -1351,6 +1355,9 @@ type Ref<C extends Codec> = BaseOps<C> & OpsByClass<C>[TypeClassOf<C>]
 |  | `notIRegex` | `a !~* $n` | bool |
 |  | `similarTo` | `a similar to $n` | bool |
 |  | `concat` | `a \|\| $n` | text |
+|  | ~~`similarity`~~ | `similarity(a, $n)` | float4 |
+|  | ~~`wordSimilarity`~~ | `word_similarity($n, a)` | float4 |
+|  | ~~`trgmSimilar`~~ | `a % $n` | bool |
 | **array `T[]`** | `overlaps` | `a && $n` | bool |
 |  | `arrayContains` | `a @> $n` | bool |
 |  | `arrayContainedBy` | `a <@ $n` | bool |
@@ -1374,6 +1381,7 @@ type Ref<C extends Codec> = BaseOps<C> & OpsByClass<C>[TypeClassOf<C>]
 |  | `jsonConcat` | `a \|\| $n` | jsonb |
 |  | `jsonDelete` | `a - $n` | jsonb |
 |  | `jsonDeletePath` | `a #- $n` | jsonb |
+|  | `jsonbSet` | `jsonb_set(a, $n, $n[, false])` | jsonb |
 | **numeric / int** | `add` | `a + $n` | a's codec |
 |  | `sub` | `a - $n` | a's codec |
 |  | `mul` | `a * $n` | a's codec |
@@ -1383,6 +1391,7 @@ type Ref<C extends Codec> = BaseOps<C> & OpsByClass<C>[TypeClassOf<C>]
 | **tsvector** | `matches` | `a @@ q` | bool |
 |  | `tsRank` | `ts_rank(a, q)` | float4 |
 |  | `tsRankCd` | `ts_rank_cd(a, q)` | float4 |
+|  | `tsHeadline` | `ts_headline([$n::regconfig, ]a, q[, $n])` | text |
 | **range** | `rangeOverlaps` | `a && $n` | bool |
 |  | `rangeContains` | `a @> $n` | bool |
 |  | `rangeContainedBy` | `a <@ $n` | bool |
@@ -1427,6 +1436,7 @@ type Ref<C extends Codec> = BaseOps<C> & OpsByClass<C>[TypeClassOf<C>]
 
 Struck-through rows are declared but have no live differential yet:
 
+- `similarity`, `wordSimilarity`, `trgmSimilar` — pg_trgm extension — confirmed against real PostgreSQL in test/pg/trgm.test.ts.
 - `fn.rank` — WS4 — `rank()` is legal only inside OVER (…), which the emitter does not build yet.
 
 <!-- ops-table:end -->

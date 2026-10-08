@@ -57,11 +57,12 @@ import {
   lit,
   mkNode,
   param,
+  rowExpr,
 } from '../compile/nodes.js'
 import { codecOf } from '../compile/hoist.js'
 import { isAstNode } from '../compile/nodes.js'
 import { isFragment, toNode } from '../sql/fragment.js'
-import { NullOperandError } from '../sql/errors.js'
+import { BuilderError, NullOperandError } from '../sql/errors.js'
 import { queryAstOf } from './nominal.js'
 import type { QuerySource } from './nominal.js'
 import type { META, OUT } from '../schema/index.js'
@@ -70,7 +71,10 @@ import type {
   ArrayOperand,
   BitOperand,
   BoolOperand,
+  ClassOperand,
+  HeadlineOptions,
   JsonOperand,
+  JsonValue,
   JsonbOperand,
   NetOperand,
   NonNullOperand,
@@ -387,6 +391,36 @@ export function cast<A extends AnyOperand, C extends AnyCodec>(
   >
 }
 
+type Row = readonly [AnyOperand, ...AnyOperand[]]
+type RowValues<C extends Row> = {
+  readonly [K in keyof C]: C[K] extends AnyOperand ? NonNullOperand<C[K][typeof OUT]> : never
+}
+
+/** `row(a, b) <op> row($1, $2)` — one row comparison, each value bound with its column's codec. */
+function rowCompare(op: BinaryOp, name: string, cols: Row, vals: readonly unknown[]): Node {
+  if (cols.length !== vals.length) {
+    throw new BuilderError(
+      `pg-prime: ${name}() got ${cols.length} columns and ${vals.length} values; they must pair up.`,
+    )
+  }
+  return bin(
+    op,
+    rowExpr(cols.map((c) => toExpr(c, unknownCodec))),
+    rowExpr(vals.map((v, i) => toExpr(nonNull(v, name), codecOfOperand(cols[i])))),
+    boolCodec,
+  )
+}
+
+/** Keyset pagination: `tupleGt([t.position, t.id], [pos, id])`. All columns sort the same way. */
+export const tupleGt = <const C extends Row>(cols: C, vals: RowValues<C>): Expr<boolean, 'bool'> =>
+  rowCompare('>', 'tupleGt', cols, vals) as unknown as Expr<boolean, 'bool'>
+export const tupleLt = <const C extends Row>(cols: C, vals: RowValues<C>): Expr<boolean, 'bool'> =>
+  rowCompare('<', 'tupleLt', cols, vals) as unknown as Expr<boolean, 'bool'>
+export const tupleGte = <const C extends Row>(cols: C, vals: RowValues<C>): Expr<boolean, 'bool'> =>
+  rowCompare('>=', 'tupleGte', cols, vals) as unknown as Expr<boolean, 'bool'>
+export const tupleLte = <const C extends Row>(cols: C, vals: RowValues<C>): Expr<boolean, 'bool'> =>
+  rowCompare('<=', 'tupleLte', cols, vals) as unknown as Expr<boolean, 'bool'>
+
 // ─────────────────────────────────────────────────────────────────────────────
 // text / citext (03 §2.9 row "text")
 // ─────────────────────────────────────────────────────────────────────────────
@@ -436,6 +470,42 @@ export function concat<A extends TextOperand>(
   return binary('||', a, b, textCodec, textCodec) as unknown as Expr<
     string | Extract<A[typeof OUT], null>,
     'text'
+  >
+}
+
+// pg_trgm. It declares `text` signatures only, so JS strings bind as `text` even against citext.
+type TrgmArg = TextOperand | string
+type NullOf<A> = A extends ExprOf<infer T> ? Extract<T, null> : never
+
+export function similarity<A extends TrgmArg, B extends TrgmArg>(
+  a: A,
+  b: B,
+): Expr<number | NullOf<A> | NullOf<B>, 'float4'> {
+  return fnNode(
+    'similarity',
+    [toExpr(a, textCodec), toExpr(b, textCodec)],
+    float4Codec,
+  ) as unknown as Expr<number | NullOf<A> | NullOf<B>, 'float4'>
+}
+/** `word_similarity(needle, haystack)` — argument order is pg_trgm's. */
+export function wordSimilarity<A extends TrgmArg, B extends TrgmArg>(
+  needle: A,
+  haystack: B,
+): Expr<number | NullOf<A> | NullOf<B>, 'float4'> {
+  return fnNode(
+    'word_similarity',
+    [toExpr(needle, textCodec), toExpr(haystack, textCodec)],
+    float4Codec,
+  ) as unknown as Expr<number | NullOf<A> | NullOf<B>, 'float4'>
+}
+/** `a % b` — similarity above `pg_trgm.similarity_threshold`; index-backed by `gin_trgm_ops`. */
+export function trgmSimilar<A extends TextOperand, B extends TrgmArg>(
+  a: A,
+  b: B,
+): Expr<boolean | NullOf<A> | NullOf<B>, 'bool'> {
+  return pred('%', a, nonNull(b, 'trgmSimilar'), textCodec) as unknown as Expr<
+    boolean | NullOf<A> | NullOf<B>,
+    'bool'
   >
 }
 
@@ -570,6 +640,24 @@ export function jsonDelete(a: JsonbOperand, k: Operand<string>): Expr<unknown, '
 export function jsonDeletePath(a: JsonbOperand, path: readonly string[]): Expr<unknown, 'jsonb'> {
   return binary('#-', a, path, textArrayCodec, jsonbCodec) as unknown as Expr<unknown, 'jsonb'>
 }
+/**
+ * `jsonb_set(a, $path, $value[, createMissing])`. A JS `null` is the JSON `null`: an SQL NULL
+ * argument would make the whole result NULL.
+ */
+export function jsonbSet(
+  a: JsonbOperand,
+  path: readonly string[] | ClassOperand<readonly string[] | null, 'text[]'>,
+  value: JsonbOperand | JsonValue,
+  createMissing?: boolean,
+): Expr<unknown, 'jsonb'> {
+  const v =
+    value === null
+      ? castNode(param('null', textCodec), 'jsonb', jsonbCodec)
+      : toExpr(value, jsonbCodec)
+  const args = [toExpr(a, unknownCodec), toExpr(path, textArrayCodec), v]
+  if (createMissing !== undefined) args.push(lit(createMissing, boolCodec))
+  return fnNode('jsonb_set', args, jsonbCodec) as unknown as Expr<unknown, 'jsonb'>
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // numeric / int (03 §2.9 row "numeric/int") — "result codec preserved"
@@ -619,6 +707,62 @@ export function tsRankCd(a: TsvectorOperand, q: TsqueryOperand): Expr<number, 'f
     [toExpr(a, unknownCodec), toExpr(q, tsqueryCodec)],
     float4Codec,
   ) as unknown as Expr<number, 'float4'>
+}
+
+const HEADLINE = [
+  ['startSel', 'StartSel', 'string'],
+  ['stopSel', 'StopSel', 'string'],
+  ['maxWords', 'MaxWords', 'number'],
+  ['minWords', 'MinWords', 'number'],
+  ['shortWord', 'ShortWord', 'number'],
+  ['highlightAll', 'HighlightAll', 'boolean'],
+  ['maxFragments', 'MaxFragments', 'number'],
+  ['fragmentDelimiter', 'FragmentDelimiter', 'string'],
+] as const
+
+/** The option string, one bind. Strings are double-quoted with `"` doubled, as `deserialize_deflist` reads them. */
+function headlineOptions(o: HeadlineOptions): string | undefined {
+  const parts: string[] = []
+  for (const [key, name, type] of HEADLINE) {
+    const v: unknown = o[key]
+    if (v === undefined) continue
+    if (typeof v !== type || (type === 'number' && !Number.isInteger(v))) {
+      throw new BuilderError(
+        `pg-prime: tsHeadline() option ${key} must be ${type === 'number' ? 'an integer' : `a ${type}`}.`,
+      )
+    }
+    parts.push(`${name}=${typeof v === 'string' ? `"${v.replaceAll('"', '""')}"` : String(v)}`)
+  }
+  return parts.length === 0 ? undefined : parts.join(', ')
+}
+
+/** `ts_headline([$config::regconfig, ]doc, q[, $options])` — the text with query matches marked. */
+export function tsHeadline<A extends TextOperand>(
+  config: string,
+  doc: A,
+  q: TsqueryOperand,
+  opts?: HeadlineOptions,
+): Expr<string | Extract<A[typeof OUT], null>, 'text'>
+export function tsHeadline<A extends TextOperand>(
+  doc: A,
+  q: TsqueryOperand,
+  opts?: HeadlineOptions,
+): Expr<string | Extract<A[typeof OUT], null>, 'text'>
+export function tsHeadline(...args: unknown[]): unknown {
+  const [config, doc, q, opts] = typeof args[0] === 'string' ? args : [undefined, ...args]
+  const options = headlineOptions((opts ?? {}) as HeadlineOptions)
+  return fnNode(
+    'ts_headline',
+    [
+      ...(config === undefined
+        ? []
+        : [castNode(param(config, textCodec), 'regconfig', unknownCodec)]),
+      toExpr(doc, unknownCodec),
+      toExpr(q, tsqueryCodec),
+      ...(options === undefined ? [] : [param(options, textCodec)]),
+    ],
+    textCodec,
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

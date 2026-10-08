@@ -12,9 +12,9 @@ and consumed by the golden, OID-differential, semantic-differential and docs-tab
 - `OpSpec` — `{ name, class, sql, result, kind: 'expr' | 'order', deferred? }`; `name` is the export
   name (`fn.`-prefixed for the aggregate namespace); `result` is a codec name or a rule string.
 - `OPS: readonly OpSpec[]` — every operator row, grouped by class
-  (`packages/pg-prime/src/query/ops.manifest.ts:52`).
+  (`packages/pg-prime/src/query/ops.manifest.ts:55`).
 - `CONFIRMABLE: readonly OpSpec[]` — `OPS` rows with `kind === 'expr'` and no `deferred`; the rows
-  whose result OID the live suite checks (`packages/pg-prime/src/query/ops.manifest.ts:285`).
+  whose result OID the live suite checks (`packages/pg-prime/src/query/ops.manifest.ts:330`).
 
 ## Flow
 1. A maintainer adds an operator to `packages/pg-prime/src/query/ops.ts` or `fn.ts` and a row to `OPS`.
@@ -27,10 +27,10 @@ and consumed by the golden, OID-differential, semantic-differential and docs-tab
    `ops-table` markers in `design/03-query-builder.md` and fails on any difference.
 
 ## Gotchas
-- `fn.rank` is the only `deferred` row (`packages/pg-prime/src/query/ops.manifest.ts:227`), so it is
-  excluded from `CONFIRMABLE`; the live suite confirms it separately via `rank() over ()`
-  (`packages/pg-prime/test/live-query/ops.test.ts:952`). `test/query/ops.test.ts` pins that
-  `fn.rank` stays the sole deferred row.
+- `deferred` rows are excluded from `CONFIRMABLE`: `fn.rank` (`packages/pg-prime/src/query/ops.manifest.ts:267`), confirmed separately via
+  `rank() over ()` in `packages/pg-prime/test/live-query/ops.test.ts`, and the three pg_trgm rows
+  (`TRGM`), confirmed in `packages/pg-prime/test/pg/trgm.test.ts` because the PGlite boot does not load
+  the extension. `test/query/ops.test.ts` pins exactly these four.
 - `fn.denseRank`, `fn.rowNumber` and `fn.now` exist on `fn` (`packages/pg-prime/src/query/fn.ts:243`,
   `:246`, `:249`) but have no manifest rows, so none of the four consumers covers them (they are
   exercised in `packages/pg-prime/test/live-query/setop-window.test.ts` and `writes.test.ts`).
@@ -45,7 +45,7 @@ and consumed by the golden, OID-differential, semantic-differential and docs-tab
   `PG_PRIME_UPDATE_DOCS=1 pnpm test -- ops-table`.
 
 ## Tests
-- `packages/pg-prime/test/query/ops.test.ts` — manifest/golden parity, the sole-deferred check, the
+- `packages/pg-prime/test/query/ops.test.ts` — manifest/golden parity, the deferred-row list, the
   vector rows being confirmable. Run `pnpm --filter pg-prime exec vitest run test/query/ops.test.ts`.
 - `packages/pg-prime/test/query/ops-table.test.ts` — the generated table in
   `design/03-query-builder.md` equals the render of `OPS`; unique names and known classes. Run

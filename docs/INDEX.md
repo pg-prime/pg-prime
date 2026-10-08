@@ -123,7 +123,7 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime/src/query/meta.md — schema column to codec seam, insertable/generated keys, client defaults — read when a column type has no codec or enum OIDs misbehave.
 - docs/packages/pg-prime/src/query/nominal.md — nominal builder/AST checks for sub-query and CTE arguments — read when a sub-query argument is refused as "not a query".
 - docs/packages/pg-prime/src/query/ops.manifest.md — operator vocabulary data rows feeding goldens, OID differential, design table — read when adding an operator row or fixing manifest gates.
-- docs/packages/pg-prime/src/query/ops.md — class-gated operator free functions with exact result codecs — read when adding or changing a SQL operator.
+- docs/packages/pg-prime/src/query/ops.md — class-gated operators and functions (pg_trgm, jsonb_set, ts_headline, row comparisons) with exact result codecs — read when adding or changing a SQL operator.
 - docs/packages/pg-prime/src/query/ops.types.md — per-class operand gates, ORDER BY types, sum/avg/range result maps — read when an operator rejects or accepts an operand type.
 - docs/packages/pg-prime/src/query/prepared.md — placeholder() and the client-side PreparedQuery artifact — read when changing .prepare(), placeholders, or prepared execute options.
 - docs/packages/pg-prime/src/query/projection.md — nest/nestNullable markers, witnesses, value-to-expression coercion, order lists — read when changing projections, nest nullability or expression coercion.

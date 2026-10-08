@@ -246,6 +246,7 @@ export declare const jsonPathMatch: Unsupported
 export declare const jsonPathText: Unsupported
 export declare const jsonb: Unsupported
 export declare const jsonbCodec: Unsupported
+export declare const jsonbSet: Unsupported
 export declare const jsonpathCodec: Unsupported
 export declare const kit: Unsupported
 export declare const l1: Unsupported
@@ -314,6 +315,7 @@ export declare const regex: Unsupported
 export declare const renamedFrom: Unsupported
 export declare const resolveRelations: Unsupported
 export declare const similarTo: Unsupported
+export declare const similarity: Unsupported
 export declare const smallint: Unsupported
 export declare const snakeCase: Unsupported
 export declare const spanAttributes: Unsupported
@@ -336,12 +338,18 @@ export declare const timetzCodec: Unsupported
 export declare const toNode: Unsupported
 export declare const toOrderItem: Unsupported
 export declare const toServerErrorData: Unsupported
+export declare const trgmSimilar: Unsupported
+export declare const tsHeadline: Unsupported
 export declare const tsRank: Unsupported
 export declare const tsRankCd: Unsupported
 export declare const tsqueryCodec: Unsupported
 export declare const tsrangeCodec: Unsupported
 export declare const tstzrangeCodec: Unsupported
 export declare const tsvectorCodec: Unsupported
+export declare const tupleGt: Unsupported
+export declare const tupleGte: Unsupported
+export declare const tupleLt: Unsupported
+export declare const tupleLte: Unsupported
 export declare const unique: Unsupported
 export declare const uniqueIndex: Unsupported
 export declare const unknownCodec: Unsupported
@@ -354,6 +362,7 @@ export declare const varchar: Unsupported
 export declare const varcharCodec: Unsupported
 export declare const vector: Unsupported
 export declare const vectorCodec: Unsupported
+export declare const wordSimilarity: Unsupported
 export declare const writeArrayLiteral: Unsupported
 export declare const xmlCodec: Unsupported
 
@@ -472,6 +481,7 @@ export type Grouping = Unsupported
 export type Handle<T0 = any, T1 = any> = Unsupported
 export type HandleKind = Unsupported
 export type HandleMisuseError = Unsupported
+export type HeadlineOptions = Unsupported
 export type IdentRejectReason = Unsupported
 export type IdleInTransactionTimeoutError = Unsupported
 export type InFailedTransactionError = Unsupported
@@ -502,6 +512,7 @@ export type InvalidTextRepresentationError = Unsupported
 export type IsolationLevel = Unsupported
 export type JsonEncode = Unsupported
 export type JsonOperand = Unsupported
+export type JsonValue = Unsupported
 export type JsonbOperand = Unsupported
 export type ListenOptions = Unsupported
 export type Loaded<T0 = any, T1 = any, T2 = any> = Unsupported

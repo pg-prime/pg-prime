@@ -22,6 +22,10 @@ schema, `PgDateString` from the codecs and `ExprOf` from `packages/pg-prime/src/
 - `VectorOperand` — `pg: 'vector'` only; `BitOperand` — `pg: 'bit'` only.
 - `RangeOperand<P extends RangePg>` — range gate, `[OUT]` is `string | null`.
 - `ArrayOperand<E>` — `pg` is `` `${string}[]` ``; `E` is inferred from `readonly E[] | null`.
+- `JsonValue` — a JS value `JSON.stringify` encodes as-is; `jsonbSet`'s literal operand. An interface
+  without an index signature is not assignable to it.
+- `HeadlineOptions` — `tsHeadline`'s options (`startSel`, `stopSel`, `maxWords`, `minWords`, `shortWord`,
+  `highlightAll`, `maxFragments`, `fragmentDelimiter`).
 - `SumPg<P>`, `SumOut<P>` — `sum` result: `int2`/`int4` → `int8`/`bigint`; `int8`/`numeric` →
   `numeric`/`string`; floats keep `P`/`number`; `money` keeps `P`/`string`.
 - `AvgPg<P>`, `AvgOut<P>` — `avg` result: `float4`/`float8` → `float8`/`number`, else `numeric`/`string`.
@@ -37,7 +41,7 @@ schema, `PgDateString` from the codecs and `ExprOf` from `packages/pg-prime/src/
 3. Builder results are `Expr<T, P>` (`packages/pg-prime/src/query/types.ts:169`), so an operator's
    output can feed another gated operator.
 4. Aggregates and range bounds compute their declared result through `SumPg`/`AvgPg`/`RangeElemPg`
-   (`packages/pg-prime/src/query/ops.types.ts:152`, `:170`, `:174`); the runtime codecs come from the
+   (`packages/pg-prime/src/query/ops.types.ts:173`, `:191`, `:195`); the runtime codecs come from the
    twin tables `SUM_RESULT`/`AVG_RESULT` (`packages/pg-prime/src/query/fn.ts:151`, `:161`) and
    `RANGE_ELEMENT` (`packages/pg-prime/src/query/ops.ts:697`).
 
@@ -53,13 +57,13 @@ schema, `PgDateString` from the codecs and `ExprOf` from `packages/pg-prime/src/
 - `NonNullOperand` blocks only the literal; a nullable *expression* is still accepted
   (`packages/pg-prime/src/query/ops.types.ts:65`).
 - `NumPg` includes `money`, but `SumPg`/`AvgPg` have no `money` branch: `sum` keeps `money`,
-  `avg` claims `numeric` (`packages/pg-prime/src/query/ops.types.ts:152`, `:170`).
+  `avg` claims `numeric` (`packages/pg-prime/src/query/ops.types.ts:173`, `:191`).
 - The type maps and the runtime codec tables in `ops.ts`/`fn.ts` are two copies; only
   `RANGE_ELEMENT_NAMES` is pinned row for row by a test.
 - CTE columns carry `pg: any` (`packages/pg-prime/src/query/types.ts:1021`), so every gate accepts them.
 
 ## Tests
-- Type probes: `packages/pg-prime/test/query/types/ops.probe.ts` (gates, `NonNullOperand`,
+- Type probes: `packages/pg-prime/test/query/types/ops.probe.ts` and `search.probe.ts` (gates, `NonNullOperand`,
   `sum`/`avg` result types via `expectTypeOf` and `@ts-expect-error`). Run with
   `pnpm --filter pg-prime typecheck` (includes `tsc -p test/query/tsconfig.json`).
 - Runtime twins: `packages/pg-prime/test/query/ops.test.ts` pins `RANGE_ELEMENT_NAMES` against the

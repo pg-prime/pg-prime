@@ -139,6 +139,27 @@ export type RangeOperand<P extends RangePg = RangePg> = ClassOperand<string | nu
  */
 export type ArrayOperand<E> = ClassOperand<readonly E[] | null, `${string}[]`>
 
+/** A JS value `JSON.stringify` encodes as-is — `jsonbSet`'s literal operand. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly JsonValue[]
+  | { readonly [k: string]: JsonValue | undefined }
+
+/** `ts_headline` options, rendered to its `Key=value, …` option string. */
+export interface HeadlineOptions {
+  readonly startSel?: string
+  readonly stopSel?: string
+  readonly maxWords?: number
+  readonly minWords?: number
+  readonly shortWord?: number
+  readonly highlightAll?: boolean
+  readonly maxFragments?: number
+  readonly fragmentDelimiter?: string
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Result maps — the three places PostgreSQL's answer is not the operand's type
 // ─────────────────────────────────────────────────────────────────────────────

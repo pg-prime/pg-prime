@@ -49,6 +49,9 @@ export interface OpSpec {
   readonly deferred?: string
 }
 
+/** pg_trgm is an extension the PGlite tier does not load. */
+const TRGM = 'pg_trgm extension — confirmed against real PostgreSQL in test/pg/trgm.test.ts'
+
 export const OPS: readonly OpSpec[] = [
   // ── every class ────────────────────────────────────────────────────────────
   { name: 'eq', class: 'all', sql: 'a = $n', result: 'bool', kind: 'expr' },
@@ -92,6 +95,10 @@ export const OPS: readonly OpSpec[] = [
     kind: 'expr',
   },
   { name: 'val', class: 'all', sql: '$n', result: 'the given codec', kind: 'expr' },
+  { name: 'tupleGt', class: 'all', sql: 'row(a, …) > row($n, …)', result: 'bool', kind: 'expr' },
+  { name: 'tupleLt', class: 'all', sql: 'row(a, …) < row($n, …)', result: 'bool', kind: 'expr' },
+  { name: 'tupleGte', class: 'all', sql: 'row(a, …) >= row($n, …)', result: 'bool', kind: 'expr' },
+  { name: 'tupleLte', class: 'all', sql: 'row(a, …) <= row($n, …)', result: 'bool', kind: 'expr' },
 
   // ── text / citext ──────────────────────────────────────────────────────────
   { name: 'like', class: 'text', sql: 'a like $n', result: 'bool', kind: 'expr' },
@@ -105,6 +112,30 @@ export const OPS: readonly OpSpec[] = [
   { name: 'notIRegex', class: 'text', sql: 'a !~* $n', result: 'bool', kind: 'expr' },
   { name: 'similarTo', class: 'text', sql: 'a similar to $n', result: 'bool', kind: 'expr' },
   { name: 'concat', class: 'text', sql: 'a || $n', result: 'text', kind: 'expr' },
+  {
+    name: 'similarity',
+    class: 'text',
+    sql: 'similarity(a, $n)',
+    result: 'float4',
+    kind: 'expr',
+    deferred: TRGM,
+  },
+  {
+    name: 'wordSimilarity',
+    class: 'text',
+    sql: 'word_similarity($n, a)',
+    result: 'float4',
+    kind: 'expr',
+    deferred: TRGM,
+  },
+  {
+    name: 'trgmSimilar',
+    class: 'text',
+    sql: 'a % $n',
+    result: 'bool',
+    kind: 'expr',
+    deferred: TRGM,
+  },
 
   // ── array T[] ──────────────────────────────────────────────────────────────
   { name: 'overlaps', class: 'array', sql: 'a && $n', result: 'bool', kind: 'expr' },
@@ -132,6 +163,13 @@ export const OPS: readonly OpSpec[] = [
   { name: 'jsonConcat', class: 'jsonb', sql: 'a || $n', result: 'jsonb', kind: 'expr' },
   { name: 'jsonDelete', class: 'jsonb', sql: 'a - $n', result: 'jsonb', kind: 'expr' },
   { name: 'jsonDeletePath', class: 'jsonb', sql: 'a #- $n', result: 'jsonb', kind: 'expr' },
+  {
+    name: 'jsonbSet',
+    class: 'jsonb',
+    sql: 'jsonb_set(a, $n, $n[, false])',
+    result: 'jsonb',
+    kind: 'expr',
+  },
 
   // ── numeric / int ──────────────────────────────────────────────────────────
   { name: 'add', class: 'numeric', sql: 'a + $n', result: "a's codec", kind: 'expr' },
@@ -145,6 +183,13 @@ export const OPS: readonly OpSpec[] = [
   { name: 'matches', class: 'tsvector', sql: 'a @@ q', result: 'bool', kind: 'expr' },
   { name: 'tsRank', class: 'tsvector', sql: 'ts_rank(a, q)', result: 'float4', kind: 'expr' },
   { name: 'tsRankCd', class: 'tsvector', sql: 'ts_rank_cd(a, q)', result: 'float4', kind: 'expr' },
+  {
+    name: 'tsHeadline',
+    class: 'tsvector',
+    sql: 'ts_headline([$n::regconfig, ]a, q[, $n])',
+    result: 'text',
+    kind: 'expr',
+  },
 
   // ── range ──────────────────────────────────────────────────────────────────
   { name: 'rangeOverlaps', class: 'range', sql: 'a && $n', result: 'bool', kind: 'expr' },
