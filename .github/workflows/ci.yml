@@ -355,7 +355,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter pg-prime --filter @pg-prime/testing --filter @pg-prime/create --filter @pg-prime/events --filter @pg-prime/outbox --filter @pg-prime/mq --filter @pg-prime/cron exec bunx --bun vitest run --project unit
+      - run: pnpm --filter pg-prime --filter @pg-prime/testing --filter @pg-prime/create --filter @pg-prime/events --filter @pg-prime/outbox --filter @pg-prime/mq --filter @pg-prime/cron --filter @pg-prime/context --filter @pg-prime/nestjs exec bunx --bun vitest run --project unit
       - name: pg-prime tier 2 on Bun, LISTEN reconnect + gap must not skip
         working-directory: packages/pg-prime
         run: |
@@ -364,9 +364,33 @@ jobs:
           jq -e '[.testResults[] | select(.name | endswith("session-listen.test.ts")) | .assertionResults[].status] | length > 0 and all(. == "passed")' pg.json
       - name: add-ons tier 2 on Bun
         run: |
-          for p in events outbox mq cron; do
+          for p in events outbox mq cron context; do
             (cd "packages/pg-prime-$p" && bunx --bun vitest run --project pg)
           done
+      # design/19 §6.4: the Nest app run by `bun` itself (metadata-only DI) must pass, not skip.
+      - name: nestjs tier 2 on Bun, the direct-bun app must not skip
+        working-directory: packages/pg-prime-nestjs
+        run: |
+          bunx --bun vitest run --project pg --reporter=default --reporter=json --outputFile.json=pg.json
+          jq -e '[.testResults[] | select(.name | endswith("bun-app.test.ts")) | .assertionResults[].status] | all(. == "passed")' pg.json
+
+  nest11:
+    # design/19 §10 D4: @pg-prime/nestjs peers Nest `^11 || ^12` and develops on 12; this leg
+    # swaps in Nest 11 (and the GraphQL packages that pair with it) and runs tiers 0 and 1.
+    name: nestjs on Nest 11 · unit + live
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @pg-prime/nestjs add -D @nestjs/common@^11 @nestjs/core@^11 @nestjs/testing@^11 @nestjs/platform-express@^11 @nestjs/graphql@^13 @nestjs/apollo@^13
+      - run: pnpm --filter @pg-prime/nestjs exec node -e "console.log(require('@nestjs/core/package.json').version)" | grep '^11\.'
+      - run: pnpm --filter @pg-prime/nestjs typecheck
+      - run: pnpm --filter @pg-prime/nestjs test:live
 
   perf:
     # design/08 §5: "On PRs labelled `perf`: the runtime benchmark runs and posts a 3-run-median
