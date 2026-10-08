@@ -807,3 +807,42 @@ size-only failure; kit unpacked **1961.0 KB** (tarball 476.7 KB) of 8192 KB.
 - `repeatables.md` → "… hash plan, declared self-heal, one-transaction apply …".
 - `schema/types.md` → "type-only SchemaLike/TableLike/ViewLike/PolicyLike view …".
 - `schema/views.md` → "declared views rendered into sql/020_views, sync via syncDeclared, per-kind census adjustment …".
+
+#### R4 — RESULT
+
+Branch `worktree-agent-a24cebbfd28b21f54` on `9beda8c`. Commit `31436e7` (docs), then this RESULT.
+
+**Pages:**
+- New `guides/row-level-security.mdx`: setting keys (`app.org_id`, `app.user_id`, a text key),
+  `definePolicy`, `rls.enable()`/`force()`, the lane (files, markers, prune, self-heal, census, one
+  writer, shadow), RL101–RL108 and acks (`lane_refused`, prune-header line, `.plan.json`,
+  `acknowledge.dataLoss`), rollout order, the migration role, `tx.setLocal(key.set(v))`, pointers
+  to `@pg-prime/context` / `@pg-prime/nestjs`, poolers, `updatedAtTrigger`, pitfalls.
+  `tenant-isolation.ts` runs on PGlite: it renders the lane with `renderDeclared` and applies it via
+  `pg`, then `SET LOCAL ROLE`. `login-role.ts` is `pg-only`: a LOGIN role on a one-connection pool
+  shows the `''` placeholder reading NULL.
+- `guides/schema.mdx`: `### Row-level security` pointer and `### updatedAtTrigger` (runnable).
+- `concepts/tiers.mdx`: Tier M names the ENABLE flag; `### Declared Tier R`; layout updated (no
+  `040_rls/`); removal caution scoped to hand-written files.
+- `operations/zero-downtime.mdx`: `## Row-level security`; lane acks in the `--allow-data-loss` section.
+- `operations/troubleshooting.mdx`: exit-2 `lane_refused` (reading RL101/RL108 subjects),
+  `declared_*` and `rls_not_forced` doctor findings, `check` exit 3 on a stale lane.
+- `guides/adopting.mdx`: pull header without "policies"; pull's `rls.*()`/`definePolicy`/
+  `updatedAtTrigger` output; `declared_unmarked` until the first apply.
+- `docs/astro.config.mjs`: RLS guide; Ambient transactions, NestJS (guides); `@pg-prime/context`,
+  `@pg-prime/nestjs` (reference). N0 had not added them. `guides/nestjs` and `reference/nestjs`
+  are still stubs (N1 is filling them); the entries resolve.
+
+**Gates:**
+- Green: `docs:check` (764 blocks, 126 PGlite examples, coverage 100 %, site build 70 pages),
+  `lint`, `format:check`.
+- `docs:examples:pg` is green on a docker PG 17.11 superuser (:5451, removed afterwards), with
+  8 examples and the 3 pgbouncer blocks skipped.
+- pg-dev `pgprime_r4` (:5417) cannot run that tier: the gate creates scratch databases, and pg-dev
+  roles have no CREATEDB.
+
+**Follow-ups (not mine to edit):**
+- `reference/hazard-codes.mdx` says RL subjects are acknowledged by a `--hints-file`.
+  `zero-downtime.mdx` says a `--hints-file` can list `dataLoss` subjects. `readHintsFile` reads only
+  `{ from, to }`, so per-subject acks exist only programmatically (`acknowledge.dataLoss`). Fix
+  either the claims or the hints-file reader.
