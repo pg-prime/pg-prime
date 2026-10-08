@@ -157,6 +157,7 @@ async function recorded(): Promise<{ label: string; sql: string }[]> {
   await maintain.maintenanceGate(q, t, 'jobs', 1000)
   await maintain.expireBatch(q, t).catch(() => {})
   await maintain.trimBatch(q, t, 'jobs', 'completed', 10).catch(() => {})
+  await maintain.trimBatch(q, t, 'jobs', 'failed', 10).catch(() => {})
   await maintain.dedupBatch(q, t).catch(() => {})
   await maintain.reconcileGroups(recorder([{ key: 'g' }]).q, t, 'jobs')
   const r = recorder([{ key: 'g' }])

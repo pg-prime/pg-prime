@@ -422,6 +422,16 @@ describe('retention', () => {
     expect(n).toBe(2)
   })
 
+  it('a failed count also trims cancelled messages', async () => {
+    const { mq } = setup()
+    const q = mq.queue(defineQueue<P>('few', { keep: { failed: { count: 1 } } }))
+    for (const n of [1, 2, 3]) await q.cancel(await q.send({ n }))
+    const w = q.work(async () => {}, fast)
+    await until(async () => (await q.counts()).cancelled === 1)
+    await w.close()
+    expect((await q.list({ state: 'cancelled' })).map((m) => m.payload.n)).toStrictEqual([3])
+  })
+
   it('retry clears expire_at, so retention never deletes a re-queued message', async () => {
     const { db, schema, mq } = setup()
     const q = mq.queue(

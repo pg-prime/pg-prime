@@ -166,7 +166,10 @@ update "pgprime_mq"."queues" set maint_at = now() where name = $1 and maint_at <
 with del as ( delete from "pgprime_mq"."messages" where id in ( select id from "pgprime_mq"."messages" where expire_at <= now() and state in ('completed', 'failed', 'cancelled') limit 1000 for update skip locked) returning 1 ) select count(*)::int as n from del
 
 -- mq.mq.retention-count
-with del as ( delete from "pgprime_mq"."messages" where id in ( select id from "pgprime_mq"."messages" where queue = $1 and state = $2::"pgprime_mq"."msg_state" order by finished_at desc offset $3::int limit 1000 for update skip locked) returning 1 ) select count(*)::int as n from del
+with del as ( delete from "pgprime_mq"."messages" where id in ( select id from "pgprime_mq"."messages" where queue = $1 and state in ('completed') order by finished_at desc offset $2::int limit 1000 for update skip locked) returning 1 ) select count(*)::int as n from del
+
+-- mq.mq.retention-count
+with del as ( delete from "pgprime_mq"."messages" where id in ( select id from "pgprime_mq"."messages" where queue = $1 and state in ('failed', 'cancelled') order by finished_at desc offset $2::int limit 1000 for update skip locked) returning 1 ) select count(*)::int as n from del
 
 -- mq.mq.dedup-expire
 with del as ( delete from "pgprime_mq"."dedup" where (queue, key) in ( select queue, key from "pgprime_mq"."dedup" where expire_at <= now() limit 1000 for update skip locked) returning 1 ) select count(*)::int as n from del
