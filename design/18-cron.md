@@ -238,7 +238,8 @@ another run. That holds during `close()` too.
     limit $n for update skip locked) returning …`.
 - **Queue-target schedules.**
   - T1 runs §6's transaction directly: K1's manual shape with `$decided = 'enqueued'`, then
-    `send` with key `cron:<name>:manual:<runId>`.
+    `send` keyed by §6's overlap mapping (`cron:<name>:manual:<runId>` under `allow`), so overlap
+    holds as for a handler trigger.
   - It never creates a `pending` run, so T2 never sees one.
   - It must be called on an instance that declared the target queue; elsewhere it throws a
     `UsageError` (C-D9).

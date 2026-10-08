@@ -193,4 +193,53 @@ through `onInternal('pending-unclaimed')`.
 
 ## Queue target
 
-Runs a schedule by sending a message to an `@pg-prime/mq` queue. Written with the queue target.
+A schedule can send a message to an `@pg-prime/mq` queue instead of running a handler. The work
+then runs on mq's workers, with mq's retries, limits and history. Hand `pgCron` the mq instance as
+its `enqueuer`; `start()` starts every target queue, so no separate `mq.start()` is needed:
+
+{/* docs: use=blog */}
+```ts title="queue-target.ts"
+import { defineSchedule, pgCron } from '@pg-prime/cron'
+import { defineQueue, pgMq } from '@pg-prime/mq'
+
+const reindex = defineQueue<{ table: string }>('reindex')
+const mq = pgMq({ db })
+const nightly = defineSchedule(
+  'reindex-users',
+  { cron: '0 3 * * *' },
+  { queue: reindex },
+  { payload: { table: 'users' } },
+)
+
+const cron = pgCron({ db, enqueuer: mq, schedules: [nightly] })
+await cron.start()
+
+const a = await cron.trigger('reindex-users')
+const b = await cron.trigger('reindex-users')
+console.log(a.state, b.state)
+// enqueued skipped
+
+const [m] = await mq.queue(reindex).claim()
+console.log(m?.key, m?.payload)
+// cron:reindex-users { table: 'users' }
+await cron.close()
+```
+
+A tick is one short transaction: the claim and the send commit together, so each tick sends
+exactly one message, even when an instance dies between the two. The run is recorded as `enqueued`
+with the message's id (`runs()` returns it as `messageId`), and is finished as far as cron is
+concerned: whether the job succeeds is mq's to record.
+
+Cron cannot see a job running on mq's workers, so `overlap` maps onto mq's dedup instead:
+
+| `overlap` | Message key | Effect |
+|---|---|---|
+| `'skip'` (default) | `cron:<name>`, `dedup: 'until-done'` | while the previous message is unfinished, the tick sends nothing and its run is `skipped` |
+| `'allow'` | `cron:<name>:<tick ms>` (`cron:<name>:manual:<run id>` for a manual run) | one message per tick |
+
+`misfire: 'skip'` records a `missed` run and sends nothing. A manual `trigger()` sends at once —
+there is no `pending` run — and follows `overlap` the same way, as the example shows.
+
+An instance claims a queue-target schedule only when it declared the schedule and has an
+`enqueuer`, so the message is always sent with that instance's own queue declaration — its retry,
+retention and limits. Elsewhere `trigger()` throws a `UsageError`.

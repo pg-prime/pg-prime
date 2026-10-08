@@ -1,7 +1,7 @@
 # packages/pg-prime-cron/src/cron.ts
 
 ## Purpose
-`pgCron`: the per-process instance. It owns start-up (migrate, sync, LISTEN), the claim loop, handler dispatch to `runner.ts`, maintenance and every admin method. It calls the statements in `src/sql/*`, the planner and ticker, and the queue seam in `src/target/queue.ts`.
+`pgCron`: the per-process instance. It owns start-up (migrate, sync, LISTEN), the claim loop, handler dispatch to `runner.ts`, maintenance and every admin method. It calls the statements in `src/sql/*`, the planner and ticker, and the queue target in `src/target/queue.ts`.
 
 ## Public API
 - `pgCron(config: CronConfig): Cron` — builds the instance; throws `UsageError` for a schedule declared twice. Defaults: schema `pgprime_cron`, `pollMs` 10 000, `leaseMs` 30 000, `maintenanceMs` 15 000, `graceMs` 10 000.
@@ -28,6 +28,6 @@
 - The default instance label reads `HOSTNAME`/`COMPUTERNAME` from `globalThis.process`; the build has no Node types.
 
 ## Tests
-- `packages/pg-prime-cron/test/live/cron.test.ts` (tier 1, PGlite or `PG_PRIME_TEST_URL`): sync, runs, trigger/pickup, cancel, overlap, timeout, misfire, grid across restarts, limit, `at`, retention, admin, hooks, per-schedule isolation, queue seam.
+- `packages/pg-prime-cron/test/live/cron.test.ts` (tier 1, PGlite or `PG_PRIME_TEST_URL`): sync, runs, trigger/pickup, cancel, overlap, timeout, misfire, grid across restarts, limit, `at`, retention, admin, hooks, per-schedule isolation.
 - `packages/pg-prime-cron/test/pg/cron.test.ts` (tier 2, direct and PgBouncer): 5-instance exactly-once, overlap under 3, SIGKILL, pickup by owner, cancel under skip, misfire after downtime and past `endAt`.
 - Run: `pnpm --filter @pg-prime/cron test:live`, `PG_PRIME_TEST_URL=… pnpm --filter @pg-prime/cron test:pg`.
