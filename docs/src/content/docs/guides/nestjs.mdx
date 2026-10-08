@@ -225,7 +225,8 @@ export class FeedController {
 - Every `@Transactional()` in the request joins the request transaction (the default
   propagation).
 - `@RequestTransaction` takes effect only when `request` is set: without it the interceptor does
-  nothing at all. `request: {}` enables the decorator with no settings.
+  nothing at all, and under `rollbackScopeFor` it ignores the decorator too. `request: {}` enables
+  the decorator with no settings.
 
 ### HTTP, RPC and GraphQL
 
@@ -357,7 +358,8 @@ afterAll(() => app.close())
 - Requests are isolated from each other's settings, and a failed request rolls back only itself, so
   a 409 does not break the next one.
 - One request at a time: a second concurrent request throws `CONTEXT_CONCURRENT_SAVEPOINT`. Test
-  real concurrency without a pin.
+  real concurrency without a pin. A streaming route keeps streaming and holds its savepoint until
+  the stream ends or the client hangs up.
 - Code that needs a real `COMMIT` (`NOTIFY`, deferred constraints, a second connection) needs a
   scratch database. The [pin's caveats](/pg-prime/guides/ambient-transactions/#rollback-per-test)
   apply unchanged.

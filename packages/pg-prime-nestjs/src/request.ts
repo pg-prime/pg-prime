@@ -7,7 +7,8 @@ import type {
 } from '@nestjs/common'
 import type { Reflector } from '@nestjs/core'
 import type { Settings, TransactionHost } from '@pg-prime/context'
-import { Observable, from, lastValueFrom, switchMap } from 'rxjs'
+import { Observable, finalize, from, lastValueFrom, switchMap } from 'rxjs'
+import type { Subscription } from 'rxjs'
 
 export type RequestTxMode = 'never' | 'whenSettings' | 'always'
 
@@ -37,25 +38,43 @@ export class RequestInterceptor implements NestInterceptor {
     return from(this.resolve(ctx)).pipe(
       switchMap(({ settings, tx }) => {
         const { host } = this
-        if (!tx && !host.pinned) {
-          return new Observable((sub) => host.run({ settings }, () => next.handle().subscribe(sub)))
+        if (tx) {
+          const label = `${ctx.getClass().name}.${ctx.getHandler().name}`
+          return host.request({ settings, transaction: { retry: false, label } }, () =>
+            lastValueFrom(next.handle(), { defaultValue: undefined }),
+          )
         }
-        const label = `${ctx.getClass().name}.${ctx.getHandler().name}`
-        return host.request({ settings, transaction: tx && { retry: false, label } }, () =>
-          lastValueFrom(next.handle(), { defaultValue: undefined }),
-        )
+        // The scope (under a pin, a savepoint) lasts until the stream ends or is unsubscribed.
+        return new Observable((sub) => {
+          let inner: Subscription | undefined
+          const run = () =>
+            new Promise<void>((resolve, reject) => {
+              if (sub.closed) return resolve()
+              inner = next
+                .handle()
+                .pipe(finalize(resolve))
+                .subscribe({ next: (v) => sub.next(v), error: reject })
+            })
+          host.request({ settings }, run).then(
+            () => sub.complete(),
+            (e: unknown) => sub.error(e),
+          )
+          return () => inner?.unsubscribe()
+        })
       }),
     )
   }
 
   private async resolve(ctx: ExecutionContext): Promise<{ settings: Settings; tx: boolean }> {
-    const settings = (await this.request?.settings?.(ctx)) ?? {}
+    const { request } = this
+    if (!request) return { settings: {}, tx: false }
+    const settings = (await request.settings?.(ctx)) ?? {}
     const mode =
       this.reflector.getAllAndOverride<RequestTxMode | undefined>(MODE, [
         ctx.getHandler(),
         ctx.getClass(),
       ]) ??
-      this.request?.transaction ??
+      request.transaction ??
       'whenSettings'
     const tx =
       typeof mode === 'function'
