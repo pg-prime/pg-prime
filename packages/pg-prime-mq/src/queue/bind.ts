@@ -2,6 +2,7 @@ import type { Entry, SubscriptionDef } from '@pg-prime/events'
 import type { AsyncDisposable_ } from 'pg-prime'
 import type { QueueDef } from '../define.js'
 import type { Core } from '../mq.js'
+import { ASYNC_DISPOSE } from '../util.js'
 import type { QueueHandle } from './handle.js'
 
 export interface BindOptions<E, T> {
@@ -54,6 +55,17 @@ export function bind<E, T>(
       },
       { batchSize: 100, ...run },
     )
-  core.running.add(reader)
-  return reader
+  const close = async (): Promise<void> => {
+    core.running.delete(binding)
+    await reader.close()
+  }
+  const binding = {
+    get active() {
+      return reader.active
+    },
+    close,
+    [ASYNC_DISPOSE]: close,
+  } as unknown as Binding
+  core.running.add(binding)
+  return binding
 }

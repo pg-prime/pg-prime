@@ -61,9 +61,10 @@ function matrix(): [string, Fragment<unknown>][] {
   const out: [string, Fragment<unknown>][] = []
   const guards: Guard[] = [
     { kind: 'token', token: 'tok' },
+    { kind: 'flagged', token: 'tok' },
     { kind: 'expired' },
     { kind: 'blocked' },
-    { kind: 'idle' },
+    { kind: 'idle', queue: 'jobs' },
   ]
   for (const to of ['completed', 'failed', 'cancelled'] as const) {
     for (const guard of guards) {
@@ -157,6 +158,7 @@ async function recorded(): Promise<{ label: string; sql: string }[]> {
   await maintain.maintenanceGate(q, t, 'jobs', 1000)
   await maintain.expireBatch(q, t).catch(() => {})
   await maintain.trimBatch(q, t, 'jobs', 'completed', 10).catch(() => {})
+  await maintain.trimBatch(q, t, 'jobs', 'failed', 10).catch(() => {})
   await maintain.dedupBatch(q, t).catch(() => {})
   await maintain.reconcileGroups(recorder([{ key: 'g' }]).q, t, 'jobs')
   const r = recorder([{ key: 'g' }])

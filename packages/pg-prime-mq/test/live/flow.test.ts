@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { UsageError, sql } from 'pg-prime'
 import { defineQueue, pgMq } from '../../src/index.js'
-import type { Message, OnFail, WorkContext, Worker } from '../../src/index.js'
-import { freshSchema, until, useServer } from '../_db.js'
+import type { FlowRef, Message, OnFail, WorkContext, Worker } from '../../src/index.js'
+import { freshSchema, racing, until, useServer } from '../_db.js'
 
 const server = useServer()
 type P = { name: string; fail?: boolean }
@@ -153,6 +153,22 @@ describe('flows (F1)', () => {
     expect((await s.a.get(root))?.claims).toBe(1)
   })
 
+  it('removing a failed `wait` child releases its parent', async () => {
+    const { mq, a, stop } = setup()
+    const defA = defineQueue<P, string>('a', once)
+    const root = await mq.flow({
+      queue: defA,
+      payload: { name: 'root' },
+      children: [{ queue: defA, payload: { name: 'bad', fail: true } }],
+    })
+    const child = root.children[0] as FlowRef
+    await until(async () => (await a.get(child))?.state === 'failed')
+    expect((await a.get(root))?.state).toBe('blocked')
+    expect(await a.remove(child)).toBe(true)
+    await until(async () => (await a.get(root))?.state === 'completed')
+    await stop()
+  })
+
   it('a deduplicated root inserts nothing; dedup on a child or in spawn is refused', async () => {
     const { db, schema, mq, stop } = setup()
     await stop()
@@ -176,6 +192,28 @@ describe('flows (F1)', () => {
         children: [{ queue: defA, payload: { name: 'c' }, opts: { key: 'x' } as never }],
       }),
     ).rejects.toBeInstanceOf(UsageError)
+  })
+
+  it('a dedup winner that finishes between the two statements: the flow is sent again', async () => {
+    const db = server.db()
+    const schema = freshSchema()
+    const defA = defineQueue<P, string>('a', once)
+    const plain = pgMq({ db, schema }).queue(defA)
+    let raced = false
+    // After the flow's insert, the key's holder completes before its owner is read.
+    const finish = async () => {
+      const [m] = (await plain.claim()) as [Message<P>]
+      await plain.complete(m, 'done')
+      raced = true
+    }
+    const opts = { key: 'k', dedup: 'until-done' as const }
+    const first = await plain.send({ name: 'first' }, opts)
+    const mq = pgMq({ db: racing(db, 'mq.flow', finish, 'after'), schema })
+    const ref = await mq.flow({ queue: defA, payload: { name: 'x' }, opts })
+    expect(raced).toBe(true)
+    expect(ref.deduplicated).toBe(false)
+    expect((await plain.get(ref))?.payload).toStrictEqual({ name: 'x' })
+    expect(ref.id).not.toBe(first.id)
   })
 })
 

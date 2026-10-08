@@ -8,7 +8,7 @@ import type { Core } from '../mq.js'
 import { decodePayload } from '../payload.js'
 import { claim, claimGroups, promote } from '../sql/claim.js'
 import type { ClaimOptions } from '../sql/claim.js'
-import { expire, expiryGate, heartbeat } from '../sql/lease.js'
+import { heartbeat } from '../sql/lease.js'
 import {
   dedupBatch,
   expireBatch,
@@ -19,11 +19,16 @@ import {
 } from '../sql/maintain.js'
 import { holder } from '../sql/read.js'
 import type { MsgRow } from '../sql/read.js'
-import { move } from '../sql/settle.js'
 import { ASYNC_DISPOSE, limiter } from '../util.js'
 import { isDeferral, message, workContext } from './context.js'
 import type { Deferral, Message, Running, WorkContext } from './context.js'
-import { completeMessage, failMessage, finishMessage, settleSafely } from './settle.js'
+import {
+  completeMessage,
+  failMessage,
+  moveMessage,
+  recoverExpired,
+  settleSafely,
+} from './settle.js'
 
 export type Handler<T, R> = (msg: Message<T>, ctx: WorkContext<T, R>) => Promise<R | Deferral>
 
@@ -88,8 +93,9 @@ export function startWorker<T, R>(
   let nextMaint = 0
   let cursor = ''
   let groupsFirst = false
-  // A path that came back empty is skipped until something outside this worker wakes it.
+  // A path that came back empty is skipped until a wake-up, a promotion or `pollMs` passes.
   const dry = { plain: false, grouped: false }
+  let wokeAt = 0
   let beating = false
 
   const onAbort = (): void => void close()
@@ -172,6 +178,9 @@ export function startWorker<T, R>(
     )
   }
 
+  const outcome = (r: SettleOutcome | 'moved' | 'gone' | undefined): SettleOutcome | undefined =>
+    r === 'gone' ? undefined : r === 'moved' ? 'deferred' : r
+
   const runOne = async (e: Entry): Promise<void> => {
     const started = Date.now()
     const { row } = e
@@ -181,16 +190,14 @@ export function startWorker<T, R>(
       payload = await decodePayload(def.payload, row.payload)
     } catch (err) {
       const r = await settleSafely(core, m, () => failMessage(core, def, m, err, { final: true }))
-      return settled(e, r === 'gone' ? undefined : r, started, err)
+      return settled(e, outcome(r), started, err)
     }
     try {
       const value = await handler(message<T, never>(row, payload), workContext(core, def, e))
       if (e.inTx) return settled(e, await afterTx(e, undefined), started)
       if (isDeferral(value)) {
-        const ok = await settleSafely(core, m, () =>
-          move(core.db, t, row.id, e.token, value.deferral),
-        )
-        if (ok === true) return settled(e, 'deferred', started)
+        const r = await settleSafely(core, m, () => moveMessage(core, m, value.deferral))
+        if (r !== undefined) return settled(e, outcome(r), started)
         // waitForChildren refused: a `fail` child failed (fail now), or nothing is pending (run again).
         const h = value.deferral.kind === 'wait' ? await holder(core.db, t, row.id) : undefined
         if (h?.state === 'active' && h.token === e.token) {
@@ -198,9 +205,8 @@ export function startWorker<T, R>(
             ? await failMessage(core, def, m, new NonRetryableError('a child failed'), {
                 final: true,
               })
-            : (await move(core.db, t, row.id, e.token, { kind: 'release' })) &&
-              ('deferred' as const)
-          return settled(e, r || undefined, started)
+            : await moveMessage(core, m, { kind: 'release' })
+          return settled(e, outcome(r), started)
         }
         return settled(e, undefined, started)
       }
@@ -209,12 +215,12 @@ export function startWorker<T, R>(
     } catch (err) {
       if (e.inTx) return settled(e, await afterTx(e, err), started, err)
       if (e.lost) return settled(e, undefined, started, err)
-      const r = await settleSafely(core, m, (): Promise<SettleOutcome | false | undefined> =>
+      const r = await settleSafely(core, m, () =>
         e.shutdown && !e.cancelled
-          ? move(core.db, t, row.id, e.token, { kind: 'release' }).then((ok) => ok && 'deferred')
+          ? moveMessage(core, m, { kind: 'release' })
           : failMessage(core, def, m, err, { cancelled: e.cancelled }),
       )
-      settled(e, r === 'gone' || r === false ? undefined : r, started, err)
+      settled(e, outcome(r), started, err)
     }
   }
 
@@ -267,11 +273,8 @@ export function startWorker<T, R>(
       if (grouped) {
         const scan = opts.group?.scan ?? 4 * n
         const g = { scan, concurrency: opts.group?.concurrency, rate: opts.group?.rate }
-        let r = await claimGroups(ctl, t, claimOptions(n), { ...g, after: cursor })
-        if (r.rows.length === 0 && r.scanned < scan && cursor !== '') {
-          r = await claimGroups(ctl, t, claimOptions(n), { ...g, after: '' })
-        }
-        cursor = r.rows.length > 0 || r.scanned >= scan ? r.cursor : ''
+        const r = await claimGroups(ctl, t, claimOptions(n), { ...g, after: cursor })
+        cursor = r.cursor
         rows = r.rows
         dry.grouped = r.scanned === 0
       } else {
@@ -291,21 +294,7 @@ export function startWorker<T, R>(
   }
 
   const expireScan = async (): Promise<void> => {
-    if (!(await expiryGate(ctl, t, queue, expireScanMs))) return
-    const r = await expire(ctl, t, queue)
-    for (const id of r.exhausted) {
-      await finishMessage(
-        core,
-        { id, queue },
-        'failed',
-        { kind: 'expired' },
-        { error: 'lease-expired' },
-      )
-    }
-    if (r.requeued.length + r.exhausted.length > 0) {
-      promoteAt = 0
-      hooks.emit('onLeaseExpired', { queue, ids: [...r.requeued, ...r.exhausted] })
-    }
+    if ((await recoverExpired(core, ctl, queue, expireScanMs)) > 0) promoteAt = 0
   }
 
   const maintain = async (): Promise<void> => {
@@ -347,7 +336,9 @@ export function startWorker<T, R>(
       try {
         await core.ready(def)
         const now = Date.now()
-        let woken: boolean = reason !== 'slot'
+        // A busy worker never waits on the waker, so `pollMs` stands in for its wake-ups.
+        let woken = reason !== 'slot' || now - wokeAt >= pollMs
+        if (woken) wokeAt = now
         if (woken || now >= promoteAt) {
           const p = await promote(ctl, t, queue)
           promoteAt = p.promoted === 1000 ? now : now + (p.nextInMs ?? Infinity)
@@ -430,5 +421,6 @@ export function startWorker<T, R>(
     [ASYNC_DISPOSE]: () => close(),
   } as unknown as Worker
   core.running.add(worker)
+  if (opts.signal?.aborted === true) void close()
   return worker
 }

@@ -181,7 +181,7 @@ export async function resolveRemoved(
           sql`select ${child}::bigint as id, ${parent}::bigint as parent,
             'cancelled'::text as state, 'ignore'::text as on_fail`,
         ],
-        ...depsCtes(t, null),
+        ...depsCtes(t, null, true),
       ],
       (refs) => sql`select ${refs} as fx`,
     ),

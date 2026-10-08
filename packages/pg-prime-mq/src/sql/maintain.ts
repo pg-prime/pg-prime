@@ -1,5 +1,5 @@
 import { sql } from 'pg-prime'
-import { ms, one, run } from './tables.js'
+import { ms, one, raw, run } from './tables.js'
 import type { Q, Tables } from './tables.js'
 
 /** One maintainer per queue per interval: a CAS on `queues.maint_at`. */
@@ -43,20 +43,21 @@ export async function expireBatch(q: Q, t: Tables): Promise<number> {
   return r['n'] as number
 }
 
-/** S10 by count: one batch of the `state` messages beyond the newest `keep`. */
+/** S10 by count: a batch of `kind` rows beyond the newest `keep`; `failed` counts `cancelled`. */
 export async function trimBatch(
   q: Q,
   t: Tables,
   queue: string,
-  state: 'completed' | 'failed',
+  kind: 'completed' | 'failed',
   keep: number,
 ): Promise<number> {
+  const states = raw(kind === 'failed' ? `'failed', 'cancelled'` : `'completed'`)
   const r = await one(
     q,
     'retention-count',
     sql`with del as (
         delete from ${t.messages} where id in (
-          select id from ${t.messages} where queue = ${queue} and state = ${state}::${t.msgState}
+          select id from ${t.messages} where queue = ${queue} and state in (${states})
           order by finished_at desc offset ${keep}::int limit 1000 for update skip locked)
         returning 1
       ) select count(*)::int as n from del`,

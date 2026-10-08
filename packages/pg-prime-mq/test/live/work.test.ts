@@ -10,7 +10,7 @@ import {
   pgMq,
 } from '../../src/index.js'
 import type { Message, MqHooks, QueueDef, SettleOutcome } from '../../src/index.js'
-import { freshSchema, sleep, until, useServer } from '../_db.js'
+import { freshSchema, racing, sleep, until, useServer } from '../_db.js'
 
 const server = useServer()
 type P = { n: number }
@@ -162,6 +162,17 @@ describe('leases', () => {
     await expect(q.fail(again, new Error('late'))).rejects.toBeInstanceOf(LeaseLostError)
   })
 
+  it('a manual claim recovers expired leases first', async () => {
+    const { db, schema, q } = setup({ retry: { baseDelayMs: 0 } })
+    const ref = await q.send({ n: 1 })
+    await q.claim({ leaseMs: 20 })
+    await sleep(40)
+    // As if the last scan were long ago.
+    await db.sql`update ${sql.ident(schema, 'queues')} set expire_at = '-infinity'`.execute()
+    const [m] = await q.claim()
+    expect([m?.id, m?.attempts]).toStrictEqual([ref.id, 1])
+  })
+
   it('progress is stored while the lease is held', async () => {
     const { q } = setup()
     const ref = await q.send({ n: 1 })
@@ -234,6 +245,10 @@ describe('transactions', () => {
     await expect(
       db.transaction((tx) => capped.complete(m, undefined, { tx })),
     ).rejects.toBeInstanceOf(UsageError)
+    await expect(
+      db.transaction((tx) => capped.fail(m, new Error('x'), { tx })),
+    ).rejects.toBeInstanceOf(UsageError)
+    expect((await capped.get(m.id))?.state).toBe('active')
     let caught: unknown
     const w = capped.work(async (_x, ctx) => {
       try {
@@ -319,6 +334,49 @@ describe('admin', () => {
     await until(async () => (await q.get(active))?.state === 'cancelled')
     await w.close()
     expect(reason).toBeInstanceOf(CancelledError)
+  })
+
+  it('a cancel flagged during a short attempt holds when it fails or defers', async () => {
+    const { q } = setup()
+    const failing = await q.send({ n: 1 })
+    const deferring = await q.send({ n: 2 })
+    let open = (): void => {}
+    const flagged = new Promise<void>((r) => (open = r))
+    let runs = 0
+    const w = q.work(
+      async (m, ctx) => {
+        runs++
+        await flagged
+        if (m.payload.n === 1) throw new Error('boom')
+        return ctx.defer({ delayMs: 0 })
+      },
+      { ...fast, concurrency: 2 },
+    )
+    await until(async () => (await q.counts()).active === 2)
+    await q.cancel(failing)
+    await q.cancel(deferring)
+    open()
+    await until(async () => (await q.counts()).cancelled === 2)
+    await w.close()
+    expect(runs).toBe(2)
+  })
+
+  it('cancel catches a message that left active before it was flagged', async () => {
+    const { db, schema, q } = setup({ retry: { baseDelayMs: 0 } })
+    const ref = await q.send({ n: 1 })
+    const [m] = (await q.claim()) as [Message<P>]
+    const jobs = defineQueue<P>('jobs', { retry: { baseDelayMs: 0 } })
+    const late = pgMq({ db: racing(db, 'mq.cancel', () => q.fail(m, 'x'), 'before'), schema })
+    await late.queue(jobs).cancel(ref)
+    expect((await q.get(ref))?.state).toBe('cancelled')
+  })
+
+  it('cancel never reaches a message of another queue', async () => {
+    const { mq, q } = setup()
+    const other = mq.queue(defineQueue<P>('other'))
+    const ref = await other.send({ n: 1 })
+    await q.cancel(ref.id)
+    expect((await other.get(ref))?.state).toBe('ready')
   })
 
   it('retry: finished → ready, clearing expire_at, error and cancel (T15)', async () => {
@@ -418,6 +476,16 @@ describe('retention', () => {
     expect(n).toBe(2)
   })
 
+  it('a failed count also trims cancelled messages', async () => {
+    const { mq } = setup()
+    const q = mq.queue(defineQueue<P>('few', { keep: { failed: { count: 1 } } }))
+    for (const n of [1, 2, 3]) await q.cancel(await q.send({ n }))
+    const w = q.work(async () => {}, fast)
+    await until(async () => (await q.counts()).cancelled === 1)
+    await w.close()
+    expect((await q.list({ state: 'cancelled' })).map((m) => m.payload.n)).toStrictEqual([3])
+  })
+
   it('retry clears expire_at, so retention never deletes a re-queued message', async () => {
     const { db, schema, mq } = setup()
     const q = mq.queue(
@@ -452,6 +520,12 @@ describe('watch and result', () => {
     await expect(q.result(await q.send({ n: 1 }), { pollMs: 20, timeoutMs: 50 })).rejects.toThrow(
       /timed out/,
     )
+    const reason = new Error('stopped')
+    const signal = AbortSignal.abort(reason)
+    const pending = await q.send({ n: 1 })
+    const t0 = Date.now()
+    await expect(q.result(pending, { pollMs: 20, timeoutMs: 2000, signal })).rejects.toBe(reason)
+    expect(Date.now() - t0).toBeLessThan(1000)
   })
 
   it('watch()/result() need watch: true, which needs completed messages kept', async () => {
@@ -481,6 +555,31 @@ describe('worker lifecycle and hooks', () => {
     expect([m?.state, m?.attempts, m?.claims]).toStrictEqual(['ready', 0, 0])
   })
 
+  it('an idle worker with nothing delayed sleeps until pollMs', async () => {
+    const { db, schema } = setup()
+    let promotes = 0
+    const counted = new Proxy(db, {
+      get(o, k) {
+        if (k === 'withOptions')
+          return (opts: { label?: string }) => (
+            opts.label === 'mq.promote' && promotes++,
+            o.withOptions(opts)
+          )
+        const v = Reflect.get(o, k)
+        return typeof v === 'function' ? v.bind(o) : v
+      },
+    })
+    const idle = pgMq({ db: counted, schema }).queue(defineQueue<P>('idle'))
+    const w = idle.work(async () => {}, {
+      pollMs: 5000,
+      expireScanMs: 60_000,
+      maintenanceMs: 60_000,
+    })
+    await sleep(300)
+    await w.close()
+    expect(promotes).toBeLessThanOrEqual(3)
+  })
+
   it('a throwing hook is disabled for that call and reported as hook-failed', async () => {
     const internal: string[] = []
     const { q } = setup(
@@ -496,14 +595,17 @@ describe('worker lifecycle and hooks', () => {
     expect(internal).toStrictEqual(['hook-failed'])
   })
 
-  it('an abort signal closes the worker', async () => {
+  it('an abort signal closes the worker, also one aborted before work()', async () => {
     const { q } = setup()
     const stop = new AbortController()
     const w = q.work(async () => 1, { ...fast, signal: stop.signal })
+    await sleep(40)
     stop.abort()
-    await w.close()
+    const early = q.work(async () => 1, { ...fast, signal: AbortSignal.abort() })
+    await sleep(40)
     await q.send({ n: 1 })
     await sleep(60)
-    expect((await q.counts()).ready).toBe(1)
+    expect([(await q.counts()).ready, w.running, early.running]).toStrictEqual([1, 0, 0])
+    await Promise.all([w.close(), early.close()])
   })
 })

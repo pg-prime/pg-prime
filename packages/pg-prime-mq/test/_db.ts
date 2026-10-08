@@ -63,6 +63,39 @@ export async function until(check: () => boolean | Promise<boolean>, ms = 10_000
   }
 }
 
+/** `db`, except that `fn` runs once, right before or after the first statement labelled `label`. */
+export function racing(
+  db: Db,
+  label: string,
+  fn: () => Promise<unknown>,
+  when: 'before' | 'after',
+): Db {
+  let done = false
+  return new Proxy(db, {
+    get(o, k) {
+      if (k !== 'withOptions') {
+        const v = Reflect.get(o, k)
+        return typeof v === 'function' ? v.bind(o) : v
+      }
+      return (opts: { label?: string }) => {
+        const q = o.withOptions(opts)
+        if (opts.label !== label || done) return q
+        done = true
+        return {
+          sql: (s: TemplateStringsArray, ...v: unknown[]) => ({
+            execute: async () => {
+              if (when === 'before') await fn()
+              const rows = await q.sql(s, ...v).execute()
+              if (when === 'after') await fn()
+              return rows
+            },
+          }),
+        }
+      }
+    },
+  })
+}
+
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 export function p95(xs: readonly number[]): number {

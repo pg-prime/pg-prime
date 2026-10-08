@@ -5,14 +5,16 @@ import type { Cte, F, Q, Tables } from './tables.js'
 export type Terminal = 'completed' | 'failed' | 'cancelled'
 
 /**
- * Who may finish the message: its owner (`token`), the lease-expiry scan (`expired`), a flow
- * cascade on a waiting parent (`blocked`), or a cancel of a message nobody runs (`idle`).
+ * Who may finish the message: its owner (`token`), its owner once `cancel()` flagged it
+ * (`flagged`), the lease-expiry scan (`expired`), a flow cascade on a waiting parent (`blocked`),
+ * or a cancel of a message nobody runs (`idle`).
  */
 export type Guard =
   | { readonly kind: 'token'; readonly token: string }
+  | { readonly kind: 'flagged'; readonly token: string }
   | { readonly kind: 'expired' }
   | { readonly kind: 'blocked' }
-  | { readonly kind: 'idle' }
+  | { readonly kind: 'idle'; readonly queue: string }
 
 export interface FinishArgs {
   readonly id: bigint
@@ -32,18 +34,20 @@ export interface Settled {
   readonly cascadeTo: bigint | null
 }
 
-const fromActive = (g: Guard): boolean => g.kind === 'token' || g.kind === 'expired'
+const fromActive = (g: Guard): boolean => g.kind !== 'blocked' && g.kind !== 'idle'
 
 function guardSql(g: Guard): F {
   switch (g.kind) {
     case 'token':
       return sql`m.token = ${g.token} and m.state = 'active'`
+    case 'flagged':
+      return sql`m.token = ${g.token} and m.state = 'active' and m.cancel`
     case 'expired':
       return sql`m.state = 'active' and m.lease_until < now()`
     case 'blocked':
       return sql`m.state = 'blocked'`
     case 'idle':
-      return sql`m.state in ('ready', 'delayed', 'blocked')`
+      return sql`m.state in ('ready', 'delayed', 'blocked') and m.queue = ${g.queue}`
   }
 }
 
@@ -53,8 +57,9 @@ const RETURNING = sql`m.id, m.queue, m.state, m.group_key, m.parent, m.dedup_key
  * `[deps]`: a settled child resolves its `deps` row and, unless it failed under `wait`, its
  * parent: a completed or ignored child decrements `pending_deps` (the last one releases a blocked
  * parent once, by EvalPlanQual on the parent row); a `fail` child flags `child_failed`.
+ * `removed`: a removed child also resolves a `failed` row, which its parent still counts.
  */
-export function depsCtes(t: Tables, result: string | null): (Cte | false)[] {
+export function depsCtes(t: Tables, result: string | null, removed = false): (Cte | false)[] {
   const release = sql`dp.status <> 'failed' and p.pending_deps = 1 and p.state = 'blocked'`
   return [
     [
@@ -63,7 +68,8 @@ export function depsCtes(t: Tables, result: string | null): (Cte | false)[] {
           status = (case when done.state = 'completed' then 'completed'
             when done.on_fail = 'ignore' then 'ignored' else 'failed' end)::${t.depStatus},
           value = ${result}::jsonb
-        from done where d.parent = done.parent and d.child = done.id and d.status = 'pending'
+        from done where d.parent = done.parent and d.child = done.id
+          and d.status ${removed ? sql`in ('pending', 'failed')` : sql`= 'pending'`}
         returning d.parent, d.status, done.on_fail`,
     ],
     [
@@ -192,9 +198,12 @@ export type Move =
   /** S14: `ctx.waitForChildren`; refused while a `fail` child has failed. */
   | { readonly kind: 'wait' }
 
-/** S8r, S12, S13, S14: token-guarded moves out of `active`, each with its counter decrements. */
+/**
+ * S8r, S12, S13, S14: token-guarded moves out of `active`, each with its counter decrements. A
+ * message flagged by `cancel()` is never moved: its owner finishes it `cancelled` instead.
+ */
 export function moveSql(t: Tables, id: bigint, token: string, mv: Move): F {
-  const guard = sql`m.id = ${id}::bigint and m.token = ${token} and m.state = 'active'`
+  const guard = sql`m.id = ${id}::bigint and m.token = ${token} and m.state = 'active' and not m.cancel`
   const fresh = sql`order_key = sign(m.order_key) * ${t.next}`
   let set: F
   switch (mv.kind) {

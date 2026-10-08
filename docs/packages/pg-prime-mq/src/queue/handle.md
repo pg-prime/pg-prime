@@ -11,18 +11,19 @@
 - `queueHandle(core, def)` — internal constructor.
 
 ## Flow
-1. `sendMany` encodes each item, keeps the first of duplicate dedup keys and splits by dedup mode (packages/pg-prime-mq/src/queue/handle.ts:108).
+1. `sendMany` encodes each item, keeps the first of duplicate dedup keys and splits by dedup mode (packages/pg-prime-mq/src/queue/handle.ts:115).
 2. Each statement's deduplicated rows take their owner from the debounce `d` row or a fresh `dedup` read; a vanished winner is sent again (≤ 3 rounds).
 3. Two statements without `{ tx }` share one transaction.
-4. `claim` promotes, then S3/S4, then S5 for the rest; undecodable payloads are failed (packages/pg-prime-mq/src/queue/handle.ts:177).
-5. `result` opens a waker on the watch channel first, then re-reads the row on every wake (packages/pg-prime-mq/src/queue/handle.ts:260).
-6. `cancel` finishes an idle message (`guard: idle`), else flags an active one (packages/pg-prime-mq/src/queue/handle.ts:312).
-7. `remove` locks the tree without waiting, refuses active members, deletes, and resolves the root's dependency as ignored (packages/pg-prime-mq/src/queue/handle.ts:341).
+4. `claim` recovers expired leases (gated, every 15 s), promotes, then S3/S4, then S5 for the rest from the handle's own round-robin cursor; undecodable payloads are failed (packages/pg-prime-mq/src/queue/handle.ts:184).
+5. `result` opens a waker on the watch channel first, then re-reads the row on every wake (packages/pg-prime-mq/src/queue/handle.ts:261).
+6. `cancel` finishes an idle message of this queue (`guard: idle`), else flags an active one, and tries again while the message moved between the two (packages/pg-prime-mq/src/queue/handle.ts:314).
+7. `remove` locks the tree without waiting, refuses active members, deletes, and resolves the root's dependency as ignored, also a failed one (its parent still counted it) (packages/pg-prime-mq/src/queue/handle.ts:344).
 
 ## Gotchas
 - `sendMany` takes `{ payload, opts }` items (plan 17 §7.2 also allowed bare payloads, ambiguous at runtime).
 - `retry({ ids })` refuses finished parents with `pending`/`failed` children (a stale read only over-refuses).
 - `fail` re-reads the row through `tx` when given (parent, retry policy); `complete` needs only the token.
+- `complete`/`fail` with `{ tx }` are refused on a queue with a global `concurrency` (`assertTxSettle`).
 - `watch()` needs a LISTEN connection; behind a transaction pooler it is refused, `result()` polls.
 
 ## Tests

@@ -6,7 +6,7 @@ import { sql } from 'pg-prime'
 import type { Db } from 'pg-prime'
 import { requiresConcurrency } from '@pg-prime/testing'
 import { defineQueue, pgMq } from '../../src/index.js'
-import type { Mq, Worker } from '../../src/index.js'
+import type { FlowRef, Mq, Worker } from '../../src/index.js'
 import { claimGroups, claimGroupsSql } from '../../src/sql/claim.js'
 import { reconcileGroups, reconcileQueue } from '../../src/sql/maintain.js'
 import { tables } from '../../src/sql/tables.js'
@@ -294,6 +294,45 @@ describe('the §10 tier-2 table', () => {
       expect(new Set(refs.map((r) => r.id))).toStrictEqual(new Set([winners[0]?.id]))
     }
     expect((await fl[0]!.mq.queue(def).counts()).ready).toBe(3)
+  }, 60_000)
+
+  test('a flow racing the completion of its dedup winner never returns id 0', async () => {
+    const schema = freshSchema()
+    const def = defineQueue<P>('flows')
+    const [a, b, c] = fleet(schema, 3, 3)
+    await a!.mq.start()
+    const w = c!.mq.queue(def).work(async () => {}, { concurrency: 4, pollMs: 5 })
+    const refs: FlowRef[] = []
+    const opts = { key: 'k', dedup: 'until-done' } as const
+    const end = Date.now() + 3000
+    await Promise.all(
+      [a, b, a, b].map(async (x) => {
+        while (Date.now() < end)
+          refs.push(await x!.mq.flow({ queue: def, payload: { n: 0 }, opts }))
+      }),
+    )
+    await w.close()
+    expect(refs.filter((r) => r.id === 0n)).toStrictEqual([])
+    expect(refs.some((r) => r.deduplicated) && refs.some((r) => !r.deduplicated)).toBe(true)
+  }, 30_000)
+
+  test('a cancel always lands while 8 workers keep deferring and retrying the message', async () => {
+    const schema = freshSchema()
+    const def = defineQueue<P>('cancels', { retry: { maxAttempts: 1_000_000, baseDelayMs: 0 } })
+    const [a, b] = fleet(schema, 2, 4)
+    const q = a!.mq.queue(def)
+    const refs = await q.sendMany(Array.from({ length: 200 }, (_, n) => ({ payload: { n } })))
+    const w = b!.mq.queue(def).work(
+      async (m, ctx) => {
+        if (m.payload.n % 2 === 0) return ctx.defer({ delayMs: 0 })
+        throw new Error('again')
+      },
+      { concurrency: 8, pollMs: 20 },
+    )
+    await sleep(200)
+    await Promise.all(refs.map((r) => q.cancel(r)))
+    await until(async () => (await q.counts()).cancelled === 200, 20_000)
+    await w.close()
   }, 60_000)
 
   test('an active parent racing a failing fail-child always ends failed, never blocked (1 000 runs)', async () => {

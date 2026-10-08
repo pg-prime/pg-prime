@@ -3,10 +3,11 @@ import type { QueueDef } from '../define.js'
 import { NonRetryableError } from '../errors.js'
 import type { Core } from '../mq.js'
 import { MAX_PAYLOAD, toJson } from '../payload.js'
+import { expire, expiryGate } from '../sql/lease.js'
 import { holder } from '../sql/read.js'
 import type { MsgRow } from '../sql/read.js'
 import { finish, lockAncestors, move } from '../sql/settle.js'
-import type { Guard, Settled } from '../sql/settle.js'
+import type { Guard, Move, Settled } from '../sql/settle.js'
 import { backoffMs, sleep } from '../util.js'
 
 type Held = Pick<MsgRow, 'id' | 'queue' | 'parent' | 'onFail' | 'attempts' | 'retry'> & {
@@ -128,13 +129,47 @@ export async function failMessage(
     )
     return r && 'failed'
   }
-  const ok = await move(o.tx ?? core.db, core.t, m.id, m.token, {
-    kind: 'retry',
-    delayMs: backoffMs(m.retry, attempt),
-    error,
-    stack,
+  const mv = { kind: 'retry', delayMs: backoffMs(m.retry, attempt), error, stack } as const
+  const r = await moveMessage(core, m, mv, o.tx)
+  return r === 'moved' ? 'retry' : r
+}
+
+/** A move out of `active`, or `cancelled` when `cancel()` flagged the message meanwhile. */
+export async function moveMessage(
+  core: Core,
+  m: Held,
+  mv: Move,
+  tx?: Queryable<any>,
+): Promise<'moved' | 'cancelled' | undefined> {
+  if (await move(tx ?? core.db, core.t, m.id, m.token, mv)) return 'moved'
+  const guard = { kind: 'flagged', token: m.token } as const
+  const r = await finishMessage(core, m, 'cancelled', guard, {
+    error: 'cancelled',
+    ...(tx && { tx }),
   })
-  return ok ? 'retry' : undefined
+  return r && 'cancelled'
+}
+
+/** S9 at most once per queue per `everyMs`: re-queues or fails expired leases; returns how many. */
+export async function recoverExpired(
+  core: Core,
+  q: Queryable<any>,
+  queue: string,
+  everyMs: number,
+): Promise<number> {
+  if (!(await expiryGate(q, core.t, queue, everyMs))) return 0
+  const r = await expire(q, core.t, queue)
+  for (const id of r.exhausted)
+    await finishMessage(
+      core,
+      { id, queue },
+      'failed',
+      { kind: 'expired' },
+      { error: 'lease-expired' },
+    )
+  const ids = [...r.requeued, ...r.exhausted]
+  if (ids.length > 0) core.hooks.emit('onLeaseExpired', { queue, ids })
+  return ids.length
 }
 
 /**

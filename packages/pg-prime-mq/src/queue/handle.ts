@@ -28,7 +28,7 @@ import { assertTxSettle, message } from './context.js'
 import type { Message } from './context.js'
 import { newRow } from './flow.js'
 import type { MessageRef, SendOptions } from './flow.js'
-import { completeMessage, failMessage, finishMessage } from './settle.js'
+import { completeMessage, failMessage, finishMessage, recoverExpired } from './settle.js'
 import { startWorker } from './worker.js'
 import type { Handler, Worker, WorkerOptions } from './worker.js'
 
@@ -42,7 +42,12 @@ export interface QueueHandle<T, R> {
     opts?: { tx?: Queryable<any> },
   ): Promise<MessageRef[]>
   work(handler: Handler<T, R>, opts?: WorkerOptions): Worker
-  /** Manual consumption: settle each with `complete`, `fail` or `extend` before its lease ends. */
+  /**
+   * Manual consumption: settle each with `complete`, `fail` or `extend` before its lease ends.
+   * Expired leases are recovered first, at most once per 15 s per queue. Groups are served
+   * round-robin, probing at most `4 × limit` per call: an empty result can mean only paused or
+   * full groups were probed, and the next call goes on after them.
+   */
   claim(opts?: { token?: string; leaseMs?: number; limit?: number }): Promise<Message<T>[]>
   complete(m: Message<T>, result: R, opts?: { tx?: Queryable<any> }): Promise<void>
   fail(m: Message<T>, err: unknown, opts?: { tx?: Queryable<any>; final?: boolean }): Promise<void>
@@ -104,6 +109,8 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
     return { ...r, token: token(m) }
   }
   const ready = (): Promise<void> => core.ready(def)
+  // Manual claims' round-robin position over groups, as a worker keeps its own.
+  let cursor = ''
 
   const sendMany: QueueHandle<T, R>['sendMany'] = async (items, opts = {}) => {
     const { tx } = opts
@@ -176,6 +183,7 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
 
     async claim(opts = {}) {
       await ready()
+      await recoverExpired(core, core.db, name, 15_000)
       await promote(core.db, t, name)
       const o = {
         queue: name,
@@ -187,18 +195,10 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
       }
       const rows = await claim(core.db, t, o)
       if (rows.length < o.n) {
-        const g = await claimGroups(
-          core.db,
-          t,
-          { ...o, n: o.n - rows.length },
-          {
-            after: '',
-            scan: 4 * o.n,
-            concurrency: undefined,
-            rate: undefined,
-          },
-        )
-        rows.push(...g.rows)
+        const g = { after: cursor, scan: 4 * o.n, concurrency: undefined, rate: undefined }
+        const r = await claimGroups(core.db, t, { ...o, n: o.n - rows.length }, g)
+        cursor = r.cursor
+        rows.push(...r.rows)
       }
       const out: Message<T>[] = []
       for (const r of rows) {
@@ -225,6 +225,7 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
       if (r === undefined) throw lost(m)
     },
     async fail(m, err, opts = {}) {
+      if (opts.tx !== undefined) assertTxSettle(def)
       const r = await failMessage(core, def, await held(m, opts.tx ?? core.db), err, {
         ...(opts.final === undefined ? {} : { final: opts.final }),
         ...(opts.tx === undefined ? {} : { tx: opts.tx }),
@@ -265,6 +266,7 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
         opts.timeoutMs === undefined ? undefined : setTimeout(() => stop.abort(), opts.timeoutMs)
       const onAbort = (): void => stop.abort()
       opts.signal?.addEventListener('abort', onAbort, { once: true })
+      if (opts.signal?.aborted === true) stop.abort()
       // Subscribe first, then read: a fast completion cannot slip between the two.
       const w = waker(core.db, engineChannel(t.schema, 'q-watch', name), {
         pollMs: opts.pollMs ?? 5000,
@@ -312,15 +314,16 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
     async cancel(ref, reason) {
       await ready()
       const id = idOf(ref)
-      const error = reason ?? 'cancelled'
-      const r = await finishMessage(
-        core,
-        { id, queue: name },
-        'cancelled',
-        { kind: 'idle' },
-        { error },
-      )
-      if (r === undefined) await flagCancel(core.db, t, name, id, reason ?? null)
+      const idle = { kind: 'idle', queue: name } as const
+      // A message that moves between idle and active meanwhile is caught by the next pass.
+      for (;;) {
+        const r = await finishMessage(core, { id, queue: name }, 'cancelled', idle, {
+          error: reason ?? 'cancelled',
+        })
+        if (r !== undefined || (await flagCancel(core.db, t, name, id, reason ?? null))) return
+        const s = (await get(core.db, t, name, { id }))?.state
+        if (s !== 'ready' && s !== 'delayed' && s !== 'blocked' && s !== 'active') return
+      }
     },
     async retry(sel) {
       await ready()
