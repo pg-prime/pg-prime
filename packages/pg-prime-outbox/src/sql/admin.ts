@@ -31,9 +31,9 @@ export async function listParked<T>(
   return rows.map((r) => {
     const error = r['error'] as string | null
     try {
-      return { ...decode(r), error }
+      return { ...decode(r), error, decoded: true as const }
     } catch {
-      return { ...decode(r, true), error }
+      return { ...decode(r, true), error, decoded: false as const }
     }
   })
 }

@@ -25,9 +25,13 @@ export interface OutboxRecord<T> {
   readonly createdAt: Date
 }
 
-export interface ParkedRecord<T> extends OutboxRecord<T> {
+/** `decoded: false` when the codec rejected the stored payload; `payload` is then the raw JSON. */
+export type ParkedRecord<T> = Omit<OutboxRecord<T>, 'payload'> & {
   readonly error: string | null
-}
+} & (
+    | { readonly decoded: true; readonly payload: T }
+    | { readonly decoded: false; readonly payload: unknown }
+  )
 
 export interface DeliveryContext {
   readonly signal: AbortSignal

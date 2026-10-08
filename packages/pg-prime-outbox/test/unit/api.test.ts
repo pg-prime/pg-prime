@@ -2,7 +2,13 @@ import { createMockPool } from '@pg-prime/testing'
 import { pgPrime } from 'pg-prime'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import { NotStartedError, defineOutbox, functionSink, pgOutbox } from '../../src/index.js'
-import type { OutboxRecord, OutboxTopic, PayloadOf, WriteResult } from '../../src/index.js'
+import type {
+  OutboxRecord,
+  OutboxTopic,
+  ParkedRecord,
+  PayloadOf,
+  WriteResult,
+} from '../../src/index.js'
 import { schema } from '../support.js'
 
 const orders = defineOutbox<{ id: string }>('orders')
@@ -25,6 +31,12 @@ describe('registry', () => {
     expect(Object.keys(outbox.topics)).toStrictEqual(['orders', 'audit'])
     expect(outbox.topic(orders)).toBe(outbox.topics.orders)
     await db.end()
+  })
+
+  it('a parked payload is T only once decoded', () => {
+    const p = {} as ParkedRecord<number>
+    expectTypeOf(p.payload).toEqualTypeOf<unknown>()
+    if (p.decoded) expectTypeOf(p.payload).toEqualTypeOf<number>()
   })
 
   it('functionSink is typed by the topic', () => {

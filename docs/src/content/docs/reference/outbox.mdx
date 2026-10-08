@@ -247,12 +247,16 @@ interface OutboxRecord<T> {
 
 {/* docs: signature */}
 ```ts
-interface ParkedRecord<T> extends OutboxRecord<T> {
+type ParkedRecord<T> = Omit<OutboxRecord<T>, 'payload'> & {
   readonly error: string | null
-}
+} & (
+    | { readonly decoded: true; readonly payload: T }
+    | { readonly decoded: false; readonly payload: unknown }
+  )
 ```
 
-A `payload` the `codec` cannot decode is the stored JSON.
+A `payload` the `codec` cannot decode is the stored JSON, with `decoded: false`; check `decoded`
+before treating `payload` as `T`.
 
 ### `OutboxSink`
 

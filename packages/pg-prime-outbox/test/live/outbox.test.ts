@@ -290,7 +290,7 @@ describe('relay', () => {
     await sleep(100)
     expect(got.map((r) => r.payload).sort()).toStrictEqual([1, 4])
     const parked = await topic.parked()
-    expect(parked.map((r) => [r.payload, r.attempts])).toStrictEqual([[2, 1]])
+    expect(parked.map((r) => [r.payload, r.attempts, r.decoded])).toStrictEqual([[2, 1, false]])
     expect(parked[0]!.error).toMatch(/old shape/)
     expect(await topic.discard([parked[0]!.id])).toBe(1)
     await until(() => got.length === 3)

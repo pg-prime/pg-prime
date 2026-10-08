@@ -6,7 +6,7 @@ The topic's operator statements: create, list parked, replay, discard, pause/res
 ## Public API
 Internal, behind `OutboxTopic`:
 - `createTopic(ctx)` → stored partition count (`packages/pg-prime-outbox/src/sql/admin.ts:5`).
-- `listParked(ctx, limit, after)` → `ParkedRecord[]` (`:22`).
+- `listParked(ctx, limit, after)` → `ParkedRecord[]` (`:22`); a row the codec rejects comes back raw with `decoded: false`.
 - `replay(ctx, ids)`, `discard(ctx, ids)` → affected count (`:42`, `:61`).
 - `setPaused(ctx, paused)` (`:79`), `stats(ctx)` → `OutboxStats` (`:89`).
 
