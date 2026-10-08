@@ -1,0 +1,58 @@
+{
+  "name": "@pg-prime/mq",
+  "version": "0.1.0",
+  "description": "Work queues on PostgreSQL for pg-prime: leases, retries, priorities, groups, flows and topic bindings. Pre-alpha — the API will change.",
+  "keywords": [
+    "job-queue",
+    "mq",
+    "pg-prime",
+    "postgres",
+    "postgresql",
+    "queue",
+    "skip-locked"
+  ],
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-prime/pg-prime.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "node ../../tools/build-package.mjs",
+    "clean": "node ../../tools/build-package.mjs --clean",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --project unit",
+    "test:live": "vitest run --project unit --project live",
+    "test:pg": "vitest run"
+  },
+  "dependencies": {
+    "@pg-prime/events": "workspace:^"
+  },
+  "devDependencies": {
+    "@pg-prime/testing": "workspace:*",
+    "pg-prime": "workspace:*",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "pg-prime": ">=0.2.0"
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}

@@ -16,7 +16,11 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.7",
+    "@pg-prime/cron": "workspace:*",
+    "@pg-prime/events": "workspace:*",
     "@pg-prime/kit": "workspace:*",
+    "@pg-prime/mq": "workspace:*",
+    "@pg-prime/outbox": "workspace:*",
     "@pg-prime/testing": "workspace:*",
     "@types/pg": "^8.21.0",
     "pg": "^8.23.0",
