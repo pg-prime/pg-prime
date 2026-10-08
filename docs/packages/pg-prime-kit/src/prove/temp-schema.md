@@ -1,7 +1,7 @@
 # packages/pg-prime-kit/src/prove/temp-schema.ts
 
 ## Purpose
-The generate-time proof for shadow tier 3 (no `CREATEDB`): instead of cloning the database, it provisions a second set of `pgprime_shadow_<token>_<schema>` schemas inside the target, materializes the current IR there, re-derives and applies the plan, and checks convergence. Called by `packages/pg-prime-kit/src/generate.ts:522` when `shadow.tier === 3`. Uses `provisionShadow` (`shadow/ladder.ts`), `remapIr` (`schema/remap.ts`), `diffIR`, `buildStatements`, `splitStages`, `applySegments`, `extractCatalog` and `prove/pg-dump.ts`.
+The generate-time proof for shadow tier 3 (no `CREATEDB`): instead of cloning the database, it provisions a second set of `pgprime_shadow_<token>_<schema>` schemas inside the target, materializes the current IR there, re-derives and applies the plan, and checks convergence. Called by `packages/pg-prime-kit/src/generate.ts:767` when `shadow.tier === 3`. Uses `provisionShadow` (`shadow/ladder.ts`), `remapIr` (`schema/remap.ts`), `diffIR`, `buildStatements`, `splitStages`, `applySegments`, `extractCatalog` and `prove/pg-dump.ts`.
 
 ## Public API
 - `TempSchemaProveInput` — `target`, `current` and `desired` IRs (user schema names), `schemas`, optional `renameHints`, `buildOptions`, `diagnostics`, `strictUnmodeled`, `expectedStages` (statement count per file), `desiredConn` + `desiredSchemaMap` (for the dump oracle), `dumpOracle`, `allowSkippedOracle`, `pgDump`, `dumpTimeoutMs`, `token` (test-only).

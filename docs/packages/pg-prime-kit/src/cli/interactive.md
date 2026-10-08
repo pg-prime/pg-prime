@@ -2,7 +2,7 @@
 
 ## Purpose
 Turns renames confirmed under `migrate generate --interactive` into a unified-diff patch that adds `.renamedFrom(...)` to the schema source, instead of editing the file.
-Called only by `interactiveRenames` in `packages/pg-prime-kit/src/cli/commands/generate.ts:448`; uses `parseId` from `packages/pg-prime-kit/src/ir/stable-id.ts`.
+Called only by `interactiveRenames` in `packages/pg-prime-kit/src/cli/commands/generate.ts:470`; uses `parseId` from `packages/pg-prime-kit/src/ir/stable-id.ts`.
 
 ## Public API
 - `RenameEdit` — `{ from?, to?, kind, type }`; `from`/`to` are stable-id strings such as `column:public.users.name`.
@@ -25,7 +25,7 @@ Called only by `interactiveRenames` in `packages/pg-prime-kit/src/cli/commands/g
 - Paths are relative to `process.cwd()`, not the CLI's injected `cwd`, and may contain `../` (`packages/pg-prime-kit/src/cli/interactive.ts:98`).
 - The table "edit" adds a `//` comment line instead of changing code; the author still has to add the annotation.
 - Old names are quoted with `JSON.stringify`, so the patch uses double quotes regardless of the file's quote style.
-- `generate` only prompts when both stdin and stdout are TTYs (`packages/pg-prime-kit/src/cli/commands/generate.ts:269`) and still exits 2 after printing the patch.
+- `generate` only prompts when both stdin and stdout are TTYs (`packages/pg-prime-kit/src/cli/commands/generate.ts:289`) and still exits 2 after printing the patch.
 
 ## Tests
 - `packages/pg-prime-kit/test/cli/interactive.test.ts`: column found by camelCase key (hunk line, annotation, `patch -p0` trailer), table found via `pgTable`, and the "could not locate" message.

@@ -430,7 +430,4 @@ describe.skipIf(!ok)("lane hazards on the full before/after state (D25)", () => 
     },
     T,
   );
-
-  it.todo("RL102 / RL106 and the updatedAt trigger pre-drop ride the statement path (R3's BuildOptions)");
-  it.todo("probeEmptiness under RLS reports a populated table as not empty (R3, D20)");
 });

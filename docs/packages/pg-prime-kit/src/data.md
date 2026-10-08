@@ -18,7 +18,7 @@ Callees: `history/store.ts` (`dataProgressSql`, `DataProgress`), `history/schema
 - `LagReading` — `{ lagMs, replicas, source: "primary" | "replicas", detail }`.
 
 ## Flow
-1. The runner reads `pgprime.data_progress` before the file and threads it in as `state` (`packages/pg-prime-kit/src/runner/run.ts:812-813`, `:1056`).
+1. The runner reads `pgprime.data_progress` before the file and threads it in as `state` (`packages/pg-prime-kit/src/runner/run.ts:818-819`, `:1063`).
 2. Per iteration, `waitForLag` returns immediately with no ceiling; otherwise it polls primary or replica lag every `max(pause, 100)` ms while over the ceiling (`packages/pg-prime-kit/src/data/batch.ts:152-219`).
 3. `BEGIN`; `set_config(..., true)` for `lock_timeout` (when given), `statement_timeout` (default `"0"`), `pgprime.batch_size`, and `pgprime.watermark` (`""` when none) (`packages/pg-prime-kit/src/data/batch.ts:250-260`).
 4. Execute the statement; read `rows_done`/`watermark` columns from a single result row, else the command-tag `rowCount` with no watermark (`packages/pg-prime-kit/src/data/batch.ts:126-140`, `:261-262`).

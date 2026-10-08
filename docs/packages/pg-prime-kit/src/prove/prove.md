@@ -1,7 +1,7 @@
 # packages/pg-prime-kit/src/prove/prove.ts
 
 ## Purpose
-The shadow-clone proof run at generate time: clone the current database, apply the plan stage by stage, re-extract, and require an empty diff and matching fingerprint against the desired IR, then run the `pg_dump` oracle. Called by `packages/pg-prime-kit/src/generate.ts:540` (shadow tiers 1 and 2) and `packages/pg-prime-kit/src/generate.ts:1002`; tier 3 uses `prove/temp-schema.ts` instead. Calls `extractCatalog`, `diffIR`, `buildStatements`, `orderStatements`, `applySegments` and `prove/pg-dump.ts`.
+The shadow-clone proof run at generate time: clone the current database, apply the plan stage by stage, re-extract, and require an empty diff and matching fingerprint against the desired IR, then run the `pg_dump` oracle. Called by `packages/pg-prime-kit/src/generate.ts:785` (shadow tiers 1 and 2) and `packages/pg-prime-kit/src/generate.ts:1247`; tier 3 uses `prove/temp-schema.ts` instead. Calls `extractCatalog`, `diffIR`, `buildStatements`, `orderStatements`, `applySegments` and `prove/pg-dump.ts`.
 
 ## Public API
 - `ProveStage` — `{ statements, segments }`, one emitted plan file.

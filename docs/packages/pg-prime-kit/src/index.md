@@ -1,22 +1,23 @@
 # packages/pg-prime-kit/src/index.ts
 
 ## Purpose
-The root entry of `@pg-prime/kit` (`exports["."]` in `packages/pg-prime-kit/package.json`): a pure re-export barrel that is the package's whole programmatic API — catalog extraction, IR, diff, DDL building, plans, proof, the runner, data migrations, history tables, config loading, `generate`, the schema-emit leg, the shadow ladder, connection helpers, SQL identifiers/lexing, repeatables and lint. External consumers import it as `@pg-prime/kit` (e.g. `tools/pack-smoke.mjs`); nothing inside `src/` imports it. The CLI binary is a separate entry, `packages/pg-prime-kit/src/cli.ts`, which imports `cli/main.ts` directly.
+The root entry of `@pg-prime/kit` (`exports["."]` in `packages/pg-prime-kit/package.json`): a pure re-export barrel that is the package's whole programmatic API — catalog extraction, IR, diff, DDL building, plans, proof, the runner, data migrations, history tables, config loading, `generate`, the schema-emit leg and declared lane, the shadow ladder, connection helpers, SQL identifiers/lexing, repeatables and lint. External consumers import it as `@pg-prime/kit` (e.g. `tools/pack-smoke.mjs`); nothing inside `src/` imports it. The CLI binary is a separate entry, `packages/pg-prime-kit/src/cli.ts`, which imports `cli/main.ts` directly.
 
 ## Public API
-Grouped by source module (181 runtime values and 175 types per `tools/api-snapshot/pg-prime-kit.json`).
+Grouped by source module (188 runtime values and 186 types per `tools/api-snapshot/pg-prime-kit.json`).
 - IR — `ir/hash.ts` (`canonicalize`, `contentHash`, `sha256`), `ir/stable-id.ts` (`encodeId`, `parseId`, `StableId`, …), `ir/fact.ts` (`SchemaIR`, `CATALOG_PROVENANCE`, fact/edge types) (`packages/pg-prime-kit/src/index.ts:11`–`:33`).
 - Catalog — `extractCatalog`, `probeEmptiness`, `observedCounts`, `observationDiagnostics`, `evaluatedEnumLabels`, `Diagnostic`, and `export type *` of `catalog/payloads.ts` (`packages/pg-prime-kit/src/index.ts:35`–`:46`).
-- Diff — `diffIR`, rename helpers, `Delta`/`RenameHint`, `buildStatements`, `orderStatements`, `splitStages`, `renameCandidates`, `PHASE`, `Statement`, `Stage` (`packages/pg-prime-kit/src/index.ts:48`–`:59`, `:248`–`:252`).
-- Plans and proof — `plan/plan.ts` (`buildPlan`, `Plan`, `MIGRATION_NAME`, …), `plan/emit.ts` (`writePlan`, `planSql`, `planOrderKey`, refusal errors), `prove/*` (`proveOnShadowClone`, `proveInTempSchemas`, pg_dump oracle) (`packages/pg-prime-kit/src/index.ts:61`–`:108`, `:250`–`:253`).
+- Diff — `diffIR`, rename helpers, `Delta`/`RenameHint`, `buildStatements`, `orderStatements`, `splitStages`, `renameCandidates`, `PHASE`, `Statement`, `Stage` (`packages/pg-prime-kit/src/index.ts:48`–`:59`, `:249`–`:253`).
+- Plans and proof — `plan/plan.ts` (`buildPlan`, `Plan`, `MIGRATION_NAME`, …), `plan/emit.ts` (`writePlan`, `planSql`, `planOrderKey`, refusal errors), `prove/*` (`proveOnShadowClone`, `proveInTempSchemas`, pg_dump oracle) (`packages/pg-prime-kit/src/index.ts:61`–`:108`, `:251`–`:254`).
 - Runner — `runner/apply.ts`, `runner/run.ts` (`applyPending`, `forceUnlock`, …), `runner/files.ts` (`readMigrationsDir`, `parseMigrationSql`, …), `runner/status.ts` (`packages/pg-prime-kit/src/index.ts:109`–`:165`).
 - Data migrations and history — `data/batch.ts`, `data/lag.ts`, `history/schema.ts`, `history/store.ts` (`packages/pg-prime-kit/src/index.ts:168`–`:204`).
 - CLI contracts and config — `EXIT`, `RUNNER_EXIT`, and the `config/index.ts` set (`defineConfig`, `loadConfig`, `resolveConfig`, `loadSchema`, …) (`packages/pg-prime-kit/src/index.ts:208`–`:226`).
-- Generate — everything public in `generate.ts` (`generate`, `generateFromDatabases`, templates, hints helpers) (`packages/pg-prime-kit/src/index.ts:228`–`:247`).
-- Schema-emit leg — `schema/emit.ts`, `schema/load.ts`, `schema/remap.ts`, `schema/types.ts` (types only), `schema/views.ts` (`packages/pg-prime-kit/src/index.ts:259`–`:284`).
-- Shadow and connections — `shadow/ladder.ts` (`provisionShadow`, `parseShadowUrl`, errors), `db/pg.ts` (`withClient`, `createDatabase`, `ConnInfo`, …) (`packages/pg-prime-kit/src/index.ts:285`–`:310`).
-- SQL text — `sql/ident.ts` (quoting, identifier limits) and `sql/statements.ts` (`lexSql`, `splitStatements`, …) (`packages/pg-prime-kit/src/index.ts:312`–`:334`).
-- Repeatables and lint — `repeatables/index.ts`, `lint/lint.ts`, `lint/rules.ts` (`packages/pg-prime-kit/src/index.ts:337`–`:370`).
+- Generate — `generate.ts` except `shadowRepeatables` (`generate`, `generateFromDatabases`, `LaneRefusedError`, templates, hints helpers) (`packages/pg-prime-kit/src/index.ts:228`–`:248`).
+- Schema-emit leg — `schema/emit.ts`, `schema/load.ts`, `schema/remap.ts`, `schema/types.ts` (types only, `PolicyLike` included), `schema/views.ts` (`packages/pg-prime-kit/src/index.ts:260`–`:286`).
+- Declared lane — `schema/declared.ts`: `renderDeclared`, `syncDeclared`, `declaredCensus`, `POLICIES_DIR`, `TRIGGERS_DIR`, `PRUNE_FILE` and their types (`packages/pg-prime-kit/src/index.ts:287`–`:303`).
+- Shadow and connections — `shadow/ladder.ts` (`provisionShadow`, `parseShadowUrl`, errors), `db/pg.ts` (`withClient`, `createDatabase`, `ConnInfo`, …) (`packages/pg-prime-kit/src/index.ts:304`–`:329`).
+- SQL text — `sql/ident.ts` (quoting, identifier limits) and `sql/statements.ts` (`lexSql`, `splitStatements`, …) (`packages/pg-prime-kit/src/index.ts:331`–`:353`).
+- Repeatables and lint — `repeatables/index.ts`, `lint/lint.ts`, `lint/rules.ts` (`packages/pg-prime-kit/src/index.ts:356`–`:389`).
 
 ## Flow
 1. No runtime code: each `export … from` re-binds names from the module that owns them.
@@ -25,7 +26,7 @@ Grouped by source module (181 runtime values and 175 types per `tools/api-snapsh
 
 ## Gotchas
 - `packages/pg-prime-kit/src/unsupported-typescript.d.ts` is generated by `tools/api-snapshot.mjs` and must declare exactly this entry's value and type names, each as the `Unsupported` brand that puts "requires TypeScript >= 5.9" into the error text. Any export added or removed here needs `pnpm api-snapshot` re-run; `pnpm api-snapshot:check` fails on drift. Do not hand-edit the stub or simplify its identity alias `Unsupported<M = …> = M`.
-- Two name collisions are resolved by renaming: `sql/statements.ts`'s `canonicalize` is exported as `canonicalizeSql` and its `Segment` as `SqlSegment` (`packages/pg-prime-kit/src/index.ts:328`, `:333`), leaving `canonicalize` (IR hash) and `Segment` (diff/order) unqualified.
+- Two name collisions are resolved by renaming: `sql/statements.ts`'s `canonicalize` is exported as `canonicalizeSql` and its `Segment` as `SqlSegment` (`packages/pg-prime-kit/src/index.ts:347`, `:352`), leaving `canonicalize` (IR hash) and `Segment` (diff/order) unqualified.
 - Internal helpers are deliberately absent: `tsSpecifierAdvice`, `enableTsSpecifiers`, the `cli/` command layer (except `EXIT`/`RUNNER_EXIT`), `seed/`, `pull/` and `checkpoint/`.
 - `pg-prime` is a peer dependency imported for types only across `src/`; `packages/pg-prime-kit/test/schema-emit/no-value-import.test.ts` fails on a value import (one dynamic `import("pg-prime")` is allowed in `src/seed/db.ts`).
 - `tools/api-snapshot.mjs` rejects a `default` export from any entry.
