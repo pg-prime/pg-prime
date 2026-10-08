@@ -92,7 +92,7 @@ exports[`statements > golden SQL 1`] = `
         select $4, key,
                case when key is null then floor(random() * p.n)::smallint
                     else abs(hashtextextended(key, 0) % p.n)::smallint end,
-               idem, payload, headers
+               idem, coalesce(payload, 'null'::jsonb), headers
         from src, (select count(*) from lk) as locked,
              (select (select partitions from "pgprime_outbox".topics where name = $5) as n) as p
         on conflict (topic, idem) do nothing

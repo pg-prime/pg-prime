@@ -10,7 +10,8 @@ write path, the admin statements and the relay to a shared `TopicCtx`
   `topic(def)`, `start()`, `migrate()`, `close()`, `[Symbol.asyncDispose]`.
 - `OutboxTopic<T>`: `name`, `start`, `write`, `writeMany`, `relay`, `parked`, `replay`, `discard`,
   `pause`, `resume`, `stats`.
-- `context.ts` (internal): `TopicCtx`, `hooksOf` (hook isolation), `channelOf` (`ob_` + 24 hex of
+- `context.ts` (internal): `TopicCtx` (its `decode(row, raw?)` can leave the payload as stored),
+  `hooksOf` (hook isolation), `channelOf` (`ob_` + 24 hex of
   `sha256(schema/topic)`), `errorText` (message capped at 2 000 chars).
 
 ## Flow

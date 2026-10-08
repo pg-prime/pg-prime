@@ -158,6 +158,63 @@ describe('relay under concurrency', () => {
     }
   })
 
+  test('a failing partition does not let the next round serve its siblings twice', async () => {
+    const spans: { p: number; from: number; to: number }[] = []
+    const delivered: string[] = []
+    const sink = functionSink<string>(async (wave, ctx) => {
+      if (wave[0]!.payload === 'boom') return
+      const from = performance.now()
+      await sleep(300)
+      spans.push({ p: ctx.partition, from, to: performance.now() })
+      delivered.push(...wave.map((r) => r.payload))
+    })
+    const { schema, db, topic, proc } = await setup(
+      defineOutbox<string>('isolate', { partitions: 4 }),
+      sink,
+    )
+    // Settling a `boom` record throws, so its partition's serve rejects on every round.
+    const fn = sql.ident(schema, 'boom')
+    await db.sql`create function ${fn}() returns trigger language plpgsql
+      as $$ begin raise exception 'boom'; end $$`.execute()
+    await db.sql`create trigger boom before update or delete on ${sql.ident(schema, 'records')}
+      for each row when (old.payload = '"boom"') execute function ${fn}()`.execute()
+    const rows = await db.sql`select p, min(k) as k from (
+        select 'k' || g as k, abs(hashtextextended('k' || g, 0) % 4) as p
+        from generate_series(1, 100) g) x group by p order by p`.execute()
+    const keyOf = rows.map((r) => r['k'] as string)
+
+    await topic.pause()
+    const opts = { leaseMs: 3_000, pollMs: 20 }
+    const r1 = (await proc()).relay(opts)
+    await until(() => r1.partitions.length === 4)
+    const r2 = (await proc()).relay(opts)
+    await until(() => r1.partitions.length === 2 && r2.partitions.length === 2, 5_000)
+    expect([r1.partitions, r2.partitions]).toStrictEqual([
+      [0, 1],
+      [2, 3],
+    ])
+    // Each relay holds one failing partition and one whose serve takes three slow waves.
+    await db.transaction((tx) =>
+      topic.writeMany(
+        [0, 2]
+          .map((p) => ({ payload: 'boom', key: keyOf[p]! }))
+          .concat(
+            [1, 3].flatMap((p) => [1, 2, 3].map((i) => ({ payload: `${p}.${i}`, key: keyOf[p]! }))),
+          ),
+        { tx },
+      ),
+    )
+    await topic.resume()
+    await until(() => new Set(delivered).size === 6)
+    await sleep(400)
+    expect(delivered.sort()).toStrictEqual(['1.1', '1.2', '1.3', '3.1', '3.2', '3.3'])
+    for (const p of [1, 3]) {
+      const mine = spans.filter((s) => s.p === p).sort((a, b) => a.from - b.from)
+      for (let i = 1; i < mine.length; i++)
+        expect(mine[i]!.from).toBeGreaterThanOrEqual(mine[i - 1]!.to)
+    }
+  })
+
   test('rebalance 1 → 4 → 2: shares within one heartbeat, released partitions re-leased at once', async () => {
     const { sink } = recordingSink<number>()
     const { proc } = await setup(defineOutbox<number>('rebalance'), sink)

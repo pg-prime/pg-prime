@@ -1,15 +1,25 @@
 import { sql } from 'pg-prime'
 import type { AnyFragment } from 'pg-prime'
+import { errorText } from '../context.js'
 import type { TopicCtx } from '../context.js'
+import { NonRetryableSinkError } from '../errors.js'
 import type { OutboxRecord } from '../types.js'
 import type { Lease } from './lease.js'
+
+/** A record whose payload the codec rejects; it parks at once. */
+export interface Undecodable {
+  readonly id: bigint
+  readonly key: string | null
+  readonly attempts: number
+  readonly error: NonRetryableSinkError
+}
 
 /** R1: the partition's deliverable head, in id order. The lease makes this relay its only reader. */
 export async function readPartition<T>(
   { db, s, def, decode }: TopicCtx<T>,
   p: number,
   limit: number,
-): Promise<OutboxRecord<T>[]> {
+): Promise<(OutboxRecord<T> | Undecodable)[]> {
   const t = def.topic
   const rows = await db.withOptions({ label: 'outbox.read' }).sql`
     select r.id, r.key, r.idem, r.payload, r.headers, r.attempts, r.created_at
@@ -20,7 +30,18 @@ export async function readPartition<T>(
       and not (select paused from ${s}.topics where name = ${t})
     order by r.id
     limit ${limit}::int`.execute()
-  return rows.map(decode)
+  return rows.map((r) => {
+    try {
+      return decode(r)
+    } catch (e) {
+      const id = r['id'] as bigint
+      const error = new NonRetryableSinkError(
+        `@pg-prime/outbox: ${t}: record ${id} does not decode: ${errorText(e)}`,
+        { cause: e },
+      )
+      return { id, key: r['key'] as string | null, attempts: r['attempts'] as number, error }
+    }
+  })
 }
 
 /**

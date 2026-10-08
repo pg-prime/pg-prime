@@ -6,15 +6,19 @@ the retention sweep.
 
 ## Public API
 Internal:
-- `readPartition(ctx, p, limit)` → `OutboxRecord[]` (`packages/pg-prime-outbox/src/relay/deliver.ts:8`).
-- `waves(rows, failed)` — generator of waves (`:30`).
-- `settleDelivered(ctx, lease, ids)` → count (`:48`); `settleFailed(ctx, lease, id, error, delayMs)`
-  (`:72`); `settleParked(ctx, lease, id, error)` (`:95`) → 0 when the lease is gone.
-- `sweep(ctx, everyMs, limit, force)` → deleted count (`:119`).
+- `readPartition(ctx, p, limit)` → `(OutboxRecord | Undecodable)[]`
+  (`packages/pg-prime-outbox/src/relay/deliver.ts:18`); `Undecodable` (`:10`) carries a
+  `NonRetryableSinkError` in place of the payload.
+- `waves(rows, failed)` — generator of waves (`:51`).
+- `settleDelivered(ctx, lease, ids)` → count (`:69`); `settleFailed(ctx, lease, id, error, delayMs)`
+  (`:93`); `settleParked(ctx, lease, id, error)` (`:116`) → 0 when the lease is gone.
+- `sweep(ctx, everyMs, limit, force)` → deleted count (`:140`).
 
 ## Flow
 1. R1 reads the partition's pending records with `next_at <= now()`, skipping keys with a live
-   `blocked` row and everything while the topic is paused, in id order, up to `limit`.
+   `blocked` row and everything while the topic is paused, in id order, up to `limit`. Each row is
+   decoded on its own; one whose codec throws comes back `Undecodable`, so it parks instead of
+   failing the whole read.
 2. `waves`: wave k holds the k-th record of each key; unkeyed records join wave 0. A key added to
    `failed` is left out of every later wave.
 3. Each settle locks the partition row (`for update`) only if `token` matches and the lease is
@@ -38,3 +42,5 @@ Internal:
 - `packages/pg-prime-outbox/test/unit/relay-math.test.ts` — wave split and exclusion.
 - `packages/pg-prime-outbox/test/unit/sql.test.ts` — golden SQL for R1, both D1s, F1, K1, retention.
 - `packages/pg-prime-outbox/test/pg/relay.test.ts` — "head failure keeps receiver order".
+- `packages/pg-prime-outbox/test/live/outbox.test.ts` — an undecodable payload parks and blocks only
+  its key.
