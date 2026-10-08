@@ -11,7 +11,7 @@ S1 rows for `sql/send.ts`.
 ## Flow
 1. `newRow` validates the group key and `dedup`-needs-`key`, merges retry overrides, encodes (packages/pg-prime-mq/src/queue/flow.ts:58).
 2. `flow` walks the tree depth-first, numbering nodes; inner nodes carry their child count (packages/pg-prime-mq/src/queue/flow.ts:110).
-3. One insert; a deduplicated root returns the owner with `children: []`.
+3. One insert; a deduplicated root returns the owner with `children: []`. An owner that finished before it was read sends the flow again (≤ 3 rounds), never a zero id.
 4. `spawn` inserts one child guarded by the parent's token; 0 rows ⇒ `LeaseLostError` (packages/pg-prime-mq/src/queue/flow.ts:153).
 
 ## Gotchas

@@ -177,6 +177,45 @@ describe('flows (F1)', () => {
       }),
     ).rejects.toBeInstanceOf(UsageError)
   })
+
+  it('a dedup winner that finishes between the two statements: the flow is sent again', async () => {
+    const db = server.db()
+    const schema = freshSchema()
+    const defA = defineQueue<P, string>('a', once)
+    const plain = pgMq({ db, schema }).queue(defA)
+    let raced = false
+    // After the flow's insert, the key's holder completes before its owner is read.
+    const racing = new Proxy(db, {
+      get(o, k) {
+        if (k !== 'withOptions') {
+          const v = Reflect.get(o, k)
+          return typeof v === 'function' ? v.bind(o) : v
+        }
+        return (opts: { label: string }) => {
+          const q = o.withOptions(opts)
+          if (opts.label !== 'mq.flow' || raced) return q
+          raced = true
+          return {
+            sql: (s: TemplateStringsArray, ...v: unknown[]) => ({
+              execute: async () => {
+                const rows = await q.sql(s, ...v).execute()
+                const [m] = (await plain.claim()) as [Message<P>]
+                await plain.complete(m, 'done')
+                return rows
+              },
+            }),
+          }
+        }
+      },
+    })
+    const opts = { key: 'k', dedup: 'until-done' as const }
+    const first = await plain.send({ name: 'first' }, opts)
+    const ref = await pgMq({ db: racing, schema }).flow({ queue: defA, payload: { name: 'x' }, opts })
+    expect(raced).toBe(true)
+    expect(ref.deduplicated).toBe(false)
+    expect((await plain.get(ref))?.payload).toStrictEqual({ name: 'x' })
+    expect(ref.id).not.toBe(first.id)
+  })
 })
 
 describe('spawn and waitForChildren', () => {

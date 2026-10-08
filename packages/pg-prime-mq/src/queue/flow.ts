@@ -127,12 +127,14 @@ export async function flow(core: Core, root: FlowRoot<any>, tx?: Queryable<any>)
   else core.assertStarted('flow')
   const q = tx ?? core.db
   const extend = typeof root.opts?.dedup === 'object' && root.opts.dedup.extend === true
-  const out = await insert(q, core.t, rows, { extend, flow: true })
-  const head = out[0] as (typeof out)[number]
-  if (head.id === null) {
+  let out = await insert(q, core.t, rows, { extend, flow: true })
+  // The winner finished between the two statements: send the flow again.
+  for (let round = 1; out[0]?.id === null; round++) {
     const key = rows[0]?.dedup as string
-    const id = head.existing ?? (await dedupOwners(q, core.t, root.queue.name, [key])).get(key)
-    return { queue: root.queue.name, id: id ?? 0n, deduplicated: true, children: [] }
+    const id = out[0].existing ?? (await dedupOwners(q, core.t, root.queue.name, [key])).get(key)
+    if (id !== undefined) return { queue: root.queue.name, id, deduplicated: true, children: [] }
+    if (round === 3) throw new Error(`@pg-prime/mq: flow of ${root.queue.name} did not settle.`)
+    out = await insert(q, core.t, rows, { extend, flow: true })
   }
   const ids = new Map(out.map((r) => [r.n, r.id as bigint]))
   const ref = (x: Node): FlowRef => ({
