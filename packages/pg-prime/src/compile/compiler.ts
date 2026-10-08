@@ -1508,8 +1508,10 @@ export function compileExpr(e: Expr): {
 
 /** Emits catalog DDL: binds become typed literals, column refs stay identifiers, placeholders refuse. */
 class DdlEmitter extends Emitter {
-  constructor(readonly what: string) {
+  readonly what: string
+  constructor(what: string) {
     super()
+    this.what = what
   }
 
   refuse(thing: string): never {
