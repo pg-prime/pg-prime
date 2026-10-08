@@ -7,8 +7,8 @@ The topic's operator statements: create, list parked, replay, discard, pause/res
 Internal, behind `OutboxTopic`:
 - `createTopic(ctx)` → stored partition count (`packages/pg-prime-outbox/src/sql/admin.ts:5`).
 - `listParked(ctx, limit, after)` → `ParkedRecord[]` (`:22`).
-- `replay(ctx, ids)`, `discard(ctx, ids)` → affected count (`:35`, `:54`).
-- `setPaused(ctx, paused)` (`:72`), `stats(ctx)` → `OutboxStats` (`:82`).
+- `replay(ctx, ids)`, `discard(ctx, ids)` → affected count (`:42`, `:61`).
+- `setPaused(ctx, paused)` (`:79`), `stats(ctx)` → `OutboxStats` (`:89`).
 
 ## Flow
 1. `createTopic` upserts `topics` (only `keep_delivered_ms` is updated on conflict) and inserts
@@ -25,6 +25,8 @@ Internal, behind `OutboxTopic`:
 - A key's parked record is its head (later records stay pending behind the block), so deleting the
   key's `blocked` row on replay/discard is enough to unblock it.
 - The parent/child inserts of `createTopic` share one statement; the foreign key is checked at its end.
+- `listParked` returns the stored JSON as `payload` when the codec cannot decode it, so a record
+  parked for that reason can still be listed and discarded.
 
 ## Tests
 - `packages/pg-prime-outbox/test/unit/sql.test.ts` — golden SQL and the one-row-per-CTE rule.

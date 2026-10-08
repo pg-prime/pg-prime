@@ -83,11 +83,14 @@ export function pgOutbox<const D extends Record<string, OutboxDef<any>> = {}>(
       chan: channelOf(schema, t),
       hooks,
       start,
-      decode: (r) => ({
+      decode: (r, raw) => ({
         id: r['id'] as bigint,
         key: r['key'] as string | null,
         idem: r['idem'] as string,
-        payload: def.codec === undefined ? (r['payload'] as T) : def.codec.decode(r['payload']),
+        payload:
+          def.codec === undefined || raw === true
+            ? (r['payload'] as T)
+            : def.codec.decode(r['payload']),
         headers: r['headers'] as Record<string, string> | null,
         attempts: r['attempts'] as number,
         createdAt: r['created_at'] as Date,

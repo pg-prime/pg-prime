@@ -58,8 +58,8 @@ incumbent above its share releases the extra partitions after its current batch.
 
 ## Parking
 
-A record that fails `retry.maxAttempts` times (10 by default), or fails with
-`NonRetryableSinkError`, is **parked**. Its key stays blocked, so later records of that key wait
+A record that fails `retry.maxAttempts` times (10 by default), fails with
+`NonRetryableSinkError`, or whose stored payload the `codec` cannot decode is **parked**. Its key stays blocked, so later records of that key wait
 behind it: per-key order is never skipped silently. Inspect and resolve:
 
 {/* docs: use=blog */}
@@ -76,7 +76,8 @@ await orders.replay([42n]) // back to pending with a fresh attempt count; unbloc
 await orders.discard([43n]) // gone for good; the key's next record goes next
 ```
 
-Parked records are never deleted automatically.
+Parked records are never deleted automatically. `parked()` lists a payload the `codec` cannot
+decode as stored.
 
 ## Retention
 

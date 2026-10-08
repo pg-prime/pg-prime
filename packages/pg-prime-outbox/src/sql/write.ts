@@ -39,7 +39,7 @@ export async function writeRecords<T>(
         select ${t}, key,
                case when key is null then floor(random() * p.n)::smallint
                     else abs(hashtextextended(key, 0) % p.n)::smallint end,
-               idem, payload, headers
+               idem, coalesce(payload, 'null'::jsonb), headers
         from src, (select count(*) from lk) as locked,
              (select (select partitions from ${s}.topics where name = ${t}) as n) as p
         on conflict (topic, idem) do nothing

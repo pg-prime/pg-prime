@@ -134,18 +134,25 @@ export function startRelay<T>(
     for (const wave of waves(rows, failedKeys)) {
       if (closed || held.get(h.p) !== h) return false
       const t0 = performance.now()
-      let failed: ReadonlyMap<bigint, unknown>
-      try {
-        const res = await sink.deliver(wave, {
-          signal: h.ctrl.signal,
-          epoch: h.epoch,
-          partition: h.p,
-        })
-        failed = res?.failed ?? new Map()
-      } catch (e) {
-        failed = new Map(wave.map((r) => [r.id, e]))
+      const failed = new Map<bigint, unknown>()
+      const ready: OutboxRecord<T>[] = []
+      for (const r of wave) {
+        if ('error' in r) failed.set(r.id, r.error)
+        else ready.push(r)
       }
-      const ok = wave.filter((r) => !failed.has(r.id)).map((r) => r.id)
+      if (ready.length > 0) {
+        try {
+          const res = await sink.deliver(ready, {
+            signal: h.ctrl.signal,
+            epoch: h.epoch,
+            partition: h.p,
+          })
+          for (const [id, e] of res?.failed ?? []) failed.set(id, e)
+        } catch (e) {
+          for (const r of ready) failed.set(r.id, e)
+        }
+      }
+      const ok = ready.filter((r) => !failed.has(r.id)).map((r) => r.id)
       if (ok.length > 0) {
         if ((await settleDelivered(ctx, h, ok)) < ok.length) {
           lose(h.p, h)
@@ -166,7 +173,11 @@ export function startRelay<T>(
     return rows.length === batchSize
   }
 
-  const settleFailure = async (h: Held, r: OutboxRecord<T>, error: unknown): Promise<boolean> => {
+  const settleFailure = async (
+    h: Held,
+    r: Pick<OutboxRecord<T>, 'id' | 'key' | 'attempts'>,
+    error: unknown,
+  ): Promise<boolean> => {
     const attempt = r.attempts + 1
     const text = errorText(error)
     if (
@@ -193,12 +204,16 @@ export function startRelay<T>(
         if (await serve(h)) more = true
       }
     }
-    await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker))
+    // A rejected worker must not leave its siblings serving into the next round.
+    const done = await Promise.allSettled(
+      Array.from({ length: Math.min(concurrency, queue.length) }, worker),
+    )
+    for (const r of done) if (r.status === 'rejected') throw r.reason
     return more
   }
 
+  const heartbeats = setInterval(() => void beat(), leaseMs / 3)
   const loop = async (w: Waker): Promise<void> => {
-    const timer = setInterval(() => void beat(), leaseMs / 3)
     try {
       while (!closed) {
         try {
@@ -219,7 +234,6 @@ export function startRelay<T>(
         }
       }
     } finally {
-      clearInterval(timer)
       await w.close()
     }
   }
@@ -242,6 +256,8 @@ export function startRelay<T>(
       let timer: ReturnType<typeof setTimeout> | undefined
       await Promise.race([running, new Promise((r) => (timer = setTimeout(r, graceMs)))])
       clearTimeout(timer)
+      clearInterval(heartbeats)
+      await wake?.close()
       const leases = [...held.values()]
       held.clear()
       for (const h of leases) h.ctrl.abort()

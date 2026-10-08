@@ -124,7 +124,7 @@ with src as (
   select $t, key,
          case when key is null then floor(random() * p.n)::smallint
               else abs(hashtextextended(key, 0) % p.n)::smallint end,
-         coalesce(idem, gen_random_uuid()::text), payload, headers
+         coalesce(idem, gen_random_uuid()::text), coalesce(payload, 'null'::jsonb), headers
   from src, (select count(*) from lk) as locked,             -- forces lk to run first
        (select (select partitions from pgprime_outbox.topics where name = $t) as n) as p   -- always one row; n is null for an unknown topic
   on conflict (topic, idem) do nothing
@@ -135,6 +135,8 @@ select ins.*, (select pg_notify($chan, '') where exists (select from ins)) is nu
 
 - A conflicting `idem` (within `keepDeliveredMs`, X7) returns no row, so the caller sees
   `{ duplicate: true }`.
+- `jsonb_to_recordset` turns a JSON `null` payload (and an `undefined` one, absent from the JSON)
+  into SQL NULL; the `coalesce` stores it as JSON `null`.
 - **Unknown topic is an error, never a silent no-op.**
   - The scalar sub-select always yields one row. For a topic with no `topics` row, `partition`
     is null, and the insert fails with `23502` on `records.partition`. The client maps that to
@@ -266,9 +268,14 @@ lease partitions (L1) ─▶ for each owned partition (concurrently, up to `conc
 - The wake-up loop is local (X1): `db.listen(chan)` when the pooler profile allows it, else pure
   polling with one `onInternal('listen-unavailable')`. `chan` is `ob_` + 24 hex chars of
   `sha256(schema '/' topic)`.
-- `close()` stops leasing, finishes in-flight waves (`graceMs`), releases its partitions
-  (`owner = token = lease_until = null`) and deletes its `relays` row, so peers take over at once.
-  `signal` and `[Symbol.asyncDispose]` do the same.
+- `close()` stops leasing, finishes in-flight waves (`graceMs`), stops the heartbeat and the
+  LISTEN, releases its partitions (`owner = token = lease_until = null`) and deletes its `relays`
+  row, so peers take over at once. A sink call that ignores `signal` cannot hold any of that past
+  `graceMs`. `signal` and `[Symbol.asyncDispose]` do the same.
+- A round ends when every partition's batch has settled, even after one fails, so the next round
+  never serves a partition whose batch is still in flight.
+- A stored payload the topic's `codec` cannot decode fails that record non-retryably: it parks at
+  once (K1), blocks its key, and never reaches the sink. `parked()` lists it with the stored JSON.
 - Retry delay is the family's local `backoffMs` (15 §0.2; `baseDelayMs × 2^(attempt−1)` capped by
   `maxDelayMs`, `jitter` `'full'`). The sink can mark an error non-retryable
   (`new NonRetryableSinkError()`), and the record parks at once.
@@ -375,6 +382,7 @@ accepted too, since a single statement is its own transaction, and the docs say 
 | Lease stolen while the old relay's sink call is in flight | possible duplicate delivery; the old relay's D1 returns 0 → stop; per-key order holds for each relay | X6 fencing lets a sink reject the stale epoch |
 | Sink fails for key K | K blocked with backoff; other keys continue | X5 |
 | Poison record | parked after `maxAttempts`; K stays blocked (`block`) or proceeds (`skip`) | K1 |
+| Stored payload no longer decodes (codec change) | parked at once; K stays blocked; other keys continue | K1 |
 | NOTIFY lost or unavailable | `gap` → immediate read; `pollMs` caps latency | §4 |
 | Pool exhausted | settles queue in the pool; a heartbeat delayed past `leaseMs` ⇒ lease lost ⇒ redelivery (bounded by `idem`) | heartbeat at `leaseMs / 3` |
 | Clock skew | none (DB clock) | 15 §0.5 |
@@ -408,6 +416,8 @@ locks, single statements). Wake-ups need `directConnection`; otherwise the relay
 - Park blocks the key; `replay`, `discard` (both unblock it), `pause`; `keepDeliveredMs` retention; a duplicate
   `idem` after delivery is still a no-op within the window; `start()` refuses a declaration whose
   `partitions` differs; `write` before `start()` throws `NotStartedError`.
+- A `null` or `undefined` payload is stored as JSON `null`; a payload the codec cannot decode parks
+  at once and blocks only its key.
 - Function sink; examples.
 
 **Tier 2 (`requiresConcurrency`):**
@@ -421,6 +431,8 @@ locks, single statements). Wake-ups need `directConnection`; otherwise the relay
 | **relay SIGKILL** | the batch is redelivered with the same `idem` and a higher `epoch`; the deduplicating sink count equals the record count |
 | **rebalance** — 1 → 4 → 2 relays, a newcomer starting while the incumbent owns all P | the newcomer gets its share within one heartbeat; shares within ±1; a released partition is re-leased within one L1 cycle, not after `leaseMs` |
 | **wake latency** | p95 < 100 ms with `pollMs: 5000` |
+| **a failing partition beside a slow one** — 2 relays, each holding a partition whose settle throws and one whose batch takes three slow waves | no overlap per partition; every slow record delivered once |
+| **close() under a sink that ignores abort** — child process | after `close()` no backend LISTENs on the channel, and the child exits once its pool ends |
 | **PgBouncer transaction mode** | writes plus a polling relay deliver everything |
 
 **Bun:** unit tier plus the tier-2 order test and `webhookSink` on Bun 1.4.2.

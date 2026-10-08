@@ -31,8 +31,9 @@ const relay = outbox.topics.orderPlaced.relay(
 
 - **Atomic:** the record commits or rolls back with your data.
 - **Ordered per key:** same-key writers serialize until commit; relays lease whole partitions, so a
-  key is never delivered by two relays at once, and a failing key blocks only itself.
-- **Safe to redeliver:** every record has a stable idempotency key and every delivery a fencing epoch.
+  key has one relay at a time while its lease is valid, and a failing key blocks only itself.
+- **Safe to redeliver:** every record has a stable idempotency key and every delivery a fencing
+  epoch, so a sink can reject a relay whose lease was taken over while its call was in flight.
 - **Operable:** retries with backoff, parking with `replay`/`discard`, `pause`, `stats`, retention.
 - **Built-in sinks:** `functionSink` and `webhookSink` (signed JSON over `fetch`).
 - Works behind PgBouncer transaction mode (by polling) and on Bun. No runtime dependencies.

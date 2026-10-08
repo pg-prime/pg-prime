@@ -96,7 +96,8 @@ second write with the same `idempotencyKey` is a no-op that returns the first re
 
 `topic.relay(sink, options)` starts delivering in the background and returns a `Relay` with
 `partitions` and `close()`. Run one per process, as many processes as you like: they share the
-topic's partitions fairly and never deliver one key concurrently.
+topic's partitions fairly and, while their leases are valid, never deliver one key concurrently.
+A lease can lapse under a sink call that ignores cancellation, so check the fencing epoch (below).
 
 A sink is one method. It receives a **wave**: a batch that never holds two records of one key, so
 it may deliver the wave in parallel.
@@ -151,7 +152,8 @@ record is **parked** and its key stays blocked until an operator replays or disc
 [Outbox in production](/pg-prime/operations/outbox/)).
 
 Throw (or report) a `NonRetryableSinkError` for a record that can never succeed, such as a payload
-the receiver rejects as invalid; it parks at once.
+the receiver rejects as invalid; it parks at once. A stored payload the topic's `codec` can no
+longer decode parks at once too, without reaching the sink.
 
 ## The receiving side: idempotency and fencing
 

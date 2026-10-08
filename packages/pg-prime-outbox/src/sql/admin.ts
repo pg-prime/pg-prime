@@ -28,7 +28,14 @@ export async function listParked<T>(
     select id, key, idem, payload, headers, attempts, created_at, error from ${s}.records
     where topic = ${def.topic} and state = 'parked' and id > ${after}::bigint
     order by id limit ${limit}::int`.execute()
-  return rows.map((r) => ({ ...decode(r), error: r['error'] as string | null }))
+  return rows.map((r) => {
+    const error = r['error'] as string | null
+    try {
+      return { ...decode(r), error }
+    } catch {
+      return { ...decode(r, true), error }
+    }
+  })
 }
 
 /** Parked → pending with a fresh attempt count; unblocks their keys and wakes the relays. */

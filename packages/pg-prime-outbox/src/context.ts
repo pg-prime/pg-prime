@@ -22,7 +22,8 @@ export interface TopicCtx<T> {
   readonly hooks: Hooks
   /** Starts the topic lazily; only for calls that do not run in the caller's transaction. */
   start(): Promise<void>
-  decode(row: Record<string, unknown>): OutboxRecord<T>
+  /** With `raw`, the payload is left as stored. */
+  decode(row: Record<string, unknown>, raw?: boolean): OutboxRecord<T>
 }
 
 export function hooksOf(hooks: OutboxHooks | undefined): Hooks {

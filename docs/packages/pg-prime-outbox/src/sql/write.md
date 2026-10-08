@@ -11,12 +11,14 @@ ordering locks, idempotent inserts and a wake-up NOTIFY.
 
 ## Flow
 1. Each payload is validated by the topic's Standard Schema (`PayloadError` on issues) and encoded
-   by its codec (`packages/pg-prime-outbox/src/sql/write.ts:90`); a missing `idempotencyKey` becomes
+   by its codec (`packages/pg-prime-outbox/src/sql/write.ts:87`); a missing `idempotencyKey` becomes
    `randomUUID()` client-side.
 2. W1 (label `outbox.write`): `src` unpacks the JSON rows; `lk` takes
    `pg_advisory_xact_lock(hashtextextended(topic/key, 0))` for each distinct key in key order when
    `ordered`; `ins` inserts with `partition = abs(hashtextextended(key, 0) % P)` (random for unkeyed)
    and `on conflict (topic, idem) do nothing`; the final select NOTIFYs the topic channel once.
+   `coalesce(payload, 'null'::jsonb)` stores a `null` or `undefined` payload as JSON `null`, since
+   `jsonb_to_recordset` turns both into SQL NULL.
 3. A `23502` (null `partition`: no `topics` row) becomes `NotStartedError`.
 4. Inputs whose `idem` was not returned are duplicates; a second statement reads their existing ids.
    A repeated `idem` inside one batch is a duplicate of the first.
@@ -37,6 +39,7 @@ ordering locks, idempotent inserts and a wake-up NOTIFY.
 
 ## Tests
 - `packages/pg-prime-outbox/test/unit/sql.test.ts` — golden SQL.
-- `packages/pg-prime-outbox/test/live/outbox.test.ts` — rollback, duplicates, start rules, codec.
+- `packages/pg-prime-outbox/test/live/outbox.test.ts` — rollback, duplicates, start rules, null
+  payloads, codec.
 - `packages/pg-prime-outbox/test/pg/ordered.test.ts` — tier 2: a held writer serializes the next
   writer of its key, and `ordered: false` shows the inversion.

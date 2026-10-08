@@ -148,6 +148,13 @@ describe('write', () => {
     )
   })
 
+  it('a null or undefined payload is stored as JSON null', async () => {
+    const outbox = outboxOf({ t: defineOutbox<null | undefined>('t') })
+    await outbox.start()
+    await outbox.topics.t.writeMany([{ payload: null }, { payload: undefined }], { tx: db })
+    expect(await count(sql`payload = 'null'::jsonb`)).toBe(2)
+  })
+
   it('schema and codec run on write and read', async () => {
     const positive: StandardSchemaV1<unknown, number> = {
       '~standard': {
@@ -259,6 +266,35 @@ describe('relay', () => {
     expect(await topic.discard((await topic.parked()).map((r) => r.id))).toBe(1)
     await until(() => got.length === 1)
     expect(got[0]!.payload).toBe('next')
+  })
+
+  it('a payload that no longer decodes parks at once and blocks only its key', async () => {
+    const parks: unknown[] = []
+    const t = defineOutbox<number>('t', {
+      codec: {
+        encode: (n) => n,
+        decode: (v) => {
+          if (v === 2) throw new Error('old shape')
+          return v as number
+        },
+      },
+    })
+    const outbox = outboxOf({ t }, { onPark: (e) => parks.push(e.error) })
+    await outbox.start()
+    const topic = outbox.topics.t
+    const items = [1, 2, 3].map((payload) => ({ payload, key: 'k' }))
+    await topic.writeMany([...items, { payload: 4, key: 'j' }], { tx: db })
+    const { sink, got } = recordingSink<number>()
+    relays.push(topic.relay(sink, fast))
+    await until(() => parks.length === 1 && got.length === 2)
+    await sleep(100)
+    expect(got.map((r) => r.payload).sort()).toStrictEqual([1, 4])
+    const parked = await topic.parked()
+    expect(parked.map((r) => [r.payload, r.attempts])).toStrictEqual([[2, 1]])
+    expect(parked[0]!.error).toMatch(/old shape/)
+    expect(await topic.discard([parked[0]!.id])).toBe(1)
+    await until(() => got.length === 3)
+    expect(got[2]!.payload).toBe(3)
   })
 
   it('pause stops delivery and resume restarts it', async () => {
