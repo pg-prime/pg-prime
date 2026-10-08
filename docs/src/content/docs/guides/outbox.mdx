@@ -3,4 +3,238 @@ title: "Transactional outbox"
 description: Writing in a transaction, keys, sinks and receiver-side idempotency.
 ---
 
-`@pg-prime/outbox` is being built; this page is written with it. The design is [plan 16](https://github.com/pg-prime/pg-prime/blob/main/design/16-outbox.md).
+import { Aside } from '@astrojs/starlight/components'
+
+"Save the order **and** tell the payment service" is two writes to two systems, and no transaction
+spans both. Write to the database and then call the service, and a crash in between loses the
+message. Call first and then write, and a failed write leaves the service acting on an order that
+does not exist.
+
+`@pg-prime/outbox` makes it one write. The message is a row in your own transaction: it commits
+with your data or rolls back with it. A **relay** then delivers committed rows to a **sink** (an
+HTTP endpoint, a broker, a function) at least once, **in order per key**, with retries, a parked
+state for poison records, and cleanup.
+
+```sh
+pnpm add @pg-prime/outbox
+```
+
+The package has no runtime dependencies; `pg-prime` is its peer.
+
+## Writing in a transaction
+
+Declare a topic, create the outbox once at boot, and write in the same transaction as your data:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="publish-post.ts"
+import { defineOutbox, functionSink, pgOutbox } from '@pg-prime/outbox'
+
+const postPublished = defineOutbox<{ postId: string; title: string }>('post-published')
+const outbox = pgOutbox({ db, define: { postPublished } })
+// Once at boot, outside any transaction: migrates `pgprime_outbox` and creates the topic.
+await outbox.start()
+
+const [user] = await db.sql`
+  insert into users (email, name) values ('ada@example.com', 'Ada') returning id`.execute()
+
+await db.transaction(async (tx) => {
+  const [post] = await tx.sql`
+    insert into posts (author_id, title, body, published)
+    values (${user!['id']}, 'Hello', 'First post', true) returning id`.execute()
+  // Same transaction: the record exists exactly when the post does.
+  await outbox.topics.postPublished.write(
+    { postId: String(post!['id']), title: 'Hello' },
+    { tx, key: `post:${String(post!['id'])}` },
+  )
+})
+
+let done!: () => void
+const delivered = new Promise<void>((resolve) => (done = resolve))
+const relay = outbox.topics.postPublished.relay(
+  functionSink(async (wave, ctx) => {
+    for (const r of wave) console.log(`epoch ${ctx.epoch}: ${r.payload.title} (${r.idem.length}-char idem)`)
+    done()
+  }),
+)
+await delivered
+await relay.close()
+// epoch 1: Hello (36-char idem)
+```
+
+`write` needs `tx`, by type: a record outside your transaction would bring back the problem the
+package exists to solve. The root `db` is accepted too, because one statement is its own
+transaction; that is enough when the record is the only thing you write.
+
+A rolled-back transaction leaves no record and sends no wake-up. `writeMany` writes several records
+in one statement.
+
+<Aside type="caution">
+Call `outbox.start()` once at boot. A `write` that carries a transaction before `start()` resolved
+throws `NotStartedError` instead of migrating from inside your transaction, which would wait for a
+second pool connection while yours is held. A topic you create on the fly with
+`outbox.topic(def)` needs its own `await outbox.topic(def).start()`.
+</Aside>
+
+## Choosing keys
+
+A record's `key` is its ordering unit: records of one key are delivered one at a time, in commit
+order. Use the aggregate's identity (`order:42`, `user:7`). Records without a key have no order and
+spread across partitions.
+
+Ordering holds because, by default (`ordered: true`), writers of the same key serialize until
+commit: the second waits for the first's transaction to end before it takes its id. So `id` order
+is commit order, per key, and the relay delivers in `id` order. The cost is one advisory lock per
+distinct key per transaction. `defineOutbox(topic, { ordered: false })` drops it, for topics where
+order does not matter.
+
+The idempotency key (`idem`) is yours when you pass `idempotencyKey`, a random UUID otherwise. A
+second write with the same `idempotencyKey` is a no-op that returns the first record's id with
+`duplicate: true`, for as long as the first record is pending, parked or delivered within
+`keepDeliveredMs` (24 h by default).
+
+## Relays and sinks
+
+`topic.relay(sink, options)` starts delivering in the background and returns a `Relay` with
+`partitions` and `close()`. Run one per process, as many processes as you like: they share the
+topic's partitions fairly and never deliver one key concurrently.
+
+A sink is one method. It receives a **wave**: a batch that never holds two records of one key, so
+it may deliver the wave in parallel.
+
+{/* docs: use=blog */}
+```ts
+import type { OutboxSink } from '@pg-prime/outbox'
+
+const sink: OutboxSink<{ postId: string }> = {
+  async deliver(wave, ctx) {
+    const failed = new Map<bigint, unknown>()
+    await Promise.all(
+      wave.map(async (r) => {
+        const res = await fetch('https://search.example.com/index', {
+          method: 'POST',
+          body: JSON.stringify(r.payload),
+          headers: { 'idempotency-key': r.idem },
+          signal: ctx.signal,
+        })
+        if (!res.ok) failed.set(r.id, new Error(`indexer answered ${res.status}`))
+      }),
+    )
+    return { failed }
+  },
+}
+```
+
+Resolve to report the whole wave delivered, return `{ failed }` to fail some records, or throw to
+fail them all. `functionSink(fn)` wraps a function. `webhookSink` is the built-in HTTP sink:
+
+{/* docs: use=blog */}
+```ts
+import { webhookSink } from '@pg-prime/outbox'
+
+const hook = webhookSink<{ postId: string }>({
+  url: 'https://hooks.example.com/posts',
+  sign: { secret: process.env['HOOK_SECRET'] ?? '' },
+  timeoutMs: 5_000,
+})
+```
+
+It POSTs one JSON record per request with `Idempotency-Key` and `X-Outbox-Epoch` headers and an
+optional HMAC-SHA256 `X-Signature` of the body. `408`, `425`, `429` and `5xx` are retried; any
+other non-2xx parks the record. `mode: 'batch'` posts one JSON array per URL.
+
+## Failures
+
+A failed record is retried with exponential backoff (`retry: { maxAttempts, baseDelayMs,
+maxDelayMs, jitter }`, defaults 10, 1 s, 5 min, full jitter). While it waits, **its key is
+blocked** and nothing later of that key is sent; other keys keep flowing. After `maxAttempts` the
+record is **parked** and its key stays blocked until an operator replays or discards it (see
+[Outbox in production](/pg-prime/operations/outbox/)).
+
+Throw (or report) a `NonRetryableSinkError` for a record that can never succeed, such as a payload
+the receiver rejects as invalid; it parks at once.
+
+## The receiving side: idempotency and fencing
+
+Delivery is at least once. A relay that crashes after the receiver applied a record, but before the
+relay marked it delivered, delivers it again from another process. Two values make that safe:
+
+- **`idem`** is stable across redeliveries. Store it with the effect and skip a record you have
+  seen. `webhookSink` sends it as `Idempotency-Key`.
+- **`epoch`** grows every time a partition changes hands. A receiver that keeps the highest epoch
+  per partition can reject a stale relay that lost its lease mid-call.
+
+{/* docs: use=blog */}
+```ts
+// On the receiver: apply each record once, in its own transaction.
+async function receive(r: { idem: string; payload: { postId: string } }): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [fresh] = await tx.sql`
+      insert into applied (idem) values (${r.idem}) on conflict do nothing returning idem`.execute()
+    if (fresh === undefined) return
+    // …apply r.payload here, in the same transaction
+  })
+}
+```
+
+## Writing a Kafka or NATS sink
+
+A broker sink maps a wave to one produce call and keys the messages by the record key, so the
+broker keeps the order the outbox gives it:
+
+{/* docs: use=blog */}
+```ts
+import { functionSink } from '@pg-prime/outbox'
+
+// The few members of a Kafka producer this sink uses (kafkajs' `producer.send` has this shape).
+interface Producer {
+  send(r: {
+    topic: string
+    messages: { key: string | null; value: string; headers: Record<string, string> }[]
+  }): Promise<unknown>
+}
+
+const kafkaSink = (producer: Producer, topic: string) =>
+  functionSink<unknown>(async (wave, ctx) => {
+    await producer.send({
+      topic,
+      messages: wave.map((r) => ({
+        key: r.key,
+        value: JSON.stringify(r.payload),
+        headers: { 'idempotency-key': r.idem, 'outbox-epoch': String(ctx.epoch) },
+      })),
+    })
+  })
+```
+
+Turn on the producer's own idempotence where it has one; `idem` covers the rest on the consumer
+side.
+
+## Appending to an events topic
+
+`@pg-prime/outbox` does not depend on `@pg-prime/events`. A sink that appends to an events topic is
+a few lines over a structural type, so neither package needs the other:
+
+{/* docs: use=blog */}
+```ts
+import { functionSink } from '@pg-prime/outbox'
+
+// What an `@pg-prime/events` topic handle offers, structurally.
+interface TopicLike<T> {
+  publishMany(items: readonly { payload: T; key?: string; headers?: Record<string, string> }[]): Promise<unknown>
+}
+
+const toTopic = <T>(topic: TopicLike<T>) =>
+  functionSink<T>(async (wave) => {
+    await topic.publishMany(
+      wave.map((r) => ({
+        payload: r.payload,
+        headers: { idem: r.idem },
+        ...(r.key === null ? {} : { key: r.key }),
+      })),
+    )
+  })
+```
+
+The events log keeps its own order, so the result is the outbox's per-key order. When the record
+and the topic live in the same database, publishing to the topic directly in your transaction
+(`publish(…, { tx })`) is simpler than an outbox.
