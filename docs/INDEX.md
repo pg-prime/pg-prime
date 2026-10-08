@@ -2,6 +2,12 @@
 
 One line per doc: path — what it covers — read when.
 
+- docs/packages/pg-prime-context/src/errors.md — ContextError and its codes — read when adding or handling a CONTEXT_* code.
+- docs/packages/pg-prime-context/src/host.md — TransactionHost: ALS store, propagation join/savepoint/new, scoped settings, strict mode, pinned savepoints — read when a host transaction joins, nests or applies settings wrongly.
+- docs/packages/pg-prime-context/src/index.md — @pg-prime/context entry: TransactionHost, option and settings types, AsyncStorage, ContextError — read when changing the context package's exported surface.
+- docs/packages/pg-prime-context/src/pin.md — capture/restore SQL of a pinned savepoint — read when settings leak between requests of a rollbackScope test.
+- docs/packages/pg-prime-context/src/storage.md — AsyncStorage interface and the default AsyncLocalStorage — read when swapping the storage or porting to another runtime.
+- docs/packages/pg-prime-context/src/testing.md — rollbackScope, the rollback-per-test pin — read when changing how tests pin a host.
 - docs/packages/pg-prime-create/src/args.md — create-pg-prime flag parser, --help text, package-manager detection — read when adding or changing a create-pg-prime flag.
 - docs/packages/pg-prime-create/src/cli.md — create-pg-prime bin entry: TTY detection, readline, exit code — read when the scaffolder hangs, mis-prompts or exits wrongly.
 - docs/packages/pg-prime-create/src/index.md — @pg-prime/create library exports and generated versions.ts — read when importing the scaffolder programmatically or versions.ts is missing.
@@ -19,7 +25,7 @@ One line per doc: path — what it covers — read when.
 - docs/packages/pg-prime-cron/src/sql/maintenance.md — lease expiry, counter reconcile, retention, maintenance gate — read when running counters drift or history grows.
 - docs/packages/pg-prime-cron/src/sql/runs.md — heartbeat, F1 finish, X1 cancel statements — read when finishing or cancelling a run misbehaves.
 - docs/packages/pg-prime-cron/src/sql/schedules.md — schedule upsert/sync, admin statements, row decoders — read when sync or admin calls write the wrong row.
-- docs/packages/pg-prime-cron/src/target/queue.md — queue-target seam for the mq target (C4) — read when implementing or calling the cron queue target.
+- docs/packages/pg-prime-cron/src/target/queue.md — mq queue target: claim and send in one transaction, overlap → dedup keys, manual trigger — read when a queue-target tick sends twice, never, or under the wrong key.
 - docs/packages/pg-prime-cron/src/ticks.md — next-tick module: croner patterns, every grid, at, DST — read when a pattern, time zone or DST tick is wrong.
 - docs/packages/pg-prime-cron/src/wake.md — LISTEN-or-poll sleep for the cron loop — read when cron reacts slowly to triggers or behind PgBouncer.
 - docs/packages/pg-prime-events/src/channel.md — typed LISTEN/NOTIFY channels and the engineChannel/engineChannelSql name scheme — read when changing channel encoding, listen errors or engine channel names.

@@ -1,0 +1,233 @@
+---
+title: "Ambient transactions"
+description: TransactionHost, propagation, scoped settings, RLS and rollback-per-test.
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+pg-prime passes transactions explicitly: `db.transaction(async (tx) => …)` hands you a `tx`, and a
+helper that needs it declares `tx: Tx<S>`. That is the safest shape, and core keeps it. Some
+applications prefer the active transaction to be **ambient**: service methods that compose without
+threading `tx` through every call, and request settings (`app.tenant_id`, `app.user_id`,
+`app.role`, …) that reach every transaction so row-level security works without passing anything.
+
+`@pg-prime/context` adds that on `AsyncLocalStorage`, as an opt-in package:
+
+```sh
+pnpm add @pg-prime/context
+```
+
+## The host
+
+A `TransactionHost` wraps your `Db`. `host.db` is the active transaction, or the root outside one,
+and `host.transaction(fn)` opens or joins one:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="ambient.ts"
+import { TransactionHost } from '@pg-prime/context'
+
+const host = new TransactionHost(db)
+
+async function createUser(email: string, name: string) {
+  const [user] = await host.db.insertInto(host.db.h.users).values({ email, name }).returning((t) => t.users.$all).execute()
+  return user!
+}
+
+async function welcome(email: string) {
+  return host.transaction(async () => {
+    const user = await createUser(email, 'Ada')
+    await host.db.insertInto(host.db.h.posts).values({ authorId: user.id, title: 'Hello', body: '…' }).execute()
+    return user.id
+  })
+}
+
+// One transaction: createUser joined it, so the user and the post commit together.
+console.log(await welcome('ada@example.com'))
+```
+
+`host.tx()` returns the active transaction for helpers that declare `tx: Tx<S>`, and throws
+`CONTEXT_NO_TRANSACTION` outside one. `host.db` is typed `Queryable`, not `Tx | Db`, because nesting
+goes through `host.transaction`.
+
+## Propagation
+
+When a host transaction is already active, `propagation` decides what a nested `host.transaction`
+does. The host's default is `'join'`; set another with `new TransactionHost(db, { propagation })`
+and override it per call:
+
+| `propagation` | Nested call | Cost |
+|---|---|---|
+| `'join'` | Runs `fn` with the **real** outer `Tx` | Nothing |
+| `'savepoint'` | `SAVEPOINT … RELEASE` on the outer transaction: a failure rolls back only this part | Two round trips |
+| `'new'` | A separate transaction on a second connection, committed on its own | A connection |
+
+{/* docs: use=blog */}
+```ts
+import { TransactionHost } from '@pg-prime/context'
+
+const host = new TransactionHost(db)
+await host.transaction(async () => {
+  await host.transaction(async () => {
+    await host.db.sql`insert into users (email, name) values ('probe@example.com', 'Probe')`.execute()
+  }, { propagation: 'savepoint' }).catch(() => {
+    // A duplicate email rolled back only the savepoint; the outer transaction carries on.
+  })
+})
+```
+
+- **A join cannot change the transaction.** `timeoutMs`, `lockTimeoutMs` and `localSettings`, or an
+  `isolation`/`accessMode` other than the outer's, throw `CONTEXT_OPTIONS`: use `'savepoint'` or
+  `'new'`. `retry`, `signal` and `label` are ignored.
+- **`host.tx().rollbackWith(v)` inside a join ends the outer transaction**, which resolves with `v`.
+  For a local rollback use `propagation: 'savepoint'`.
+- A savepoint refuses `isolation`, `accessMode`, `deferrable` and `retry`, which PostgreSQL cannot
+  change mid-transaction. Two host savepoints in flight on one transaction (`Promise.all`) throw
+  `CONTEXT_CONCURRENT_SAVEPOINT`: a transaction is one connection.
+- `'new'` needs a free connection per concurrent caller. With `max: 1` it waits for
+  `connectionTimeoutMillis` and throws `PoolTimeoutError`.
+
+## Scoped settings
+
+`host.run({ settings }, fn)` runs `fn` in a scope. Every transaction the host starts inside it sends
+the settings in core's post-`BEGIN` `set_config(…, true)` batch, so they cost no extra round trip,
+and `SET LOCAL` ends with the transaction. Typed keys come from core's `setting()`:
+
+{/* docs: use=blog */}
+```ts
+import { TransactionHost } from '@pg-prime/context'
+import { setting, uuidCodec } from 'pg-prime'
+
+export const tenantId = setting('app.tenant_id', uuidCodec)
+export const userId = setting('app.user_id', uuidCodec)
+const host = new TransactionHost(db)
+
+// In your request middleware, after authentication:
+async function handle(auth: { tenantId: string; userId: string }, next: () => Promise<void>) {
+  await host.run({ settings: { ...tenantId.set(auth.tenantId), ...userId.set(auth.userId) } }, next)
+}
+```
+
+A policy reads the same key. `tenantId.current()` is `nullif(current_setting('app.tenant_id', true),
+'')::uuid`, NULL when the scope set nothing, so the policy fails closed:
+
+{/* docs: use=blog */}
+```ts
+import { setting, uuidCodec } from 'pg-prime'
+
+const tenantId = setting('app.tenant_id', uuidCodec)
+await db.sql`create policy tenant_isolation on projects
+  using (tenant_id = ${tenantId.current()}) with check (tenant_id = ${tenantId.current()})`.execute()
+```
+
+- **Settings apply only inside transactions.** Outside one they would need a session `SET`, which
+  leaks between tenants behind a transaction pooler.
+- A nested `run` inherits the parent's settings and may add to them; `run` inside a transaction
+  throws `CONTEXT_NESTED_SCOPE`. Explicit `localSettings` win over the scope's.
+- `host.setLocal(name, value)` sends one batch inside a transaction and, in a scope, also records the
+  setting for the transactions the scope starts later. Outside both it throws `CONTEXT_NO_SCOPE`.
+- RLS needs a role that is neither a superuser nor the table's owner (or `force row level security`).
+
+### Strict mode
+
+On by default: reading `host.db` in a scope **with settings** but no transaction throws
+`CONTEXT_UNSCOPED_QUERY`. Under RLS that read would run without the settings and see no rows (or,
+for a `BYPASSRLS` role, every tenant's). `host.root` and `host.outside()` stay as explicit escapes;
+`new TransactionHost(db, { strict: false })` turns the check off.
+
+## Retry
+
+Only the outermost transaction retries, by core's rules (`40001` at repeatable read or serializable).
+Each attempt gets a new `Tx`, so `host.db` follows it, the settings are sent again, and joined and
+savepoint calls re-run as part of the callback. `host.attempt` is the attempt number (0 outside a
+transaction). A `'new'` transaction committed on attempt 1 runs again on attempt 2, like any other
+side effect. A `ContextError` is a `UsageError`, which core never retries.
+
+## The dev guard and explicit transactions
+
+Core's dev guard throws `HandleMisuseError` when the root `Db` runs a statement inside a
+transaction's callback. Inside a host transaction `host.db` **is** the transaction, so the guard
+never fires on it; a root `Db` captured elsewhere (a module-level `db`) still does, which is the
+point. `host.outside()` is the deliberate root statement, such as an audit row that must survive a
+rollback.
+
+A transaction you opened yourself is not ambient. Adopt it with `within`, which sends the scope's
+settings to it first:
+
+{/* docs: use=blog */}
+```ts
+import { TransactionHost } from '@pg-prime/context'
+
+const host = new TransactionHost(db)
+const countUsers = async () => (await host.db.sql`select count(*)::int as n from users`.execute())[0]!['n']
+await db.transaction((tx) => host.within(tx, countUsers))
+```
+
+## Add-ons and prepared queries
+
+Events, outbox, mq and cron do not read the host: pass the transaction explicitly, as
+`{ tx: host.current() }` (a transaction, or the root outside one) or `{ tx: host.tx() }` where one is
+required. A prepared query built on the root runs on the root; run it on the active handle with
+`host.db.run(prepared, { params })`.
+
+## Requests
+
+`host.request({ settings, transaction }, fn)` is `run({ settings }, …)`, inside a host transaction
+when `transaction` is `true` or a `HostTxOptions`. Framework integrations call it per request; under
+[rollback per test](#rollback-per-test) it also isolates each request.
+
+## Runtimes
+
+Node ≥ 22.12 and Bun are tested. Deno and Workers with `nodejs_compat` provide `AsyncLocalStorage`
+and are expected to work. Without it the static `node:async_hooks` import fails at load: the package
+never degrades silently, because an ambient transaction falling back to the root would run
+statements outside it. `storage` accepts any object with `getStore()` and `run()`.
+
+## Rollback per test
+
+`rollbackScope(host)` from `@pg-prime/context/testing` opens a transaction the test owns and **pins**
+it on the host. `rollback()` discards everything the test wrote:
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="rollback-per-test.ts"
+import { TransactionHost } from '@pg-prime/context'
+import { rollbackScope } from '@pg-prime/context/testing'
+
+const host = new TransactionHost(db)
+const scope = await rollbackScope(host)
+await host.request({ settings: { 'app.user_id': '42' }, transaction: true }, async () => {
+  await host.db.sql`insert into users (email, name) values ('test@example.com', 'Test')`.execute()
+})
+await scope.rollback()
+console.log((await db.sql`select count(*)::int as n from users`.execute())[0]) // { n: 0 }
+```
+
+Wherever production would open a root transaction, the pinned host opens a **savepoint** on the
+pin instead: one per request through `host.request`, or one per `host.transaction` in the test body.
+Each one:
+
+- runs inside the pin's dev-guard frame, so a captured root `Db` throws `HandleMisuseError` as in
+  an unpinned run instead of committing for real or waiting on the pin's locks;
+- reads the session's settings on entry and restores them before `RELEASE` (which would otherwise
+  keep every `SET LOCAL`): the user-settable built-ins (`statement_timeout`, `search_path`, …) and
+  every key the host has applied, through a scope, `localSettings` or `host.setLocal`;
+- rolls back only itself on failure, so a request answered with an error does not break the next.
+
+<Aside type="caution">
+PostgreSQL does not list custom settings (`app.*`) anywhere, so the pin restores only the ones the
+host knows. A dotted key set **only** by a raw `tx.setLocal` or `set_config` can leak into the next
+request of the same test. Set request keys through the scope or `host.setLocal`.
+</Aside>
+
+- A savepoint cannot change `isolation` or `deferrable` and a one-connection test cannot produce
+  `40001`, so those and `retry` are ignored under a pin. `accessMode: 'read only'` becomes
+  `transaction_read_only` and the savepoint ends with `ROLLBACK TO`.
+- One request at a time: a second concurrent one throws `CONTEXT_CONCURRENT_SAVEPOINT`. Test real
+  concurrency without a pin.
+- A pin does not satisfy strict mode, and `host.db` in a request without a transaction runs on the
+  request's savepoint.
+- Test-body `host.db` outside a request runs on the pinned transaction itself, so a failing statement
+  aborts the rest of the test (`25P02`): await requests first. A failing statement without a
+  transaction inside a request aborts the rest of that request, where production would have
+  autocommitted it.
+- Code that needs a real `COMMIT` (`NOTIFY` delivery, deferred constraints, a second connection)
+  needs a scratch database.

@@ -1,0 +1,19 @@
+{
+  "//": "Typecheck project: pg-prime and the siblings resolve to source, so nothing needs building first. Decorators are for the tests only; tsconfig.build.json turns them off for src.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "paths": {
+      "pg-prime": ["../pg-prime/src/index.ts"],
+      "@pg-prime/testing": ["../pg-prime-testing/src/index.ts"],
+      "@pg-prime/context": ["../pg-prime-context/src/index.ts"],
+      "@pg-prime/context/testing": ["../pg-prime-context/src/testing.ts"],
+      "@pg-prime/nestjs": ["./src/index.ts"],
+      "@pg-prime/nestjs/testing": ["./src/testing.ts"]
+    }
+  },
+  "include": ["src", "test"]
+}

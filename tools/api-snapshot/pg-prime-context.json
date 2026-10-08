@@ -1,0 +1,47 @@
+{
+  "_source": "design/08 §2.3 — the committed public-surface golden. `node tools/api-snapshot.mjs` rewrites it; `--check` is the gate. `values` is Object.keys() of the built entry; `types` is the entry .d.ts read through the TypeScript 5.9.3 compiler API. `_arity` is each type's declared type-parameter count and exists only so the types@<5.9 stub can mirror it.",
+  "package": "@pg-prime/context",
+  "entries": {
+    ".": {
+      "values": [
+        "ContextError",
+        "TransactionHost"
+      ],
+      "types": [
+        "AsyncStorage",
+        "ContextError",
+        "ContextErrorCode",
+        "HostTxOptions",
+        "Propagation",
+        "RequestScope",
+        "Setting",
+        "Settings",
+        "TransactionHost",
+        "TransactionHostOptions"
+      ],
+      "_arity": {
+        "ContextError": 0,
+        "ContextErrorCode": 0,
+        "TransactionHost": 1,
+        "HostTxOptions": 0,
+        "Propagation": 0,
+        "RequestScope": 0,
+        "Setting": 0,
+        "Settings": 0,
+        "TransactionHostOptions": 0,
+        "AsyncStorage": 1
+      }
+    },
+    "./testing": {
+      "values": [
+        "rollbackScope"
+      ],
+      "types": [
+        "RollbackScope"
+      ],
+      "_arity": {
+        "RollbackScope": 1
+      }
+    }
+  }
+}

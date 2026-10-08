@@ -3,7 +3,7 @@ title: Hazard codes
 description: Every code migrate lint can report, with its default severity.
 ---
 
-pg-prime ships **36 hazard codes** in six families, plus **6 style codes** that are off unless you
+pg-prime ships **44 hazard codes** in seven families, plus **6 style codes** that are off unless you
 ask for them. Every code on this page is checked against the kit's own tables on every build, so a
 rule that exists and a rule that is documented are the same set.
 
@@ -24,6 +24,7 @@ hand-written SQL at all.
 | `LK` | Lock hazard. It works, and it holds a lock that stops your application while it does. | `warn` |
 | `TX` | Transaction and robustness. The file cannot run, or cannot be re-run, the way it is written. | `error` |
 | `EN` | Enum. PostgreSQL's enum DDL has two rules that are easy to trip over. | `error` |
+| `RL` | Row-level security. A change that locks a role out, widens access, or cannot apply under a policy. | `error` / `warn` |
 | `ST` | Style. Advice nobody asked for, so nobody gets it unless they do. | `off` |
 
 The codes are ours; the `DS`/`MF`/`BC` families and their severities follow Atlas and the rule
@@ -146,6 +147,25 @@ The first of these is the bug that motivated writing the differ.
 |---|---|---|
 | <a id="EN101"/>`EN101` | error | A new enum label is used before its `ADD VALUE` has committed. PostgreSQL refuses to use a label added in the same transaction, so the `ADD VALUE` and every statement that mentions the new label must be in different migrations. |
 | <a id="EN102"/>`EN102` | error | Removing or reordering enum labels, for which PostgreSQL has no DDL. The change becomes `DS104`'s type-replacement path — a new type, a rewrite of every table that uses it, and a swap. |
+
+## RL — row-level security
+
+Coverage is counted per table, role and command. A role is covered for a command by a permissive
+policy for that command (or `ALL`) whose `TO` list names `PUBLIC`, the role, or a role it is a member
+of. Hand-written and unmanaged policies count, so only a real loss is reported. The subject of
+`RL101` and `RL108` is `schema.table:role:command`, for example `public.documents:app_user:select`,
+and that is what a `--hints-file` acknowledges. A table proven empty is never reported.
+
+| Code | Severity | What it is, and what to do |
+|---|---|---|
+| <a id="RL101"/>`RL101` | error | Coverage lost: after the change, a role has no permissive policy for a command it had one for before, or a table gets `ENABLE ROW LEVEL SECURITY` with no permissive policy at all. Every query that role runs returns zero rows. Losing `SELECT` is reported on its own, because `UPDATE` and `DELETE` with a `WHERE` or `RETURNING` need it too. Add the replacement policy before you remove the old one. |
+| <a id="RL102"/>`RL102` | warn | `ENABLE ROW LEVEL SECURITY` runs in the migration, and a policy a role needs arrives only with the declared repeatables, which commit after it. Until then that role sees zero rows. Ship the policies one deploy earlier: without RLS they have no effect. `FORCE` has no such window, because it commits with the policies. |
+| <a id="RL103"/>`RL103` | error | Access widens: `DISABLE ROW LEVEL SECURITY` in a migration, or `NO FORCE` on a table that was forced. Every row becomes visible to every role with table privileges. |
+| <a id="RL104"/>`RL104` | warn | A declared policy on a table that has no `rls.enable()` or `rls.force()`. The policy has no effect until RLS is enabled, which is normal in the middle of a rollout. |
+| <a id="RL105"/>`RL105` | error | A restrictive policy pg-prime created is no longer declared and is about to be dropped. Whatever it restricted is allowed from then on. |
+| <a id="RL106"/>`RL106` | error | The plan drops or retypes a column, or drops a table, that a policy depends on. PostgreSQL refuses the statement at apply time. Change or drop the policy in an earlier deploy. |
+| <a id="RL107"/>`RL107` | warn | A data migration touches a table with row-level security, and the role running `apply` has no `BYPASSRLS`. The runner sets `row_security = off`, so the statement fails with `42501` instead of silently skipping rows. Run migrations as a role with `BYPASSRLS`, or as a superuser. Reported by the pre-flight check in `migrate apply`. |
+| <a id="RL108"/>`RL108` | error | A forced table whose owner had a command before (by owning an unforced table, or through a policy) and has no permissive policy for it after. The owner's own queries, including your migrations if they run as the owner, see zero rows. |
 
 ## ST — style
 

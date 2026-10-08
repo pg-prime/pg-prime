@@ -35,6 +35,7 @@ import type {
   TablePayload,
   TypePayload,
 } from "../catalog/payloads.js";
+import type { LaneState } from "../catalog/extract.js";
 import type { Fact, SchemaIR } from "../ir/fact.js";
 import { encodeId, idName, parseId, type StableId } from "../ir/stable-id.js";
 import { splitIdentifierList, parseConstraintDef, parseIndexDef, type IndexItemSpec } from "./parse.js";
@@ -67,6 +68,8 @@ export interface EmitTsOptions {
    * reviewer reads.
    */
   readonly extraUnsupported?: readonly UnsupportedItem[];
+  /** FORCE flags, policies and the `updatedAtTrigger`s to write (design/20 §5.6) */
+  readonly lane?: LaneState;
 }
 
 /* ------------------------------ identifiers ------------------------------- */
@@ -273,11 +276,7 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
       drop("partition", name, "the catalog gives no partition bound for a relation marked as a partition");
       continue;
     }
-    if (p.rowSecurity) {
-      // Not a reason to drop the table: RLS enablement is written to `sql/` as a Tier-R
-      // repeatable, so the desired state still has it.
-      bump("rlsTable");
-    }
+    if (p.rowSecurity) bump("rlsTable");
     emittable.push(f);
   }
   const tableConst = new Map<string, string>();
@@ -405,6 +404,31 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
     bump("table");
   }
 
+  for (const p of options.lane?.policies ?? []) {
+    const on = tableConst.get(`${p.schema}.${p.table}`);
+    const identity = `${p.schema}.${p.table}.${p.name}`;
+    if (on === undefined) {
+      drop("policy", identity, "its table is not in the pulled schema");
+      continue;
+    }
+    needs.add("definePolicy");
+    if (p.using !== null || p.withCheck !== null) needsSql = true;
+    // Raw `pg_get_expr` text is lossless; every omitted clause stays omitted.
+    const opts = [
+      `on: ${on}`,
+      ...(p.command === "all" ? [] : [`for: ${lit(p.command)}`]),
+      ...(p.permissive ? [] : [`as: "restrictive"`]),
+      ...(p.roles.length === 1 && p.roles[0] === "public" ? [] : [`to: [${p.roles.map(lit).join(", ")}]`]),
+      ...(p.using === null ? [] : [`using: () => sql.unsafeRaw(${lit(p.using)})`]),
+      ...(p.withCheck === null ? [] : [`withCheck: () => sql.unsafeRaw(${lit(p.withCheck)})`]),
+    ];
+    body.push(
+      `export const ${names.claim(`${p.table}_${p.name}`)} = definePolicy(${lit(p.name)}, {\n${opts.map((o) => `  ${o},`).join("\n")}\n})`,
+      "",
+    );
+    bump("policy");
+  }
+
   body.push(
     `export default defineSchema({\n${ordered.map((f) => `  ${tableConst.get(qualified(f.id))!},`).join("\n")}\n})`,
   );
@@ -418,8 +442,8 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
     ...(options.repeatableCount === undefined || options.repeatableCount === 0
       ? []
       : [
-          ` * ${String(options.repeatableCount)} Tier-R object(s) — views, functions, triggers, policies,`,
-          ` * matviews, aggregates — were written to \`${options.sqlDir ?? "sql"}/\` as repeatables instead:`,
+          ` * ${String(options.repeatableCount)} Tier-R object(s) — views, functions, triggers, matviews,`,
+          ` * aggregates — were written to \`${options.sqlDir ?? "sql"}/\` as repeatables instead:`,
           " * they are re-applied by hash rather than diffed (design/06 §3.8).",
         ]),
     " *",
@@ -506,6 +530,16 @@ export function emitTypeScript(ir: SchemaIR, options: EmitTsOptions): EmitTsResu
     if (p.clusterOn !== null) {
       needs.add("clusterOn");
       extras.push(`clusterOn(${lit(p.clusterOn)})`);
+    }
+    if (p.rowSecurity) {
+      needs.add("rls");
+      const forced = options.lane?.tables.some((t) => t.schema === schema && t.name === table && t.forced);
+      extras.push(forced === true ? "rls.force()" : "rls.enable()");
+    }
+    for (const t of options.lane?.updatedAtTriggers ?? []) {
+      if (t.schema !== schema || t.table !== table || !keys.has(t.column)) continue;
+      needs.add("updatedAtTrigger");
+      extras.push(`updatedAtTrigger(t.${keys.get(t.column)!})`);
     }
 
     const comment = comments.get(encodeId(fact.id));

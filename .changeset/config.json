@@ -13,7 +13,9 @@
       "@pg-prime/events",
       "@pg-prime/outbox",
       "@pg-prime/mq",
-      "@pg-prime/cron"
+      "@pg-prime/cron",
+      "@pg-prime/context",
+      "@pg-prime/nestjs"
     ]
   ],
   "linked": [],

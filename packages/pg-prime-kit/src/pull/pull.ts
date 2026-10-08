@@ -14,7 +14,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { extractCatalog, type Diagnostic } from "../catalog/extract.js";
+import { extractCatalog, readLaneState, type Diagnostic } from "../catalog/extract.js";
 import { withClient, type ConnInfo } from "../db/pg.js";
 import { observedCounts } from "../catalog/extract.js";
 import { emitTypeScript, type UnsupportedItem } from "./emit-ts.js";
@@ -44,8 +44,23 @@ export async function pullSchema(input: PullInput): Promise<PullResult> {
   const schemas = [...new Set(input.schemas)].sort();
   return withClient(input.connection, async (client) => {
     const extracted = await extractCatalog(client, { schemas, observe: true });
+    const lane = await readLaneState(client, schemas);
     const prefix = input.sqlDir === undefined ? "sql" : posixBase(input.sqlDir);
-    const tierR = await readTierR(client, schemas, prefix);
+    // A marked updatedAt trigger on a timestamptz column becomes `updatedAtTrigger(...)`; its
+    // trigger and function leave `sql/`, since the declared lane renders both.
+    const updatedAtTriggers = lane.updatedAtTriggers.filter(
+      (t) =>
+        extracted.ir.get({ kind: "column", schema: t.schema, table: t.table, name: t.column })?.payload["type"] ===
+        "timestamp with time zone",
+    );
+    const declared = new Set(
+      updatedAtTriggers.flatMap((t) => [
+        `trigger ${t.schema}.${t.table}.pgprime_set_${t.column}`,
+        `function ${t.schema}.pgprime_set_${t.column}()`,
+      ]),
+    );
+    const read = await readTierR(client, schemas, prefix);
+    const tierR = { ...read, objects: read.objects.filter((o) => !declared.has(`${o.kind} ${o.identity}`)) };
 
     // A Tier-R object with nowhere to go is residue, not a silent loss.
     const orphanTierR: UnsupportedItem[] =
@@ -61,6 +76,7 @@ export async function pullSchema(input: PullInput): Promise<PullResult> {
       schemas,
       sqlDir: prefix,
       repeatableCount: input.sqlDir === undefined ? 0 : tierR.objects.length,
+      lane: { ...lane, updatedAtTriggers },
       extraUnsupported: [...tierR.unsupported, ...orphanTierR],
     });
 

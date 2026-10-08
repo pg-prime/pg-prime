@@ -250,14 +250,19 @@ test-body code.
   1. run inside `inTransactionFrame(pin.tx, …)` (core, §8.1), so a captured root `Db` throws
      `HandleMisuseError` as in an unpinned dev run instead of committing for real or hanging on the
      pin's locks;
-  2. on entry, capture `select jsonb_object_agg(name, setting) from pg_settings where context =
-     'user' and (name like '%.%' or name in ('statement_timeout', 'lock_timeout'))`, then apply the
-     scope settings;
+  2. on entry, capture `current_setting(k, true)` in one statement for every user-settable built-in
+     in `pg_settings` (`context = 'user'`) and every key the host knows (scope settings,
+     `localSettings`, `host.setLocal`, so every `SettingKey` it has seen), then apply the scope
+     settings. Placeholder GUCs never appear in `pg_settings`, `SHOW ALL` or
+     `pg_show_all_settings()` (PG 17, 18, PGlite; N0 spike 6), so the host's keys are the only way
+     to find them;
   3. on success, **before** `RELEASE` (which keeps `SET LOCAL` values), restore every changed entry
-     to its captured value in one `set_config(…, true)` statement; `''` only for dotted placeholders
-     created during the request, never for built-ins. Reading the session (not the host's writes)
-     covers `tx.setLocal`, `localSettings` and `timeoutMs` too. A failed restore aborts only `R`; on
-     error `ROLLBACK TO` restores everything itself.
+     to its captured value in one `set_config(…, true)` statement; `''` only for keys captured as
+     unset (placeholders), never for built-ins. Built-ins changed by `tx.setLocal`, `localSettings`
+     or `timeoutMs` are restored too. **Caveat:** a dotted key set only by a raw `tx.setLocal` or
+     `set_config`, which the host never saw, is not restored and can leak into the next request of
+     the same pinned test (guide: set request keys through the scope or `host.setLocal`). A failed
+     restore aborts only `R`; on error `ROLLBACK TO` restores everything itself.
 - **Options:** a savepoint cannot change `isolation`/`deferrable` and serializable retry cannot occur
   on one connection, so those and `retry` are ignored under a pin (documented; §6.3 covers them
   unpinned). `accessMode: 'read only'` → `set_config('transaction_read_only', 'on', true)` inside the
@@ -698,3 +703,152 @@ slips, C1 waits — it does not add `setting()` itself. RLS tests use raw
 | opus-adv-8: `astro.config.mjs` collision with design/20 R4 | R4 owns the file; N0 hands its sidebar entries to the integrator (§8.2, §9) |
 | opus-adv-6: last-wins registry can pick another app's host | `hostOf`: the instance's own host first; the registry refuses duplicates (§4.4, D5) |
 | opus-adv-5: isolation/access mode under the pin unspecified | Isolation, deferrable and retry are ignored under a pin; `read only` becomes `transaction_read_only` and the savepoint ends with `ROLLBACK TO` (§3.7) |
+
+---
+
+#### N0 — RESULT (2026-10-09)
+
+Branch `worktree-agent-ad06b018e2a1b986d`, from `c39698a`. Commits: `42e0055` slots, `38998cb`
+tooling, `f6cbab5` CI, `d3a0d0e` docs stubs, `db8879b` nestjs dev-dep fixes.
+
+**Set up.**
+- Slots `packages/pg-prime-{context,nestjs}`: exports `.` and `./testing` (`src/index.ts`,
+  `src/testing.ts`, both `export {}`), generated types@<5.9 stub, README, slot test, pack-smoke
+  body, unit/live/pg vitest projects (nestjs also aliases `@pg-prime/context{,/testing}`).
+  context's build tsconfig keeps `types: ["node"]` for `node:async_hooks`; nestjs sets
+  `experimentalDecorators` + `emitDecoratorMetadata` in `tsconfig.json` and turns both off in
+  `tsconfig.build.json`.
+- Deps: peer `pg-prime >=0.2.0` on both; nestjs → `@pg-prime/context: workspace:^`, peers
+  `@nestjs/{common,core} ^11.0.0 || ^12.0.0`, `rxjs ^7.8.0`; dev deps Nest 12.1.2 (common, core,
+  testing, platform-express), `@nestjs/{graphql,apollo}` 14.0.3, `@apollo/server` 5.5.1,
+  `@as-integrations/express5` (Apollo on Express 5 does not boot without it), `graphql` 16,
+  `rxjs`, `reflect-metadata`, and `typescript ^7.0.2` (else `@nestjs/graphql`'s optional
+  `typescript` peer resolves to the workspace's 5.9.3 and links its `tsc` into the package's
+  `.bin`; pnpm now reports that optional peer as unmet, which is harmless).
+- Tools: `budgets.json` (§8.2 numbers, deps, required peers, `context-basic` 3 KB / `nestjs-module`
+  8 KB deltas); `treeshake-check` externalizes every required peer of the imported packages for
+  the delta and never stages third-party peers (existing goldens unchanged); `api-snapshot`
+  lets `./testing` export names the root does not and renders the stub from the union of all
+  entries; `pack-smoke` installs `REGISTRY_PEERS` (Nest, rxjs, reflect-metadata) for nestjs;
+  `check-dts` lib-checks a package with a third-party required peer with Node's types and counts
+  a `reference types` directive as `@types/<name>`; `docs-typecheck` enables
+  `experimentalDecorators`; knip workspaces; changesets `fixed` += both plus one minor changeset
+  each; RELEASING rows; docs depends on both plus `@nestjs/{common,core,testing}`, `rxjs`,
+  `reflect-metadata` (not GraphQL: its `typescript` peer would re-resolve Starlight's).
+- CI: bun job unit filter += both, tier-2 loop += context, a nestjs tier-2 step whose jq check
+  fails if `bun-app.test.ts` exists and any of its cases is not `passed`; a `nest11` job that
+  `pnpm add`s Nest 11 + `@nestjs/{graphql,apollo}@^13`, asserts 11 resolved, runs `typecheck` and
+  `test:live` (simulated locally: green).
+
+**W0 spikes** (Node 24.14, Bun 1.4.2, Nest 12.1.2 and 11.2.7 unless noted).
+
+| # | Result | Fallback |
+|---|---|---|
+| 1 | **Pass.** TS 7.0.2 typechecks class, method and parameter (`@Inject`) legacy decorators in `test/` with `emitDecoratorMetadata`; TS 5.9.3 and `oxlint --type-aware` clean too | Call-form fixtures: not needed |
+| 2 | **Pass.** Vitest 4.1.10 / Vite 8.2.1 (oxc) transforms them **and emits `design:paramtypes`** (it follows the tsconfig): metadata-only DI resolves under Node and `bunx --bun vitest` | esbuild pre-transform: not needed |
+| 3 | **Pass.** All four hooks run on `useFactory` (and `useValue`) instances; every `beforeApplicationShutdown` precedes every `onApplicationShutdown`. Order **within** a phase differs: Nest 12 reverses registration order on shutdown, Nest 11 keeps it, so only the phase split may be relied on (as designed) | `useClass` + call-form `Inject`: not needed |
+| 4 | **Pass.** A factory-provided `APP_INTERCEPTOR` running `next.handle().subscribe` inside `als.run` reaches async handlers behind an async guard, Observable handlers and a nested tx store; 20 concurrent requests isolated; Node, `bunx --bun vitest`, direct `bun` (metadata-only DI), Nest 11 | — |
+| 5 | **Pass.** An undecorated `class PgPrimeModule { static forRoot(): DynamicModule }` (global, exports) imports and injects on Nest 12 and 11 | `Module({})(PgPrimeModule)`: not needed |
+| 6 | **Fail — design change.** Placeholder (dotted) GUCs are **never** in `pg_settings`, `SHOW ALL` or `pg_show_all_settings()` on PG 17.11, 18.6 or PGlite 18.3, even after `set_config`; only `current_setting(k, true)` sees them. Built-ins (`statement_timeout`, `lock_timeout`) are listed with `context = 'user'`. Also verified: `set_config('transaction_read_only', 'on', true)` inside a savepoint refuses writes and `ROLLBACK TO` restores read-write, on all three | **Verified** on PG 17 and PGlite: capture `current_setting(k, true)` for the host's known keys plus `pg_settings` for the built-ins in one statement; restore all in one `set_config(…, true)` before `RELEASE` (`NULL` → `''`); `statement_timeout` returns to its captured 30 s |
+| 7 | **Confirmed.** By default `@ResolveField` resolvers (sync and async) see no store while the query resolver sees its scope; with `fieldResolverEnhancers: ['interceptors']` each field runs in its own interceptor scope. Node and Bun, `@nestjs/graphql` 14 and 13 | Design unchanged |
+
+**Spike 6 changes §3.7 (for C1; §3.7 step 2 and §6.1 "Pin" are to be read this way):** the
+capture keys are the scope's settings ∪ explicit `localSettings` ∪ `host.setLocal` keys ∪ every
+dotted key the host has applied under this pin, read with `current_setting(k, true)`, plus
+`pg_settings` for `context = 'user'` built-ins. A dotted key set only through a raw
+`tx.setLocal`/`set_config` that the host never saw cannot be found, so it can leak into the next
+request of the same pinned test: a guide caveat ("set request keys through the scope or
+`host.setLocal`"), and the §6.1 placeholder case uses a key the host knows. Built-ins set by a raw
+`tx.setLocal` or `timeoutMs` are still restored.
+
+**Gates.** Full chain green, tier 2 on a temporary `postgres:17` + `edoburu/pgbouncer`
+(transaction mode; PgBouncer tests ran):
+- unit: pg-prime 1 122, create 35, testing 23, events 33, outbox 51, cron 59, mq/context/nestjs 1;
+- live: pg-prime 1 943 (+18 skipped), testing 28, events 49, outbox 68, cron 78, 3 × 1;
+- pg: pg-prime 2 031 (+29 skipped), kit 461, create 42, testing 36, events 59, outbox 77, cron 94,
+  3 × 1;
+- package:check 33/33 size gates, no API drift, emit parity, check:dts, tree-shake 7 ok + 3
+  pending (`context-basic`, `nestjs-module`, `mq-send`), pack smoke (context install 20.6 KB /
+  60 KB, nestjs 41.8 KB / 120 KB incl. context; unpacked 4.3 / 4.9 KB), create smoke;
+- bench:types, bench:compile; docs:check 710 blocks / 68 pages, 114 examples;
+  docs:examples:pg 10; Bun unit for both slots.
+
+**Sidebar entries (integrator → `docs/astro.config.mjs`):**
+- Guides: `{ label: 'Ambient transactions', slug: 'guides/ambient-transactions' }`,
+  `{ label: 'NestJS', slug: 'guides/nestjs' }`.
+- Reference (after `@pg-prime/cron`): `{ label: '@pg-prime/context', slug: 'reference/context' }`,
+  `{ label: '@pg-prime/nestjs', slug: 'reference/nestjs' }`.
+
+**For C1 and N1.**
+- `./testing` is `src/testing.ts`; record your golden with `pnpm build && node
+  tools/api-snapshot.mjs` and the tree-shake golden with `node tools/treeshake-check.mjs --update
+  --case <context-basic|nestjs-module>` (entries already written); commit only yours.
+- check-dts fails on `node:*` or a `@types/node` reference in context's `dist` — keep
+  `AsyncStorage` structural. nestjs is checked with Node's types (Nest's own `.d.ts` need them).
+- `test/pack-smoke.ts` is yours; nestjs's already boots an empty Nest context with Nest, rxjs and
+  reflect-metadata installed from the registry: extend it to `PgPrimeModule` over a mock pool.
+- N1: the `nest11` CI job runs only `typecheck` and `test:live`, so Nest e2e that must hold on 11
+  belongs in `test/live`; `test/bun/*.ts` is a knip entry and `bun test/bun/app.ts` from the
+  package dir resolves pg-prime and context to source through `tsconfig.json` paths;
+  `docs-examples` does not enable decorators, so runnable Nest blocks need `no-run`, and GraphQL
+  blocks need `skip-check="…"` (docs has no GraphQL deps).
+
+#### C1 — RESULT (2026-10-09)
+
+Branch `worktree-agent-a080f444a4d9ee569`, from `3e619d1`. Commits: `f25cb29` the package, tests,
+docs and goldens; then this RESULT.
+
+**Built as designed (§2.2, §3), with these deviations:**
+- **`request(scope, fn)` and `pinned`** are added to `TransactionHost`. `request` is
+  `run({ settings }, …)`, inside `transaction(fn, scope.transaction)` when `transaction` is `true`
+  or a `HostTxOptions`; under a pin a request without a transaction still opens the savepoint `R`
+  as the store's `base` (§3.7), which the public API could not express otherwise. `pinned` lets
+  N1's interceptor stay a pass-through when `request` is unset and nothing is pinned.
+- `ContextErrorCode` (union, nestjs codes included) is exported; `new ContextError(code, message)`.
+- Setting names are validated by core when sent, not at `run()`: `assertGucName` is **not** a root
+  export of `pg-prime` (R1's note says it was; it is not). No core change needed.
+- Pin capture per N0 spike 6, as now written in §3.7: `current_setting(k, true)` for every
+  `pg_settings` row with `context = 'user'` plus every key the host has applied; the restore is one
+  server-side `set_config(…, true)` over the entries that changed, keys learned after the capture
+  counting as unset. Capture runs on the base before `SAVEPOINT`, so core applies `timeoutMs` /
+  `localSettings` natively. **Caveat** (guide, §3.7): a dotted key set only by a raw
+  `tx.setLocal`/`set_config` can leak into the next request of the same pinned test.
+- `'new'` under a pin nests a pinned savepoint on the current transaction. `#busy` is a `WeakSet`.
+
+**Tests.** unit 24 (mock pool: propagation, join, savepoint, retry, API, guard, cost/graph, pin
+protocol), live 10 (PGlite: settings, savepoints, `within`, `rollbackScope`), pg 8 (RLS via raw
+`create policy … ${tenantId.current()}` on a non-superuser role, `within` + RLS, 50 scopes on
+`max: 5` with every pooled connection empty, pin + RLS + dev guard, savepoints, `40001` re-run with
+settings, `new`/`max: 1`, PgBouncer). Green on docker PG 17.11 (+ PgBouncer 1.26 transaction mode)
+and PG 18.6 (PgBouncer case skipped), and under Bun 1.4.2 (`bunx --bun vitest`: unit, live, pg).
+
+**Chain** (PG 17 + PgBouncer; PG 18 for `test:pg` too): lint ✓, format ✓, typecheck ✓, test ✓,
+test:live ✓ (events `a failing single entry keeps its attempt count` timed out once, green on
+rerun), test:pg ✓ on 17 (cron `misfire past endAt` flaked once, green on rerun) and 18, build ✓,
+bench:compile ✓, bench:types ✓, docs:check ✓ (754 blocks / 69 pages, 123 examples),
+docs:examples:pg ✓ (10), package:check ✓ (33/33 size gates, no API drift, emit parity, check:dts,
+tree-shake, pack smoke, create smoke).
+
+**Sizes.** `src/` 354 hand-written lines. Unpacked 31.9 KB / 40 KB; install 48.2 KB / 60 KB;
+`context-basic` delta 1 871 B esbuild / 2 007 B rollup min+gz (budget 3 072), 7 modules.
+
+**INDEX lines** (for the integrator):
+- docs/packages/pg-prime-context/src/index.md — @pg-prime/context entry: TransactionHost, option and settings types, AsyncStorage, ContextError — read when changing the context package's exported surface.
+- docs/packages/pg-prime-context/src/host.md — TransactionHost: ALS store, propagation join/savepoint/new, scoped settings, strict mode, pinned savepoints — read when a host transaction joins, nests or applies settings wrongly.
+- docs/packages/pg-prime-context/src/storage.md — AsyncStorage interface and the default AsyncLocalStorage — read when swapping the storage or porting to another runtime.
+- docs/packages/pg-prime-context/src/pin.md — capture/restore SQL of a pinned savepoint — read when settings leak between requests of a rollbackScope test.
+- docs/packages/pg-prime-context/src/errors.md — ContextError and its codes — read when adding or handling a CONTEXT_* code.
+- docs/packages/pg-prime-context/src/testing.md — rollbackScope, the rollback-per-test pin — read when changing how tests pin a host.
+
+**For the integrator:** knip now hints "Remove from ignoreDependencies" for `pg-prime` and
+`@pg-prime/testing` in `packages/pg-prime-context` (`knip.json`, not C1's).
+
+**For N1.**
+- The interceptor: `if (!request && !host.pinned) return next.handle()`; otherwise
+  `host.request({ settings, transaction: tx && { retry: false, label } }, () => lastValueFrom(…))`.
+  Under a pin this opens `R` for every request, as the ALS tx or as the base.
+- `rollbackScopeFor(app)` wraps `rollbackScope(host)` from `@pg-prime/context/testing`.
+- `@Transactional` calls `host.transaction(fn, { label, ...opts })`; it is `async`, so option
+  refusals are rejections. Throw `new ContextError('CONTEXT_NOT_REGISTERED' | 'CONTEXT_DUPLICATE_HOST', msg)`.
+- Join refuses `timeoutMs`/`lockTimeoutMs`/`localSettings` and a different isolation/access mode;
+  `retry`, `signal`, `label` pass through ignored.
