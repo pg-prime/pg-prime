@@ -136,6 +136,8 @@ function main() {
           // and on TS 7. Re-checking them here would report the same error once per block.
           skipLibCheck: true,
           types: ['node'],
+          // Nest's DI needs legacy decorators; no other block uses decorators.
+          experimentalDecorators: true,
           allowJs: false,
           verbatimModuleSyntax: false,
         },

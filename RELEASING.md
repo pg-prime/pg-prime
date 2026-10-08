@@ -15,6 +15,7 @@ Nothing in this repository publishes anything until the one-time setup in §1 is
 | Version tool | Changesets (`@changesets/cli@3`), config in `.changeset/config.json` |
 | Version group | **`pg-prime`, `@pg-prime/kit` and `@pg-prime/create` are `fixed`** — always the same version. The scaffolder is in the group because it *pins what it scaffolds*: the ranges in the `package.json` it writes are generated at build time from the workspace, and that pin is only exact if the scaffolder ships every time the two packages it pins do (design/13 decision 6) |
 | Add-ons in the group | **`@pg-prime/events`, `@pg-prime/outbox`, `@pg-prime/mq` and `@pg-prime/cron`** are `fixed` too (design/08 §1.1's add-on rule). Each peers `pg-prime >=0.2.0`, the release that ships `migrateOwnedSchema`; an open-ended floor never leaves range, so changesets never forces a major on them. Until `changeset version` raises `pg-prime` to 0.2.0, `changeset status` logs "must depend on the current version" for those peers; that is expected and does not fail |
+| Context add-ons | **`@pg-prime/context` and `@pg-prime/nestjs`** are `fixed` too, with the same `pg-prime >=0.2.0` peer floor (the release that ships `setting()`). `@pg-prime/nestjs` depends on `@pg-prime/context` and peers `@nestjs/common` and `@nestjs/core` (`^11 \|\| ^12`) and `rxjs` |
 | Independent | `@pg-prime/testing` |
 | Publisher | `.github/workflows/release.yml`, on push to `main` |
 | Auth | **npm trusted publishing (OIDC).** There is no npm token anywhere |
@@ -31,7 +32,8 @@ there is no credential to run it with.
 npm requires the **first** publish of a name to be manual, and a trusted publisher can only be
 configured on a package that exists. So for each of `pg-prime`, `@pg-prime/kit`,
 `@pg-prime/testing` and `@pg-prime/create`, and then `@pg-prime/events`, `@pg-prime/outbox`,
-`@pg-prime/mq` and `@pg-prime/cron`, in this order:
+`@pg-prime/mq` and `@pg-prime/cron`, and then `@pg-prime/context` and `@pg-prime/nestjs`, in this
+order:
 
 1. **Publish `0.0.0` by hand**, once, from a laptop, with 2FA:
 
@@ -40,7 +42,7 @@ configured on a package that exists. So for each of `pg-prime`, `@pg-prime/kit`,
    cd packages/<dir> && npm publish --access public
    ```
 
-   (The first four placeholder `0.0.0`s are already published — see §5. The four add-ons are
+   (The first four placeholder `0.0.0`s are already published — see §5. The add-ons are
    not yet: publish each one's placeholder the same way before the release that first contains
    it. If a name is already on the registry under our account, skip to step 2.)
 
@@ -141,7 +143,7 @@ pnpm changeset          # pick the packages, pick the bump, write the entry
 **As the releaser.** Read the "Version Packages" PR before merging it:
 
 - Are the version numbers what you expect? `pg-prime`, `@pg-prime/kit`, `@pg-prime/create` and
-  the four add-ons must be **identical** — if they are not, the `fixed` group in
+  the add-ons must be **identical** — if they are not, the `fixed` group in
   `.changeset/config.json` has been broken.
 - Does each `CHANGELOG.md` entry read like something a user can act on?
 - Is anything breaking? Then it must be a **minor** (we are pre-1.0), and `MIGRATING.md` must have

@@ -159,7 +159,8 @@ export async function snapshot(pkg) {
   // Invariant 1 — every subpath is a subset of the root.
   const root = entries['.']
   for (const [subpath, rec] of Object.entries(entries)) {
-    if (subpath === '.') continue
+    // `./testing` is a test-helper surface kept out of the root on purpose.
+    if (subpath === '.' || subpath === './testing') continue
     const extraV = rec.values.filter((n) => !root.values.includes(n))
     const extraT = rec.types.filter((n) => !root.types.includes(n))
     if (extraV.length || extraT.length) {
@@ -216,6 +217,17 @@ export function renderStub(pkgName, root) {
   }
   lines.push('')
   return lines.join('\n')
+}
+
+/** Every entry's names: subpaths are slices of the root, except `./testing`, which adds its own. */
+function stubNames(entries) {
+  const all = Object.values(entries)
+  const union = (key) => [...new Set(all.flatMap((e) => e[key]))].sort()
+  return {
+    values: union('values'),
+    types: union('types'),
+    _arity: Object.assign({}, ...all.map((e) => e._arity)),
+  }
 }
 
 function stubPathOf(pkg) {
@@ -292,9 +304,9 @@ if (process.argv[1] && process.argv[1].endsWith('api-snapshot.mjs')) {
       writeFileSync(goldenPath, next)
     }
 
-    // Invariant 2 — the stub mirrors the root entry exactly.
+    // Invariant 2 — the stub mirrors the root entry (plus `./testing`, which shares it) exactly.
     const stubPath = stubPathOf(pkg)
-    const stub = renderStub(pkg.name, entries['.'])
+    const stub = renderStub(pkg.name, stubNames(entries))
     if (check) {
       const onDisk = existsSync(stubPath) ? readFileSync(stubPath, 'utf8') : null
       if (onDisk !== stub) {

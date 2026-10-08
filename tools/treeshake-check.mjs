@@ -25,8 +25,9 @@
 //     what the golden is derived from and two bundlers on one gate is two ways to go red for a
 //     reason that is not ours. A rollup/esbuild module-set disagreement is printed loudly.
 //  5. An add-on fixture's budget is `{ "delta": bytes }`: the gate is the min+gz of the same entry
-//     bundled with `pg-prime` external, i.e. what the add-on adds over the pg-prime an app already
-//     ships. The module-set golden still covers the whole bundle.
+//     bundled with every peer of the packages it imports external (`pg-prime` included), i.e. what
+//     the add-on adds over what an app already ships. The module-set golden covers the whole
+//     bundle except third-party peers (a framework), which are never staged and always external.
 //  6. A golden of `{ "modules": null }` is a seeded slot whose API does not exist yet: while its
 //     entry fails to bundle it is reported as pending; once it bundles, the golden must be recorded.
 import { build as esbuild, transform } from 'esbuild'
@@ -81,10 +82,29 @@ function stagePackages(tmp, names) {
     cpSync(join(src, 'package.json'), join(dest, 'package.json'))
     for (const dep of Object.keys(ws.pkg.dependencies ?? {})) stage(dep, src)
   }
-  for (const n of names) {
-    const entry = readFileSync(join(FIXTURES, n, 'entry.ts'), 'utf8')
-    for (const [, spec] of entry.matchAll(/from '((?:@[^/']+\/)?[^/']+)/g)) stage(spec, ROOT)
+  for (const n of names) for (const spec of imports(n).filter(isWorkspace)) stage(spec, ROOT)
+}
+
+const isWorkspace = (name) => PACKAGES.some((p) => p.name === name)
+const imports = (name) =>
+  [
+    ...readFileSync(join(FIXTURES, name, 'entry.ts'), 'utf8').matchAll(
+      /from '((?:@[^/']+\/)?[^/']+)/g,
+    ),
+  ].map((m) => m[1])
+
+/** Required peers of the workspace packages a fixture imports, and of their workspace dependencies. */
+function peersOf(name) {
+  const peers = new Set()
+  const visit = (spec) => {
+    const ws = PACKAGES.find((p) => p.name === spec)
+    if (!ws) return
+    const meta = ws.pkg.peerDependenciesMeta ?? {}
+    for (const p of Object.keys(ws.pkg.peerDependencies ?? {})) if (!meta[p]?.optional) peers.add(p)
+    for (const d of Object.keys(ws.pkg.dependencies ?? {})) visit(d)
   }
+  imports(name).forEach(visit)
+  return [...peers]
 }
 
 export function caseNames() {
@@ -97,9 +117,9 @@ export function caseNames() {
 /** Metafile input keys → stable module ids, relative to the staged tmp dir. */
 const normalise = (paths) => [...new Set(paths.map(posix))].sort()
 
-async function bundleWithEsbuild(tmp, name, external = []) {
+async function bundleWithEsbuild(tmp, name, peers = []) {
   const result = await esbuild({
-    external,
+    external: peers.flatMap((p) => [p, `${p}/*`]),
     absWorkingDir: tmp,
     entryPoints: [join(tmp, name, 'entry.ts')],
     bundle: true,
@@ -130,13 +150,14 @@ async function bundleWithEsbuild(tmp, name, external = []) {
  * The second opinion. rollup cannot read TypeScript, so the entry is transpiled by esbuild first
  * (types are erased, nothing else changes) and rollup does the resolution and the DCE.
  */
-async function bundleWithRollup(tmp, name) {
+async function bundleWithRollup(tmp, name, peers = []) {
   const src = readFileSync(join(tmp, name, 'entry.ts'), 'utf8')
   const js = await transform(src, { loader: 'ts', format: 'esm', target: 'node22' })
   const entryJs = join(tmp, name, 'entry.rollup.mjs')
   writeFileSync(entryJs, js.code)
   const bundle = await rollup({
     input: entryJs,
+    external: (id) => peers.some((p) => id === p || id.startsWith(`${p}/`)),
     plugins: [
       nodeResolve({ exportConditions: ['node', 'import', 'default'], preferBuiltins: true }),
     ],
@@ -186,15 +207,16 @@ export async function run({ update = false, only = undefined } = {}) {
       const golden = existsSync(goldenPath)
         ? JSON.parse(readFileSync(goldenPath, 'utf8')).modules
         : undefined
+      const framework = peersOf(name).filter((p) => !isWorkspace(p))
       let es
       try {
-        es = await bundleWithEsbuild(tmp, name)
+        es = await bundleWithEsbuild(tmp, name, framework)
       } catch (e) {
         if (golden !== null) throw e
         results.push({ name, pending: true })
         continue
       }
-      const ro = await bundleWithRollup(tmp, name)
+      const ro = await bundleWithRollup(tmp, name, framework)
       const delta = typeof spec === 'object'
       const budget = delta ? spec.delta : spec
       if (update) {
@@ -216,7 +238,7 @@ export async function run({ update = false, only = undefined } = {}) {
       }
       const recorded = update ? es.modules : (golden ?? null)
       const gzEs = delta
-        ? gz((await bundleWithEsbuild(tmp, name, ['pg-prime', 'pg-prime/*'])).code)
+        ? gz((await bundleWithEsbuild(tmp, name, peersOf(name))).code)
         : gz(es.code)
       const gzRo = gz(ro.code)
       const sizeOk = gzEs <= budget
