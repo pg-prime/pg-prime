@@ -7,9 +7,8 @@ import type { Db } from 'pg-prime'
 import { requiresConcurrency } from '@pg-prime/testing'
 import { defineQueue, pgMq } from '../../src/index.js'
 import type { Mq, Worker } from '../../src/index.js'
-import { claimGroups } from '../../src/sql/claim.js'
+import { claimGroups, claimGroupsSql } from '../../src/sql/claim.js'
 import { reconcileGroups, reconcileQueue } from '../../src/sql/maintain.js'
-import { finish } from '../../src/sql/settle.js'
 import { tables } from '../../src/sql/tables.js'
 import { freshSchema, p95, sleep, until, useServer } from '../_db.js'
 
@@ -462,19 +461,20 @@ describe('the §10 tier-2 table', () => {
       consumer: 'bench',
       limited: false,
     }
+    // Server time (planning + execution): the skip scan's cost, not the laptop's network jitter.
+    const g = { after: '', scan: 4, concurrency: undefined, rate: undefined }
     const took: number[] = []
     for (let i = 0; i < 100; i++) {
-      const t0 = performance.now()
-      const r = await claimGroups(db, t, o, { after: '', scan: 4, concurrency: 1, rate: undefined })
-      took.push(performance.now() - t0)
-      const m = r.rows[0]
-      if (m !== undefined)
-        await finish(db, t, {
-          id: m.id,
-          to: 'completed',
-          guard: { kind: 'token', token: m.token as string },
-        })
+      const plan = await db.sql`explain (analyze, timing off) ${claimGroupsSql(t, o, g)}`.execute()
+      const ms = (label: string) =>
+        Number(
+          /([\d.]+) ms/.exec(
+            plan.map((r) => String(r['QUERY PLAN'])).find((l) => l.startsWith(label)) ?? '',
+          )?.[1],
+        )
+      took.push(ms('Planning Time') + ms('Execution Time'))
     }
+    expect((await claimGroups(db, t, o, g)).rows).toHaveLength(1)
     expect(p95(took)).toBeLessThan(5)
   }, 60_000)
 })
