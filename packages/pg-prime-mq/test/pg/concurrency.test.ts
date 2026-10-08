@@ -336,9 +336,6 @@ describe('the §10 tier-2 table', () => {
     const def = defineQueue<P, number>('held')
     const db = server.db(6)
     const mq = pgMq({ db, schema })
-    const scanner = pgMq({ db: server.db(2), schema })
-      .queue(def)
-      .work(async () => 0, { pollMs: 50, expireScanMs: 50 })
     const q = mq.queue(def)
     await q.sendMany([0, 1, 2].map((n) => ({ payload: { n } })))
     const leaseMs = 600
@@ -359,7 +356,11 @@ describe('the §10 tier-2 table', () => {
       },
       { concurrency: 3, leaseMs, pollMs: 50 },
     )
-    await until(() => holding)
+    await until(async () => holding && (await q.counts()).active === 3)
+    // A second worker scans for expired leases; nothing is left for it to claim.
+    const scanner = pgMq({ db: server.db(2), schema })
+      .queue(def)
+      .work(async () => 0, { pollMs: 50, expireScanMs: 50 })
     await sleep(2 * leaseMs)
     const stale = await count(
       server.db(1),
