@@ -603,6 +603,8 @@ type TableExtra =
       readonly parentSchema: string | undefined
       readonly bound: string
     }
+  | { readonly node: 'rls'; readonly force: boolean }
+  | { readonly node: 'updatedAtTrigger'; readonly column: string }
 ```
 
 One heterogeneous array of tagged nodes, so an extension pack can add a node kind without an API
@@ -933,6 +935,150 @@ one, so `` sql`${userInput} > 0` `` cannot mean what it looks like it means. Wit
 failure is a `42P02` from PostgreSQL at apply time, three steps and one shadow database away from the
 line that wrote it. A column *reference* in a hole is the one interpolated value this position can
 render, because it is an identifier whose resolved name the schema layer knows.
+
+## Row-level security and triggers
+
+Policies and the `updated_at` trigger ride the migration kit's `sql/` repeatable lane: plain SQL,
+nothing in the query path. Generic by design — no tenant model, setting name or role is assumed. See
+[`setting`](/pg-prime/reference/query/#setting) for the session value a policy usually reads.
+
+```ts no-run="a schema module runs nothing on its own"
+import { definePolicy, eq, pgTable, rls, setting, updatedAtTrigger, uuidCodec } from 'pg-prime'
+
+export const orgId = setting('app.org_id', uuidCodec)
+
+export const documents = pgTable(
+  'documents',
+  (t) => ({ id: t.uuid().primaryKey(), orgId: t.uuid(), updatedAt: t.timestamptz() }),
+  (t) => [rls.force(), updatedAtTrigger(t.updatedAt)],
+)
+
+export const documentsTenant = definePolicy('tenant', {
+  on: documents,
+  to: ['app_user'],
+  using: (t) => eq(t.orgId, orgId.current()),
+  withCheck: (t) => eq(t.orgId, orgId.current()),
+})
+```
+
+### `rls`
+
+{/* docs: signature */}
+```ts
+const rls: { enable(): TableExtra; force(): TableExtra }
+```
+
+`rls.enable()` is `ALTER TABLE … ENABLE ROW LEVEL SECURITY`, planned by the migration like any other
+table fact. `rls.force()` implies it and also applies the policies to the table owner (`FORCE ROW
+LEVEL SECURITY`), which the kit states in the table's policy file so it commits together with the
+policies. Superusers and `BYPASSRLS` roles bypass both.
+
+### `definePolicy`
+
+{/* docs: signature */}
+```ts
+function definePolicy<T extends AnyTable>(name: string, spec: PolicySpec<T>): Policy<T>
+```
+
+One `CREATE POLICY` on `spec.on`. Export it from a schema module; `migrate generate` finds it like a
+view. The name, roles, command and predicate shape are checked here, with a `SchemaError`; the
+predicate bodies run when the policy is rendered.
+
+### `PolicySpec`
+
+{/* docs: signature */}
+```ts
+type Pred<T extends AnyTable> = (t: T['cols']) => PolicyExpr
+interface PolicyBase<T extends AnyTable> {
+  readonly on: T
+  readonly as?: 'permissive' | 'restrictive'
+  readonly to?: readonly PolicyRole[]
+}
+type PolicySpec<T extends AnyTable> = PolicyBase<T> &
+  (
+    | { readonly for?: 'all' | 'update'; readonly using?: Pred<T>; readonly withCheck?: Pred<T> }
+    | { readonly for: 'select' | 'delete'; readonly using?: Pred<T>; readonly withCheck?: never }
+    | { readonly for: 'insert'; readonly withCheck?: Pred<T>; readonly using?: never }
+  )
+```
+
+`as` defaults to permissive, `to` to `PUBLIC`, `for` to `all`. The predicates are thunks so a policy
+can reference a table declared later in the file. Both are optional, as in PostgreSQL: a permissive
+policy without one grants nothing, a restrictive one restricts nothing.
+
+Every column renders qualified by its table name — `"documents"."org_id"` — so a subquery over
+another table that also has an `org_id` cannot capture it. A subquery over the policy's *own* table
+must alias it (`FROM documents d`). A value becomes a typed literal (`'f'::boolean`); a prepared
+placeholder, an aggregate, a window call or a `bytea` value is a `SchemaError`.
+
+### `PolicyExpr`
+
+{/* docs: signature */}
+```ts
+type PolicyExpr = { readonly [OUT]: boolean | null } | AnyFragment
+```
+
+A boolean operator result, a boolean column, or any `sql` fragment.
+
+### `PolicyRole`
+
+{/* docs: signature */}
+```ts
+type PolicyRole = 'public' | 'current_user' | 'current_role' | 'session_user' | (string & {})
+```
+
+The four keywords render bare; any other name is a quoted role, which must exist.
+
+### `PolicyCommand`
+
+{/* docs: signature */}
+```ts
+type PolicyCommand = 'all' | 'select' | 'insert' | 'update' | 'delete'
+```
+
+### `Policy`
+
+{/* docs: signature */}
+```ts
+interface Policy<T extends AnyTable> {
+  readonly kind: 'policy'
+  readonly name: string
+  readonly $: PolicyRuntime
+  readonly __table?: T
+}
+```
+
+`__table` is a phantom: it ties the value to its table's type and is never present at runtime.
+
+### `PolicyRuntime`
+
+{/* docs: signature */}
+```ts
+interface PolicyRuntime {
+  readonly name: string
+  readonly table: TableRuntime
+  readonly command: PolicyCommand
+  readonly permissive: boolean
+  readonly roles: readonly string[]
+  ddl(schemaOf: (schema: string | undefined) => string): string
+}
+```
+
+`ddl` returns the statement without a trailing semicolon, evaluating the predicates on every call.
+`schemaOf` maps the table's declared schema (`undefined` for the default) to the one to emit.
+
+### `updatedAtTrigger`
+
+{/* docs: signature */}
+```ts
+function updatedAtTrigger(
+  column: AnyRef & { readonly [META]: { readonly pg: 'timestamptz' | 'timestamp' } },
+): TableExtra
+```
+
+A `BEFORE UPDATE … FOR EACH ROW` trigger that sets the column to `now()`, through a static plpgsql
+function `pgprime_set_<column>()` in the table's schema. An explicit value in the `UPDATE` is
+overwritten, `$onUpdate` included.
 
 ## Enums
 

@@ -616,3 +616,59 @@ run the chain; append the integration record.
 | Trigger function placement | The table's schema | It exists in shadow, verify and target before the lane runs; no bootstrap. |
 | Runner `row_security = off` | On by default | It only turns silent wrong results into errors; the changeset says so. |
 | Interface name | `SettingKey` (not `Setting`) | design/19 already exports `type Setting = string \| number \| boolean`. |
+
+---
+
+#### R1 — RESULT
+
+Branch `worktree-agent-ae0f989b445bb5b4b` on `0b38870`. Commits: `5343882` **contract** (§3 API,
+`compileDdlExpr`, `inTransactionFrame`, API snapshot), `f671008` tests, `60b99c8` docs + changeset,
+`8ee4fb4` fix (no TS parameter property: Node's strip-only loader rejected it in outbox's child
+process), then this RESULT with the `root-import-all` module golden.
+
+**S0 (PGlite 0.5.7 = PG 18.3, user `postgres` is superuser):** `CREATE ROLE … NOLOGIN` ok; `SET ROLE`
+to a non-super role ok; RLS filters by `current_setting('app.org', true)`; the `''` placeholder
+after a committed `set_config(…, true)` is reproduced; owner sees all rows unforced and 0 rows after
+`FORCE`; plpgsql `CREATE OR REPLACE TRIGGER` and `COMMENT ON POLICY` work. All §8 live cases run on
+PGlite; no `no-run` fallback needed.
+
+**Contract as built (deviations from §3):**
+- `Policy<T>` has one extra optional phantom member `__table?: T` (never present at runtime): an
+  unused type parameter fails `no-unused-vars` and made `Policy<A>` equal `Policy<B>`.
+- `$.ddl()` returns the statement **without** a trailing `;`, always printing `AS …`, `FOR …` and
+  `TO …` (default `TO PUBLIC`); keywords upper-case bare, other roles quoted.
+- `updatedAtTrigger` returns the §3.1 node only; core does **not** render the function/trigger SQL —
+  the kit (R2) renders §4's two files. `test/live/rls.test.ts` pins that SQL on PGlite.
+- `assertGucName` was already exported; unchanged.
+- Bind rendering: `quoteStringLiteral(encoded)::<codec.sqlName>` (`'f'::boolean`, `'10'::integer`,
+  `E'a\\b'::text`, `NULL::integer`); a bind whose codec is `unknownCodec` (raw `sql` holes, columns
+  whose type the default registry does not know: enums, arrays, typmods) is a bare untyped literal.
+  Column codecs come from `defaultRegistry().byName(pgType)`, no `src/query` import.
+- A schema ref passed as data (e.g. `${other.cols.x}` in raw SQL) renders `"<table>"."<col>"`.
+- Typed subqueries via `compileOnly` render (`exists(db.from(...)…)`), but their `FROM` keeps the
+  declared schema; `schemaOf` does not remap them. Documented; raw `sql` is the remappable form.
+- Aggregates/window calls are refused anywhere in the tree, subqueries included.
+
+**Added for design/19:** `inTransactionFrame(tx, fn)` (`session/guard.ts`, `txFrames` filled in
+`makeTxHandle`), root export, tier-0 test, reference entry in `reference/pg-prime.mdx`.
+
+**Tests:** core unit 61 files / 1159 tests; core live (PGlite) 100 / 1987 (+18 skipped); core
+`test:pg` on pg-dev PG 17.11 and 18.6 (`pgprime_r1`) 113 files / 2067 each (RLS files skip loudly:
+no CREATEROLE) and on a docker PG 17 superuser + PgBouncer (transaction mode) 113 / 2079, RLS live
+7/7 and tier-2 4/4 including the PgBouncer case.
+
+**Chain** (docker PG 17 + PgBouncer, `PG_PRIME_PG_DUMP` via `docker exec`): lint ✓, format ✓,
+typecheck ✓, test ✓, test:live ✓, test:pg ✓ (one cron timing flake, `misfire past endAt`, green
+on rerun), build ✓, bench:compile ✓, docs:check ✓, docs:examples:pg ✓; package:check: api-snapshot,
+emit-parity, check:dts, pack-smoke, create-smoke ✓. **Size-only failures (integrator re-baselines):**
+- `size-budget`: pg-prime total `.js` **981.7 KB** > 974.0 KB (unpacked 2546.2 KB of 2560 KB ok).
+- `treeshake`: `root-import-all` **88 916 B** min+gz > 88 064 B; module set +3
+  (`schema/policy.js`, `schema/trigger.js`, `session/setting.js`, golden updated here).
+  `connect-one-select` 76 472 B and `full-crud-tx` 76 718 B stay within 76 800 B.
+- `bench:types`: package `.d.ts` bytes **617 933** > 613 376; every instantiation line in budget.
+
+**INDEX lines** (for the integrator):
+- docs/packages/pg-prime/src/schema/policy.md — definePolicy, PolicySpec/PolicyRuntime, CREATE POLICY rendering, column qualification — read when a declared policy renders or validates wrongly.
+- docs/packages/pg-prime/src/schema/trigger.md — updatedAtTrigger table extra and its refusals — read when declaring an updated_at trigger or it throws.
+- docs/packages/pg-prime/src/session/setting.md — setting()/SettingKey: typed GUC set() records and current() SQL — read when a setting reads NULL, 22P02, or setLocal names misbehave.
+- Updated summaries: `compile/compiler.md` — add "compileDdlExpr"; `session/guard.md` — add "inTransactionFrame".

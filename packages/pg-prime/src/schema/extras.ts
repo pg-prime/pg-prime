@@ -125,6 +125,10 @@ export type TableExtra =
       /** `FOR VALUES FROM (…) TO (…)` / `DEFAULT`, verbatim. */
       readonly bound: string
     }
+  /** `ENABLE ROW LEVEL SECURITY`; `force` also applies it to the table owner. */
+  | { readonly node: 'rls'; readonly force: boolean }
+  /** `BEFORE UPDATE … FOR EACH ROW` sets `column` (a DB name) to `now()`. */
+  | { readonly node: 'updatedAtTrigger'; readonly column: string }
 
 function dbNames(refs: readonly AnyRef[], what: string): readonly string[] {
   if (refs.length === 0) throw new SchemaError(`pg-prime: ${what} was given no columns.`)
@@ -772,3 +776,9 @@ export function partitionOf(
   }
   return { node: 'partitionOf', parent, parentSchema: options?.schema, bound }
 }
+
+/** Row-level security on a table: `rls.enable()`, or `rls.force()` to apply it to the owner too. */
+export const rls: { enable(): TableExtra; force(): TableExtra } = Object.freeze({
+  enable: (): TableExtra => ({ node: 'rls', force: false }),
+  force: (): TableExtra => ({ node: 'rls', force: true }),
+})

@@ -559,6 +559,19 @@ interface AdvisoryLockOptions {
 `try: true` selects the `try_` family, which returns `false` instead of blocking; `shared: true`
 selects the `_shared` family. [Locks](/pg-prime/operations/locks/) has the decision table.
 
+### `inTransactionFrame`
+
+{/* docs: signature */}
+```ts
+function inTransactionFrame<R>(tx: Tx, fn: () => R): R
+```
+
+Runs `fn` as if it were inside `tx`'s callback, so the development misuse guard still throws
+`HandleMisuseError` when `fn` reaches for a captured root `Db`. For code that keeps one transaction
+open across many callbacks — a test that pins every request to one transaction — where the guard
+would otherwise see no open transaction. Without the guard (production, or a runtime without
+`AsyncLocalStorage`) it is a plain call. A value that is not a `Tx` handle is a `UsageError`.
+
 ## Execution options
 
 Options compose downward: what you pass to `pgPrime()` is the default for the handle, what you pass

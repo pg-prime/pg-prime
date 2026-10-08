@@ -15,6 +15,8 @@ loading), `packages/pg-prime/src/session/runner.ts:47` (the check and the warnin
 - `currentFrames()` — frames on the current async context, or `undefined` before the store exists.
 - `withFrame(frame, fn)` — runs `fn` with `frame` pushed; plain call when there is no store.
 - `withoutFrames(fn)` — runs `fn` with an empty frame stack; plain call when there is no store.
+- `inTransactionFrame(tx, fn)` — public: runs `fn` with `tx`'s frame pushed, so a captured root `Db` throws `HandleMisuseError` as inside `db.transaction`; plain call without a store; throws `UsageError` if `tx` is not a `Tx` handle.
+- `txFrames` — `WeakMap` from each `Tx` handle to its frame, filled by `makeTxHandle` (`packages/pg-prime/src/session/handles.ts:668`).
 - `assertNotInsideTransaction(captureSite)` — throws `HandleMisuseError` when any frame is open; captures a
   call site only on the throwing path and only when `captureSite` is true.
 - `concurrentStatementsWarning(count)` — the warning string for overlapping statements on one transaction.
@@ -57,3 +59,4 @@ loading), `packages/pg-prime/src/session/runner.ts:47` (the check and the warnin
 - `packages/pg-prime/test/session/session.test.ts:1649` — no static `node:async_hooks` import.
 - Run: `pnpm --filter pg-prime exec vitest run test/session/session.test.ts`.
 - Uncovered: the runtime-without-`AsyncLocalStorage` fallback is not exercised by a test.
+- `packages/pg-prime/test/session/frame.test.ts` — `inTransactionFrame`: root `Db` throws inside the frame, not outside; non-`Tx` refused.

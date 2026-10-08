@@ -5,7 +5,7 @@ Table-level declarations returned from `pgTable`'s third-argument callback: prim
 `pgTable` stores the array on `TableRuntime.extras` (`packages/pg-prime/src/schema/table.ts:348`); readers are the kit's `packages/pg-prime-kit/src/schema/emit.ts`, FK inference in `relations.ts:598`, and `packages/pg-prime/src/errors/refs.ts:24`. Calls `checkName`, `fragmentDdlText`, `checkFkAction`, `isFragment`, `quoteIdentPart`.
 
 ## Public API
-- `TableExtra` — union keyed by `node`: `primaryKey`, `index`, `comment`, `unique`, `check`, `foreignKey`, `exclude`, `renamedFrom`, `clusterOn`, `partitionBy`, `partitionOf`.
+- `TableExtra` — union keyed by `node`: `primaryKey`, `index`, `comment`, `unique`, `check`, `foreignKey`, `exclude`, `renamedFrom`, `clusterOn`, `partitionBy`, `partitionOf`, `rls` (`{ force }`), `updatedAtTrigger` (`{ column }`, built by `trigger.ts`).
 - `primaryKey(...refs)` / `primaryKey({ name?, columns })` — composite / named primary key; `PrimaryKeyInput` is the object form.
 - `index(name, options?)` / `uniqueIndex(name, options?)` — return a mutable index builder; `.on(...keys)` returns the `index` node.
 - Index builder methods: `using`, `where` (fragment), `include(...refs)`, `nullsNotDistinct`, `with(params)`, `fillfactor(10..100)`, `tablespace`, `concurrently(bool)`.
@@ -20,6 +20,7 @@ Table-level declarations returned from `pgTable`'s third-argument callback: prim
 - `comment(text)`, `renamedFrom(from)`, `clusterOn(index)` — single-field nodes.
 - `partitionBy(strategy, key)` — `'range' | 'list' | 'hash'` and the key as text.
 - `partitionOf(parent, bound, options?)` — child partition; `PartitionOfOptions` has the parent `schema`.
+- `rls.enable()` / `rls.force()` — `{ node: 'rls', force }`; `force` implies enable (design/20 D3–D5).
 
 ## Flow
 1. `pgTable` calls the extras callback once with the frozen refs and freezes the returned array (`packages/pg-prime/src/schema/table.ts:348`).

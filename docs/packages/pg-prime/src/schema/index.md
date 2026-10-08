@@ -2,7 +2,7 @@
 
 ## Purpose
 Barrel for the schema layer and the target of the `pg-prime/schema` subpath export (`packages/pg-prime/package.json:29`).
-Re-exports the public surface of `symbols.ts`, `types.ts`, `ref.ts`, `ddl.ts`, `column.ts`, `extras.ts`, `objects.ts`, `table.ts`, `view.ts` and `relations.ts`. Imported by `packages/pg-prime/src/index.ts` (`packages/pg-prime/src/index.ts:77`, `:183`, `:205`), by `packages/pg-prime/src/query/*` and `packages/pg-prime/src/session/*`, and by code `pull` generates (`packages/pg-prime-kit/src/pull/emit-ts.ts:434`).
+Re-exports the public surface of `symbols.ts`, `types.ts`, `ref.ts`, `ddl.ts`, `column.ts`, `extras.ts`, `policy.ts`, `trigger.ts`, `objects.ts`, `table.ts`, `view.ts` and `relations.ts`. Imported by `packages/pg-prime/src/index.ts` (`packages/pg-prime/src/index.ts:77`, `:183`, `:205`), by `packages/pg-prime/src/query/*` and `packages/pg-prime/src/session/*`, and by code `pull` generates (`packages/pg-prime-kit/src/pull/emit-ts.ts:434`).
 
 ## Public API
 - Phantom keys from `symbols.ts`: `COLS`, `DATE_BRAND`, `ERR`, `INS`, `META`, `NAME`, `OUT`, `READONLY`, `REFS`, `RELS`, `SCHEMA`, `SEL`, `SRC`, `TABLES`, `UPD`.
@@ -10,14 +10,16 @@ Re-exports the public surface of `symbols.ts`, `types.ts`, `ref.ts`, `ddl.ts`, `
 - From `ref.ts`: `AnyRef`, `Projectable`, `Ref`, `RefRuntime`, `RefsOfCols`.
 - From `ddl.ts`: `fragmentDdlText`; types `CheckSpec`, `FkAction`, `ForeignKeyOptions`, `RefLike`, `RefSpec`, `UniqueSpec`.
 - From `column.ts`: the column factories, `pgEnum`, `enumColumn`, `raw`, `kit`, `VECTOR_MAX_DIMENSIONS`, and the `Col` / `ColumnDdl` / `PgEnum` family of types.
-- From `extras.ts`: `check`, `clusterOn`, `comment`, `exclude`, `foreignKey`, `index`, `partitionBy`, `partitionOf`, `primaryKey`, `renamedFrom`, `unique`, `uniqueIndex`, and their input / node types.
+- From `extras.ts`: `check`, `clusterOn`, `comment`, `exclude`, `foreignKey`, `index`, `partitionBy`, `partitionOf`, `primaryKey`, `renamedFrom`, `rls`, `unique`, `uniqueIndex`, and their input / node types.
+- From `policy.ts`: `definePolicy` and `Policy`, `PolicyCommand`, `PolicyExpr`, `PolicyRole`, `PolicyRuntime`, `PolicySpec`.
+- From `trigger.ts`: `updatedAtTrigger`.
 - From `objects.ts`: `pgDomain`, `pgExtension`, `pgSequence` and their option / result types.
 - From `table.ts`: `pgSchema`, `pgTable`, `snakeCase`, `table`, plus `Table`, `TableRuntime`, row-shape aliases and options.
 - From `view.ts`: `isView`, `pgMaterializedView`, `pgView`, plus the view handle, builder and runtime types.
 - From `relations.ts`: `defineRelations`, `defineSchema`, `resolveRelations`, plus `Schema`, `Handle`, `Loaded`, `ResolvedRelation` and the lookup types.
 
 ## Flow
-1. Pure re-exports; no runtime code of its own (`packages/pg-prime/src/schema/index.ts:2`–`:174`).
+1. Pure re-exports; no runtime code of its own (`packages/pg-prime/src/schema/index.ts:2`–`:184`).
 2. Every phantom key is re-exported because exported types reference them (TS2527) (`packages/pg-prime/src/schema/index.ts:1`).
 
 ## Gotchas

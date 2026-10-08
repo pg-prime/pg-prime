@@ -82,9 +82,20 @@ export {
   partitionOf,
   primaryKey,
   renamedFrom,
+  rls,
   unique,
   uniqueIndex,
 } from './extras.js'
+export { definePolicy } from './policy.js'
+export type {
+  Policy,
+  PolicyCommand,
+  PolicyExpr,
+  PolicyRole,
+  PolicyRuntime,
+  PolicySpec,
+} from './policy.js'
+export { updatedAtTrigger } from './trigger.js'
 export type {
   ExcludeItem,
   ExcludePair,

@@ -12,7 +12,7 @@ callers are in `packages/pg-prime/src/session/handles.ts:58` (`runTransaction`, 
 - `savepointName(depth)` — `"pgprime_sp_<depth>"`, always double-quoted.
 - `savepointSql` / `releaseSavepointSql` / `rollbackToSavepointSql(depth)` — the three savepoint statements.
 - `setConfigSql(count, local)` — `select set_config($1,$2,<local>), …` for `count` pairs.
-- `assertGucName(name)` — throws `UsageError` unless `name` matches `ident` or `ident.ident`.
+- `assertGucName(name)` — throws `UsageError` unless `name` matches `ident` or `ident.ident`; also `setting()`'s name check (`session/setting.ts`).
 - `setConfigParams(settings)` — flat `[name, String(value), …]` list; asserts every name.
 - `advisoryKey(key)` — `bigint` wrapped to signed 64-bit, `number` truncated, `string` hashed with
   FNV-1a 64 over UTF-8.

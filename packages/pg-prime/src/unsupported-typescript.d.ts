@@ -175,6 +175,7 @@ export declare const dateCodec: Unsupported
 export declare const daterangeCodec: Unsupported
 export declare const defaultRegistry: Unsupported
 export declare const definePgType: Unsupported
+export declare const definePolicy: Unsupported
 export declare const defineRelations: Unsupported
 export declare const defineSchema: Unsupported
 export declare const desc: Unsupported
@@ -203,6 +204,7 @@ export declare const hasNul: Unsupported
 export declare const ilike: Unsupported
 export declare const inList: Unsupported
 export declare const inQuery: Unsupported
+export declare const inTransactionFrame: Unsupported
 export declare const index: Unsupported
 export declare const inetCodec: Unsupported
 export declare const innerProduct: Unsupported
@@ -317,6 +319,8 @@ export declare const raw: Unsupported
 export declare const regex: Unsupported
 export declare const renamedFrom: Unsupported
 export declare const resolveRelations: Unsupported
+export declare const rls: Unsupported
+export declare const setting: Unsupported
 export declare const similarTo: Unsupported
 export declare const similarity: Unsupported
 export declare const smallint: Unsupported
@@ -356,6 +360,7 @@ export declare const tupleLte: Unsupported
 export declare const unique: Unsupported
 export declare const uniqueIndex: Unsupported
 export declare const unknownCodec: Unsupported
+export declare const updatedAtTrigger: Unsupported
 export declare const utf8ByteLength: Unsupported
 export declare const uuid: Unsupported
 export declare const uuidCodec: Unsupported
@@ -602,6 +607,12 @@ export type PgTimestampString = Unsupported
 export type PgTypeDescriptor<T0 = any, T1 = any, T2 = any> = Unsupported
 export type PkOf<T0 = any> = Unsupported
 export type PlaceholderRef = Unsupported
+export type Policy<T0 = any> = Unsupported
+export type PolicyCommand = Unsupported
+export type PolicyExpr = Unsupported
+export type PolicyRole = Unsupported
+export type PolicyRuntime = Unsupported
+export type PolicySpec<T0 = any> = Unsupported
 export type PoolEvent = Unsupported
 export type PoolOptions = Unsupported
 export type PoolStats = Unsupported
@@ -690,6 +701,7 @@ export type SessionDefaults = Unsupported
 export type SetOps<T0 = any, T1 = any> = Unsupported
 export type SetPatch<T0 = any> = Unsupported
 export type SetQuery<T0 = any, T1 = any> = Unsupported
+export type SettingKey<T0 = any, T1 = any> = Unsupported
 export type Simplify<T0 = any> = Unsupported
 export type Sources = Unsupported
 export type SpanAttributes = Unsupported

@@ -17,6 +17,7 @@ import type { AnyCodec } from '../codec/index.js'
 import {
   BuilderError,
   InvalidFragmentError,
+  SchemaError,
   TooManyParametersError,
   UnsupportedNodeError,
 } from '../sql/errors.js'
@@ -523,10 +524,12 @@ function emitExpr(em: Emitter, e: Expr): void {
       return
 
     case 'agg':
+      if (em instanceof DdlEmitter) em.refuse('an aggregate')
       emitAgg(em, e)
       return
 
     case 'over':
+      if (em instanceof DdlEmitter) em.refuse('a window call')
       emitOver(em, e)
       return
 
@@ -1501,4 +1504,48 @@ export function compileExpr(e: Expr): {
     placeholders: Object.freeze(em.placeholders),
     usedUnsafeRaw: em.usedUnsafeRaw,
   }
+}
+
+/** Emits catalog DDL: binds become typed literals, column refs stay identifiers, placeholders refuse. */
+class DdlEmitter extends Emitter {
+  readonly what: string
+  constructor(what: string) {
+    super()
+    this.what = what
+  }
+
+  refuse(thing: string): never {
+    throw new SchemaError(
+      `pg-prime: ${this.what} contains ${thing}, which a catalog expression cannot hold.`,
+    )
+  }
+
+  override bindValue(value: unknown, codec: AnyCodec): void {
+    const ref = (value as { $?: { table?: unknown; dbName?: unknown } } | null)?.$
+    if (typeof ref?.table === 'string' && typeof ref.dbName === 'string') {
+      this.push(`${quoteIdentPart(ref.table)}.${quoteIdentPart(ref.dbName)}`)
+      return
+    }
+    const encoded = value === null ? null : codec.encode(value as never)
+    if (encoded !== null && typeof encoded !== 'string') this.refuse('a binary bind')
+    const text = encoded === null ? 'NULL' : quoteStringLiteral(encoded)
+    this.push(codec.sqlName === 'unknown' ? text : `${text}::${codec.sqlName}`)
+  }
+
+  override bindSlot(): void {
+    this.refuse('a prepared-statement placeholder')
+  }
+}
+
+/**
+ * An expression as catalog DDL text (policy `USING` / `WITH CHECK`).
+ *
+ * Every column renders qualified by its relation name, so a subquery cannot capture it; a bind is
+ * inlined as `'<encoded>'::<sqlName>`; placeholders, aggregates, window calls and binary binds are
+ * a `SchemaError`.
+ */
+export function compileDdlExpr(e: Expr, what: string): string {
+  const em = new DdlEmitter(what)
+  emitExpr(em, e)
+  return em.sql()
 }

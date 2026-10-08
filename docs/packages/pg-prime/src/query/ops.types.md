@@ -12,7 +12,7 @@ schema, `PgDateString` from the codecs and `ExprOf` from `packages/pg-prime/src/
 - `ClassOperand<T, P>` — `{ [OUT]: T; [META]: { pg: P } }`: "a `T` that PostgreSQL calls `P`"; satisfied
   by column refs, builder expressions and typed `sql` fragments, never a hand-written literal.
 - `AnyOperand<T = unknown>` — `ClassOperand<T, string>`; operand of `min`/`max`/`cast`/`asc`/`desc`/`eq`.
-- `NonNullOperand<T>` — `(T | ExprOf<T>) & {}`: right operand that may not be the literal `null`/`undefined`.
+- `NonNullOperand<T>` — `(T | ExprOf<T | null>) & {}`: right operand that may not be the literal `null`/`undefined`; a nullable expression (`setting(...).current()`) is accepted, as on the left.
 - `Order` — opaque `{ dir: 'asc' | 'desc' }` returned by `asc`/`desc`; not `Projectable`.
 - `OrderArg`, `OrderBy` — what `orderBy` accepts: an `Order` or any `[OUT]`-bearing expression, or an array.
 - `TextPg`, `NumPg`, `JsonPg`, `NetPg`, `RangePg` — the PG type-name unions of each class
@@ -55,7 +55,7 @@ schema, `PgDateString` from the codecs and `ExprOf` from `packages/pg-prime/src/
 - The pg slot uses codec `name` (`int4`, `int8`), never `sqlName` (`integer`, `bigint`); a fragment
   typed with a codec whose `name` is not in a class union fails the gate.
 - `NonNullOperand` blocks only the literal; a nullable *expression* is still accepted
-  (`packages/pg-prime/src/query/ops.types.ts:65`).
+  (`packages/pg-prime/src/query/ops.types.ts:64`), including one typed `T | null` such as `eq(t.orgId, orgId.current())`.
 - `NumPg` includes `money`, but `SumPg`/`AvgPg` have no `money` branch: `sum` keeps `money`,
   `avg` claims `numeric` (`packages/pg-prime/src/query/ops.types.ts:173`, `:191`).
 - The type maps and the runtime codec tables in `ops.ts`/`fn.ts` are two copies; only
