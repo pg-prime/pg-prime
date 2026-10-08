@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ownedSchemaSql } from 'pg-prime'
+import { ownedSchemaSql, sql } from 'pg-prime'
 import {
   NotStartedError,
   PayloadError,
@@ -34,7 +34,7 @@ describe('migrate', () => {
     for (const f of ownedSchemaSql({ schema, migrations: MIGRATIONS })) {
       await db.transaction(async (tx) => {
         for (const s of f.sql.split(';\n').filter((x) => x.trim() !== '')) {
-          await tx.sql`${(await import('pg-prime')).sql.unsafeRaw(s)}`.execute()
+          await tx.sql`${sql.unsafeRaw(s)}`.execute()
         }
       })
     }
@@ -151,15 +151,16 @@ describe('publish and subscribe', () => {
   })
 
   it('ctx.commit({ tx }) commits the offset with the handler’s own writes', async () => {
-    const { db, events } = setup()
-    await db.sql`create table if not exists sink (n int)`.execute()
-    await db.sql`delete from sink`.execute()
+    const { db, schema, events } = setup()
+    await events.migrate()
+    const sink = sql.ident(schema, 'sink')
+    await db.sql`create table ${sink} (n int)`.execute()
     const sub = events.subscription(defineSubscription(orders, 'sink', { from: 'beginning' }))
     await events.topic(orders).publishMany([{ payload: { n: 1 } }, { payload: { n: 2 } }])
     const reader = sub.run(
       async (e, ctx) => {
         await db.transaction(async (tx) => {
-          await tx.sql`insert into sink values (${e.payload.n})`.execute()
+          await tx.sql`insert into ${sink} values (${e.payload.n})`.execute()
           await ctx.commit({ tx })
         })
       },
@@ -167,7 +168,7 @@ describe('publish and subscribe', () => {
     )
     await until(async () => (await sub.lag()).entries === 0)
     await reader.close()
-    expect(await db.sql`select n from sink order by n`.execute()).toStrictEqual([
+    expect(await db.sql`select n from ${sink} order by n`.execute()).toStrictEqual([
       { n: 1 },
       { n: 2 },
     ])
@@ -211,6 +212,32 @@ describe('retry, park, discard', () => {
     expect((await sub.parked()).length).toBe(1)
     expect(await sub.discard([bad?.id as bigint])).toBe(1)
     expect(await sub.parked()).toStrictEqual([])
+  })
+
+  it('a failing single entry keeps its attempt count when more entries arrive', async () => {
+    let retries = 0
+    const { events } = setup({ onRetry: () => void retries++ })
+    const def = defineSubscription(orders, 'grow', {
+      from: 'beginning',
+      retry: { maxAttempts: 3, baseDelayMs: 30, maxDelayMs: 30 },
+    })
+    const sub = events.subscription(def)
+    const topic = events.topic(orders)
+    await topic.publish({ n: 1 })
+    const seen: number[] = []
+    const reader = sub.run(
+      async (e) => {
+        if (e.payload.n === 1) throw new Error('poison')
+        seen.push(e.payload.n)
+      },
+      { pollMs: 10, batchSize: 10 },
+    )
+    await until(() => retries === 1)
+    await topic.publishMany([{ payload: { n: 2 } }, { payload: { n: 3 } }])
+    await until(() => seen.length === 2)
+    await reader.close()
+    expect(retries).toBe(3)
+    expect((await sub.parked()).map((p) => [p.entry.payload.n, p.attempts])).toStrictEqual([[1, 3]])
   })
 
   it('a failing batch is isolated: maxAttempts 1 never parks an innocent entry', async () => {
