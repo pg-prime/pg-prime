@@ -3,7 +3,7 @@ import { sql } from 'pg-prime'
 import type { Db, Fragment, Queryable, Subscription } from 'pg-prime'
 import type { ChannelDef } from './define.js'
 import { decodePayload, encodePayload } from './payload.js'
-import { ASYNC_DISPOSE } from './util.js'
+import { ASYNC_DISPOSE, emitAll } from './util.js'
 
 /** `ev_` + 24 hex chars of `sha256(schema/kind/name)`: fixed length, unique per schema. */
 export function engineChannel(schema: string, kind: string, name: string): string {
@@ -36,9 +36,7 @@ export function channelHandle<T>(db: Db, def: ChannelDef<T>): ChannelHandle<T> {
     },
     async listen(handler, opts) {
       const errors = new Set<(e: unknown) => void>()
-      const fail = (e: unknown): void => {
-        for (const h of errors) h(e)
-      }
+      const fail = (e: unknown): void => emitAll(errors, e)
       const inner = await db.listen(
         def.name,
         (raw) => {

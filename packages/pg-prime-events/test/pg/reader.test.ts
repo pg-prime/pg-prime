@@ -106,6 +106,66 @@ describe('subscription readers on a real server', () => {
   )
 
   requiresConcurrency(it)(
+    'a throw after a committed ctx.commit({ tx }) neither redelivers nor rewinds; a rolled-back one retries',
+    async () => {
+      const db = server.db(3)
+      const schema = freshSchema()
+      const events = pgEvents({ db, schema })
+      await events.start()
+      const sink = sql.ident(schema, 'sink')
+      await db.sql`create table ${sink} (who text, n int)`.execute()
+      const retry = { maxAttempts: 5, baseDelayMs: 1, maxDelayMs: 1 }
+      const each = defineSubscription(topic, 'each', { from: 'beginning', retry })
+      const batch = defineSubscription(topic, 'batch', { from: 'beginning', retry })
+      const thrown = new Set<string>()
+      const once = (key: string): boolean => {
+        if (thrown.has(key)) return false
+        thrown.add(key)
+        return true
+      }
+      const write = (who: string, ns: number[], ctx: ReadContext, inside: boolean) =>
+        db.transaction(async (tx) => {
+          for (const n of ns) await tx.sql`insert into ${sink} values (${who}, ${n})`.execute()
+          await ctx.commit({ tx })
+          if (inside) throw new Error('rolled back with the commit')
+        })
+      const readers = [
+        events.subscription(each).run(
+          async (e, ctx) => {
+            const n = e.payload.n
+            await write('each', [n], ctx, n % 3 === 2 && once(`in:${n}`))
+            if (n % 3 === 1 && once(`after:${n}`)) throw new Error('after the commit')
+          },
+          { pollMs: 20, batchSize: 4 },
+        ),
+        events.subscription(batch).run(
+          {
+            batch: async (es, ctx) => {
+              const ns = es.map((e) => e.payload.n)
+              await write('batch', ns, ctx, false)
+              if (once(`batch:${es[0]?.payload.n}`)) throw new Error('after the commit')
+            },
+          },
+          { pollMs: 20, batchSize: 4 },
+        ),
+      ]
+      await events
+        .topic(topic)
+        .publishMany(Array.from({ length: 12 }, (_, n) => ({ payload: { n, at: 0 } })))
+      for (const def of [each, batch]) {
+        await until(async () => (await events.subscription(def).lag()).entries === 0, 10_000)
+      }
+      await Promise.all(readers.map((r) => r.close()))
+      for (const who of ['each', 'batch']) {
+        const rows = await db.sql`select n from ${sink} where who = ${who} order by n`.execute()
+        expect(rows.map((r) => r['n'])).toStrictEqual(Array.from({ length: 12 }, (_, n) => n))
+      }
+      expect([...thrown].filter((k) => k.startsWith('in:'))).toHaveLength(4)
+    },
+    60_000,
+  )
+
+  requiresConcurrency(it)(
     'a process-killing poison entry is parked after maxAttempts restarts; the rest are delivered once',
     async () => {
       const schema = freshSchema()

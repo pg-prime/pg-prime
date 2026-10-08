@@ -61,6 +61,8 @@ export interface Statements {
     size: number,
   ): Promise<number | undefined>
   commit(q: Q, t: string, s: string, token: string, c: Cursor): Promise<boolean>
+  /** The stored cursor, once any transaction updating it has ended. */
+  stored(q: Q, t: string, s: string, token: string): Promise<Cursor | undefined>
   nack(q: Q, t: string, s: string, token: string, delayMs: number): Promise<boolean>
   park(
     q: Q,
@@ -144,7 +146,7 @@ export function statements(schema: string): Statements {
         'publish',
         sql`with e as (
           insert into ${entries} (topic, type, key, payload, headers)
-          select ${topic}, r.type, r.key, r.payload, r.headers
+          select ${topic}, r.type, r.key, coalesce(r.payload, 'null'::jsonb), r.headers
           from rows from (jsonb_to_recordset(${json}::jsonb)
             as (type text, key text, payload jsonb, headers jsonb)) with ordinality as r(type, key, payload, headers, n)
           order by r.n
@@ -234,18 +236,24 @@ export function statements(schema: string): Statements {
         q,
         'read',
         sql`with late as (
-          select e.* from ${entries} e
-          join unnest(${xids(c)}::xid8[], ${afters(c)}::bigint[]) as p(xid, after)
-            on e.xid = p.xid and e.id > p.after
-          where e.topic = ${t}
+          select e.* from unnest(${xids(c)}::xid8[], ${afters(c)}::bigint[]) as p(xid, after)
+          cross join lateral (
+            select * from ${entries} e
+            where e.topic = ${t} and e.xid = p.xid and e.id > p.after
+            order by e.id limit ${n}::int
+          ) e
+          order by e.xid, e.id limit ${n}::int
         ), next as (
           select * from ${entries}
           where topic = ${t} and (xid, id) > (${String(c.xid)}::xid8, ${c.id}::bigint)
-          order by xid, id limit ${n}::int
+          order by xid, id limit ${n}::int - (select count(*) from late)
         ), pos as (
           select xid, id from next order by xid desc, id desc limit 1
+        ), cut as (
+          select xid, id from late order by xid, id offset ${n}::int - 1
         )
         select (select xid from pos)::text as pos_xid, (select id from pos) as pos_id,
+          (select xid from cut)::text as late_xid, (select id from cut) as late_id,
           array(select pg_snapshot_xip(pg_current_snapshot()))::text[] as running,
           x.id, x.xid::text as xid, x.type, x.key, x.payload, x.headers, x.at
         from (select) m
@@ -254,10 +262,14 @@ export function statements(schema: string): Statements {
         order by x.xid, x.id`,
       )
       const head = rows[0] as RawRow
-      const posXid = head['pos_xid'] as string | null
+      const at = (x: string): { xid: bigint; id: bigint } | null =>
+        head[`${x}_xid`] === null
+          ? null
+          : { xid: BigInt(head[`${x}_xid`] as string), id: head[`${x}_id`] as bigint }
       return {
         view: {
-          pos: posXid === null ? null : { xid: BigInt(posXid), id: head['pos_id'] as bigint },
+          pos: at('pos'),
+          late: at('late'),
           running: (head['running'] as string[]).map(BigInt),
         },
         rows: head['id'] === null ? [] : rows.map(entryRow),
@@ -287,6 +299,16 @@ export function statements(schema: string): Statements {
           where ${guard(t, s, token)} returning 1`,
       )
       return rows.length === 1
+    },
+
+    async stored(q, t, s, token) {
+      const [r] = await run(
+        q,
+        'stored',
+        sql`select last_xid::text as last_xid, last_id, pending::text[] as pending, pending_after
+          from ${subs} where ${guard(t, s, token)} for share`,
+      )
+      return r === undefined ? undefined : cursorOf(r)
     },
 
     async nack(q, t, s, token, delayMs) {

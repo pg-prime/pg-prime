@@ -8,20 +8,22 @@ readers (`src/log/subscription.ts`), tails (`src/log/topic.ts`) and seeding (`sr
 ## Public API
 - `Cursor` — `{ xid, id, pending: Map<xid, after> }`; `after` is the last id delivered from that
   transaction (0: none). Internal, exposed only as the opaque `Entry.cursor` string.
-- `ReadView` — `{ pos, running }`: the last unfiltered `next` row of a read (or null) and the read
-  snapshot's `pg_snapshot_xip`.
+- `ReadView` — `{ pos, late, running }`: the last unfiltered `next` row of a read (or null), the
+  last unfiltered `late` row when `late` filled the read limit (or null), and the read snapshot's
+  `pg_snapshot_xip`.
 - `BEGINNING` — `(0, 0)`, no pending. `seed(xmax, xip)` — `from: 'now'`: `(xmax, 0)`, xip pending at 0.
 - `advance(c, read, e)` — the cursor right after acknowledging `e`.
 - `advanceTo(c, read)` — the cursor once the whole read is acknowledged, even if it delivered nothing.
 - `encodeCursor(c)` / `decodeCursor(s)` — `xid.id[.x:a,…]`; a bad string is a `UsageError`.
 
 ## Flow
-1. R1 reads `late` (pending xids, ids above their `after`) and `next` (`(xid, id) > position`, limit n)
-   in one statement whose snapshot also yields `running` (`src/log/sql.ts:232`).
-2. `advance` for a late entry sets that xid's `after` (`packages/pg-prime-events/src/log/cursor.ts:29`);
-   for a next entry it moves the position and adds every running xid below it to pending (`:33`).
+1. R1 reads `late` (pending xids, ids above their `after`, in `(xid, id)` order) and `next`
+   (`(xid, id) > position`), at most n rows in all, in one statement whose snapshot also yields
+   `running` (`src/log/sql.ts:234`).
+2. `advance` for a late entry sets that xid's `after` (`packages/pg-prime-events/src/log/cursor.ts:33`);
+   for a next entry it moves the position and adds every running xid below it to pending (`:37`).
 3. `advanceTo` moves the position to `pos`, adds running xids below it, then prunes pending xids that
-   are no longer running (`:38`).
+   are no longer running, up to where `late` was cut off (`:42`).
 
 ## Gotchas
 - Why nothing is lost: a transaction visible now either has an xid above the position (read by
@@ -32,8 +34,11 @@ readers (`src/log/subscription.ts`), tails (`src/log/topic.ts`) and seeding (`sr
 - Why nothing is duplicated: `late` takes ids above `after`, `next` takes rows above the position,
   and a pending xid is always below the position, so the two sets are disjoint.
 - Prune only in `advanceTo`, after the whole read is acknowledged: a finished transaction's entries
-  all became visible at once and all appeared in that read's unlimited `late`. A partial
-  acknowledgement (failure, isolation) uses `advance` only.
+  all became visible at once and `late` reads them in `(xid, id)` order. If `late` filled the limit,
+  only xids below its last row are complete: that xid keeps `after` = the last row's id, and higher
+  xids keep theirs. A partial acknowledgement (failure, isolation) uses `advance` only.
+- `late` is bounded by the read limit, so a large late transaction arrives in batches of n and an
+  isolating reader reads one row per step instead of every remaining late row.
 - `pending` is bounded by concurrent transactions: aborted or entry-less xids leave at the next prune.
 - Ordering: entries are delivered once per cursor; a transaction's entries arrive in insertion
   order, but a read limit can split a transaction and a late one may arrive between its parts.

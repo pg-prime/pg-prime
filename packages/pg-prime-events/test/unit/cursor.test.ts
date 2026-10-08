@@ -60,18 +60,23 @@ class Model {
   /** R1, statement for statement. */
   read(c: Cursor, n: number, types: readonly string[] | null): { view: ReadView; rows: Row[] } {
     const all = this.visible()
-    const late = all.filter((e) => c.pending.has(e.xid) && e.id > (c.pending.get(e.xid) as bigint))
+    const late = all
+      .filter((e) => c.pending.has(e.xid) && e.id > (c.pending.get(e.xid) as bigint))
+      .sort(byPos)
+      .slice(0, n)
     const next = all
       .filter((e) => e.xid > c.xid || (e.xid === c.xid && e.id > c.id))
       .sort(byPos)
-      .slice(0, n)
+      .slice(0, n - late.length)
     const last = next.at(-1)
+    const cut = late.length === n ? late.at(-1) : undefined
     const rows = [...late, ...next]
       .filter((e) => types === null || types.includes(e.type))
       .sort(byPos)
     return {
       view: {
         pos: last === undefined ? null : { xid: last.xid, id: last.id },
+        late: cut === undefined ? null : { xid: cut.xid, id: cut.id },
         running: this.snapshot().xip,
       },
       rows,
@@ -362,6 +367,26 @@ describe('named interleavings', () => {
     expect(r.persisted.pending.get(late.xid as bigint)).toBe(late.entries[1]?.id)
     r.drain(m)
     expect(r.acked.map((a) => a.id)).toStrictEqual([1n, 2n, 3n, 4n])
+  })
+
+  it('a late transaction larger than the read limit is read n entries at a time', () => {
+    const m = new Model()
+    const late: Tx = { xid: undefined, state: 'running', entries: [] }
+    const early: Tx = { xid: undefined, state: 'running', entries: [] }
+    m.txs.push(late, early)
+    m.insert(late, 'a')
+    m.insert(early, 'a')
+    m.finish(early, 'committed')
+    const r = new SimReader(BEGINNING, null)
+    r.drain(m)
+    for (let i = 0; i < 4; i++) m.insert(late, 'a')
+    m.finish(late, 'committed')
+    expect(m.read(r.cursor, 2, null).rows.map((e) => e.id)).toStrictEqual([1n, 3n])
+    r.step(m, { n: 2, take: 0, isolate: false, commitEach: false, crashAt: -1 })
+    expect(r.persisted.pending.get(late.xid as bigint)).toBe(3n)
+    r.drain(m)
+    expect(r.acked.map((a) => a.id)).toStrictEqual([2n, 1n, 3n, 4n, 5n, 6n])
+    expect(r.cursor.pending.size).toBe(0)
   })
 
   it("from: 'now' delivers transactions open at seeding time, not committed ones", () => {

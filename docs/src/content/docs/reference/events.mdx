@@ -109,7 +109,7 @@ Channels never need `start()`: a channels-only application never touches a table
 | Method | |
 |---|---|
 | `notify(payload, { tx? })` | encodes and sends through `db.notify` or `tx.notify`; works behind every pooler |
-| `listen(handler, { signal?, onGap? })` | `db.listen` plus decoding; an invalid payload goes to the subscription's `error` event, never to the handler |
+| `listen(handler, { signal?, onGap? })` | `db.listen` plus decoding; an invalid payload goes to the subscription's `error` event, never to the handler; a throwing `error` listener is ignored |
 
 ## Topics
 
@@ -119,7 +119,7 @@ Channels never need `start()`: a channels-only application never touches a table
 |---|---|
 | `publish(payload, opts?)` | one entry; `opts` is a `PublishOptions` |
 | `publishMany(items, { tx? })` | one statement for every item, one wake-up |
-| `tail(handler, { from?, signal?, pollMs? })` | an in-memory cursor from `'now'` or `{ after: Entry.cursor }`; returns a pg-prime `Subscription` whose only event is `error` |
+| `tail(handler, { from?, signal?, pollMs? })` | an in-memory cursor from `'now'` or `{ after: Entry.cursor }`; returns a pg-prime `Subscription` whose only event is `error`; a throwing `error` listener is ignored |
 | `read({ afterId?, limit? })` | browse by id for admin tools; not a resume handle |
 
 ### `PublishOptions`
@@ -160,7 +160,8 @@ right after this entry, the only valid resume handle.
 ### `ReadContext`
 
 `{ signal, attempt, commit({ tx }) }`. `commit` writes the offset inside your transaction, which
-makes a same-database sink exactly-once. `signal` aborts when the reader stops or loses its lease.
+makes a same-database sink exactly-once; a throw after that transaction committed does not
+redeliver what it covered. `signal` aborts when the reader stops or loses its lease.
 
 ### `Reader`
 

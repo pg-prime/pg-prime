@@ -25,6 +25,7 @@ use; owns schema ensure (migrate or check), declaration upserts and `close()`.
 - `{ tx }` publishes require `start()` (or any earlier non-tx call) to have ensured the schema;
   otherwise `NotStartedError`, never a lazy migration inside the caller's transaction.
 - Channels never touch the schema; a channels-only user need not call `start()`.
+- A schema that is behind points only at `events.migrate()`: events exports no vendorable SQL.
 - Failed ensures and readies are forgotten so the next call retries (`:99`, `:126`).
 - Topic upserts make declarations authoritative for `keep_ms` / `keep_until_consumed`.
 

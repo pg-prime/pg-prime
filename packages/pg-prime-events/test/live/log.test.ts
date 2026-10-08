@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ownedSchemaSql, sql } from 'pg-prime'
+import { TransactionRollback, ownedSchemaSql, sql } from 'pg-prime'
 import {
   NotStartedError,
   PayloadError,
@@ -44,7 +44,9 @@ describe('migrate', () => {
   it('autoMigrate: false refuses an unmigrated schema', async () => {
     const db = server.db()
     const events = pgEvents({ db, schema: freshSchema(), autoMigrate: false })
-    await expect(events.start()).rejects.toBeInstanceOf(SchemaVersionError)
+    const e = await events.start().catch((x: unknown) => x)
+    expect(e).toBeInstanceOf(SchemaVersionError)
+    expect((e as Error).message).toMatch(/needs 1\. Run events\.migrate\(\)\.$/)
     await events.migrate()
     await events.start()
   })
@@ -141,12 +143,14 @@ describe('publish and subscribe', () => {
     const { db, events } = setup()
     await events.start()
     const topic = events.topic(orders)
-    await db
-      .transaction(async (tx) => {
-        await topic.publish({ n: 1 }, { tx })
+    let published: unknown
+    await expect(
+      db.transaction(async (tx) => {
+        published = await topic.publish({ n: 1 }, { tx })
         tx.rollback()
-      })
-      .catch(() => {})
+      }),
+    ).rejects.toBeInstanceOf(TransactionRollback)
+    expect(published).toStrictEqual({ id: expect.any(BigInt) })
     expect(await topic.read()).toStrictEqual([])
   })
 
@@ -304,6 +308,41 @@ describe('retention, lag, tails', () => {
     await resumed.close()
     expect(again).toStrictEqual([2, 3])
   })
+
+  it('a tail with an already-aborted signal delivers nothing', async () => {
+    const { events } = setup()
+    const topic = events.topic(orders)
+    await topic.publish({ n: 1 })
+    const seen: number[] = []
+    const tail = await topic.tail((e) => void seen.push(e.payload.n), {
+      from: { after: '0.0' },
+      signal: AbortSignal.abort(),
+      pollMs: 20,
+    })
+    await new Promise((r) => setTimeout(r, 200))
+    await tail.close()
+    expect(seen).toStrictEqual([])
+  })
+
+  it('a throwing tail error observer neither escapes nor stops the others', async () => {
+    const { events } = setup()
+    const topic = events.topic(orders)
+    const errors: unknown[] = []
+    const tail = await topic.tail(
+      () => {
+        throw new Error('handler')
+      },
+      { pollMs: 20 },
+    )
+    tail.on('error', () => {
+      throw new Error('observer')
+    })
+    tail.on('error', (e) => void errors.push(e))
+    await topic.publishMany([{ payload: { n: 1 } }, { payload: { n: 2 } }])
+    await until(() => errors.length === 2)
+    await tail.close()
+    expect(errors.map((e) => (e as Error).message)).toStrictEqual(['handler', 'handler'])
+  })
 })
 
 describe('payloads', () => {
@@ -314,5 +353,12 @@ describe('payloads', () => {
     expect(nul).toBeInstanceOf(PayloadError)
     expect((nul as PayloadError).path).toStrictEqual(['a', 0, 'b'])
     await expect(t.publish('x'.repeat(1024 * 1024 + 1))).rejects.toBeInstanceOf(PayloadError)
+  })
+
+  it('a JSON null payload round-trips', async () => {
+    const { events } = setup()
+    const t = events.topic(defineTopic<null>('nulls'))
+    await t.publishMany([{ payload: null }, { payload: null }])
+    expect((await t.read()).map((e) => e.payload)).toStrictEqual([null, null])
   })
 })

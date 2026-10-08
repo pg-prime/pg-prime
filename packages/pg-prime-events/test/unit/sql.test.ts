@@ -22,6 +22,7 @@ async function all() {
   await s.read(q, 'orders', c, 100, null).catch(() => {})
   await s.mark(q, 'orders', 'billing', 'tok', 5n, 3)
   await s.commit(q, 'orders', 'billing', 'tok', c)
+  await s.stored(q, 'orders', 'billing', 'tok')
   await s.nack(q, 'orders', 'billing', 'tok', 250)
   await s.park(q, 'orders', 'billing', 'tok', c, 5n, 3, 'boom')
   await s.maintain(q, 'orders', 60_000)
