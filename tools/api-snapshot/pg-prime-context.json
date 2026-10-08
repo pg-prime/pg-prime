@@ -1,0 +1,16 @@
+{
+  "_source": "design/08 §2.3 — the committed public-surface golden. `node tools/api-snapshot.mjs` rewrites it; `--check` is the gate. `values` is Object.keys() of the built entry; `types` is the entry .d.ts read through the TypeScript 5.9.3 compiler API. `_arity` is each type's declared type-parameter count and exists only so the types@<5.9 stub can mirror it.",
+  "package": "@pg-prime/context",
+  "entries": {
+    ".": {
+      "values": [],
+      "types": [],
+      "_arity": {}
+    },
+    "./testing": {
+      "values": [],
+      "types": [],
+      "_arity": {}
+    }
+  }
+}
