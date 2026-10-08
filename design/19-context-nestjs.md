@@ -792,3 +792,63 @@ request of the same pinned test: a guide caveat ("set request keys through the s
   package dir resolves pg-prime and context to source through `tsconfig.json` paths;
   `docs-examples` does not enable decorators, so runnable Nest blocks need `no-run`, and GraphQL
   blocks need `skip-check="…"` (docs has no GraphQL deps).
+
+#### C1 — RESULT (2026-10-09)
+
+Branch `worktree-agent-a080f444a4d9ee569`, from `3e619d1`. Commits: `f25cb29` the package, tests,
+docs and goldens; then this RESULT.
+
+**Built as designed (§2.2, §3), with these deviations:**
+- **`request(scope, fn)` and `pinned`** are added to `TransactionHost`. `request` is
+  `run({ settings }, …)`, inside `transaction(fn, scope.transaction)` when `transaction` is `true`
+  or a `HostTxOptions`; under a pin a request without a transaction still opens the savepoint `R`
+  as the store's `base` (§3.7), which the public API could not express otherwise. `pinned` lets
+  N1's interceptor stay a pass-through when `request` is unset and nothing is pinned.
+- `ContextErrorCode` (union, nestjs codes included) is exported; `new ContextError(code, message)`.
+- Setting names are validated by core when sent, not at `run()`: `assertGucName` is **not** a root
+  export of `pg-prime` (R1's note says it was; it is not). No core change needed.
+- Pin capture per N0 spike 6, as now written in §3.7: `current_setting(k, true)` for every
+  `pg_settings` row with `context = 'user'` plus every key the host has applied; the restore is one
+  server-side `set_config(…, true)` over the entries that changed, keys learned after the capture
+  counting as unset. Capture runs on the base before `SAVEPOINT`, so core applies `timeoutMs` /
+  `localSettings` natively. **Caveat** (guide, §3.7): a dotted key set only by a raw
+  `tx.setLocal`/`set_config` can leak into the next request of the same pinned test.
+- `'new'` under a pin nests a pinned savepoint on the current transaction. `#busy` is a `WeakSet`.
+
+**Tests.** unit 24 (mock pool: propagation, join, savepoint, retry, API, guard, cost/graph, pin
+protocol), live 10 (PGlite: settings, savepoints, `within`, `rollbackScope`), pg 8 (RLS via raw
+`create policy … ${tenantId.current()}` on a non-superuser role, `within` + RLS, 50 scopes on
+`max: 5` with every pooled connection empty, pin + RLS + dev guard, savepoints, `40001` re-run with
+settings, `new`/`max: 1`, PgBouncer). Green on docker PG 17.11 (+ PgBouncer 1.26 transaction mode)
+and PG 18.6 (PgBouncer case skipped), and under Bun 1.4.2 (`bunx --bun vitest`: unit, live, pg).
+
+**Chain** (PG 17 + PgBouncer; PG 18 for `test:pg` too): lint ✓, format ✓, typecheck ✓, test ✓,
+test:live ✓ (events `a failing single entry keeps its attempt count` timed out once, green on
+rerun), test:pg ✓ on 17 (cron `misfire past endAt` flaked once, green on rerun) and 18, build ✓,
+bench:compile ✓, bench:types ✓, docs:check ✓ (754 blocks / 69 pages, 123 examples),
+docs:examples:pg ✓ (10), package:check ✓ (33/33 size gates, no API drift, emit parity, check:dts,
+tree-shake, pack smoke, create smoke).
+
+**Sizes.** `src/` 354 hand-written lines. Unpacked 31.9 KB / 40 KB; install 48.2 KB / 60 KB;
+`context-basic` delta 1 871 B esbuild / 2 007 B rollup min+gz (budget 3 072), 7 modules.
+
+**INDEX lines** (for the integrator):
+- docs/packages/pg-prime-context/src/index.md — @pg-prime/context entry: TransactionHost, option and settings types, AsyncStorage, ContextError — read when changing the context package's exported surface.
+- docs/packages/pg-prime-context/src/host.md — TransactionHost: ALS store, propagation join/savepoint/new, scoped settings, strict mode, pinned savepoints — read when a host transaction joins, nests or applies settings wrongly.
+- docs/packages/pg-prime-context/src/storage.md — AsyncStorage interface and the default AsyncLocalStorage — read when swapping the storage or porting to another runtime.
+- docs/packages/pg-prime-context/src/pin.md — capture/restore SQL of a pinned savepoint — read when settings leak between requests of a rollbackScope test.
+- docs/packages/pg-prime-context/src/errors.md — ContextError and its codes — read when adding or handling a CONTEXT_* code.
+- docs/packages/pg-prime-context/src/testing.md — rollbackScope, the rollback-per-test pin — read when changing how tests pin a host.
+
+**For the integrator:** knip now hints "Remove from ignoreDependencies" for `pg-prime` and
+`@pg-prime/testing` in `packages/pg-prime-context` (`knip.json`, not C1's).
+
+**For N1.**
+- The interceptor: `if (!request && !host.pinned) return next.handle()`; otherwise
+  `host.request({ settings, transaction: tx && { retry: false, label } }, () => lastValueFrom(…))`.
+  Under a pin this opens `R` for every request, as the ALS tx or as the base.
+- `rollbackScopeFor(app)` wraps `rollbackScope(host)` from `@pg-prime/context/testing`.
+- `@Transactional` calls `host.transaction(fn, { label, ...opts })`; it is `async`, so option
+  refusals are rejections. Throw `new ContextError('CONTEXT_NOT_REGISTERED' | 'CONTEXT_DUPLICATE_HOST', msg)`.
+- Join refuses `timeoutMs`/`lockTimeoutMs`/`localSettings` and a different isolation/access mode;
+  `retry`, `signal`, `label` pass through ignored.
