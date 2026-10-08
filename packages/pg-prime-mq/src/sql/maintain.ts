@@ -43,7 +43,7 @@ export async function expireBatch(q: Q, t: Tables): Promise<number> {
   return r['n'] as number
 }
 
-/** S10 by count: one batch of the `kind` messages beyond the newest `keep`; `failed` includes `cancelled`. */
+/** S10 by count: a batch of `kind` rows beyond the newest `keep`; `failed` counts `cancelled`. */
 export async function trimBatch(
   q: Q,
   t: Tables,

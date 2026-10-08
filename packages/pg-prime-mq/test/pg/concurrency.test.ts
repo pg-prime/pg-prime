@@ -307,7 +307,8 @@ describe('the §10 tier-2 table', () => {
     const end = Date.now() + 3000
     await Promise.all(
       [a, b, a, b].map(async (x) => {
-        while (Date.now() < end) refs.push(await x!.mq.flow({ queue: def, payload: { n: 0 }, opts }))
+        while (Date.now() < end)
+          refs.push(await x!.mq.flow({ queue: def, payload: { n: 0 }, opts }))
       }),
     )
     await w.close()

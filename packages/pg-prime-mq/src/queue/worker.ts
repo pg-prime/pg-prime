@@ -22,7 +22,13 @@ import type { MsgRow } from '../sql/read.js'
 import { ASYNC_DISPOSE, limiter } from '../util.js'
 import { isDeferral, message, workContext } from './context.js'
 import type { Deferral, Message, Running, WorkContext } from './context.js'
-import { completeMessage, failMessage, moveMessage, recoverExpired, settleSafely } from './settle.js'
+import {
+  completeMessage,
+  failMessage,
+  moveMessage,
+  recoverExpired,
+  settleSafely,
+} from './settle.js'
 
 export type Handler<T, R> = (msg: Message<T>, ctx: WorkContext<T, R>) => Promise<R | Deferral>
 

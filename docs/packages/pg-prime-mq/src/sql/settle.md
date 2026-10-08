@@ -9,10 +9,10 @@ The one `finish` builder for terminal transitions, the token-guarded moves out o
   `finishSql`, `finish`, `lockAncestors`, `depsCtes`, `moveSql`, `move`, `progress`, `extend`.
 
 ## Flow
-1. `done` updates (or deletes, `del`) the message under its guard; `expire_at` comes from the queue row (packages/pg-prime-mq/src/sql/settle.ts:119).
-2. `dd` drops an `until-done` dedup row; `dp`/`pr` resolve the parent's dependency (packages/pg-prime-mq/src/sql/settle.ts:57).
+1. `done` updates (or deletes, `del`) the message under its guard; `expire_at` comes from the queue row (packages/pg-prime-mq/src/sql/settle.ts:125).
+2. `dd` drops an `until-done` dedup row; `dp`/`pr` resolve the parent's dependency (packages/pg-prime-mq/src/sql/settle.ts:62).
 3. `gd` then `qd` decrement group and queue counters, gated on the previous CTE; freed capacity wakes workers.
-4. Moves (S8r/S12/S13/S14) share the counter fragments (packages/pg-prime-mq/src/sql/settle.ts:196).
+4. Moves (S8r/S12/S13/S14) share the counter fragments (packages/pg-prime-mq/src/sql/settle.ts:205).
 
 ## Gotchas
 - Lock order is message → parent message → group → queue; claims never wait on message or group rows.

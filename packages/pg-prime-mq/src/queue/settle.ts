@@ -143,7 +143,10 @@ export async function moveMessage(
 ): Promise<'moved' | 'cancelled' | undefined> {
   if (await move(tx ?? core.db, core.t, m.id, m.token, mv)) return 'moved'
   const guard = { kind: 'flagged', token: m.token } as const
-  const r = await finishMessage(core, m, 'cancelled', guard, { error: 'cancelled', ...(tx && { tx }) })
+  const r = await finishMessage(core, m, 'cancelled', guard, {
+    error: 'cancelled',
+    ...(tx && { tx }),
+  })
   return r && 'cancelled'
 }
 
@@ -157,7 +160,13 @@ export async function recoverExpired(
   if (!(await expiryGate(q, core.t, queue, everyMs))) return 0
   const r = await expire(q, core.t, queue)
   for (const id of r.exhausted)
-    await finishMessage(core, { id, queue }, 'failed', { kind: 'expired' }, { error: 'lease-expired' })
+    await finishMessage(
+      core,
+      { id, queue },
+      'failed',
+      { kind: 'expired' },
+      { error: 'lease-expired' },
+    )
   const ids = [...r.requeued, ...r.exhausted]
   if (ids.length > 0) core.hooks.emit('onLeaseExpired', { queue, ids })
   return ids.length

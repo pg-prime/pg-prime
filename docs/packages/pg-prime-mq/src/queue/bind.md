@@ -11,7 +11,7 @@ same transaction as the offset commit.
 
 ## Flow
 1. `handle.start()` once, outside any transaction.
-2. Per batch: `db.transaction` → `sendMany(items, { tx })` → `ctx.commit({ tx })` (packages/pg-prime-mq/src/queue/bind.ts:48).
+2. Per batch: `db.transaction` → `sendMany(items, { tx })` → `ctx.commit({ tx })` (packages/pg-prime-mq/src/queue/bind.ts:49).
 3. `onBind` reports the batch size.
 
 ## Gotchas

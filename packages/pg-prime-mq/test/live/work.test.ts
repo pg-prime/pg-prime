@@ -570,7 +570,11 @@ describe('worker lifecycle and hooks', () => {
       },
     })
     const idle = pgMq({ db: counted, schema }).queue(defineQueue<P>('idle'))
-    const w = idle.work(async () => {}, { pollMs: 5000, expireScanMs: 60_000, maintenanceMs: 60_000 })
+    const w = idle.work(async () => {}, {
+      pollMs: 5000,
+      expireScanMs: 60_000,
+      maintenanceMs: 60_000,
+    })
     await sleep(300)
     await w.close()
     expect(promotes).toBeLessThanOrEqual(3)

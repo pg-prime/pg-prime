@@ -44,8 +44,9 @@ export interface QueueHandle<T, R> {
   work(handler: Handler<T, R>, opts?: WorkerOptions): Worker
   /**
    * Manual consumption: settle each with `complete`, `fail` or `extend` before its lease ends.
-   * Expired leases are recovered first, at most once per 15 s per queue. Groups are served round-robin, probing at most `4 × limit` per call: an empty result can
-   * mean only paused or full groups were probed, and the next call goes on after them.
+   * Expired leases are recovered first, at most once per 15 s per queue. Groups are served
+   * round-robin, probing at most `4 × limit` per call: an empty result can mean only paused or
+   * full groups were probed, and the next call goes on after them.
    */
   claim(opts?: { token?: string; leaseMs?: number; limit?: number }): Promise<Message<T>[]>
   complete(m: Message<T>, result: R, opts?: { tx?: Queryable<any> }): Promise<void>

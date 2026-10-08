@@ -64,7 +64,12 @@ export async function until(check: () => boolean | Promise<boolean>, ms = 10_000
 }
 
 /** `db`, except that `fn` runs once, right before or after the first statement labelled `label`. */
-export function racing(db: Db, label: string, fn: () => Promise<unknown>, when: 'before' | 'after'): Db {
+export function racing(
+  db: Db,
+  label: string,
+  fn: () => Promise<unknown>,
+  when: 'before' | 'after',
+): Db {
   let done = false
   return new Proxy(db, {
     get(o, k) {
