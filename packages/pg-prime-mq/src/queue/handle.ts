@@ -265,6 +265,7 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
         opts.timeoutMs === undefined ? undefined : setTimeout(() => stop.abort(), opts.timeoutMs)
       const onAbort = (): void => stop.abort()
       opts.signal?.addEventListener('abort', onAbort, { once: true })
+      if (opts.signal?.aborted === true) stop.abort()
       // Subscribe first, then read: a fast completion cannot slip between the two.
       const w = waker(core.db, engineChannel(t.schema, 'q-watch', name), {
         pollMs: opts.pollMs ?? 5000,

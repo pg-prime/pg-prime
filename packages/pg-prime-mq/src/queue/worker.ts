@@ -415,5 +415,6 @@ export function startWorker<T, R>(
     [ASYNC_DISPOSE]: () => close(),
   } as unknown as Worker
   core.running.add(worker)
+  if (opts.signal?.aborted === true) void close()
   return worker
 }

@@ -520,6 +520,12 @@ describe('watch and result', () => {
     await expect(q.result(await q.send({ n: 1 }), { pollMs: 20, timeoutMs: 50 })).rejects.toThrow(
       /timed out/,
     )
+    const reason = new Error('stopped')
+    const signal = AbortSignal.abort(reason)
+    const pending = await q.send({ n: 1 })
+    const t0 = Date.now()
+    await expect(q.result(pending, { pollMs: 20, timeoutMs: 2000, signal })).rejects.toBe(reason)
+    expect(Date.now() - t0).toBeLessThan(1000)
   })
 
   it('watch()/result() need watch: true, which needs completed messages kept', async () => {
@@ -564,14 +570,17 @@ describe('worker lifecycle and hooks', () => {
     expect(internal).toStrictEqual(['hook-failed'])
   })
 
-  it('an abort signal closes the worker', async () => {
+  it('an abort signal closes the worker, also one aborted before work()', async () => {
     const { q } = setup()
     const stop = new AbortController()
     const w = q.work(async () => 1, { ...fast, signal: stop.signal })
+    await sleep(40)
     stop.abort()
-    await w.close()
+    const early = q.work(async () => 1, { ...fast, signal: AbortSignal.abort() })
+    await sleep(40)
     await q.send({ n: 1 })
     await sleep(60)
-    expect((await q.counts()).ready).toBe(1)
+    expect([(await q.counts()).ready, w.running, early.running]).toStrictEqual([1, 0, 0])
+    await Promise.all([w.close(), early.close()])
   })
 })

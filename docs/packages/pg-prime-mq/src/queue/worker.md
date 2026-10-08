@@ -23,6 +23,7 @@ for expired leases, runs maintenance, and settles each message once.
 - A failure after `close({ graceMs })` aborted the handler is a release (no attempt), not a retry.
 - An in-transaction completion is never acknowledged alone: a rollback costs one attempt and a re-run.
 - Statements other than claims, heartbeats and expiry go to `db`, not `controlDb`.
+- A `signal` already aborted when `work()` runs closes the worker at once.
 
 ## Tests
 - `test/live/work.test.ts`, `test/live/groups.test.ts`, `test/pg/concurrency.test.ts`, `test/pg/indeterminate.test.ts`. `pnpm --filter @pg-prime/mq test:pg`.
