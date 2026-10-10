@@ -176,7 +176,12 @@ function startReader<T>(
         signal: handlerStop.signal,
         attempt: Math.max(1, attempts),
         async commit({ tx }) {
-          if (!(await sql.commit(tx, t, s, token, c))) throw lostError()
+          if (!(await sql.commit(tx, t, s, token, c))) {
+            // The handler may swallow the error; held.lost still ends the batch.
+            held.lost = true
+            handlerStop.abort()
+            throw lostError()
+          }
           committed = encodeCursor(c)
         },
       })
@@ -192,6 +197,8 @@ function startReader<T>(
         )
         if (typeof handler === 'function') {
           for (const [i, e] of es.entries()) {
+            // Only a lost lease cuts a batch short; close() still holds it and lets the batch finish.
+            if (held.lost) throw lostError()
             await handler(e, ctx(cursors[i] as Cursor))
             done = i + 1
           }
