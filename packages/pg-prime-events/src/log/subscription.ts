@@ -192,6 +192,8 @@ function startReader<T>(
         )
         if (typeof handler === 'function') {
           for (const [i, e] of es.entries()) {
+            // Only a lost lease cuts a batch short; close() still holds it and lets the batch finish.
+            if (held.lost) throw lostError()
             await handler(e, ctx(cursors[i] as Cursor))
             done = i + 1
           }

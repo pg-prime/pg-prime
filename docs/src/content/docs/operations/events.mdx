@@ -53,8 +53,9 @@ the oldest. Hooks report the rest: `onDeliver` (count, duration), `onRetry`, `on
 
 A reader holds its subscription's lease for `leaseMs` (default 30 s) and renews it every third of
 that. A standby instance retries every half lease; a closed reader releases at once, a dead one
-after `leaseMs`. A reader that finds its lease taken stops with `EventsLeaseLostError` on its next
-commit and its handler's `ctx.signal` aborts; nothing it did after losing the lease is committed.
+after `leaseMs`. A reader that finds its lease taken, at its next heartbeat or commit, aborts its
+handler's `ctx.signal`, hands it no further entry and stops with `EventsLeaseLostError`; nothing it
+did after losing the lease is committed.
 
 ## Poolers
 
