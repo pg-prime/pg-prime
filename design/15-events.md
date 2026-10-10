@@ -650,7 +650,7 @@ member; `bench/types` fixture with 100 topics).
 |---|---|
 | **cursor exact under concurrent producers** — 8 producers in random-length txs (some aborted, one held open 20 s), reader restarted 10 × | every committed entry delivered exactly once, aborted never; the held-open tx's entries arrive after its commit; no read waits for it |
 | **unrelated long transaction does not delay readers** | entry-to-handler latency p95 < 200 ms while a `select pg_sleep(30)` tx is open |
-| **one reader per subscription** — 3 instances, the handler commits its log row with `ctx.commit({ tx })` | the log shows each entry once and no overlap, even when a stall costs a reader its lease; failover within `leaseMs` |
+| **one reader per subscription** — 3 instances, the handler commits its log row with `ctx.commit({ tx })` | the log shows each entry once and no overlap, even when a stall costs a reader its lease; after a crash the next entry is handled within 2 × `leaseMs` + 500 ms (the dead lease lasts ≤ `leaseMs`, standbys retry every `leaseMs / 2`) |
 | **lease lost mid-batch** — the lease is taken while a per-entry handler without `ctx.commit` runs | the old reader hands it no further entry of the batch, commits nothing and charges no retry |
 | **exactly-once sink** — `ctx.commit({ tx })`, reader killed mid-tx | sink rows = entries |
 | **throw after `ctx.commit({ tx })`** — per-entry and batch handlers throw after their commit committed, or inside it | sink rows = entries; nothing committed is redelivered, the rolled-back ones are retried |

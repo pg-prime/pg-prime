@@ -44,7 +44,7 @@ second connection while yours is held.
 
 `run` returns a `Reader`. Entry handlers run one at a time, in order; resolving acknowledges, and
 offsets are committed once per read. Several instances may run the same subscription: one holds
-its lease and the rest stand by and take over within the lease time if it dies.
+its lease and the rest stand by and take over once its lease expires if it dies.
 
 ## Exactly-once effects in the same database
 
