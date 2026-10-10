@@ -168,9 +168,12 @@ interface OutboxTopic<T> {
 ```
 
 `write` and `writeMany` run in the caller's transaction and throw `NotStartedError` when the topic's
-`start()` has not resolved (with the root `db` as `tx` they start it lazily instead). `replay`
-moves parked records back to pending and `discard` deletes them; both return how many they changed
-and unblock the records' keys. `parked` lists 100 records by default, in id order after `after`.
+`start()` has not resolved (with the root `db` as `tx` they start it lazily instead). On an
+`ordered` topic each call locks its keys in sorted order until commit; separate calls are not
+sorted against each other, so write a transaction's keys with one `writeMany` or in a consistent
+order to avoid deadlocks (`40P01`). `replay` moves parked records back to pending and `discard`
+deletes them; both return how many they changed and unblock the records' keys. `parked` lists 100
+records by default, in id order after `after`.
 
 ### `WriteOptions`
 

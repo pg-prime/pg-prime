@@ -50,7 +50,8 @@ counting relays that own nothing, so a new process gets its share within one hea
 incumbent above its share releases the extra partitions after its current batch.
 
 - `close()` (or the relay's `signal`, or `await using`) stops leasing, lets in-flight waves finish
-  for up to `graceMs` (10 s), then releases its partitions so peers take them at once.
+  for up to `graceMs` (10 s) while it keeps heartbeating, waits for a heartbeat or retention sweep
+  already running, then releases its partitions and its membership so peers take them at once.
 - A crashed relay's partitions are taken after its lease expires. The batch it was delivering is
   redelivered with the **same `idem`** and a **higher `epoch`**.
 - A relay that loses a lease while its sink call is in flight sees `ctx.signal` abort with

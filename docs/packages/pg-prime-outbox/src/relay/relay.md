@@ -25,8 +25,9 @@ wake-up loop (`waker.ts`) and the family `backoffMs`.
    (`onPark`), else F1 with `backoffMs` (`onFail`). A failed key is dropped from later waves. Any
    settle that finds the lease gone stops the partition.
 5. With no full batch, the loop waits for a wake, `pollMs`, or the earliest backoff it set itself.
-6. `close()` stops the loop, waits up to `graceMs` for in-flight waves, stops the heartbeat timer
-   and the waker, aborts the rest, releases the partitions and deletes the membership row.
+6. `close()` stops the loop and keeps heartbeating while in-flight waves finish, for up to
+   `graceMs`; then it stops the heartbeat, waits for a heartbeat or sweep already in flight, stops
+   the waker, aborts the rest, releases the partitions and deletes the membership row.
 
 ## Gotchas
 - Rebalancing happens between rounds, so a released partition never has a wave in flight.
@@ -37,13 +38,21 @@ wake-up loop (`waker.ts`) and the family `backoffMs`.
 - Settling every worker before rethrowing matters: a sibling still in flight when the loop starts
   the next round would be served twice at once under the same lease and epoch.
 - Errors in a round are reported as `relay-failed` and retried after `pollMs`.
+- A heartbeat that lands after the final release would re-insert the membership row (a ghost
+  member that shrinks peers' fair share), so `close()` awaits the one in flight and no new one
+  starts.
+- A start or L1 still stalled when `graceMs` ends is not awaited: after start the loop stops
+  without heartbeating, and L1's leases are released as soon as it returns; the membership row is
+  left alone, since a successor reusing `owner` may own it by then. If the pool has ended by then,
+  the leases expire after `leaseMs`.
 
 ## Tests
 - `packages/pg-prime-outbox/test/unit/waker.test.ts` — NOTIFY, gap, poll, pending wake, close.
 - `packages/pg-prime-outbox/test/unit/relay-math.test.ts` — `backoffMs` against
   `fixtures/backoff/vectors.json`.
 - `packages/pg-prime-outbox/test/pg/relay.test.ts` — the tier-2 table, including wake latency and
-  a failing partition beside a slow one.
+  a failing partition beside a slow one; `close()` awaiting a blocked sweep or heartbeat,
+  heartbeating through `graceMs`, and a start or L1 that outlives `graceMs`.
 - `packages/pg-prime-outbox/test/pg/sigkill.test.ts` — SIGKILL redelivery; `close()` under a sink
   that ignores abort (child process).
 - `packages/pg-prime-outbox/test/pg/pgbouncer.test.ts` — polling behind PgBouncer.

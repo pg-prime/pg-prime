@@ -31,7 +31,9 @@ const relay = outbox.topics.orderPlaced.relay(
 
 - **Atomic:** the record commits or rolls back with your data.
 - **Ordered per key:** same-key writers serialize until commit; relays lease whole partitions, so a
-  key has one relay at a time while its lease is valid, and a failing key blocks only itself.
+  key has one relay at a time while its lease is valid, and a failing key blocks only itself. Key
+  locks are sorted within one call only, so write a transaction's keys with one `writeMany` or in a
+  consistent order, or crossing transactions can deadlock (`40P01`).
 - **Safe to redeliver:** every record has a stable idempotency key and every delivery a fencing
   epoch, so a sink can reject a relay whose lease was taken over while its call was in flight.
 - **Operable:** retries with backoff, parking with `replay`/`discard`, `pause`, `stats`, retention.

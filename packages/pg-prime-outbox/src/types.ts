@@ -101,7 +101,13 @@ export interface OutboxTopic<T> {
   readonly name: string
   /** Creates this topic's rows; declared topics start with `outbox.start()`. */
   start(): Promise<void>
+  /**
+   * Writes one record in `tx`. On an `ordered` topic a keyed write locks its key until commit, and
+   * keys are sorted only within one call: a transaction writing several keys should use one
+   * `writeMany` or a consistent key order, or two such transactions can deadlock (40P01).
+   */
   write(payload: T, opts: WriteOptions): Promise<WriteResult>
+  /** Writes several records in `tx` in one statement, locking their keys in sorted order. */
   writeMany(
     items: readonly ({ payload: T } & Omit<WriteOptions, 'tx'>)[],
     opts: { tx: Queryable<any> },
