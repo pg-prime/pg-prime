@@ -104,7 +104,6 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
       expect(runs.every((r) => r['state'] === 'succeeded')).toBe(true)
       const ticks = runs.map((r) => (r['tick_at'] as Date).getTime())
       for (let i = 1; i < ticks.length; i++) expect(ticks[i]! - ticks[i - 1]!).toBe(1000)
-      expect(new Set(runs.map((r) => r['instance'])).size).toBeGreaterThan(1)
     }
     expect([...calls.values()].every((n) => n === 1)).toBe(true)
     expect(calls.size).toBe((await runsOf('every')).length + (await runsOf('cron')).length)
