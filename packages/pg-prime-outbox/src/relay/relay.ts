@@ -112,8 +112,8 @@ export function startRelay<T>(
   const rebalance = async (): Promise<void> => {
     if (held.size <= fairShare(def.partitions, live)) {
       const got = await acquire(ctx, owner, leaseMs)
-      // close() may have released already; nobody would serve or release these.
-      if (closed) return release(ctx, owner, got.leases, true)
+      // close() may have released already: give these back, but leave the membership row to it.
+      if (closed) return got.leases.length > 0 ? release(ctx, owner, got.leases, false) : undefined
       live = got.live
       for (const l of got.leases) held.set(l.p, { ...l, ctrl: new AbortController() })
       if (got.leases.length > 0) {

@@ -334,9 +334,10 @@ describe('relay close()', () => {
     const relays = sql.ident(schema, 'relays')
     await db.sql`insert into ${relays} (topic, owner, seen_at)
       values ('ghost', 'stale', now() - interval '1 day')`.execute()
+    const p = await proc()
     // The heartbeat deletes stale members before it upserts its own row, so it waits here.
     const unlock = await holding(db, sql`select from ${relays} where owner = 'stale' for update`)
-    const relay = (await proc()).relay({ graceMs: 100 })
+    const relay = p.relay({ graceMs: 100 })
     await until(async () => (await busy(db, schema, true)) > 0)
     let closed = false
     const closing = relay.close().then(() => (closed = true))
@@ -348,7 +349,7 @@ describe('relay close()', () => {
     expect(await leftovers(db, schema)).toStrictEqual({ leases: 0, members: [] })
   })
 
-  test('an acquire that outlives graceMs releases what it took', async () => {
+  test('an acquire that outlives graceMs releases what it took, and only that', async () => {
     const { schema, db, proc } = await setup(defineOutbox<number>('late'), quiet)
     // Only L1 sets a fresh token, so only L1 waits here.
     const fn = sql.ident(schema, 'stall')
@@ -359,13 +360,17 @@ describe('relay close()', () => {
       for each row when (new.token is distinct from old.token and new.token is not null)
       execute function ${fn}()`.execute()
     const unlock = await holding(db, sql`select pg_advisory_xact_lock(hashtext(${schema}), 0)`)
-    const relay = (await proc()).relay({ graceMs: 100 })
+    const relay = (await proc()).relay({ owner: 'me', graceMs: 100 })
     await until(async () => (await busy(db, schema, true)) > 0)
     await relay.close()
+    expect(await leftovers(db, schema)).toStrictEqual({ leases: 0, members: [] })
+    // A successor reusing the owner name joins meanwhile.
+    await db.sql`insert into ${sql.ident(schema, 'relays')} (topic, owner)
+      values ('late', 'me')`.execute()
     await unlock()
     await until(async () => (await busy(db, schema)) === 0)
     await until(async () => (await leftovers(db, schema))!['leases'] === 0, 3_000)
-    expect(await leftovers(db, schema)).toStrictEqual({ leases: 0, members: [] })
+    expect(await leftovers(db, schema)).toStrictEqual({ leases: 0, members: ['me'] })
   })
 
   test('a start that outlives graceMs neither heartbeats nor leases', async () => {

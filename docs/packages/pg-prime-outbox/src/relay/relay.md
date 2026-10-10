@@ -42,8 +42,9 @@ wake-up loop (`waker.ts`) and the family `backoffMs`.
   member that shrinks peers' fair share), so `close()` awaits the one in flight and no new one
   starts.
 - A start or L1 still stalled when `graceMs` ends is not awaited: after start the loop stops
-  without heartbeating, and L1's leases are released (with the membership row) as soon as it
-  returns. If the pool has ended by then, they expire after `leaseMs`.
+  without heartbeating, and L1's leases are released as soon as it returns; the membership row is
+  left alone, since a successor reusing `owner` may own it by then. If the pool has ended by then,
+  the leases expire after `leaseMs`.
 
 ## Tests
 - `packages/pg-prime-outbox/test/unit/waker.test.ts` — NOTIFY, gap, poll, pending wake, close.
