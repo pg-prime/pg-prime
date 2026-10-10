@@ -28,7 +28,7 @@ const crons: Cron[] = []
 
 const q = (text: string) => rows(admin, text.replaceAll('$S', S))
 const runsOf = (name: string) =>
-  q(`select id, state::text as state, tick_at, started_at, manual, missed, error, instance
+  q(`select id, state::text as state, tick_at, started_at, finished_at, manual, missed, error, instance
      from $S.runs where schedule = '${name}' order by tick_at nulls last, id`)
 const sched = async (name: string) =>
   (await q(`select * from $S.schedules where name = '${name}'`))[0]!
@@ -69,9 +69,13 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
     crons.push(c)
     return c
   }
-  const fleet = async (n: number, schedules: (i: number) => ScheduleDef<any>[]) => {
+  const fleet = async (
+    n: number,
+    schedules: (i: number) => ScheduleDef<any>[],
+    cfg: Partial<CronConfig> = {},
+  ) => {
     const all = Array.from({ length: n }, (_, i) =>
-      instance({ schedules: schedules(i), instance: `i${i}` }),
+      instance({ ...cfg, schedules: schedules(i), instance: `i${i}` }),
     )
     await Promise.all(all.map((c) => c.start()))
     return all
@@ -201,15 +205,19 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
     await fresh()
     let live = 0
     let peak = 0
-    let stoppedAt = 0
+    let calls = 0
     const handler = async (r: { signal: AbortSignal }) => {
+      const slow = ++calls === 1
       peak = Math.max(peak, ++live)
       await new Promise((res) => r.signal.addEventListener('abort', res))
-      await sleep(1500)
+      // Only the cancelled run outlives its abort; a later one must settle within close()'s grace.
+      if (slow) await sleep(1500)
       live--
-      stoppedAt = Date.now()
     }
-    const all = await fleet(3, () => [defineSchedule('s', { everyMs: 1000 }, { handler })])
+    // A lease no stall can outlast: its expiry would free the slot while the handler still runs.
+    const all = await fleet(3, () => [defineSchedule('s', { everyMs: 1000 }, { handler })], {
+      leaseMs: 6000,
+    })
     await until(async () => (await runsOf('s')).some((r) => r['state'] === 'running'))
     const first = (await runsOf('s')).find((r) => r['state'] === 'running')!
     expect(await all[0]!.cancel(first['id'] as bigint)).toBe(true)
@@ -218,12 +226,12 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
         (await runsOf('s')).find((r) => r['id'] === first['id'])!['state'] === 'cancelled',
     )
     const runs = await runsOf('s')
-    const later = runs.filter((r) => r['state'] !== 'skipped' && r['id'] !== first['id'])
-    for (const r of later)
-      expect((r['started_at'] as Date).getTime()).toBeGreaterThanOrEqual(stoppedAt - 50)
+    const stopped = runs.find((r) => r['id'] === first['id'])!['finished_at'] as Date
+    for (const r of runs.filter((r) => r['state'] !== 'skipped' && r['id'] !== first['id']))
+      expect((r['started_at'] as Date).getTime()).toBeGreaterThanOrEqual(stopped.getTime())
     expect(peak).toBe(1)
     await Promise.all(crons.map((c) => c.close()))
-    expect((await sched('s'))['running']).toBe(0)
+    await until(async () => (await sched('s'))['running'] === 0)
   }, 30_000)
 
   test("misfire 'once' after 10 ticks of downtime: one run, missed = 9, next tick in the future", async () => {

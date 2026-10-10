@@ -424,7 +424,7 @@ locks, single statements). Wake-ups need `directConnection`; otherwise the relay
 
 | Test | Oracle |
 |---|---|
-| **per-key order under 4 relays and 8 writers** — 200 keys × 100 records, each writer updates an aggregate row then writes | the sink log per key is strictly increasing in the writer's sequence; nothing is lost |
+| **per-key order under 4 relays and 8 writers** — 200 keys × 100 records, each writer updates an aggregate row then writes | the sink, a receiver that fences stale epochs and drops a redelivered `idem` (X6), logs each key strictly increasing in the writer's sequence; nothing is lost |
 | **ordered writes serialize one key across concurrent txs** — writer A holds its tx 2 s, B writes the same key | B's record is delivered after A's; with `ordered: false` the test demonstrates the inversion (documents why X3 exists) |
 | **no concurrent delivery of one partition** | sink-side interval log per partition: no overlap within valid epochs |
 | **head failure keeps receiver order** — a recording sink fails K#1 once; K#2 and K#3 are pending in the same read | the receiver's applied order for K is 1, 2, 3; K#2 is never sent before K#1 succeeds |

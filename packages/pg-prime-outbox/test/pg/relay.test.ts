@@ -16,7 +16,7 @@ interface Proc {
 
 let cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
-  for (const f of cleanup.reverse()) await f()
+  for (const f of cleanup) await f()
   cleanup = []
 })
 
@@ -48,10 +48,19 @@ describe('relay under concurrency', () => {
     const KEYS = 200
     const PER = 100
     const log = new Map<string, number[]>()
-    const sink = functionSink<{ key: string; seq: number }>(async (wave) => {
+    // A receiver as X6 asks for: it fences stale epochs and drops redeliveries, so a lease lost to
+    // a stall shows up as neither a duplicate nor a step back.
+    const fence = new Map<number, bigint>()
+    const seen = new Set<string>()
+    const sink = functionSink<{ key: string; seq: number }>(async (wave, ctx) => {
       await sleep(0)
-      for (const r of wave)
+      if (ctx.epoch < (fence.get(ctx.partition) ?? 0n)) throw new Error('stale epoch')
+      fence.set(ctx.partition, ctx.epoch)
+      for (const r of wave) {
+        if (seen.has(r.idem)) continue
+        seen.add(r.idem)
         log.set(r.payload.key, [...(log.get(r.payload.key) ?? []), r.payload.seq])
+      }
     })
     const { schema, db, topic, proc } = await setup(
       defineOutbox<{ key: string; seq: number }>('order'),

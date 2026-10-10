@@ -5,7 +5,7 @@ import { defineSchema, pgPrime } from 'pg-prime'
 import type { Db } from 'pg-prime'
 import { defineSchedule, pgCron } from '../../src/index.js'
 import type { Cron, CronEnqueuer } from '../../src/index.js'
-import { dropSchema, open, rows, sleep } from '../_harness.js'
+import { dropSchema, open, rows, until } from '../_harness.js'
 
 const S = 'pgprime_cron_qt_pg'
 const MQ = 'pgprime_mq_qt_pg'
@@ -39,8 +39,9 @@ describe.each(targets)('queue target on $name', ({ url, pooled }) => {
   test('one message per tick across 3 instances, with transactions failing after the send', async () => {
     await dropSchema(admin, S)
     await dropSchema(admin, MQ)
+    let sends = 0
     let crashes = 0
-    // Throws after mq's insert, inside the claim's transaction: a crash before COMMIT.
+    // Every third send throws after mq's insert, inside the claim's transaction: a crash before COMMIT.
     const flaky = (mq: CronEnqueuer): CronEnqueuer => ({
       queue: (def) => {
         const h = mq.queue(def)
@@ -48,7 +49,7 @@ describe.each(targets)('queue target on $name', ({ url, pooled }) => {
           start: () => h.start!(),
           send: async (payload, opts) => {
             const r = await h.send(payload, opts)
-            if (Math.random() < 0.3) throw new Error(`crash ${++crashes}`)
+            if (++sends % 3 === 1) throw new Error(`crash ${++crashes}`)
             return r
           },
         }
@@ -81,7 +82,10 @@ describe.each(targets)('queue target on $name', ({ url, pooled }) => {
         return c.start()
       }),
     )
-    await sleep(12_000)
+    await until(
+      async () => (await q(`select from $S.runs where schedule = 'q'`)).length >= 10,
+      30_000,
+    )
     await Promise.all(crons.map((c) => c.close()))
 
     const runs = await q(`select state::text as state, tick_at, message_id, instance

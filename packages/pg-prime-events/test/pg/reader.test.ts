@@ -17,45 +17,63 @@ describe('subscription readers on a real server', () => {
     async () => {
       const schema = freshSchema()
       const def = defineSubscription(topic, 'single', { from: 'beginning' })
-      const log: { who: number; n: number; start: number; end: number }[] = []
       const leaseMs = 600
+      const admin = server.db(1)
+      const events = pgEvents({ db: admin, schema })
+      await events.start()
+      const sink = sql.ident(schema, 'sink')
+      await admin.sql`create table ${sink} (n int, who int, start float8, "end" float8)`.execute()
+      const log = async () =>
+        (await admin.sql`select n, who, start, "end" from ${sink} order by start`.execute()) as {
+          n: number
+          who: number
+          start: number
+          end: number
+        }[]
+      // A stall past the lease hands the subscription over mid-batch; a handler that commits its
+      // row with the offset keeps the log exactly-once and lease-ordered anyway.
       const instances = [0, 1, 2].map((who) => {
         const db = server.db(2)
-        const events = pgEvents({ db, schema })
-        const reader = events.subscription(def).run(
-          async (e) => {
-            const start = Date.now()
-            await sleep(2)
-            log.push({ who, n: e.payload.n, start, end: Date.now() })
-          },
-          { leaseMs, pollMs: 50, batchSize: 5 },
-        )
-        return { db, events, reader }
+        const reader = pgEvents({ db, schema })
+          .subscription(def)
+          .run(
+            async (e, ctx) => {
+              const start = Date.now()
+              await sleep(2)
+              await db.transaction(async (tx) => {
+                await tx.sql`insert into ${sink} values (${e.payload.n}, ${who}, ${start}, ${Date.now()})`.execute()
+                await ctx.commit({ tx })
+              })
+            },
+            { leaseMs, pollMs: 50, batchSize: 5 },
+          )
+        return { db, reader }
       })
-      const producer = pgEvents({ db: server.db(1), schema }).topic(topic)
+      const producer = events.topic(topic)
       for (let n = 0; n < 150; n++) {
         await producer.publish({ n, at: 0 })
         if (n % 10 === 0) await sleep(20)
       }
-      await until(() => log.length === 150)
+      await until(async () => (await log()).length === 150)
+      // A reader that lost its lease to a stall stays active until its next statement fails.
+      await until(() => instances.filter((i) => i.reader.active).length === 1)
 
       const active = instances.findIndex((i) => i.reader.active)
-      expect(instances.filter((i) => i.reader.active)).toHaveLength(1)
       // A crash: the pool goes away under the reader, which can neither commit nor release.
       const crashedAt = Date.now()
       await instances[active]?.db.end()
       for (let n = 150; n < 160; n++) await producer.publish({ n, at: 0 })
-      await until(() => log.length === 160, 10_000)
-      const takeover = (log.find((l) => l.n === 150)?.start ?? 0) - crashedAt
-      expect(takeover).toBeLessThan(2 * leaseMs + 500)
+      await until(async () => (await log()).length === 160, 10_000)
       await Promise.all(instances.map((i) => i.reader.close()))
+      const rows = await log()
+      const takeover = (rows.find((l) => l.n === 150)?.start ?? 0) - crashedAt
+      expect(takeover).toBeLessThan(2 * leaseMs + 500)
 
-      expect(log.map((l) => l.n).sort((a, b) => a - b)).toStrictEqual(
+      expect(rows.map((l) => l.n).sort((a, b) => a - b)).toStrictEqual(
         Array.from({ length: 160 }, (_, n) => n),
       )
-      const ordered = [...log].sort((a, b) => a.start - b.start)
-      for (const [i, cur] of ordered.entries()) {
-        const prev = ordered[i - 1]
+      for (const [i, cur] of rows.entries()) {
+        const prev = rows[i - 1]
         if (prev !== undefined && prev.who !== cur.who) {
           expect(cur.start).toBeGreaterThanOrEqual(prev.end)
         }
