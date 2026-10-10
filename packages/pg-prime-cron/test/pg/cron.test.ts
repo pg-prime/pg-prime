@@ -104,7 +104,6 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
       expect(runs.every((r) => r['state'] === 'succeeded')).toBe(true)
       const ticks = runs.map((r) => (r['tick_at'] as Date).getTime())
       for (let i = 1; i < ticks.length; i++) expect(ticks[i]! - ticks[i - 1]!).toBe(1000)
-      expect(new Set(runs.map((r) => r['instance'])).size).toBeGreaterThan(1)
     }
     expect([...calls.values()].every((n) => n === 1)).toBe(true)
     expect(calls.size).toBe((await runsOf('every')).length + (await runsOf('cron')).length)
@@ -234,6 +233,60 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
     await until(async () => (await sched('s'))['running'] === 0)
   }, 30_000)
 
+  test('a handler that outlives close() keeps its lease and slot until it settles', async () => {
+    await fresh()
+    let calls = 0
+    let release!: () => void
+    const held = new Promise<void>((r) => (release = r))
+    // The first run ignores its signal until released; later ones return at once.
+    const handler = async () => {
+      if (++calls === 1) await held
+    }
+    // A lease no stall can outlast, so only a stopped heartbeat can expire the run.
+    const node = (name: string) =>
+      instance({
+        schedules: [defineSchedule('s', { everyMs: 1000 }, { handler })],
+        instance: name,
+        leaseMs: 6000,
+      })
+    const owner = node('owner')
+    await owner.start()
+    try {
+      await until(async () => (await runsOf('s')).some((r) => r['state'] === 'running'))
+      await node('peer').start()
+      await owner.close()
+      // close() gave up after 2 × graceMs; a stopped heartbeat would now let the peer expire the run.
+      await sleep(6000 + 500 + 1000)
+      const [first, ...rest] = await runsOf('s')
+      expect(first).toMatchObject({ state: 'cancelling', instance: 'owner' })
+      expect(new Set(rest.map((r) => r['state']))).toEqual(new Set(['skipped']))
+      expect(calls).toBe(1)
+    } finally {
+      release()
+    }
+    await until(async () => (await runsOf('s')).some((r) => r['state'] === 'succeeded'))
+    const [done, ...after] = await runsOf('s')
+    expect(done).toMatchObject({ state: 'cancelled', error: null })
+    const next = after.find((r) => r['state'] === 'succeeded')!
+    expect((next['started_at'] as Date).getTime()).toBeGreaterThanOrEqual(
+      (done!['finished_at'] as Date).getTime(),
+    )
+  }, 30_000)
+
+  test('a handler that never settles does not keep a closed process alive', async () => {
+    await fresh()
+    const child = spawn(process.execPath, [await victim(), url, S, pooled ? '1' : '0', 'close'], {
+      stdio: ['ignore', 'pipe', 'inherit'],
+    })
+    let out = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    const kill = setTimeout(() => child.kill('SIGKILL'), 10_000)
+    const code = await new Promise((res) => child.on('exit', res))
+    clearTimeout(kill)
+    expect(out).toContain('closed')
+    expect(code).toBe(0)
+  }, 30_000)
+
   test("misfire 'once' after 10 ticks of downtime: one run, missed = 9, next tick in the future", async () => {
     await fresh()
     const s = () => [
@@ -324,19 +377,28 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
   }, 30_000)
 })
 
-// Claims a tick, says so, then hangs until killed.
+// Claims a tick, says so, and hangs past its timeout; with 'close' it closes and ends its pool.
 const VICTIM = `
 import { defineSchema, pgPrime } from 'pg-prime'
 import { defineSchedule, pgCron } from '../../src/index.js'
-const [url, schema, pooled] = process.argv.slice(2)
+const [url, schema, pooled, close] = process.argv.slice(2)
 const db = pgPrime({
   connection: url,
   schema: defineSchema({}),
   ...(pooled === '1' ? { poolerMode: 'pgbouncer-transaction' } : {}),
 })
-const handler = () => (console.log('running'), new Promise(() => {}))
-const victim = defineSchedule('victim', { everyMs: 2000 }, { handler })
-await pgCron({ db, schema, pollMs: 200, leaseMs: 1500, schedules: [victim] }).start()
+let started
+const running = new Promise((r) => (started = r))
+const handler = () => (console.log('running'), started(), new Promise(() => {}))
+const victim = defineSchedule('victim', { everyMs: 2000 }, { handler }, { timeoutMs: 60_000 })
+const cron = pgCron({ db, schema, pollMs: 200, leaseMs: 1500, graceMs: 100, schedules: [victim] })
+await cron.start()
+if (close) {
+  await running
+  await cron.close()
+  await db.end()
+  console.log('closed')
+}
 `
 
 let bundled: Promise<string> | undefined

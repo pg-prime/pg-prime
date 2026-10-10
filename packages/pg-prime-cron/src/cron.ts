@@ -103,7 +103,6 @@ export function pgCron(config: CronConfig): Cron {
   let ready: Promise<void> | undefined
   let started: Promise<void> | undefined
   let loop: Promise<void> | undefined
-  let beat: ReturnType<typeof setInterval> | undefined
   let closing: Promise<void> | undefined
   let lastMaintenance = -Infinity
 
@@ -290,7 +289,6 @@ export function pgCron(config: CronConfig): Cron {
       await started?.catch(() => {})
       await loop
       await runs.drain(config.graceMs ?? 10_000)
-      clearInterval(beat)
       await w.close()
     })())
   }
@@ -322,7 +320,6 @@ export function pgCron(config: CronConfig): Cron {
         if (queues !== undefined) await startQueues(queues, [...defs.values()].filter(isQueue))
         await w.listen()
         if (closing !== undefined) return
-        beat = setInterval(() => void runs.heartbeat(), leaseMs / 3)
         loop = run()
       })())
     },

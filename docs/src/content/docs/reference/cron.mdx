@@ -205,7 +205,7 @@ interface Cron extends AsyncDisposable_ {
 | Method | Does |
 |---|---|
 | `start()` | migrates (or checks), upserts the declared schedules, starts declared queues, LISTENs, starts the loop |
-| `close()` | stops claiming, waits `graceMs`, aborts what is left and marks it `cancelling`, waits `graceMs` again |
+| `close()` | stops claiming, waits `graceMs`, aborts what is left and marks it `cancelling`, waits `graceMs` again; a handler still running keeps its lease by heartbeat until it settles |
 | `create(def)` | inserts a schedule with `source: 'api'`, starting a queue target's queue first; a duplicate name is a `UsageError` |
 | `update(name, patch)` | merges the patch into the stored definition (shallow), recomputing `nextAt` when the timing changed |
 | `remove(name, { force })` | `false` when absent; a `UsageError` when runs are open, including one a concurrent tick or trigger just committed, and `force` is not set |
@@ -349,7 +349,7 @@ type RunState =
 |---|---|
 | `pending` | a manual run waiting for an instance that registered the handler |
 | `running` | claimed, under a lease |
-| `cancelling` | aborted (cancel, timeout or shutdown); still holds the slot until the handler settles |
+| `cancelling` | aborted (cancel, timeout or shutdown); still holds the slot until the handler settles or its lease expires |
 | `succeeded`, `failed`, `cancelled` | finished; `error` is `'timeout'` or `'lease-expired'` for those two causes |
 | `skipped` | overlap `'skip'` found a run open |
 | `missed` | misfire `'skip'`: one row for the ticks it dropped |

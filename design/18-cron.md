@@ -256,7 +256,9 @@ another run. That holds during `close()` too.
 
    The owner's next heartbeat returns `cancelling` and aborts the handler, and its F1 records
    `cancelled` and frees the slot. Until then `overlap: 'skip'` still sees the slot as taken, so a
-   second run cannot start while the cancelled handler is still running.
+   second run cannot start while the cancelled handler is still running — as long as its
+   heartbeats land within `leaseMs`. A run whose heartbeat is later than that is presumed dead:
+   maintenance expires it (§3.7) and frees the slot, even if the handler is in fact still running.
 
 ### 3.7 Maintenance (gated by a CAS on `meta.maint_at`, every `maintenanceMs`, default 15 s)
 
@@ -279,18 +281,21 @@ start(): migrate/ensure → upsert declared schedules (15 §0.3) → await enque
          queue target (so its `{ tx }` sends are allowed) → listen on 'cron_<hash>' (or poll) → loop:
   Q1 → plan each → K1 (handler: run it; queue: §6) → T2 pickups (handler schedules)
   sleep until min(next_at of $mine) − db_now, capped by pollMs (10 000), woken by NOTIFY or gap
-  every leaseMs/3: heartbeats for running runs; every maintenanceMs: §3.7 (gated)
-close(): stop claiming; let running handlers finish within graceMs, else abort + mark `cancelling`; F1 only when a handler settles
+  every leaseMs/3 while a handler runs: one heartbeat for all of them; every maintenanceMs: §3.7 (gated)
+close(): stop claiming; let running handlers finish within graceMs, else abort + mark `cancelling`;
+         return after graceMs more; F1 only when a handler settles
 ```
 
 - **Abort is not finish.** On `timeoutMs`, or `close()` after `graceMs`:
   1. the instance aborts the handler's signal;
   2. it marks the run `cancelling` (still counted in `running`) with a token-guarded update;
-  3. it keeps heartbeating it;
+  3. it keeps heartbeating it, also after `close()` has returned; the heartbeat and `timeoutMs`
+     timers are unref'd, so neither keeps the process alive;
   4. it runs F1 (`failed`/`'timeout'`, or `cancelled`) only when the handler's promise settles.
 
   A handler that ignores its signal therefore keeps the `overlap: 'skip'` slot until it really
-  stops. If the process exits first, the lease expires and maintenance finishes it (§3.7).
+  stops. If the process exits first, or `db` is ended so heartbeats fail, the lease expires and
+  maintenance finishes it (§3.7).
 - **Handler execution.**
   `retry: { maxAttempts, baseDelayMs, maxDelayMs, jitter }` re-attempts in-process with the
   family's local `backoffMs` (15 §0.2), keeping the lease. The attempt count is persisted at F1.
@@ -424,6 +429,7 @@ declared retry, retention and limits are never overwritten.
 | N instances wake for one tick | one claims; the others match no row (CAS) or hit `DO NOTHING` | C-D4 |
 | Instance crashes mid-handler | lease expires → run `failed` (`lease-expired`); the slot is freed; the next tick is unaffected | §3.7, C-D8 |
 | Cancel of a running run | `cancelling` keeps the slot until the handler stops (heartbeat → abort → F1) or its lease expires | §3.6 |
+| A heartbeat later than `leaseMs` (stalled process, ended `db`) | the run is presumed dead and expired; `overlap: 'skip'` may then start a run beside a handler that is still running | §3.7 |
 | A counter drifts (bug) | recomputed by the lock-then-count reconcile within `maintenanceMs` | §3.7 |
 | Crash between claim and handler start | same as above (the run is `running` with a lease) | |
 | Queue target: crash mid-transaction | nothing committed; the tick is claimed again on the next loop (grace permitting) | §6 |
@@ -480,7 +486,9 @@ needs `directConnection`; otherwise there is pure polling with one
 | **overlap under 3 instances** — handler 2.5 × period | `skip`: never two running; `allow`: concurrent runs |
 | **instance SIGKILL mid-run** | run `failed` (`lease-expired`) within `leaseMs + maintenanceMs`; `running` back to 0; the next tick fires on time |
 | **manual run picked only by a handler owner** — service A owns S, service B triggers it | the `pending` run is picked up and run by A; B never starts it |
-| **cancel under `skip`** — cancel a long running run, ticks keep coming | no second run starts until the cancelled handler has stopped; `running` returns to 0 |
+| **cancel under `skip`** — cancel a long running run, ticks keep coming | while its heartbeats land within `leaseMs`, no second run starts until the cancelled handler has stopped; `running` returns to 0 |
+| **handler outlives `close()`** — it ignores its signal past 2 × `graceMs` + `leaseMs`; a live peer | the run stays `cancelling` under its lease and the peer only skips; once it settles, `cancelled` and the next tick runs |
+| **a never-settling handler with `timeoutMs`, after `close()` and `db.end()`** | the process exits |
 | **manual trigger picked by exactly one instance** | one `running`, others see nothing |
 | **queue target: one message per tick** — 3 instances, kill mid-transaction | mq messages with key `cron:<name>:*` = ticks; none twice |
 | **misfire `once` after 10 ticks of downtime** | one run with `missed = 9`, next tick in the future |

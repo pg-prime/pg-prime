@@ -80,7 +80,9 @@ What happens when a tick comes due while the previous run is still open:
 
 The decision is taken on the schedule row's `running` counter, under the row lock the claim already
 holds. `pending`, `running` and `cancelling` runs all hold the slot, so a cancelled handler that is
-still winding down keeps a `'skip'` schedule from starting a second one.
+still winding down keeps a `'skip'` schedule from starting a second one. That holds while its
+instance heartbeats within `leaseMs`: a run whose heartbeat is later than that is presumed dead and
+expired, and the next tick may then run beside it.
 
 ## Misfire
 

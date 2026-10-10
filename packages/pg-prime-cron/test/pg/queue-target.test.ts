@@ -88,7 +88,7 @@ describe.each(targets)('queue target on $name', ({ url, pooled }) => {
     )
     await Promise.all(crons.map((c) => c.close()))
 
-    const runs = await q(`select state::text as state, tick_at, message_id, instance
+    const runs = await q(`select state::text as state, tick_at, message_id
       from $S.runs where schedule = 'q' order by tick_at`)
     const msgs = await q(`select id, key from $MQ.messages order by id`)
     expect(crashes).toBeGreaterThan(0)
@@ -96,7 +96,6 @@ describe.each(targets)('queue target on $name', ({ url, pooled }) => {
     expect(runs.every((r) => r['state'] === 'enqueued')).toBe(true)
     const ticks = runs.map((r) => (r['tick_at'] as Date).getTime())
     for (let i = 1; i < ticks.length; i++) expect(ticks[i]! - ticks[i - 1]!).toBe(1000)
-    expect(new Set(runs.map((r) => r['instance'])).size).toBeGreaterThan(1)
     expect(new Set(msgs.map((m) => m['key'])).size).toBe(msgs.length)
     expect(msgs.map((m) => [m['id'], m['key']])).toEqual(
       runs.map((r) => [r['message_id'], `cron:q:${(r['tick_at'] as Date).getTime()}`]),

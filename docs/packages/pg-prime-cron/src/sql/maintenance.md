@@ -18,6 +18,7 @@ Periodic upkeep run by one instance per `maintenanceMs`: the gate, lease expiry,
 ## Gotchas
 - `expire` must group by schedule: `update … from f` with two runs of one schedule would update the row once and decrement by one.
 - Expiry never re-runs a tick (C-D8).
+- Expiry cannot tell a dead owner from a late heartbeat: a handler whose heartbeat is later than `leaseMs` loses its `overlap: 'skip'` slot even if it still runs.
 - Plan 18 §3.7 locks only `running > 0`; the code also locks schedules with an open run, so a counter that drifted low is repaired too.
 
 ## Tests

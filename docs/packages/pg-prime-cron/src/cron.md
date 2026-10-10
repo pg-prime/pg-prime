@@ -8,15 +8,15 @@
 - `Cron` methods: `start`, `close`, `create`, `update`, `remove`, `pause`, `resume`, `enable`, `disable`, `trigger`, `cancel`, `get`, `list`, `runs`, `preview`, `prune`, `[Symbol.asyncDispose]`.
 
 ## Flow
-1. `ensure()` (`cron.ts:113`) runs once, retried after a failure: `migrateOwnedSchema` (apply unless `autoMigrate: false`), refuses a version below the client's with `SchemaVersionError`, reads DB `now()` and upserts each declared schedule with `source: 'code'` (`write`, `:141`).
-2. `start()` (`:317`): `ensure`, `startQueues` for queue targets when an `enqueuer` exists, `waker.listen()`, the heartbeat interval (`leaseMs / 3`), then `run()`.
-3. `iterate()` (`:212`): Q1 for the executable names (`mine()`, `:101`), then `tick(row)` per due row unless `maxConcurrent` is reached; a failing tick is reported and the next row continues.
-4. `tick()` (`:148`): ticker from the row, `plan()`, then `advance` (nothing to fire), `queueTick` (queue target) or K1 `claim`; reports `onMisfire`/`onTick`, and a `running` claim starts the handler.
+1. `ensure()` (`cron.ts:112`) runs once, retried after a failure: `migrateOwnedSchema` (apply unless `autoMigrate: false`), refuses a version below the client's with `SchemaVersionError`, reads DB `now()` and upserts each declared schedule with `source: 'code'` (`write`, `:140`).
+2. `start()` (`:315`): `ensure`, `startQueues` for queue targets when an `enqueuer` exists, `waker.listen()`, then `run()`. Heartbeats belong to the runner.
+3. `iterate()` (`:211`): Q1 for the executable names (`mine()`, `:101`), then `tick(row)` per due row unless `maxConcurrent` is reached; a failing tick is reported and the next row continues.
+4. `tick()` (`:147`): ticker from the row, `plan()`, then `advance` (nothing to fire), `queueTick` (queue target) or K1 `claim`; reports `onMisfire`/`onTick`, and a `running` claim starts the handler.
 5. T2 `pickup` takes `pending` manual runs of this instance's handler schedules, up to the free capacity (max 100).
-6. Every `maintenanceMs` locally: `maintain()` (`:257`) wins the `meta` gate or returns; then expire, reconcile, retain, and `pending-unclaimed` reporting.
+6. Every `maintenanceMs` locally: `maintain()` (`:256`) wins the `meta` gate or returns; then expire, reconcile, retain, and `pending-unclaimed` reporting.
 7. The loop sleeps until the earliest `next_at` of its schedules (from DB time), clamped to 10 ms…`pollMs`, woken early by NOTIFY, `gap`, a finished run or `trigger()`.
-8. `close()` (`:287`): stop the loop, `runner.drain(graceMs)`, stop heartbeats, UNLISTEN. An aborted `signal` calls it, also when already aborted at construction, so `start()` then rejects.
-9. Admin: `update`/`enable` lock the row in a transaction (`lockedUpdate`, `:300`) and write through `tx`; `pause`/`resume`/`disable` are one `setFlags`; each notifies the channel. `create` (`:331`) starts a queue target's queue (`startQueues`) before it writes the row.
+8. `close()` (`:286`): stop the loop, `runner.drain(graceMs)`, UNLISTEN. It returns after at most 2 × `graceMs`; a handler still running keeps heartbeating until it settles. An aborted `signal` calls it, also when already aborted at construction, so `start()` then rejects.
+9. Admin: `update`/`enable` lock the row in a transaction (`lockedUpdate`, `:298`) and write through `tx`; `pause`/`resume`/`disable` are one `setFlags`; each notifies the channel. `create` (`:328`) starts a queue target's queue (`startQueues`) before it writes the row.
 
 ## Gotchas
 - C-D9: an instance claims only schedules in its own `defs` — declared or `create`d here; queue targets only with an `enqueuer`.
@@ -30,5 +30,5 @@
 
 ## Tests
 - `packages/pg-prime-cron/test/live/cron.test.ts` (tier 1, PGlite or `PG_PRIME_TEST_URL`): sync, runs, trigger/pickup, cancel, overlap, timeout, lost lease at finish, already-aborted `signal`, misfire, grid across restarts, limit, `at`, retention, admin, hooks, per-schedule isolation.
-- `packages/pg-prime-cron/test/pg/cron.test.ts` (tier 2, direct and PgBouncer): 5-instance exactly-once, overlap under 3, SIGKILL, pickup by owner, cancel under skip, misfire after downtime and past `endAt`, `remove` waiting on a trigger's row lock.
+- `packages/pg-prime-cron/test/pg/cron.test.ts` (tier 2, direct and PgBouncer): 5-instance exactly-once, overlap under 3, SIGKILL, pickup by owner, cancel under skip, a handler outliving `close()`, misfire after downtime and past `endAt`, `remove` waiting on a trigger's row lock.
 - Run: `pnpm --filter @pg-prime/cron test:live`, `PG_PRIME_TEST_URL=… pnpm --filter @pg-prime/cron test:pg`.
