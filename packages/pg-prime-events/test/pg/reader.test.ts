@@ -250,37 +250,43 @@ describe('subscription readers on a real server', () => {
     120_000,
   )
 
-  requiresConcurrency(it)(
-    'a reader that finds its lease lost mid-batch hands no further entry to the handler',
-    async () => {
-      const db = server.db(2)
-      const schema = freshSchema()
-      const retries: unknown[] = []
-      const events = pgEvents({ db, schema, hooks: { onRetry: (e) => void retries.push(e) } })
-      const def = defineSubscription(topic, 'lost', { from: 'beginning' })
-      await events.start()
-      await events
-        .topic(topic)
-        .publishMany(Array.from({ length: 5 }, (_, n) => ({ payload: { n, at: 0 } })))
-      const seen: number[] = []
-      const reader = events.subscription(def).run(
-        async (e, ctx) => {
-          seen.push(e.payload.n)
-          if (seen.length > 1) return
-          // A direct takeover: expiring the lease first would race the old reader's heartbeat.
-          await db.sql`update ${sql.ident(schema, 'subscriptions')}
-            set token = 'thief', lease_until = now() + interval '1 min'`.execute()
-          await until(() => ctx.signal.aborted)
-        },
-        { leaseMs: 300, pollMs: 20, batchSize: 5 },
-      )
-      await until(() => seen.length > 0 && !reader.active)
-      await reader.close()
-      expect(seen).toStrictEqual([0])
-      expect(retries).toStrictEqual([])
-      expect((await events.subscription(def).lag()).entries).toBe(5)
-    },
-  )
+  for (const via of ['heartbeat', 'ctx.commit'] as const) {
+    requiresConcurrency(it)(
+      `a reader that finds its lease lost mid-batch by its ${via} hands no further entry to the handler`,
+      async () => {
+        const db = server.db(2)
+        const schema = freshSchema()
+        const retries: unknown[] = []
+        const events = pgEvents({ db, schema, hooks: { onRetry: (e) => void retries.push(e) } })
+        const def = defineSubscription(topic, 'lost', { from: 'beginning' })
+        await events.start()
+        await events
+          .topic(topic)
+          .publishMany(Array.from({ length: 5 }, (_, n) => ({ payload: { n, at: 0 } })))
+        const seen: number[] = []
+        const reader = events.subscription(def).run(
+          async (e, ctx) => {
+            seen.push(e.payload.n)
+            // A direct takeover: expiring the lease first would race the old reader's heartbeat.
+            if (seen.length === 1) {
+              await db.sql`update ${sql.ident(schema, 'subscriptions')}
+                set token = 'thief', lease_until = now() + interval '1 min'`.execute()
+            }
+            if (via === 'heartbeat') await until(() => ctx.signal.aborted)
+            // A log-and-continue handler swallows the commit's EventsLeaseLostError.
+            else await db.transaction((tx) => ctx.commit({ tx })).catch(() => {})
+          },
+          // The long lease keeps the heartbeat from finding the loss first.
+          { leaseMs: via === 'heartbeat' ? 300 : 60_000, pollMs: 20, batchSize: 5 },
+        )
+        await until(() => seen.length > 0 && !reader.active)
+        await reader.close()
+        expect(seen).toStrictEqual([0])
+        expect(retries).toStrictEqual([])
+        expect((await events.subscription(def).lag()).entries).toBe(5)
+      },
+    )
+  }
 
   requiresConcurrency(it)('a stale reader cannot commit or park', async () => {
     const db = server.db(2)

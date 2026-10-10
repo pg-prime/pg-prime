@@ -15,30 +15,31 @@ plus `reset`, `lag`, `parked`, `discard` and `remove`. Built by `pgEvents`; `@pg
 
 ## Flow
 1. The loop ensures the subscription, then L1; without the lease it retries every `leaseMs / 2`
-   (`packages/pg-prime-events/src/log/subscription.ts:293`).
-2. Holding it, a heartbeat runs every `leaseMs / 3`; 0 rows aborts the handler signal, and an
-   entry handler gets no further entry of the batch (`:134`, `:196`).
-3. Every 60 s the reader runs retention for its topic (`:255`).
+   (`packages/pg-prime-events/src/log/subscription.ts:298`).
+2. Holding it, a heartbeat runs every `leaseMs / 3`. 0 rows from it or from `ctx.commit` aborts the
+   handler signal, and an entry handler gets no further entry of the batch, even if it caught the
+   commit's error (`:134`, `:178`, `:201`).
+3. Every 60 s the reader runs retention for its topic (`:260`).
 4. R1 reads `batchSize` entries (1 while isolating); an empty read commits `advanceTo` if the cursor
-   moved, else waits on the waker (`:266`).
+   moved, else waits on the waker (`:271`).
 5. `attempt` writes the A1 marker, computes per-entry cursors, parks instead of invoking when a single
    entry's count exceeds `maxAttempts` (`:164`).
 6. Success commits the cursor after the last acknowledged entry (skipped if `ctx.commit` already did).
-7. A multi-entry failure isolates the rest; a single-entry failure nacks with `backoffMs` (`:229`).
-8. `close()` stops the loop, lets the running batch finish and releases the lease (`:280`).
+7. A multi-entry failure isolates the rest; a single-entry failure nacks with `backoffMs` (`:234`).
+8. `close()` stops the loop, lets the running batch finish and releases the lease (`:285`).
 
 ## Gotchas
 - A failure is never charged to a batch: the batch's entries are re-run one by one, and only
   single-entry attempts count, so `maxAttempts: 1` never parks an innocent entry unseen.
 - A marker still set at takeover (crash or nack) isolates `head_size` entries, whatever the size
-  (`:128`); a failed single entry keeps the reader isolated until it succeeds or is parked (`:237`),
+  (`:128`); a failed single entry keeps the reader isolated until it succeeds or is parked (`:242`),
   otherwise a larger batch would re-mark and reset its count.
 - The marker is written before the handler, so a process-killing entry is still counted and parked
   after `maxAttempts` restarts.
 - `ctx.commit({ tx })` runs C1 in the caller's transaction (exactly-once for same-database sinks) and
   clears the marker; a crash later in the same batch is then found one round later.
 - A failure after `ctx.commit` (a later throw, a rollback, `IndeterminateCommitError`) reads the
-  stored cursor (`:209`), which waits for the handler's transaction to end. Entries up to it count as
+  stored cursor (`:214`), which waits for the handler's transaction to end. Entries up to it count as
   acknowledged: never redelivered, never rewound, and a failure on them is not retried.
 - One reader per subscription: guarded writes after a takeover fail with `EventsLeaseLostError`, and
   the old reader goes back to standby. `reset` clears the token so a running reader loses its lease.

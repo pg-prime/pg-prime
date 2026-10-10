@@ -176,7 +176,12 @@ function startReader<T>(
         signal: handlerStop.signal,
         attempt: Math.max(1, attempts),
         async commit({ tx }) {
-          if (!(await sql.commit(tx, t, s, token, c))) throw lostError()
+          if (!(await sql.commit(tx, t, s, token, c))) {
+            // The handler may swallow the error; held.lost still ends the batch.
+            held.lost = true
+            handlerStop.abort()
+            throw lostError()
+          }
           committed = encodeCursor(c)
         },
       })
