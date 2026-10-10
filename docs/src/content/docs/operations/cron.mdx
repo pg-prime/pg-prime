@@ -37,7 +37,8 @@ every real hour across transitions is an `everyMs` schedule, which knows nothing
   instance then marks it `failed` / `'lease-expired'` and frees the overlap slot. It is not re-run.
 - **Deploys:** `close()` stops claiming, waits `graceMs` for handlers, then aborts their `signal`,
   marks them `cancelling` and waits `graceMs` again. Wire it to your shutdown signal, or pass
-  `signal` to `pgCron`.
+  `signal` to `pgCron`. A handler still running after that keeps heartbeating its lease until it
+  settles, without keeping the process alive; if `db` is ended before then, the lease expires instead.
 
 ## Maintenance
 

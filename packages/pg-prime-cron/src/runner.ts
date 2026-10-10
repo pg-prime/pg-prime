@@ -33,14 +33,15 @@ export type Emit = <K extends keyof CronHooks>(
 
 export interface Runner {
   readonly size: number
+  /** Heartbeats every `leaseMs / 3` while any run is active, also after `drain` gave up waiting. */
   start(run: StartRun, handler: (ctx: RunContext<any>) => Promise<unknown>): void
-  heartbeat(): Promise<void>
   /** Waits `graceMs`, aborts what is left, then waits `graceMs` more for it to settle. */
   drain(graceMs: number): Promise<void>
 }
 
 export function runner(db: Db, t: Tables, leaseMs: number, emit: Emit, onEnd: () => void): Runner {
   const active = new Map<bigint, Active>()
+  let beat: ReturnType<typeof setInterval> | undefined
 
   const abort = (a: Active, reason: Reason): void => {
     if (a.reason !== undefined) return
@@ -128,6 +129,29 @@ export function runner(db: Db, t: Tables, leaseMs: number, emit: Emit, onEnd: ()
     })
   }
 
+  async function renew() {
+    const live = [...active.values()]
+    let rows
+    try {
+      rows = await heartbeat(
+        db,
+        t,
+        live.map((a) => a.run),
+        leaseMs,
+      ).execute()
+    } catch (e) {
+      return internal('heartbeat failed', e)
+    }
+    const states = new Map(rows.map((r) => [r['id'] as bigint, r['state']]))
+    for (const a of live) {
+      const s = states.get(a.run.id)
+      if (s === undefined && active.has(a.run.id)) {
+        abort(a, 'lost')
+        internal(`run ${a.run.id} lost its lease`, new CronLeaseLostError(a.run.id))
+      } else if (s === 'cancelling') abort(a, 'cancel')
+    }
+  }
+
   return {
     get size() {
       return active.size
@@ -135,33 +159,19 @@ export function runner(db: Db, t: Tables, leaseMs: number, emit: Emit, onEnd: ()
     start(run, handler) {
       const a = { run, ac: new AbortController() } as Active
       active.set(run.id, a)
+      if (beat === undefined) {
+        beat = setInterval(() => void renew(), leaseMs / 3)
+        // A handler that outlives close() must not keep the process alive by itself.
+        ;(beat as unknown as { unref?: () => void }).unref?.()
+      }
       a.done = execute(a, handler).finally(() => {
         active.delete(run.id)
+        if (active.size === 0) {
+          clearInterval(beat)
+          beat = undefined
+        }
         onEnd()
       })
-    },
-    async heartbeat() {
-      const live = [...active.values()]
-      if (live.length === 0) return
-      let rows
-      try {
-        rows = await heartbeat(
-          db,
-          t,
-          live.map((a) => a.run),
-          leaseMs,
-        ).execute()
-      } catch (e) {
-        return internal('heartbeat failed', e)
-      }
-      const states = new Map(rows.map((r) => [r['id'] as bigint, r['state']]))
-      for (const a of live) {
-        const s = states.get(a.run.id)
-        if (s === undefined && active.has(a.run.id)) {
-          abort(a, 'lost')
-          internal(`run ${a.run.id} lost its lease`, new CronLeaseLostError(a.run.id))
-        } else if (s === 'cancelling') abort(a, 'cancel')
-      }
     },
     async drain(graceMs) {
       const settled = () => Promise.all([...active.values()].map((a) => a.done))
