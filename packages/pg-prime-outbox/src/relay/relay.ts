@@ -65,9 +65,10 @@ export function startRelay<T>(
   let dueAt = Infinity
   let closed = false
   let started = false
+  let stopped = false
   let wake: Waker | undefined
-  let beating = false
-  let sweeping = false
+  let beating: Promise<void> | undefined
+  let sweeping: Promise<void> | undefined
 
   const lose = (p: number, h: Held): void => {
     if (held.get(p) !== h) return
@@ -78,33 +79,32 @@ export function startRelay<T>(
     hooks.call('onLease', { topic, acquired: [], released: [p] })
   }
 
-  const beat = async (): Promise<void> => {
-    if (beating || closed || !started) return
-    beating = true
+  /** One heartbeat at a time; `close()` waits for the one in flight. */
+  const beat = (): Promise<void> | undefined =>
+    started && !stopped ? (beating ??= pulse().finally(() => (beating = undefined))) : undefined
+
+  const pulse = async (): Promise<void> => {
     try {
       const sent = [...held.values()]
       const r = await heartbeat(ctx, owner, leaseMs, sent)
       live = r.live
       for (const h of sent) if (!r.kept.has(h.p)) lose(h.p, h)
       if (held.size > fairShare(def.partitions, live)) wake?.kick()
-      if (def.keepDeliveredMs > 0 && !sweeping) void clean()
+      if (def.keepDeliveredMs > 0 && !closed) {
+        sweeping ??= clean().finally(() => (sweeping = undefined))
+      }
     } catch (e) {
       hooks.internal('heartbeat-failed', `@pg-prime/outbox: ${topic}: heartbeat failed.`, e)
-    } finally {
-      beating = false
     }
   }
 
   const clean = async (): Promise<void> => {
-    sweeping = true
     try {
       let force = false
       while (!closed && (await sweep(ctx, leaseMs, SWEEP_LIMIT, force)) === SWEEP_LIMIT)
         force = true
     } catch (e) {
       hooks.internal('relay-failed', `@pg-prime/outbox: ${topic}: retention sweep failed.`, e)
-    } finally {
-      sweeping = false
     }
   }
 
@@ -112,6 +112,8 @@ export function startRelay<T>(
   const rebalance = async (): Promise<void> => {
     if (held.size <= fairShare(def.partitions, live)) {
       const got = await acquire(ctx, owner, leaseMs)
+      // close() may have released already; nobody would serve or release these.
+      if (closed) return release(ctx, owner, got.leases, true)
       live = got.live
       for (const l of got.leases) held.set(l.p, { ...l, ctrl: new AbortController() })
       if (got.leases.length > 0) {
@@ -221,6 +223,7 @@ export function startRelay<T>(
             await ctx.start()
             started = true
             await beat()
+            continue
           }
           await rebalance()
           if (await round()) continue
@@ -256,7 +259,10 @@ export function startRelay<T>(
       let timer: ReturnType<typeof setTimeout> | undefined
       await Promise.race([running, new Promise((r) => (timer = setTimeout(r, graceMs)))])
       clearTimeout(timer)
+      stopped = true
       clearInterval(heartbeats)
+      // A heartbeat landing after the release below would bring the membership row back.
+      await Promise.all([beating, sweeping])
       await wake?.close()
       const leases = [...held.values()]
       held.clear()

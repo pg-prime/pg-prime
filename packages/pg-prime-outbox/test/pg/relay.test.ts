@@ -1,6 +1,6 @@
 import { requiresConcurrency } from '@pg-prime/testing'
 import { sql } from 'pg-prime'
-import type { Db } from 'pg-prime'
+import type { AnyFragment, Db } from 'pg-prime'
 import { afterEach, describe, expect, it } from 'vitest'
 import { defineOutbox, functionSink, pgOutbox } from '../../src/index.js'
 import type { OutboxDef, OutboxSink, Relay, RelayOptions } from '../../src/index.js'
@@ -29,18 +29,57 @@ async function setup<T>(def: OutboxDef<T>, sink: OutboxSink<T>) {
   const dbs: Db[] = [db]
   cleanup.push(async () => {
     await outbox.close()
+    // No relay connection may hold a lock while DROP SCHEMA runs.
+    for (const d of dbs.slice(1)) await d.end()
     await dropSchema(db, schema)
-    for (const d of dbs) await d.end()
+    await db.end()
   })
-  const proc = async (): Promise<Proc> => {
+  const proc = async (start = true): Promise<Proc> => {
     const pdb = connectDb(url(), { poolOptions: { max: 4 } })
     dbs.push(pdb)
     const o = pgOutbox({ db: pdb, schema, define: { t: def } })
-    await o.start()
+    if (start) await o.start()
     cleanup.unshift(() => o.close())
     return { db: pdb, relay: (opts) => o.topics.t.relay(sink, opts) }
   }
   return { schema, db, topic: outbox.topics.t, proc }
+}
+
+/** Runs `lock` in a transaction on its own connection, held open until the result is called. */
+async function holding(db: Db, lock: AnyFragment): Promise<() => Promise<void>> {
+  let locked!: () => void
+  let unlock!: () => void
+  const ready = new Promise<void>((r) => (locked = r))
+  const gate = new Promise<void>((r) => (unlock = r))
+  const tx = db.transaction(async (q) => {
+    await q.sql`${lock}`.execute()
+    locked()
+    await gate
+  })
+  await Promise.race([ready, tx])
+  const free = async (): Promise<void> => {
+    unlock()
+    await tx
+  }
+  cleanup.unshift(free)
+  return free
+}
+
+/** Active statements on `schema` from other connections; `waiting` counts only lock waits. */
+async function busy(db: Db, schema: string, waiting = false): Promise<number> {
+  const [r] = await db.sql`select count(*)::int as n from pg_stat_activity
+    where pid <> pg_backend_pid() and state = 'active' and query like ${`%${schema}%`}
+      and (not ${waiting}::boolean or wait_event_type = 'Lock')`.execute()
+  return r!['n'] as number
+}
+
+/** Partitions still leased, and the owners of membership rows. */
+async function leftovers(db: Db, schema: string) {
+  const [partitions, relays] = [sql.ident(schema, 'partitions'), sql.ident(schema, 'relays')]
+  const [r] = await db.sql`select
+      (select count(*)::int from ${partitions} where token is not null) as leases,
+      (select coalesce(array_agg(owner), '{}') from ${relays}) as members`.execute()
+  return r
 }
 
 describe('relay under concurrency', () => {
@@ -264,5 +303,106 @@ describe('relay under concurrency', () => {
     }
     lat.sort((a, b) => a - b)
     expect(lat[Math.floor(lat.length * 0.95)]).toBeLessThan(100)
+  })
+})
+
+describe('relay close()', () => {
+  const quiet = recordingSink<number>().sink
+
+  test('waits for a retention sweep in flight, then leaves nothing behind', async () => {
+    const { schema, db, proc } = await setup(defineOutbox<number>('sweep'), quiet)
+    const p = await proc()
+    // The sweep's gate updates the topic row, so it waits here.
+    const unlock = await holding(
+      db,
+      sql`select from ${sql.ident(schema, 'topics')} for no key update`,
+    )
+    const relay = p.relay({ pollMs: 50 })
+    await until(async () => (await busy(db, schema, true)) > 0)
+    let closed = false
+    const closing = relay.close().then(() => (closed = true))
+    await sleep(300)
+    expect(closed).toBe(false)
+    await unlock()
+    await closing
+    expect(await busy(db, schema)).toBe(0)
+    expect(await leftovers(db, schema)).toStrictEqual({ leases: 0, members: [] })
+  })
+
+  test('waits for a heartbeat in flight, so it cannot bring the membership row back', async () => {
+    const { schema, db, proc } = await setup(defineOutbox<number>('ghost'), quiet)
+    const relays = sql.ident(schema, 'relays')
+    await db.sql`insert into ${relays} (topic, owner, seen_at)
+      values ('ghost', 'stale', now() - interval '1 day')`.execute()
+    // The heartbeat deletes stale members before it upserts its own row, so it waits here.
+    const unlock = await holding(db, sql`select from ${relays} where owner = 'stale' for update`)
+    const relay = (await proc()).relay({ graceMs: 100 })
+    await until(async () => (await busy(db, schema, true)) > 0)
+    let closed = false
+    const closing = relay.close().then(() => (closed = true))
+    await sleep(300)
+    expect(closed).toBe(false)
+    await unlock()
+    await closing
+    expect(await busy(db, schema)).toBe(0)
+    expect(await leftovers(db, schema)).toStrictEqual({ leases: 0, members: [] })
+  })
+
+  test('an acquire that outlives graceMs releases what it took', async () => {
+    const { schema, db, proc } = await setup(defineOutbox<number>('late'), quiet)
+    // Only L1 sets a fresh token, so only L1 waits here.
+    const fn = sql.ident(schema, 'stall')
+    await db.sql`create function ${fn}() returns trigger language plpgsql as $$
+      begin perform pg_advisory_xact_lock_shared(hashtext(tg_table_schema), 0); return new; end
+      $$`.execute()
+    await db.sql`create trigger stall before update on ${sql.ident(schema, 'partitions')}
+      for each row when (new.token is distinct from old.token and new.token is not null)
+      execute function ${fn}()`.execute()
+    const unlock = await holding(db, sql`select pg_advisory_xact_lock(hashtext(${schema}), 0)`)
+    const relay = (await proc()).relay({ graceMs: 100 })
+    await until(async () => (await busy(db, schema, true)) > 0)
+    await relay.close()
+    await unlock()
+    await until(async () => (await busy(db, schema)) === 0)
+    await until(async () => (await leftovers(db, schema))!['leases'] === 0, 3_000)
+    expect(await leftovers(db, schema)).toStrictEqual({ leases: 0, members: [] })
+  })
+
+  test('a start that outlives graceMs neither heartbeats nor leases', async () => {
+    const { schema, db, proc } = await setup(defineOutbox<number>('slow'), quiet)
+    // Any heartbeat would delete this row.
+    await db.sql`insert into ${sql.ident(schema, 'relays')} (topic, owner, seen_at)
+      values ('slow', 'stale', now() - interval '1 day')`.execute()
+    // start() upserts the topic row, so it waits here.
+    const unlock = await holding(
+      db,
+      sql`select from ${sql.ident(schema, 'topics')} for no key update`,
+    )
+    const relay = (await proc(false)).relay({ graceMs: 100 })
+    await until(async () => (await busy(db, schema, true)) > 0)
+    await relay.close()
+    await unlock()
+    await until(async () => (await busy(db, schema)) === 0)
+    await sleep(300)
+    expect(await leftovers(db, schema)).toStrictEqual({ leases: 0, members: ['stale'] })
+    // Not even leased and given back.
+    const [p] =
+      await db.sql`select max(epoch) as e from ${sql.ident(schema, 'partitions')}`.execute()
+    expect(p!['e']).toBe(0n)
+  })
+
+  test('keeps heartbeating while a wave finishes within graceMs', async () => {
+    let entered!: () => void
+    const delivering = new Promise<void>((r) => (entered = r))
+    const sink = functionSink<number>(async () => {
+      entered()
+      await sleep(4_000)
+    })
+    const { db, topic, proc } = await setup(defineOutbox<number>('grace', { partitions: 1 }), sink)
+    await topic.write(1, { tx: db })
+    const relay = (await proc()).relay({ leaseMs: 1_500, pollMs: 20 })
+    await delivering
+    await relay.close()
+    expect((await topic.stats()).pending).toBe(0)
   })
 })
