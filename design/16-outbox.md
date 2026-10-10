@@ -32,7 +32,7 @@ at-least-once plus a stable idempotency key and a fencing epoch.
 |---|---|---|
 | X1 | **No dependency on `@pg-prime/events`**, not even an optional peer. The wake-up loop (LISTEN + `gap` + poll timer, ~40 lines) is owned here. An "append to an events topic" sink is a documented recipe. The events log does not use the outbox | The claim models differ (partitioned per-key leases vs a single cursor), so nothing substantive would be shared. Minimal install. Both directions stay independent (15 §0.1) |
 | X2 | **Partition leases, not per-row claims.** Each record maps to one of a topic's `P` partitions: `abs(hashtextextended(key, 0) % P)` for keyed records (not `mod(abs(h), P)`: `abs` of the minimum bigint overflows), random for unkeyed ones. A relay leases whole partitions (`FOR UPDATE SKIP LOCKED` on `partitions` rows) and delivers each partition in `id` order | One owner per partition ⇒ one owner per key ⇒ no concurrent delivery of a key. `hashtextextended` is the function hash partitioning relies on, so it is stable across versions and `pg_upgrade`. Per-row `SKIP LOCKED` cannot keep per-key order: skipping a locked head row would hand out the next row of the same key |
-| X3 | **Ordered writes:** a keyed write takes `pg_advisory_xact_lock(hashtextextended(topic '/' key, 0))` (keys sorted within a batch, so batches cannot deadlock) before inserting. `ordered: false` opts out | Writers of one key then serialize until commit, so **`id` order equals commit order per key**. Without it, a transaction that took its id earlier but committed later would be delivered after its successor |
+| X3 | **Ordered writes:** a keyed write takes `pg_advisory_xact_lock(hashtextextended(topic '/' key, 0))` (keys sorted within one call, so two batches cannot deadlock) before inserting. `ordered: false` opts out. Separate calls in one transaction are not sorted against each other: two transactions writing the same keys in opposite orders deadlock (Postgres aborts one with 40P01), so a transaction writing several keys uses one `writeMany` or a consistent key order | Writers of one key then serialize until commit, so **`id` order equals commit order per key**. Without it, a transaction that took its id earlier but committed later would be delivered after its successor |
 | X4 | **The relay re-reads `pending` rows** (no cursor) and marks them after delivery. **A sink call never holds two records of one key**: the relay splits each read into *waves* (wave k = the k-th pending record of every key), delivers wave by wave, and drops a key from later waves after its first failure | A late-committing lower id is simply picked up on the next read, so no xid bookkeeping is needed. Waves keep per-key FIFO without trusting the sink: a later record of a key is never sent before an earlier one has succeeded |
 | X5 | **Failure blocks the key, not the partition.** A failed keyed head record sets `blocked(topic, key).until = now() + backoff`; the partition keeps serving other keys. After `maxAttempts` the record is **parked**, and its key stays blocked (strict order) until an operator `replay`s or `discard`s it | Head-of-line blocking stays confined to the aggregate that failed |
 | X6 | Each record gets a stable **idempotency key** (`idem`: the caller's, or `gen_random_uuid()` at write), with `unique (topic, idem)` so a duplicate write is a no-op. Each partition lease carries a monotonic **`epoch`**, passed to the sink as a fencing token | Sinks can deduplicate redeliveries and reject a stale relay after a lease steal |
@@ -268,10 +268,12 @@ lease partitions (L1) ─▶ for each owned partition (concurrently, up to `conc
 - The wake-up loop is local (X1): `db.listen(chan)` when the pooler profile allows it, else pure
   polling with one `onInternal('listen-unavailable')`. `chan` is `ob_` + 24 hex chars of
   `sha256(schema '/' topic)`.
-- `close()` stops leasing, finishes in-flight waves (`graceMs`), stops the heartbeat and the
-  LISTEN, releases its partitions (`owner = token = lease_until = null`) and deletes its `relays`
-  row, so peers take over at once. A sink call that ignores `signal` cannot hold any of that past
-  `graceMs`. `signal` and `[Symbol.asyncDispose]` do the same.
+- `close()` stops leasing, keeps heartbeating while in-flight waves finish (`graceMs`), stops the
+  heartbeat, waits for a heartbeat or retention sweep already running, stops the LISTEN, releases
+  its partitions (`owner = token = lease_until = null`) and deletes its `relays` row, so peers take
+  over at once. A sink call that ignores `signal` cannot hold any of that past `graceMs`. A start
+  or L1 still running when `graceMs` ends installs nothing: when it returns, the relay releases
+  what L1 took. `signal` and `[Symbol.asyncDispose]` do the same.
 - A round ends when every partition's batch has settled, even after one fails, so the next round
   never serves a partition whose batch is still in flight.
 - A stored payload the topic's `codec` cannot decode fails that record non-retryably: it parks at
@@ -433,6 +435,9 @@ locks, single statements). Wake-ups need `directConnection`; otherwise the relay
 | **wake latency** | p95 < 100 ms with `pollMs: 5000` |
 | **a failing partition beside a slow one** — 2 relays, each holding a partition whose settle throws and one whose batch takes three slow waves | no overlap per partition; every slow record delivered once |
 | **close() under a sink that ignores abort** — child process | after `close()` no backend LISTENs on the channel, and the child exits once its pool ends |
+| **close() with a retention sweep or heartbeat blocked on a row lock** | `close()` resolves only after the lock is released; then no relay statement runs and no `relays` row is left |
+| **close() past `graceMs` with start or L1 blocked** | once the statement returns, no partition is leased; a stalled start neither heartbeats nor leases |
+| **close() while a wave outlasts `leaseMs` within `graceMs`** | the relay keeps heartbeating, so the wave settles as delivered |
 | **PgBouncer transaction mode** | writes plus a polling relay deliver everything |
 
 **Bun:** unit tier plus the tier-2 order test and `webhookSink` on Bun 1.4.2.

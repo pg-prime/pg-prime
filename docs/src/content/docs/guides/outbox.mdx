@@ -87,6 +87,11 @@ is commit order, per key, and the relay delivers in `id` order. The cost is one 
 distinct key per transaction. `defineOutbox(topic, { ordered: false })` drops it, for topics where
 order does not matter.
 
+Locks are taken in key order within one `write` or `writeMany` call only. A transaction that writes
+several keys should pass them to one `writeMany` or write them in the same order everywhere: two
+transactions taking the same keys in opposite orders deadlock, and Postgres aborts one with
+`40P01`.
+
 The idempotency key (`idem`) is yours when you pass `idempotencyKey`, a random UUID otherwise. A
 second write with the same `idempotencyKey` is a no-op that returns the first record's id with
 `duplicate: true`, for as long as the first record is pending, parked or delivered within

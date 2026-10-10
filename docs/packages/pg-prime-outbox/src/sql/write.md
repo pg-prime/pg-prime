@@ -30,7 +30,10 @@ ordering locks, idempotent inserts and a wake-up NOTIFY.
   commit. A second writer of the key waits for the first to commit, then takes a larger id. So the
   relay, reading pending rows in id order, can never see a later record of a key before an earlier
   one has committed. With `ordered: false` a later id can commit first and is delivered first.
-- Keys are locked in sorted order, so two batches sharing keys cannot deadlock.
+- Keys are locked in sorted order within one call, so two batches sharing keys cannot deadlock.
+  Separate `write` calls in one transaction are not sorted against each other: two transactions
+  writing the same keys in opposite orders deadlock (40P01). Use one `writeMany` or a consistent
+  key order.
 - `abs(h % P)`, not `mod(abs(h), P)`: `abs` of the minimum bigint overflows.
 - The NOTIFY sits in a scalar subquery of the final select (an unreferenced select CTE would not
   run); PostgreSQL sends it only on commit, collapsed to one per transaction.
