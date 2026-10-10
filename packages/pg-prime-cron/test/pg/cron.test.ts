@@ -242,19 +242,28 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
     const handler = async () => {
       if (++calls === 1) await held
     }
-    const s = () => [defineSchedule('s', { everyMs: 1000 }, { handler })]
-    const owner = instance({ schedules: s(), instance: 'owner' })
+    // A lease no stall can outlast, so only a stopped heartbeat can expire the run.
+    const node = (name: string) =>
+      instance({
+        schedules: [defineSchedule('s', { everyMs: 1000 }, { handler })],
+        instance: name,
+        leaseMs: 6000,
+      })
+    const owner = node('owner')
     await owner.start()
-    await until(async () => (await runsOf('s')).some((r) => r['state'] === 'running'))
-    await instance({ schedules: s(), instance: 'peer' }).start()
-    await owner.close()
-    // close() gave up after 2 × graceMs; a stopped heartbeat would now let the peer expire the run.
-    await sleep(1500 + 500 + 1000)
-    const [first, ...rest] = await runsOf('s')
-    expect(first).toMatchObject({ state: 'cancelling', instance: 'owner' })
-    expect(new Set(rest.map((r) => r['state']))).toEqual(new Set(['skipped']))
-    expect(calls).toBe(1)
-    release()
+    try {
+      await until(async () => (await runsOf('s')).some((r) => r['state'] === 'running'))
+      await node('peer').start()
+      await owner.close()
+      // close() gave up after 2 × graceMs; a stopped heartbeat would now let the peer expire the run.
+      await sleep(6000 + 500 + 1000)
+      const [first, ...rest] = await runsOf('s')
+      expect(first).toMatchObject({ state: 'cancelling', instance: 'owner' })
+      expect(new Set(rest.map((r) => r['state']))).toEqual(new Set(['skipped']))
+      expect(calls).toBe(1)
+    } finally {
+      release()
+    }
     await until(async () => (await runsOf('s')).some((r) => r['state'] === 'succeeded'))
     const [done, ...after] = await runsOf('s')
     expect(done).toMatchObject({ state: 'cancelled', error: null })
@@ -368,7 +377,7 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
   }, 30_000)
 })
 
-// Claims a tick, says so, and hangs in it; with 'close' it then closes and ends its pool.
+// Claims a tick, says so, and hangs past its timeout; with 'close' it closes and ends its pool.
 const VICTIM = `
 import { defineSchema, pgPrime } from 'pg-prime'
 import { defineSchedule, pgCron } from '../../src/index.js'
@@ -381,7 +390,7 @@ const db = pgPrime({
 let started
 const running = new Promise((r) => (started = r))
 const handler = () => (console.log('running'), started(), new Promise(() => {}))
-const victim = defineSchedule('victim', { everyMs: 2000 }, { handler })
+const victim = defineSchedule('victim', { everyMs: 2000 }, { handler }, { timeoutMs: 60_000 })
 const cron = pgCron({ db, schema, pollMs: 200, leaseMs: 1500, graceMs: 100, schedules: [victim] })
 await cron.start()
 if (close) {

@@ -289,8 +289,8 @@ close(): stop claiming; let running handlers finish within graceMs, else abort +
 - **Abort is not finish.** On `timeoutMs`, or `close()` after `graceMs`:
   1. the instance aborts the handler's signal;
   2. it marks the run `cancelling` (still counted in `running`) with a token-guarded update;
-  3. it keeps heartbeating it, also after `close()` has returned (on an unref'd timer, so it does
-     not keep the process alive);
+  3. it keeps heartbeating it, also after `close()` has returned; the heartbeat and `timeoutMs`
+     timers are unref'd, so neither keeps the process alive;
   4. it runs F1 (`failed`/`'timeout'`, or `cancelled`) only when the handler's promise settles.
 
   A handler that ignores its signal therefore keeps the `overlap: 'skip'` slot until it really
@@ -488,7 +488,7 @@ needs `directConnection`; otherwise there is pure polling with one
 | **manual run picked only by a handler owner** — service A owns S, service B triggers it | the `pending` run is picked up and run by A; B never starts it |
 | **cancel under `skip`** — cancel a long running run, ticks keep coming | while its heartbeats land within `leaseMs`, no second run starts until the cancelled handler has stopped; `running` returns to 0 |
 | **handler outlives `close()`** — it ignores its signal past 2 × `graceMs` + `leaseMs`; a live peer | the run stays `cancelling` under its lease and the peer only skips; once it settles, `cancelled` and the next tick runs |
-| **a never-settling handler after `close()` and `db.end()`** | the process exits |
+| **a never-settling handler with `timeoutMs`, after `close()` and `db.end()`** | the process exits |
 | **manual trigger picked by exactly one instance** | one `running`, others see nothing |
 | **queue target: one message per tick** — 3 instances, kill mid-transaction | mq messages with key `cron:<name>:*` = ticks; none twice |
 | **misfire `once` after 10 ticks of downtime** | one run with `missed = 9`, next tick in the future |

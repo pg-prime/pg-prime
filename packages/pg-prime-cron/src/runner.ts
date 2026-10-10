@@ -63,6 +63,7 @@ export function runner(db: Db, t: Tables, leaseMs: number, emit: Emit, onEnd: ()
     emit('onRunStart', { schedule: run.schedule, runId: run.id, manual: run.manual })
     const timer =
       run.timeoutMs === null ? undefined : setTimeout(() => abort(a, 'timeout'), run.timeoutMs)
+    unref(timer)
     const r = run.retry ?? {}
     const max = r.maxAttempts ?? 1
     const policy = {
@@ -161,8 +162,7 @@ export function runner(db: Db, t: Tables, leaseMs: number, emit: Emit, onEnd: ()
       active.set(run.id, a)
       if (beat === undefined) {
         beat = setInterval(() => void renew(), leaseMs / 3)
-        // A handler that outlives close() must not keep the process alive by itself.
-        ;(beat as unknown as { unref?: () => void }).unref?.()
+        unref(beat)
       }
       a.done = execute(a, handler).finally(() => {
         active.delete(run.id)
@@ -203,6 +203,9 @@ async function within(p: Promise<unknown>, ms: number): Promise<boolean> {
   clearTimeout(timer)
   return r
 }
+
+// The loop keeps a started cron alive; a handler that outlives close() must not keep the process.
+const unref = (t: unknown): void => (t as { unref?: () => void } | undefined)?.unref?.()
 
 const describe = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
