@@ -54,7 +54,7 @@ plus `reset`, `lag`, `parked`, `discard` and `remove`. Built by `pgEvents`; `@pg
   discard, isolation, a single failure under new arrivals, retention, lag.
 - `test/pg/reader.test.ts` — one reader across 3 instances with crash failover, exactly-once sink
   under killed transactions, a throw after (or inside) a `ctx.commit` transaction, process-killing
-  poison entry, a lease lost mid-batch, stale reader, wake p95 < 100 ms.
+  poison entry, a lease lost mid-batch, stale reader, commit-to-handler wake p95 < 100 ms.
 - `test/pg/cursor.test.ts` — restarts under concurrent producers, a late transaction larger than
   `batchSize`, unrelated long transaction.
 - `pnpm --filter @pg-prime/events test:live`; `PG_PRIME_TEST_URL=… pnpm --filter @pg-prime/events test:pg`.

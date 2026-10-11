@@ -659,7 +659,7 @@ member; `bench/types` fixture with 100 topics).
 | **channel across sessions + gap** — two listeners on one channel, `pg_terminate_backend` the ListenHub backend | both `onGap`s fire (S0 fix); later notifies reach both |
 | **process-killing poison entry** — the handler calls `process.exit` on one entry; the reader is restarted by the test | entry parked after `maxAttempts` restarts; every other entry delivered once |
 | **stale reader cannot park** — steal the lease, then the old reader runs K1 | 0 rows, no `parked` row |
-| **subscription wake latency** | p95 < 100 ms with `pollMs: 5000` |
+| **subscription wake latency** | commit-to-handler p95 < 100 ms with `pollMs: 5000` |
 | **PgBouncer transaction mode** | publish/subscribe by polling; `listen` refused with pg-prime's error |
 | **pg_current_snapshot ≡ statement snapshot** (E-Q1) on PG 15–18 | asserted directly |
 

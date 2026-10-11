@@ -317,20 +317,22 @@ describe('subscription readers on a real server', () => {
       const producer = pgEvents({ db: server.db(1, quiet), schema }).topic(topic)
       const def = defineSubscription(topic, 'wake', { from: 'beginning' })
       await events.start()
-      const latency: number[] = []
+      const committed: number[] = []
+      const handled = new Map<number, number>()
       const reader = events
         .subscription(def)
-        .run(async (e) => void latency.push(Date.now() - e.payload.at), { pollMs: 5_000 })
+        .run(async (e) => void handled.set(e.payload.n, Date.now()), { pollMs: 5_000 })
       await until(() => reader.active)
       await sleep(200)
       for (let n = 0; n < 50; n++) {
-        const at = Date.now()
-        await producer.publish({ n, at })
+        await producer.publish({ n, at: 0 })
+        committed.push(Date.now())
         await sleep(40)
       }
-      await until(() => latency.length === 50)
+      await until(() => handled.size === 50)
       await reader.close()
-      expect(p95(latency)).toBeLessThan(100)
+      // From the commit: a loaded server's fsync on the producer's commit is not the reader's wake.
+      expect(p95(committed.map((t, n) => handled.get(n)! - t))).toBeLessThan(100)
     },
     60_000,
   )
