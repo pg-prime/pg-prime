@@ -200,38 +200,53 @@ describe.each(targets)('cron on $name', ({ url, pooled }) => {
     expect((await runsOf('s')).length).toBe(1)
   }, 30_000)
 
-  test("cancel under 'skip': no second run starts until the cancelled handler stops", async () => {
+  test("cancel under 'skip': the slot stays taken until the cancelled handler settles", async () => {
     await fresh()
     let live = 0
     let peak = 0
     let calls = 0
+    let signal: AbortSignal | undefined
+    let release!: () => void
+    const held = new Promise<void>((r) => (release = r))
+    // The first run ignores its abort until released; later ones return at once.
     const handler = async (r: { signal: AbortSignal }) => {
-      const slow = ++calls === 1
       peak = Math.max(peak, ++live)
-      await new Promise((res) => r.signal.addEventListener('abort', res))
-      // Only the cancelled run outlives its abort; a later one must settle within close()'s grace.
-      if (slow) await sleep(1500)
+      if (++calls === 1) {
+        signal = r.signal
+        await held
+      }
       live--
     }
     // A lease no stall can outlast: its expiry would free the slot while the handler still runs.
     const all = await fleet(3, () => [defineSchedule('s', { everyMs: 1000 }, { handler })], {
       leaseMs: 6000,
     })
-    await until(async () => (await runsOf('s')).some((r) => r['state'] === 'running'))
-    const first = (await runsOf('s')).find((r) => r['state'] === 'running')!
-    expect(await all[0]!.cancel(first['id'] as bigint)).toBe(true)
-    await until(
-      async () =>
-        (await runsOf('s')).find((r) => r['id'] === first['id'])!['state'] === 'cancelled',
-    )
+    let first!: Record<string, unknown>
+    try {
+      await until(async () => (await runsOf('s')).some((r) => r['state'] === 'running'))
+      first = (await runsOf('s')).find((r) => r['state'] === 'running')!
+      expect(await all[0]!.cancel(first['id'] as bigint)).toBe(true)
+      await until(() => signal?.aborted === true)
+      const seen = (await runsOf('s')).length
+      await until(async () => (await runsOf('s')).length > seen)
+      const runs = await runsOf('s')
+      expect(runs.find((r) => r['id'] === first['id'])).toMatchObject({ state: 'cancelling' })
+      expect(new Set(runs.slice(seen).map((r) => r['state']))).toEqual(new Set(['skipped']))
+      expect((await sched('s'))['running']).toBe(1)
+      expect(calls).toBe(1)
+    } finally {
+      release()
+    }
+    await until(async () => (await runsOf('s')).some((r) => r['state'] === 'succeeded'))
     const runs = await runsOf('s')
-    const stopped = runs.find((r) => r['id'] === first['id'])!['finished_at'] as Date
-    for (const r of runs.filter((r) => r['state'] !== 'skipped' && r['id'] !== first['id']))
-      expect((r['started_at'] as Date).getTime()).toBeGreaterThanOrEqual(stopped.getTime())
+    const done = runs.find((r) => r['id'] === first['id'])!
+    expect(done).toMatchObject({ state: 'cancelled', error: null })
+    const next = runs.find((r) => r['state'] === 'succeeded')!
+    expect((next['started_at'] as Date).getTime()).toBeGreaterThanOrEqual(
+      (done['finished_at'] as Date).getTime(),
+    )
     expect(peak).toBe(1)
-    await Promise.all(crons.map((c) => c.close()))
-    await until(async () => (await sched('s'))['running'] === 0)
-  }, 30_000)
+  }, 60_000)
 
   test('a handler that outlives close() keeps its lease and slot until it settles', async () => {
     await fresh()

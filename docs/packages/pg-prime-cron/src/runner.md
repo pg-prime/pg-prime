@@ -25,5 +25,5 @@ Executes claimed handler runs in-process: one `AbortController` per run, timeout
 
 ## Tests
 - `packages/pg-prime-cron/test/live/cron.test.ts`: timeout with a signal-ignoring handler, cancel of a running run, results, F1 matching nothing.
-- `packages/pg-prime-cron/test/pg/cron.test.ts`: SIGKILL (lease expiry), cancel under skip, a handler that outlives `close()`, a never-settling handler with `timeoutMs` does not keep a closed process alive.
+- `packages/pg-prime-cron/test/pg/cron.test.ts`: SIGKILL (lease expiry), cancel under skip (the slot stays taken until the cancelled handler settles, then a successor runs), a handler that outlives `close()`, a never-settling handler with `timeoutMs` does not keep a closed process alive.
 - `packages/pg-prime-cron/test/unit/package.test.ts`: backoff vectors.
