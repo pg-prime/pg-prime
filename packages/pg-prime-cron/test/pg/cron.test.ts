@@ -11,7 +11,7 @@ import { trigger } from '../../src/sql/claim.js'
 import { tables } from '../../src/sql/tables.js'
 import { dropSchema, open, rows, sleep, until } from '../_harness.js'
 
-const S = 'pgprime_cron_pg'
+const S = `pgprime_cron_pg_${process.pid}`
 const direct = process.env['PG_PRIME_TEST_URL'] ?? ''
 const pgbouncer = process.env['PG_PRIME_TEST_PGBOUNCER_URL']
 const targets = [{ name: 'direct', url: direct, pooled: false }]

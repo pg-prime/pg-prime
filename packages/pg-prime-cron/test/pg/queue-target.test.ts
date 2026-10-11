@@ -7,8 +7,8 @@ import { defineSchedule, pgCron } from '../../src/index.js'
 import type { Cron, CronEnqueuer } from '../../src/index.js'
 import { dropSchema, open, rows, until } from '../_harness.js'
 
-const S = 'pgprime_cron_qt_pg'
-const MQ = 'pgprime_mq_qt_pg'
+const S = `pgprime_cron_qt_pg_${process.pid}`
+const MQ = `pgprime_mq_qt_pg_${process.pid}`
 const direct = process.env['PG_PRIME_TEST_URL'] ?? ''
 const pgbouncer = process.env['PG_PRIME_TEST_PGBOUNCER_URL']
 const targets = [{ name: 'direct', url: direct, pooled: false }]
