@@ -486,7 +486,7 @@ needs `directConnection`; otherwise there is pure polling with one
 | **overlap under 3 instances** — handler 2.5 × period | `skip`: never two running; `allow`: concurrent runs |
 | **instance SIGKILL mid-run** | run `failed` (`lease-expired`) within `leaseMs + maintenanceMs`; `running` back to 0; the next tick fires on time |
 | **manual run picked only by a handler owner** — service A owns S, service B triggers it | the `pending` run is picked up and run by A; B never starts it |
-| **cancel under `skip`** — cancel a long running run, ticks keep coming | while its heartbeats land within `leaseMs`, no second run starts until the cancelled handler has stopped; `running` returns to 0 |
+| **cancel under `skip`** — cancel a running run whose handler holds past its abort; ticks keep coming | while it holds (heartbeats within `leaseMs`), the run stays `cancelling`, `running = 1` and the next tick is `skipped`; once it settles, `cancelled` and a successor runs, started no earlier than its `finished_at`; never two handlers at once |
 | **handler outlives `close()`** — it ignores its signal past 2 × `graceMs` + `leaseMs`; a live peer | the run stays `cancelling` under its lease and the peer only skips; once it settles, `cancelled` and the next tick runs |
 | **a never-settling handler with `timeoutMs`, after `close()` and `db.end()`** | the process exits |
 | **manual trigger picked by exactly one instance** | one `running`, others see nothing |
