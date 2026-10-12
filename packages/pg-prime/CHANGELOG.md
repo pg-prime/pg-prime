@@ -1,5 +1,11 @@
 # pg-prime
 
+## 0.2.2
+
+### Patch Changes
+
+- [#7](https://github.com/pg-prime/pg-prime/pull/7) [`820c13e`](https://github.com/pg-prime/pg-prime/commit/820c13e80fff4e7e010dcde70af06edabaab82db) Thanks [@YohoCX](https://github.com/YohoCX)! - A key whose value is `undefined` now counts as absent in every `.values()`, `.valuesMany()` and `.set()`, as the docs say. Before, only a column with a `$default` got that treatment: anywhere else, `undefined` reached the codec and threw `PgEncodeError`, for example `cannot encode a UUID string as uuid (got undefined)` on a nullable uuid. A bulk insert where `undefined` makes the rows set different columns is refused, and the message suggests `null`.
+
 ## 0.2.1
 
 ## 0.2.0
