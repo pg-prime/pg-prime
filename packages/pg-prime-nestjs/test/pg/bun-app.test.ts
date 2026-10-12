@@ -1,9 +1,12 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { requiresRealPostgres } from '@pg-prime/testing'
 import { expect, it } from 'vitest'
 
-const test = requiresRealPostgres(it, 'the direct-bun app connects to PG_PRIME_TEST_URL')
+// CI's Bun job asserts this one passed; elsewhere `bun` may be missing.
+const test = spawnSync('bun', ['--version']).error
+  ? it.skip
+  : requiresRealPostgres(it, 'the direct-bun app connects to PG_PRIME_TEST_URL')
 
 test('a Nest app run by bun: request settings reach @Transactional, SIGTERM ends the db', async () => {
   const child = spawn('bun', [resolve(import.meta.dirname, '../bun/app.ts')], {
@@ -18,6 +21,7 @@ test('a Nest app run by bun: request settings reach @Transactional, SIGTERM ends
       const m = /listening (\S+)/.exec(out)
       if (m) ok(m[1]!)
     })
+    child.on('error', fail)
     void exited.then(() => fail(new Error(`bun exited before listening:\n${out}`)))
   })
   const res = await fetch(url, { headers: { 'x-tenant': 't7' } })
