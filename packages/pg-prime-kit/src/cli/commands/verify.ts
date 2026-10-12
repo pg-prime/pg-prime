@@ -24,14 +24,16 @@
  *    quietly ignores its own argument is how a bisect lies to you.
  */
 
-import { extractCatalog } from "../../catalog/extract.js";
+import { extractCatalog, readLaneState } from "../../catalog/extract.js";
 import { listCheckpoints } from "../../checkpoint/checkpoint.js";
 import { ConfigError, loadSchema, type ResolvedConfig } from "../../config/load.js";
 import { diffIR } from "../../diff/diff.js";
 import { withClient } from "../../db/pg.js";
 import { encodeId } from "../../ir/stable-id.js";
-import { createRepeatablesPass, loadRepeatables } from "../../repeatables/index.js";
+import { shadowRepeatables } from "../../generate.js";
+import { applyRepeatables, createRepeatablesPass, scanRepeatables } from "../../repeatables/index.js";
 import { applyPending } from "../../runner/run.js";
+import { declaredCensus, isDeclared } from "../../schema/declared.js";
 import { loadDesired } from "../../schema/load.js";
 import type { SchemaLike } from "../../schema/types.js";
 import { provisionShadow, type Shadow, type ShadowStrategy } from "../../shadow/ladder.js";
@@ -189,6 +191,17 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
     const replayed = await withClient(replayShadow.conn, (c) =>
       extractCatalog(c, { schemas: config.schemas, observe: false }),
     );
+    /* design/20 §5.5: the declared lane's markers and FORCE state on the replay. */
+    const { census, rls } = await withClient(replayShadow.conn, async (c) => ({
+      census: (await declaredCensus(c, await scanRepeatables(config.repeatablesDir), config.schemas)).findings,
+      rls: await readLaneState(c, config.schemas),
+    }));
+    const warnings = rls.tables
+      .filter((t) => t.enabled && !rls.policies.some((p) => p.schema === t.schema && p.table === t.name))
+      .map(
+        (t) =>
+          `rls_no_policies: ${t.schema}.${t.name} has row level security enabled and no policy; it returns no rows`,
+      );
 
     /* 3. The reference IR. */
     let desiredFingerprint: string;
@@ -215,7 +228,11 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
             ? {}
             : {
                 afterLoad: async (client): Promise<void> => {
-                  await loadRepeatables(client, config.repeatablesDir);
+                  const hand = (await scanRepeatables(config.repeatablesDir)).filter((f) => !isDeclared(f));
+                  await applyRepeatables(
+                    client,
+                    shadowRepeatables(schema, config.repeatablesDir, hand, desiredShadow.schemaMap, config.schemas),
+                  );
                 },
               },
         );
@@ -228,7 +245,7 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
     }
 
     const partial = str(argv.values, "to") !== undefined;
-    const empty = deltas.length === 0;
+    const empty = deltas.length === 0 && census.length === 0;
     // A `--to` replay is a BISECT, not a claim of convergence: it stops early on purpose,
     // so its diff is expected to be non-empty and exiting 4 on it would make the flag
     // useless. The deltas are printed either way; only the code differs, and the envelope
@@ -257,6 +274,8 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
         },
         fingerprint: { replayed: replayed.ir.fingerprint, desired: desiredFingerprint },
         deltas,
+        census: census.map((d) => ({ code: d.code, subject: d.subject ?? null, message: d.message })),
+        warnings,
         error: null,
       },
       text: [
@@ -268,6 +287,11 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
           ["verdict", status],
         ]),
         bullets("deltas:", deltas.slice(0, 40)),
+        bullets(
+          "declared lane:",
+          census.map((d) => `${d.code}: ${d.message}`),
+        ),
+        bullets("warnings:", warnings),
       ]
         .filter((l) => l !== "")
         .join("\n"),

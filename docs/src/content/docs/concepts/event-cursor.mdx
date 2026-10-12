@@ -1,0 +1,64 @@
+---
+title: "The event cursor"
+description: Why a subscription never skips a committed entry.
+---
+
+An event log's hard problem is not storing entries but reading them: ids are assigned when a row is
+inserted, and transactions commit in a different order. A reader that remembers "the last id I
+saw" skips any entry whose transaction was still open when a higher id became visible.
+
+```text
+time ──────────────────────────────────────────────▶
+tx A  insert id 7 ··························· commit
+tx B        insert id 8 ── commit
+reader                         reads 8, remembers 8   …   id 7 is now visible, below 8: lost
+```
+
+The common fix, a watermark below the oldest open transaction, is correct but slow: one unrelated
+long transaction (a report, a stuck session) holds every reader back until it ends.
+
+## Position plus pending
+
+Every entry records the id of its transaction (`xid`, assigned at its first write). A cursor is
+
+- a **position** `(xid, id)`: everything at or below it that was visible has been read;
+- **pending**: the transactions below the position that were still running when a read stepped
+  over them, each with the last id delivered from it.
+
+One statement reads, under one snapshot, the remaining entries of the pending transactions in
+transaction order (the *late* part), the next entries above the position (the *next* part), and the
+snapshot's list of running transactions. The two parts together are limited by the batch size,
+*late* first, so a large transaction that commits late arrives in batches too.
+
+- Acknowledging a *next* entry moves the position to it, and adds every running transaction below
+  it to pending.
+- Acknowledging a *late* entry records it as that transaction's progress.
+- Once a whole read is acknowledged, a pending transaction that is no longer running is dropped:
+  all its entries became visible at once and were in that read. When the batch limit cut *late*
+  off, the transaction it stopped in keeps its progress and the ones after it stay pending.
+
+## Why nothing is lost or duplicated
+
+1. A transaction that became visible since the last read either has an xid above the position, so
+   *next* reads it, or was running below it, so it is pending and *late* reads what is left of it.
+2. A transaction with no xid yet gets one at or above the snapshot's `xmax`, which is above any
+   position a read can reach.
+3. Per-transaction progress makes an acknowledgement in the middle of a late transaction exact.
+4. Aborted and entry-less transactions leave pending as soon as they stop running, so pending is
+   bounded by the number of concurrent transactions.
+
+An unrelated long transaction only sits in pending; nothing waits for it. A filtered read (a
+subscription with `types`) still advances the cursor without stepping over open transactions.
+
+## What the cursor promises
+
+- Each entry is delivered once per cursor; a reader that crashes redelivers from its last commit.
+- One transaction's entries arrive in insertion order. There is no order across concurrent
+  transactions, and a batch limit can split a large transaction.
+- Every delivered entry carries `cursor`: the serialized cursor state right after it, the only
+  valid resume handle. An `id` is not one, because ids follow neither xid nor commit order.
+
+The rules are pure functions in `src/log/cursor.ts`, property-tested against a model of
+PostgreSQL's snapshots with crashes, resumes, filters and fresh cursors, and the tier-2 suite runs
+eight concurrent producers, aborts, a transaction held open for 20 seconds and ten reader restarts
+against a real server.

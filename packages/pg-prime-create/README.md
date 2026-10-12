@@ -3,8 +3,7 @@
 Project scaffolder for [pg-prime](https://github.com/pg-prime/pg-prime) — one command, a working
 project, no dependency tree of its own.
 
-> **Status: pre-alpha.** It builds, installs and scaffolds, but it is still `0.0.0` and what it
-> writes will change with the packages it pins. Follow progress at
+> **Status: pre-alpha.** Published on npm; what it writes will change with the packages it pins. Follow progress at
 > <https://github.com/pg-prime/pg-prime>.
 
 ```

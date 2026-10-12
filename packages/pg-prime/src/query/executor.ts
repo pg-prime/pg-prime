@@ -35,7 +35,14 @@
 
 import type { AnyCodec, CodecRegistry } from '../codec/index.js'
 import { unknownCodec } from '../codec/index.js'
-import type { Bind, Compiled, FieldOrigin, FieldPlan, ResultShape } from '../compile/contract.js'
+import type {
+  Bind,
+  Compiled,
+  CompiledMeta,
+  FieldOrigin,
+  FieldPlan,
+  ResultShape,
+} from '../compile/contract.js'
 import { paramTypesOf } from '../compile/contract.js'
 import type { DecoderMode } from '../compile/decode.js'
 import { assertCodegenAvailable, buildDecoder } from '../compile/decode.js'
@@ -719,6 +726,7 @@ export async function runOn<Row>(
   env: ExecEnv,
   opts?: RunOptions,
   knownParamTypes?: readonly number[],
+  count?: { rowCount: number },
 ): Promise<Row[]> {
   // The session layer's descriptor hands over the array it already built. Without it this line
   // built a second copy per statement — 3 000 elements on a 1 000-row batch insert.
@@ -752,6 +760,7 @@ export async function runOn<Row>(
         timing.serverMs = gotAt - sentAt
         timing.decodeMs = performance.now() - gotAt
       }
+      if (count !== undefined) count.rowCount = result.rowCount ?? rows.length
       return rows
     } catch (e) {
       const action = healAction(e, conn, named, attempt)
@@ -814,6 +823,15 @@ function downgrade(env: ExecEnv, cause: unknown): void {
   )
 }
 
+/** Refuses an `.ifVersion()` statement on a path that cannot check its row count. */
+export function assertUnversioned(meta: CompiledMeta, where: string): void {
+  if (meta.versionCheck !== undefined) {
+    throw new BuilderError(
+      `pg-prime: ${where} would skip the .ifVersion() check; use execute() or executeRowCount().`,
+    )
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Streaming (07 §6.3)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -841,6 +859,7 @@ export async function* streamOn<Row>(
   env: ExecEnv,
   opts?: StreamOptions & RunOptions,
 ): AsyncIterable<Row> {
+  assertUnversioned(compiled.meta, 'stream()')
   const paramTypes = paramTypesOf(compiled.binds)
   const query = queryFor(compiled as Compiled<unknown>, opts, paramTypes)
   let decode: ((rows: readonly (readonly (string | null)[])[]) => Row[]) | undefined
@@ -876,6 +895,7 @@ export async function* streamBatchesOn<Row>(
   env: ExecEnv,
   opts?: StreamOptions & RunOptions,
 ): AsyncIterable<Row[]> {
+  assertUnversioned(compiled.meta, 'streamBatches()')
   const paramTypes = paramTypesOf(compiled.binds)
   const query = queryFor(compiled as Compiled<unknown>, opts, paramTypes)
   let decode: ((rows: readonly (readonly (string | null)[])[]) => Row[]) | undefined

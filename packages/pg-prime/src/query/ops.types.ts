@@ -57,12 +57,11 @@ export type AnyOperand<T = unknown> = ClassOperand<T, string>
 /**
  * A right-hand operand that may not be the literal `null`.
  *
- * `& {}` removes `null` and `undefined` from the value half of the union while leaving the
- * expression half untouched, so `eq(u.deletedAt, null)` is a compile error while
- * `eq(u.deletedAt, u.createdAt)` — two nullable columns, three-valued logic understood — is not.
- * See `eq` in `./ops.ts` for why `= NULL` is rejected rather than rewritten to `IS NULL`.
+ * `& {}` removes `null` and `undefined` from the value half only, so `eq(u.deletedAt, null)` is a
+ * compile error while a nullable expression — `eq(t.orgId, orgId.current())` — is not, exactly as
+ * on the left. See `eq` in `./ops.ts` for why `= NULL` is rejected rather than rewritten.
  */
-export type NonNullOperand<T> = (T | ExprOf<T>) & {}
+export type NonNullOperand<T> = (T | ExprOf<T | null>) & {}
 
 /**
  * An `ORDER BY` item — `asc(x)` / `desc(x, 'last')`.
@@ -138,6 +137,27 @@ export type RangeOperand<P extends RangePg = RangePg> = ClassOperand<string | nu
  * array type at all (09 §3.2), so the *shape* of the name carries no more information than that.
  */
 export type ArrayOperand<E> = ClassOperand<readonly E[] | null, `${string}[]`>
+
+/** A JS value `JSON.stringify` encodes as-is — `jsonbSet`'s literal operand. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly JsonValue[]
+  | { readonly [k: string]: JsonValue | undefined }
+
+/** `ts_headline` options, rendered to its `Key=value, …` option string. */
+export interface HeadlineOptions {
+  readonly startSel?: string
+  readonly stopSel?: string
+  readonly maxWords?: number
+  readonly minWords?: number
+  readonly shortWord?: number
+  readonly highlightAll?: boolean
+  readonly maxFragments?: number
+  readonly fragmentDelimiter?: string
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Result maps — the three places PostgreSQL's answer is not the operand's type

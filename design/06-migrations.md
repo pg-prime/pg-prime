@@ -633,6 +633,7 @@ Squawk so users can map their existing knowledge. **35 rules in v1.**
 | MF104 | Nullable → `NOT NULL` | `adding-required-field` |
 | MF105 | Narrowing type change (`varchar(n)` shrink, numeric precision drop, `int8→int4`) | `changing-column-type` |
 | MF106 | Add validated CHECK/FK to a populated table | `constraint-missing-not-valid` |
+| MF107 | Collation change on a column covered by a unique index/PK/unique or exclusion constraint/CHECK | — |
 
 Emptiness is established by a `SELECT EXISTS(SELECT 1 FROM t LIMIT 1)` probe against the target
 when one is reachable; offline, MF rules stay at `error` and must be acknowledged.
@@ -663,6 +664,7 @@ when one is reachable; offline, MF rules stay at `error` and must be acknowledge
 | LK110 | `ADD … GENERATED … STORED` / `AS IDENTITY` ⇒ rewrite | PG309/310 |
 | LK111 | `CREATE TRIGGER` takes SHARE ROW EXCLUSIVE | PG308 |
 | LK112 | `SET LOGGED`/`UNLOGGED` ⇒ rewrite | PG307 |
+| LK113 | Collation change (`ALTER COLUMN TYPE … COLLATE`, same type) ⇒ index rebuild, no table rewrite | — |
 
 LK109 checks `pg_proc.provolatile != 'i'` — a constant default is *not* a rewrite. (pg-delta gets
 this wrong in the conservative direction; we do not inherit that.)
@@ -716,6 +718,7 @@ Escape hatch: `-- pg-orm:nolint LK101 "index is on a 200-row lookup table"` — 
 > | MF104 nullable → NOT NULL | ✅ | `ddl.ts` `notNullTransition`, on the ADD half of both §3.5 rewrites |
 > | MF105 narrowing type change | ✅ | `ddl.ts` `alterColumn` type branch |
 > | MF106 add validated CHECK/FK to a populated table | ✅ | `ddl.ts` `addConstraint`, on the `NOT VALID` ADD and on the literal form |
+> | MF107 collation change on a unique/checked column | ✅ | `ddl.ts` `alterColumn` collation branch, beside LK113; coverage read textually from the desired IR's index and constraint definitions, suppressed on a proven-empty table |
 > | BC101 rename table | ✅ | `ddl.ts` rename `table` |
 > | BC102 rename column | ✅ | `ddl.ts` rename `column` |
 > | BC103 in-place column type change | ✅ | `ddl.ts` `alterColumn`; also composite `ALTER ATTRIBUTE` |
@@ -733,6 +736,7 @@ Escape hatch: `-- pg-orm:nolint LK101 "index is on a 200-row lookup table"` — 
 > | LK110 `ADD … IDENTITY`/`GENERATED STORED` | ✅ | `ddl.ts` `alterColumn` identity branch |
 > | LK111 `CREATE TRIGGER` takes SHARE ROW EXCLUSIVE | ✅ | `lint/rules.ts` (Tier R) |
 > | LK112 `SET LOGGED`/`UNLOGGED` | ✅ | `ddl.ts` alter `table` persistence |
+> | LK113 collation-only column change | ✅ | `ddl.ts` `alterColumn` collation branch (`rewrite: false`; a type change keeps LK108/MF105/BC103) |
 > | TX101 non-transactional statement without `txmode none` | ✅ | `lint/rules.ts` |
 > | TX102 mixed transactionality without a segment boundary | ✅ | `lint/rules.ts`, from `plan.segments` |
 > | TX201 non-idempotent statement in a `txmode none` file | ✅ | `lint/rules.ts` over a plan; `repeatables/idempotence.ts` over a `sql/` file's statements |

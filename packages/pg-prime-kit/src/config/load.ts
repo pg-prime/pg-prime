@@ -263,6 +263,7 @@ export interface LoadedSchema {
     readonly schemas: readonly unknown[];
     /** `pgView` / `pgMaterializedView`, both kinds in one list (design/01 §3 row 58). */
     readonly views: readonly unknown[];
+    readonly policies: readonly unknown[];
   };
   readonly files: readonly string[];
 }
@@ -286,6 +287,7 @@ const declarationOf = (v: unknown): string | null => {
   if (typeof r.name !== "string") return null;
   if (r.kind === "view" || r.kind === "materializedView") return "view";
   return r.kind === "enum" ||
+    r.kind === "policy" ||
     r.kind === "domain" ||
     r.kind === "sequence" ||
     r.kind === "extension" ||
@@ -314,13 +316,14 @@ export async function loadSchema(paths: string | readonly string[], base: string
   if (list.length === 0) throw new ConfigError("`schema` names no file");
 
   const tables: Record<string, { $: unknown }> = {};
-  const declared: Record<string, Map<string, unknown>> = {
+  const declared: Record<string, Map<unknown, unknown>> = {
     enum: new Map(),
     domain: new Map(),
     sequence: new Map(),
     extension: new Map(),
     schema: new Map(),
     view: new Map(),
+    policy: new Map(),
   };
   for (const file of list) {
     if (!(await exists(file))) throw new ConfigError(`no schema module at ${file}`);
@@ -345,16 +348,16 @@ export async function loadSchema(paths: string | readonly string[], base: string
     // The standalone declarations always come off the MODULE, never off a registry:
     // `defineSchema(...)` takes tables and relations only, so a `pgDomain` can be reached
     // in exactly one way — the export that names it. Keyed by `schema.name` for the same
-    // reason tables are: one object exported twice under two names is one object.
+    // reason tables are: one object exported twice under two names is one object. A policy is
+    // keyed by the object, so two that share an identity both reach renderDeclared's conflict check.
     let declarations = 0;
     for (const [key, value] of Object.entries(mod)) {
       if (key === "default") continue;
       const kind = declarationOf(value);
       if (kind === null) continue;
       const decl = value as { name: string; schema?: string };
-      const runtime = (value as { $?: { schema?: string } }).$;
-      const ns = (kind === "view" ? runtime?.schema : decl.schema) ?? "public";
-      declared[kind]!.set(kind === "schema" ? decl.name : `${ns}.${decl.name}`, value);
+      const ns = (kind === "view" ? (value as { $?: { schema?: string } }).$ : decl)?.schema ?? "public";
+      declared[kind]!.set(kind === "policy" ? value : kind === "schema" ? decl.name : `${ns}.${decl.name}`, value);
       declarations += 1;
     }
     // A file of nothing but views (or domains, or enums) is a real way to organize a schema, and
@@ -376,6 +379,7 @@ export async function loadSchema(paths: string | readonly string[], base: string
       extensions: [...declared["extension"]!.values()],
       schemas: [...declared["schema"]!.values()],
       views: [...declared["view"]!.values()],
+      policies: [...declared["policy"]!.values()],
     },
     files: list,
   };

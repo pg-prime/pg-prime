@@ -22,6 +22,7 @@ export default defineConfig({
           // `src/versions.ts` is generated and git-ignored; everything that imports the scaffolder
           // needs it to exist first.
           globalSetup: ['./test/globalSetup.ts'],
+          setupFiles: ['../pg-prime/test/live/_bun.ts'],
         },
       },
       {

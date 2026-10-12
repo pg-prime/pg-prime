@@ -39,10 +39,14 @@
     },
     {
       "kind": "role",
-      "count": 1
+      "count": "<masked>"
     }
   ],
   "unmodeled": [],
+  "declared": {
+    "findings": [],
+    "pruneDeletable": false
+  },
   "findings": [
     "INVALID index public.dups_v_idx — a CREATE INDEX CONCURRENTLY did not finish; DROP INDEX CONCURRENTLY it and rebuild",
     "the catalog does not match the fingerprint pgprime.migrations records — something changed outside the migration history (see `history` for both values)"

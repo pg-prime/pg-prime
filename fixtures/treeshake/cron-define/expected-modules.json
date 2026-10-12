@@ -1,0 +1,33 @@
+{
+  "_why": "design/08 §2.4 step 3 — the exact set of input modules esbuild pulled into this fixture, bundled through the published export map. A diff here on a PR is the signal; `node tools/treeshake-check.mjs --update` re-records it and the diff goes in the review.",
+  "_bundler": "esbuild --bundle --format=esm --minify --platform=node --metafile",
+  "modules": [
+    "cron-define/entry.ts",
+    "node_modules/@pg-prime/cron/dist/backoff.js",
+    "node_modules/@pg-prime/cron/dist/cron.js",
+    "node_modules/@pg-prime/cron/dist/define.js",
+    "node_modules/@pg-prime/cron/dist/errors.js",
+    "node_modules/@pg-prime/cron/dist/migrations.js",
+    "node_modules/@pg-prime/cron/dist/planner.js",
+    "node_modules/@pg-prime/cron/dist/runner.js",
+    "node_modules/@pg-prime/cron/dist/sql/claim.js",
+    "node_modules/@pg-prime/cron/dist/sql/maintenance.js",
+    "node_modules/@pg-prime/cron/dist/sql/runs.js",
+    "node_modules/@pg-prime/cron/dist/sql/schedules.js",
+    "node_modules/@pg-prime/cron/dist/sql/tables.js",
+    "node_modules/@pg-prime/cron/dist/target/queue.js",
+    "node_modules/@pg-prime/cron/dist/ticks.js",
+    "node_modules/@pg-prime/cron/dist/wake.js",
+    "node_modules/croner/dist/croner.js",
+    "node_modules/pg-prime/dist/codec/array.js",
+    "node_modules/pg-prime/dist/codec/builtins.js",
+    "node_modules/pg-prime/dist/codec/types.js",
+    "node_modules/pg-prime/dist/compile/nodes.js",
+    "node_modules/pg-prime/dist/errors/base.js",
+    "node_modules/pg-prime/dist/session/owned-schema.js",
+    "node_modules/pg-prime/dist/session/transaction.js",
+    "node_modules/pg-prime/dist/sql/errors.js",
+    "node_modules/pg-prime/dist/sql/fragment.js",
+    "node_modules/pg-prime/dist/sql/ident.js"
+  ]
+}

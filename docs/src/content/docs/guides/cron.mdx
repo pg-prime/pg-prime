@@ -1,0 +1,248 @@
+---
+title: "Cron"
+description: Declaring schedules, targets, overlap, misfire, history and manual triggers.
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+`@pg-prime/cron` runs scheduled work across any number of application instances, with PostgreSQL as
+the only coordinator. Every instance runs the same loop; each tick is claimed by exactly one of them,
+by one statement, and the claim is what makes it run. There is no leader, no lock service and no
+clock but the database's.
+
+## Declaring schedules
+
+A schedule has a name, a time, a target and options. Declare it in code and hand it to `pgCron`:
+
+{/* docs: use=blog */}
+```ts title="cleanup.ts"
+import { defineSchedule, pgCron } from '@pg-prime/cron'
+
+const cleanup = defineSchedule(
+  'cleanup',
+  { everyMs: 1000 },
+  { handler: async (run) => console.log('cleanup', run.manual ? 'by hand' : 'on the clock') },
+)
+
+const cron = pgCron({ db, schedules: [cleanup] })
+await cron.start()
+await new Promise((resolve) => setTimeout(resolve, 1500))
+await cron.close()
+// cleanup on the clock
+```
+
+`start()` creates the `pgprime_cron` schema on first use, upserts the declared schedules and starts
+the loop. Call it once at boot, outside any transaction.
+
+The time is one of three shapes:
+
+| `when` | Ticks |
+|---|---|
+| `{ cron: '0 3 * * *', tz: 'Europe/Berlin' }` | a 5-field pattern, or 6 with seconds; `tz` defaults to `'UTC'`, never the host's zone |
+| `{ everyMs: 60_000 }` | a fixed grid, anchored at `startAt` or at the first write; restarts keep the grid |
+| `{ at: new Date('2026-12-31T23:00:00Z') }` | once |
+
+`startAt`, `endAt` and `limit` bound any of them. `limit` counts **claimed ticks** — a tick that was
+skipped by overlap or missed counts too — so `limit: 5` claims five ticks and then the schedule ends.
+Manual runs never count.
+
+**Code is the source of truth for declared schedules.** `start()` compares each definition with the
+stored one by hash. A changed definition is written back, and `nextAt` is recomputed only when the
+timing changed. An operator's `pause()` or `disable()` survives the deploy.
+
+## Handler runs
+
+A claimed handler tick becomes a `running` run with a lease. The claiming instance heartbeats it
+every `leaseMs / 3` (default 10 s) and records how it ended:
+
+- **`succeeded`**, with the handler's return value as `result` (JSON).
+- **`failed`**, with the error message. `retry: { maxAttempts }` re-attempts in-process first, under
+  the same lease, with exponential backoff.
+- **`failed` / `'timeout'`** after `timeoutMs`. The handler's `signal` is aborted, and the run stays
+  `cancelling` — still holding its slot — until the handler's promise settles.
+- **`failed` / `'lease-expired'`** when the instance died: no heartbeat, so maintenance on any other
+  instance finishes the run within `leaseMs + maintenanceMs`.
+
+A crashed run is **not re-run**. The next tick is the retry for periodic work; re-running a tick that
+may have half-happened can double its side effects.
+
+`maxConcurrent` caps handler runs per instance; a due tick over the cap is left for another
+instance to claim.
+
+## Overlap
+
+What happens when a tick comes due while the previous run is still open:
+
+| `overlap` | Effect |
+|---|---|
+| `'skip'` (default) | the tick is recorded as a `skipped` run; nothing runs |
+| `'allow'` | the tick runs alongside |
+
+The decision is taken on the schedule row's `running` counter, under the row lock the claim already
+holds. `pending`, `running` and `cancelling` runs all hold the slot, so a cancelled handler that is
+still winding down keeps a `'skip'` schedule from starting a second one. That holds while its
+instance heartbeats within `leaseMs`: a run whose heartbeat is later than that is presumed dead and
+expired, and the next tick may then run beside it.
+
+## Misfire
+
+A tick is late when the loop sees it after its time. Up to `misfireGraceMs` (default 60 s) that is
+normal: the loop fires it, and a loop that fell several ticks behind fires each one in order.
+
+Beyond the grace — every instance was down, or the schedule was paused — the policy decides:
+
+| `misfire` | Effect |
+|---|---|
+| `'once'` (default) | the latest missed tick runs, with `run.missed` = how many earlier ticks it stands for |
+| `'skip'` | nothing runs; one `missed` run records the latest tick and the count |
+
+Either way the next tick is the first one after now, and no tick after `endAt` is ever fired, so an
+hourly schedule that ended at 12:00 and was down from 11:00 to 15:30 fires 12:00 (or records it
+missed) and ends. `onMisfire` reports every case.
+
+## Manual runs, cancel and history
+
+`trigger()` records a manual run. For a handler schedule it is `pending` until an instance that
+registered the handler picks it up — at once, when that is the calling instance, and otherwise on
+the NOTIFY or the next poll.
+
+{/* docs: use=blog */}
+```ts title="trigger.ts"
+import { defineSchedule, pgCron } from '@pg-prime/cron'
+
+const report = defineSchedule(
+  'weekly-report',
+  { cron: '0 6 * * 1', tz: 'Europe/Berlin' },
+  { handler: async (run) => ({ sentTo: run.payload.to }) },
+  { payload: { to: 'team@example.com' } },
+)
+
+const cron = pgCron({ db, schedules: [report] })
+await cron.start()
+
+const { runId, state } = await cron.trigger('weekly-report', { payload: { to: 'me@example.com' } })
+console.log(state)
+// pending
+
+let [run] = await cron.runs('weekly-report', { limit: 1 })
+while (run?.state !== 'succeeded') {
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  ;[run] = await cron.runs('weekly-report', { limit: 1 })
+}
+console.log(run.id === runId, run.manual, run.result)
+// true true { sentTo: 'me@example.com' }
+await cron.close()
+```
+
+`cancel(runId)` turns a `pending` run into `cancelled` and a `running` one into `cancelling`; the
+owner's next heartbeat aborts the handler's `signal`, and the run is `cancelled` once it stops.
+
+`runs(name)` pages history newest first. Maintenance keeps `history.keep` finished runs (default 100)
+for at most `history.ageMs` (30 days) per schedule.
+
+## Changing schedules at runtime
+
+Schedules can also be created and managed through the API — for user-defined jobs, or an admin
+screen:
+
+{/* docs: use=blog */}
+```ts title="admin.ts"
+import { defineSchedule, pgCron } from '@pg-prime/cron'
+
+const cron = pgCron({ db })
+await cron.create(
+  defineSchedule('digest', { cron: '0 8 * * *' }, { handler: async () => {} }, { limit: 30 }),
+)
+
+await cron.update('digest', { when: { cron: '30 8 * * *', tz: 'America/New_York' } })
+await cron.pause('digest')
+const info = await cron.get('digest')
+console.log(info?.source, info?.paused, info?.when)
+// api true { cron: '30 8 * * *', tz: 'America/New_York' }
+
+const next = await cron.preview({ cron: '0 2 * * *', tz: 'Europe/Berlin' }, {
+  from: new Date('2026-03-28T12:00:00Z'),
+  count: 2,
+})
+console.log(next.map((d) => d.toISOString()))
+// [ '2026-03-29T01:00:00.000Z', '2026-03-30T00:00:00.000Z' ]
+await cron.close()
+```
+
+`pause()` keeps `nextAt`, so resuming after a long pause applies the misfire policy. `disable()`
+clears it, and `enable()` starts again from the next tick after now. `prune(keep)` removes code
+schedules a deploy no longer declares.
+
+## Running in several services
+
+Several services can share one cron schema. An instance claims only the schedules it can execute: the
+handler schedules it declared (or created), and queue-target schedules whose queue it declared. A
+manual run is picked up only by an instance that registered the handler, so service B can trigger
+service A's job without running it:
+
+{/* docs: use=blog no-run="needs two processes; proven by 'a manual run is picked only by an instance that registered the handler' in packages/pg-prime-cron/test/pg/cron.test.ts" */}
+```ts title="service-b.ts"
+import { pgCron } from '@pg-prime/cron'
+
+const cron = pgCron({ db })
+await cron.trigger('weekly-report')
+```
+
+<Aside>
+A `pending` run for a schedule no live instance can execute waits. After `leaseMs` it is reported
+through `onInternal('pending-unclaimed')`.
+</Aside>
+
+## Queue target
+
+A schedule can send a message to an `@pg-prime/mq` queue instead of running a handler. The work
+then runs on mq's workers, with mq's retries, limits and history. Hand `pgCron` the mq instance as
+its `enqueuer`; `start()` starts every target queue, and `create()` the queue of a schedule it
+adds, so no separate `mq.start()` is needed:
+
+{/* docs: use=blog */}
+```ts title="queue-target.ts"
+import { defineSchedule, pgCron } from '@pg-prime/cron'
+import { defineQueue, pgMq } from '@pg-prime/mq'
+
+const reindex = defineQueue<{ table: string }>('reindex')
+const mq = pgMq({ db })
+const nightly = defineSchedule(
+  'reindex-users',
+  { cron: '0 3 * * *' },
+  { queue: reindex },
+  { payload: { table: 'users' } },
+)
+
+const cron = pgCron({ db, enqueuer: mq, schedules: [nightly] })
+await cron.start()
+
+const a = await cron.trigger('reindex-users')
+const b = await cron.trigger('reindex-users')
+console.log(a.state, b.state)
+// enqueued skipped
+
+const [m] = await mq.queue(reindex).claim()
+console.log(m?.key, m?.payload)
+// cron:reindex-users { table: 'users' }
+await cron.close()
+```
+
+A tick is one short transaction: the claim and the send commit together, so each tick sends
+exactly one message, even when an instance dies between the two. The run is recorded as `enqueued`
+with the message's id (`runs()` returns it as `messageId`), and is finished as far as cron is
+concerned: whether the job succeeds is mq's to record.
+
+Cron cannot see a job running on mq's workers, so `overlap` maps onto mq's dedup instead:
+
+| `overlap` | Message key | Effect |
+|---|---|---|
+| `'skip'` (default) | `cron:<name>`, `dedup: 'until-done'` | while the previous message is unfinished, the tick sends nothing and its run is `skipped` |
+| `'allow'` | `cron:<name>:<tick ms>` (`cron:<name>:manual:<run id>` for a manual run) | one message per tick |
+
+`misfire: 'skip'` records a `missed` run and sends nothing. A manual `trigger()` sends at once —
+there is no `pending` run — and follows `overlap` the same way, as the example shows.
+
+An instance claims a queue-target schedule only when it declared the schedule and has an
+`enqueuer`, so the message is always sent with that instance's own queue declaration — its retry,
+retention and limits. Elsewhere `trigger()` throws a `UsageError`.

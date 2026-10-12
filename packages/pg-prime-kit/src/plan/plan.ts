@@ -163,6 +163,7 @@ const HAZARD_SEVERITY: Record<string, "error" | "warn"> = {
   MF104: "error",
   MF105: "error",
   MF106: "error",
+  MF107: "error",
   BC101: "warn",
   BC102: "warn",
   BC103: "warn",
@@ -180,11 +181,20 @@ const HAZARD_SEVERITY: Record<string, "error" | "warn"> = {
   LK110: "warn",
   LK111: "warn",
   LK112: "warn",
+  LK113: "warn",
   TX101: "error",
   TX102: "error",
   TX201: "error",
   EN101: "error",
   EN102: "error",
+  RL101: "error",
+  RL102: "warn",
+  RL103: "error",
+  RL104: "warn",
+  RL105: "error",
+  RL106: "error",
+  RL107: "warn",
+  RL108: "error",
 };
 
 /** An unknown code is a bug in the emitter, not an advisory — it must not be silent. */
@@ -308,7 +318,7 @@ export function buildPlan(input: BuildPlanInput): Plan {
       : {
           dataLoss: acknowledgedSubjects,
           by: ack.by ?? input.by ?? osUser(),
-          reason: ack.reason ?? (blanket ? "--allow-data-loss" : "hints-file acknowledgement"),
+          reason: ack.reason ?? (blanket ? "--allow-data-loss" : "acknowledge.dataLoss"),
           at: new Date().toISOString(),
           blanket,
         };

@@ -179,14 +179,14 @@ explaining why it cannot exist; see [the shadow ladder](/pg-prime/concepts/shado
 | <a id="EmitOptions"/> `EmitOptions` | `{ schemaMap?: ReadonlyMap<string, string>; defaultSchema?: string }` | The rename map and where an unqualified table lands (`public`). |
 | <a id="EmitResult"/> `EmitResult` | `{ sql: readonly string[]; diagnostics; schemas }` | Statements in execution order, plus the schemas they touch in the caller's names. |
 | <a id="LoadDesiredOptions"/> `LoadDesiredOptions` | `{ defaultSchema?; statementTimeout?; afterLoad?: (client) => Promise<void> }` | `afterLoad` runs on the shadow's own connection, after the DDL and before the extract. |
-| <a id="SchemaLike"/> `SchemaLike` | `{ tables; enums?; domains?; sequences?; extensions?; schemas?; views? }` | A schema registry. `Schema<T, R>` from `pg-prime` is assignable to it, and so is a bare `{ tables }` literal. The optional lists are the standalone declarations `loadSchema` collects off the module's exports. |
+| <a id="SchemaLike"/> `SchemaLike` | `{ tables; enums?; domains?; sequences?; extensions?; schemas?; views?; policies? }` | A schema registry. `Schema<T, R>` from `pg-prime` is assignable to it, and so is a bare `{ tables }` literal. The optional lists are the standalone declarations `loadSchema` collects off the module's exports. |
 | <a id="TableLike"/> `TableLike` | `{ $: TableRuntime }` | One table as the registry holds it. |
 | <a id="ViewLike"/> `ViewLike` | `{ $: ViewRuntime }` | One `pgView` / `pgMaterializedView` declaration. A view is table-shaped down here, and the populated `$.view` is the only thing that distinguishes it — which is also what keeps `loadSchema`'s table sweep from emitting a `CREATE TABLE` for one. |
 | <a id="ViewRuntime"/> `ViewRuntime` | `TableRuntime & { view: ViewInfo }` | The runtime metadata behind a view's `$`. |
 | <a id="ViewInfo"/> `ViewInfo` | `{ kind; name; schema; body; existing; securityInvoker; securityBarrier; checkOption; comment; renamedFrom; dependsOn; withNoData; refreshConcurrently }` | The whole contract between the DSL and the kit. `body` is `undefined` exactly when `existing` is true. |
 | <a id="TableRuntime"/> `TableRuntime` | `{ name; schema; columns; extras; column(key) }` | The runtime metadata behind a table's `$`. Non-generic, so it costs nothing per instantiation. |
 | <a id="RefRuntime"/> `RefRuntime` | `{ table; schema; key; dbName; column }` | A column reference's runtime metadata. Carries the schema so a cross-schema foreign key target is never guessed by table name. |
-| <a id="ColumnDdl"/> `ColumnDdl` | `{ pgType; dbName; notNull; default; identity; primaryKey; unique; enumName; arrayDim; references; checks; comment; renamedFrom }` | Everything a column contributes to DDL. No `$`-prefixed builder method ever writes into it. |
+| <a id="ColumnDdl"/> `ColumnDdl` | `{ pgType; dbName; notNull; default; identity; primaryKey; unique; enumName; arrayDim; references; checks; comment; collation; renamedFrom }` | Everything a column contributes to DDL. No `$`-prefixed builder method ever writes into it. |
 | <a id="TableExtra"/> `TableExtra` | a tagged union: `primaryKey \| index \| comment \| unique \| check \| foreignKey \| renamedFrom \| clusterOn \| partitionBy \| partitionOf` | Table-level nodes, one heterogeneous array, extensible by extension packs without an API change. |
 | <a id="makeRemapper"/> `makeRemapper` | `(reverse: ReadonlyMap<string, string>) => Remapper` | Builds the shadow-schema-to-user-schema rewriter. The quoted spelling is replaced first, so the bare rule cannot leave a stray quote behind. |
 | <a id="Remapper"/> `Remapper` | `{ text: (s: string) => string; id: (id: StableId) => StableId }` | Rewrites every string in every payload, recursively. Safe by construction: the only token ever replaced is a shadow schema name, which was minted after the user's schema was written. |
@@ -850,9 +850,10 @@ Tier R: `sql/` files re-applied whenever their bytes change, recorded in `pgprim
 
 Tier R, the half that comes from TypeScript rather than from a file you wrote. `migrate generate`
 renders every `pgView` / `pgMaterializedView` in the schema into `<repeatablesDir>/020_views/` —
-before the shadow loads the lane, so the shadow gets the current definitions and the proof covers
-them — and from that point on they are ordinary repeatables: hashed, drift-detected, re-applied on
-change, and visible in the pull request that changed them.
+the shadow loads the same text from memory, so the proof covers the current definitions, and the
+files are written only when the run succeeds — and from that point on they are ordinary
+repeatables: hashed, drift-detected, re-applied on change, and visible in the pull request that
+changed them.
 
 A file rather than an in-memory contribution because `apply`, `status` and `doctor` do not load the
 TypeScript schema, and `apply` in particular has to work in a deploy image that ships migrations and
@@ -870,6 +871,38 @@ nothing else. See [views and materialized views](/pg-prime/guides/views/).
 | <a id="SyncedViews"/> `SyncedViews` | `RenderedViews & { written; pruned }` | Both lists are paths relative to the repeatables root. |
 | <a id="VIEWS_DIR"/> `VIEWS_DIR` | `'020_views'` | The directory declared views are rendered into, ranked between `010_functions` and `030_matviews` by the same convention a hand-written lane uses. |
 | <a id="DECLARED_DIRECTIVE"/> `DECLARED_DIRECTIVE` | `'-- pg-prime:declared view'` | The marker that says pg-prime generated this file. Pruning only ever deletes a file carrying it, so a hand-written view in the same directory — or one `pull` wrote, which carries `-- pg-prime:object` and not this — is never touched. |
+
+## Declared policies and triggers
+
+`definePolicy(...)` exports, `rls.enable()` / `rls.force()` and `updatedAtTrigger(...)` render into
+the same lane: one `050_policies/<schema>__<table>.sql` per table with policies or `rls.*()` (its
+`FORCE` / `NO FORCE` line included), `070_triggers/000_functions.sql`, one
+`070_triggers/<schema>__<table>.sql` per table with a trigger, and the root `990_declared_prune.sql`.
+Every object carries `COMMENT … IS 'pg-prime:declared sha256:<hash of its CREATE>'`; the prune drops
+marked objects in the managed schemas that are no longer declared, and is rendered for as long as the
+file exists — only a person deletes it. `generate` loads the lane into the shadow from memory,
+rendered into the shadow's schemas and without the prune, and refuses the whole write on a
+`declared_conflict`, a `declared_invalid`, a `policy_unknown_role` or an unacknowledged
+RL101/RL103/RL105/RL108.
+
+| Name | Shape | What it is |
+|---|---|---|
+| <a id="renderDeclared"/> `renderDeclared` | `(schema: SchemaLike, options?: RenderDeclaredOptions) => RenderedDeclared` | Pure. Policies sorted by name, each `DROP POLICY IF EXISTS` + `CREATE POLICY` + marker; one trigger function per `(schema, column)`. Diagnostics: `RL104` (policies on a table without `rls.*()`), `declared_conflict`, `declared_invalid` (a predicate that does not render, a policy on a table `schema.tables` lacks, a lane table outside `options.schemas`), `updated_at_on_update_overlap`. |
+| <a id="syncDeclared"/> `syncDeclared` | `(dir: string, files: readonly { path; sql }[], options: SyncDeclaredOptions) => Promise<SyncedDeclared>` | Writes changed files and deletes declared files no longer wanted, never the prune file; a deletion that fails other than with `ENOENT` throws. A non-declared file at a wanted path is `declared_conflict` and nothing is written. With `write: false` it reports `declared_lane_stale` (an error) and, for `020_views/`, `declared_views_stale`. |
+| <a id="declaredCensus"/> `declaredCensus` | `(client: CatalogClient, files: readonly RepeatableFile[], schemas: readonly string[]) => Promise<DeclaredCensus>` | The `-- pg-prime:object` headers of the declared files against the catalog's markers and `relforcerowsecurity`: `declared_missing` (absent, another hash, wrong FORCE state), `declared_unmarked`, `declared_orphan`. One catalog query per kind; nothing at all when no declared file is given. |
+| <a id="DeclaredCensus"/> `DeclaredCensus` | `{ findings; heal: ReadonlySet<string> }` | `heal` is the files `migrate apply` re-applies whatever their checksum says: a restored declaration has the bytes of its old row. Each finding carries the `path` that fixes it. |
+| <a id="DeclaredFile"/> `DeclaredFile` | `{ path; sql; objects: readonly DeclaredObject[] }` | One rendered file. `path` is POSIX and relative to the repeatables root. |
+| <a id="DeclaredObject"/> `DeclaredObject` | `{ kind: DeclaredKind; identity; state }` | One `-- pg-prime:object` header line. `state` is `sha256:<hex>`, or `force` / `noforce` for `rls`. |
+| <a id="DeclaredKind"/> `DeclaredKind` | `'rls' \| 'policy' \| 'trigger' \| 'function'` | Identities: `s.t`, `s.t.name`, `s.t.name`, `s.name()`. |
+| <a id="LaneAck"/> `LaneAck` | `{ code; subject; by; reason }` | One `-- pg-prime:acknowledged <code> <subject> by <who>: <reason>` line in the prune header. `generate` keeps every recorded one and adds the new ones `--allow-data-loss` signs. |
+| <a id="RenderDeclaredOptions"/> `RenderDeclaredOptions` | `{ defaultSchema?; schemas?; schemaOf?; existingPrune?; acks? }` | `schemas` scopes the prune; `schemaOf` remaps every schema for a shadow; `existingPrune` renders the prune with nothing declared. |
+| <a id="RenderedDeclared"/> `RenderedDeclared` | `{ files: readonly DeclaredFile[]; diagnostics }` | Files sorted by path. |
+| <a id="SyncDeclaredOptions"/> `SyncDeclaredOptions` | `{ write: boolean; dirs: readonly string[] }` | `dirs` are the directories (relative to the root) whose declared files this sync owns; the root prune file is always included. |
+| <a id="SyncedDeclared"/> `SyncedDeclared` | `{ written; pruned; diagnostics }` | Paths relative to the repeatables root. |
+| <a id="PolicyLike"/> `PolicyLike` | `{ kind: 'policy'; name; $: PolicyRuntime }` | One `definePolicy(...)` declaration, as `SchemaLike.policies` holds it. |
+| <a id="POLICIES_DIR"/> `POLICIES_DIR` | `'050_policies'` | |
+| <a id="TRIGGERS_DIR"/> `TRIGGERS_DIR` | `'070_triggers'` | |
+| <a id="PRUNE_FILE"/> `PRUNE_FILE` | `'990_declared_prune.sql'` | At the repeatables root, so it runs last and a rename's new object exists before the old one goes. |
 
 ## Database helpers
 
@@ -1049,6 +1082,21 @@ class GenerateRefusedError extends Error {
 `generate` declined for a reason the caller has to print rather than swallow — an unusable
 `--shadow` value, or `--shadow docker`, which needs a testcontainers dependency the kit does not
 have.
+
+### `LaneRefusedError`
+
+{/* docs: signature */}
+```ts
+class LaneRefusedError extends GenerateRefusedError {
+  readonly diagnostics: readonly Diagnostic[]
+  readonly hazards: readonly PlanHazard[]
+  constructor(diagnostics: readonly Diagnostic[], hazards: readonly PlanHazard[])
+}
+```
+
+The declared lane refused the run and nothing was written: a `declared_conflict`,
+`declared_invalid` or `policy_unknown_role` in `diagnostics`, or an unacknowledged RL101/RL103/RL105/RL108 in `hazards`.
+`migrate generate` reports it as `lane_refused` with exit 2; `migrate check` as exit 3.
 
 ### `WriteRefusedError`
 

@@ -6,7 +6,7 @@
  * analysis, **prove on a clone**, and only then write `NNNN_name.sql` + `.plan.json`."
  *
  * Exit codes are §6.1's, and the mapping is the interesting part: an unresolved rename or
- * an unacknowledged *data loss* is **2** (a human decision is missing), any other
+ * an unacknowledged *data loss* or a declared-lane refusal is **2** (a human decision is missing), any other
  * error-severity hazard is **3** (the lint gate), a plan that does not converge is **7**,
  * and a write that was refused for any other reason is **1**. Nothing is written on a
  * non-zero exit — that is `writePlan`'s D6 gate, not this command's politeness.
@@ -21,6 +21,7 @@ import {
   generate,
   readHintsFile,
   GenerateRefusedError,
+  LaneRefusedError,
   type GenerateResult,
   type Unresolved,
 } from "../../generate.js";
@@ -242,6 +243,25 @@ export async function runGenerate(config: ResolvedConfig, argv: ParseResult): Pr
         : {}),
     });
   } catch (err) {
+    // design/20 D23: a declared-lane conflict or unacknowledged lane hazard needs a human decision.
+    if (err instanceof LaneRefusedError) {
+      return envelope(
+        started,
+        "lane_refused",
+        EXIT.missingHints,
+        {
+          files: [],
+          hazards: err.hazards,
+          diagnostics: err.diagnostics.map((d) => ({
+            code: d.code,
+            severity: d.severity,
+            subject: d.subject ?? null,
+            message: d.message,
+          })),
+        },
+        `migrate generate\n\nREFUSED: ${err.message}\nNothing was written.`,
+      );
+    }
     if (err instanceof OfflineShadowError || err instanceof GenerateRefusedError || err instanceof ConfigError) {
       return refusal(started, "refused", err.message);
     }
@@ -318,7 +338,7 @@ export async function runGenerate(config: ResolvedConfig, argv: ParseResult): Pr
       candidates: result.candidates,
       unresolved: result.unresolved,
       repeatables: result.repeatables.map((r) => ({ path: r.path, sha256: r.sha256 })),
-      hazards: result.files.flatMap((f) => f.plan?.hazards ?? []),
+      hazards: [...result.files.flatMap((f) => f.plan?.hazards ?? []), ...result.laneHazards],
       diagnostics: result.diagnostics.map((d) => ({
         code: d.code,
         severity: d.severity,
@@ -377,7 +397,10 @@ export async function runGenerate(config: ResolvedConfig, argv: ParseResult): Pr
 
 function text(result: GenerateResult, config: ResolvedConfig): string {
   const head = `migrate generate — ${config.connection.database} (shadow tier ${String(result.shadow.tier)}: ${result.shadow.reason})`;
-  if (result.status === "up_to_date") return `${head}\n\nnothing to do — the database already matches the schema.`;
+  const warn = result.diagnostics.filter((d) => d.severity !== "info").map((d) => `${d.code}: ${d.message}`);
+  if (result.status === "up_to_date") {
+    return `${head}\n\nnothing to do — the database already matches the schema.${bullets("diagnostics:", warn)}`;
+  }
   if (result.status === "missing_hints") {
     return [
       head,
@@ -411,7 +434,6 @@ function text(result: GenerateResult, config: ResolvedConfig): string {
       ]),
     );
   }
-  const warn = result.diagnostics.filter((d) => d.severity !== "info").map((d) => `${d.code}: ${d.message}`);
   lines.push(bullets("diagnostics:", warn));
   if (result.writeRefusal) lines.push("", `REFUSED: ${result.writeRefusal}`);
   return lines.filter((l) => l !== "").join("\n");

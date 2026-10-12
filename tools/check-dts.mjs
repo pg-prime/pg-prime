@@ -14,9 +14,10 @@
 // (the build compiler). The tsconfig is written into os.tmpdir() with an absolute `include`, so
 // nothing lands in the repo and nothing is left behind.
 //
-// It also asserts the thing `pg-prime`'s zero-dependency promise rests on: the emitted `.d.ts`
-// tree of `pg-prime` may not name a single non-relative module. `size-budget.mjs` checks that
-// `dependencies` is empty; this checks that the declarations do not need one anyway.
+// It also asserts that a package's emitted `.d.ts` tree names no module beyond its `dependencies`
+// and REQUIRED peers. For `pg-prime` that is none at all, so its zero-dependency promise holds at
+// the type level too; an optional peer leaking into a declaration would make it required. A type
+// reference directive for `x` counts as `@types/x`, so `@types/node` cannot leak in either.
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -24,27 +25,13 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { listFiles, TSC_59, TSC_7 } from './build-package.mjs'
+import { PACKAGES } from './packages.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
 const ts = createRequire(import.meta.url)('typescript59')
 
 export const COMPILERS = { '5.9.3': TSC_59, '7.0.2': TSC_7 }
-
-export const PACKAGES = [
-  { dir: 'packages/pg-prime', zeroDeps: true },
-  { dir: 'packages/pg-prime-kit', zeroDeps: false },
-  // Zero dependencies, and the declarations say so. It is also the gate that shaped the API:
-  // `types: []` below means `node:stream` does not resolve and `NodeJS.*` is not a namespace, so
-  // `PromptIo` takes an `ask` function and two writers instead of streams, and `src/cli.ts` — the
-  // one file that touches `node:readline/promises` — exports nothing.
-  { dir: 'packages/pg-prime-create', zeroDeps: true },
-  // `zeroDeps` is the "names no external module at all" assertion, and @pg-prime/testing names
-  // exactly one: `pg-prime`, its required peer, in `mock-pool.d.ts`. The list is printed on every
-  // run, so a second specifier — @electric-sql/pglite or @testcontainers/postgresql leaking out of
-  // a lazy import and making an OPTIONAL peer required at the type level — is visible in the log.
-  { dir: 'packages/pg-prime-testing', zeroDeps: false },
-]
 
 /**
  * Every non-relative module specifier named by a package's emitted declarations.
@@ -65,6 +52,7 @@ export function externalSpecifiers(distDir) {
     if (!f.endsWith('.d.ts')) continue
     const text = readFileSync(join(distDir, f), 'utf8')
     const source = ts.createSourceFile(f, text, ts.ScriptTarget.ES2023, true, ts.ScriptKind.TS)
+    for (const r of source.typeReferenceDirectives) add(`@types/${r.fileName}`, f)
     const visit = (node) => {
       if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
         add(node.moduleSpecifier.text, f)
@@ -83,7 +71,7 @@ export function externalSpecifiers(distDir) {
   return found
 }
 
-function tsconfigFor(pkgDir, tmp, name) {
+function tsconfigFor(pkgDir, tmp, name, types) {
   const path = join(tmp, `tsconfig.${name}.json`)
   writeFileSync(
     path,
@@ -100,7 +88,8 @@ function tsconfigFor(pkgDir, tmp, name) {
           noUncheckedIndexedAccess: true,
           skipLibCheck: false,
           noEmit: true,
-          types: [],
+          types,
+          typeRoots: [join(ROOT, 'node_modules', '@types')],
         },
         include: [join(pkgDir, 'dist', '**', '*.d.ts').split('\\').join('/')],
       },
@@ -124,16 +113,25 @@ if (process.argv[1] && process.argv[1].endsWith('check-dts.mjs')) {
       console.log(
         `${pkg.dir}: ${dtsCount} .d.ts, external specifiers: ${externalList.length ? externalList.join(', ') : '(none)'}`,
       )
-      if (pkg.zeroDeps && externalList.length) {
+      const optional = pkg.pkg.peerDependenciesMeta ?? {}
+      const allowed = [
+        ...Object.keys(pkg.pkg.dependencies ?? {}),
+        ...Object.keys(pkg.pkg.peerDependencies ?? {}).filter((d) => !optional[d]?.optional),
+      ]
+      for (const spec of externalList) {
+        if (allowed.some((d) => spec === d || spec.startsWith(`${d}/`))) continue
         bad++
-        for (const spec of externalList) {
-          console.error(
-            `  FAIL the emitted declarations name \`${spec}\` (in ${externals.get(spec).slice(0, 3).join(', ')}) — pg-prime ships zero dependencies`,
-          )
-        }
+        console.error(
+          `  FAIL the emitted declarations name \`${spec}\` (in ${externals.get(spec).slice(0, 3).join(', ')}), which is not a dependency or required peer of ${pkg.name}`,
+        )
       }
+      // A framework peer's own declarations need Node's types, as its consumers always have them.
+      const framework = Object.keys(pkg.pkg.peerDependencies ?? {}).some(
+        (d) => !optional[d]?.optional && !PACKAGES.some((p) => p.name === d),
+      )
+      const types = framework ? ['node'] : []
       for (const [version, tsc] of Object.entries(COMPILERS)) {
-        const cfg = tsconfigFor(pkgDir, tmp, `${pkg.dir.replace(/[\\/]/g, '_')}.${version}`)
+        const cfg = tsconfigFor(pkgDir, tmp, `${pkg.dir.replace(/[\\/]/g, '_')}.${version}`, types)
         const started = Date.now()
         let out = ''
         let ok = true

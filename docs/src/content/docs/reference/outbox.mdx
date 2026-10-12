@@ -1,0 +1,457 @@
+---
+title: "@pg-prime/outbox"
+description: Every export of @pg-prime/outbox.
+apiEntry:
+  - "@pg-prime/outbox#."
+  - "pg-prime#."
+---
+
+The transactional outbox. [Transactional outbox](/pg-prime/guides/outbox/) is the guide and
+[Outbox in production](/pg-prime/operations/outbox/) the operations page; this page is the surface.
+
+```sh
+pnpm add @pg-prime/outbox
+```
+
+## Declaring topics
+
+### `defineOutbox`
+
+{/* docs: signature */}
+```ts
+function defineOutbox<T>(topic: string, opts?: OutboxDefOptions<T>): OutboxDef<T>
+```
+
+Declares a topic. Throws `UsageError` for an empty name, `partitions` outside 1..1024 or a negative
+`keepDeliveredMs`.
+
+### `OutboxDefOptions`
+
+{/* docs: signature */}
+```ts
+interface OutboxDefOptions<T> {
+  partitions?: number
+  ordered?: boolean
+  keepDeliveredMs?: number
+  schema?: StandardSchemaV1<unknown, T>
+  codec?: OutboxCodec<T>
+}
+```
+
+`partitions` defaults to 16 and is immutable once the topic exists. `ordered` (default `true`)
+serializes same-key writers until commit. `keepDeliveredMs` (default 86 400 000) keeps delivered
+records for write-side deduplication; `0` deletes them on delivery. `schema` validates every payload
+on write (`PayloadError` on failure); `codec` maps payloads to and from JSON.
+
+### `OutboxDef`
+
+{/* docs: signature */}
+```ts
+interface OutboxDef<T> {
+  readonly topic: string
+  readonly partitions: number
+  readonly ordered: boolean
+  readonly keepDeliveredMs: number
+  readonly schema: StandardSchemaV1<unknown, T> | undefined
+  readonly codec: OutboxCodec<T> | undefined
+}
+```
+
+### `OutboxCodec`
+
+{/* docs: signature */}
+```ts
+interface OutboxCodec<T> {
+  encode(v: T): unknown
+  decode(v: unknown): T
+}
+```
+
+### `PayloadOf`
+
+{/* docs: signature */}
+```ts
+type PayloadOf<D> = D extends OutboxDef<infer T> ? T : never
+```
+
+### `StandardSchemaV1`
+
+{/* docs: signature */}
+```ts
+interface StandardSchemaV1<Input = unknown, Output = Input> {
+  readonly '~standard': {
+    readonly version: 1
+    readonly vendor: string
+    readonly validate: (value: unknown) => StandardResult<Output> | Promise<StandardResult<Output>>
+    readonly types?: { readonly input: Input; readonly output: Output } | undefined
+  }
+}
+type StandardResult<Output> =
+  | { readonly value: Output; readonly issues?: undefined }
+  | { readonly issues: readonly { readonly message: string; readonly path?: readonly unknown[] | undefined }[] }
+```
+
+The [Standard Schema](https://standardschema.dev) interface, copied so the package has no
+dependency. Zod, Valibot and ArkType schemas satisfy it.
+
+## The outbox
+
+### `pgOutbox`
+
+{/* docs: signature */}
+```ts
+function pgOutbox<const D extends Record<string, OutboxDef<any>> = {}>(config: OutboxConfig<D>): Outbox<D>
+```
+
+### `OutboxConfig`
+
+{/* docs: signature */}
+```ts
+interface OutboxConfig<D extends Record<string, OutboxDef<any>>> {
+  db: Db
+  schema?: string
+  autoMigrate?: boolean
+  define?: D
+  hooks?: OutboxHooks
+}
+```
+
+`schema` defaults to `'pgprime_outbox'`, `autoMigrate` to `true`.
+
+### `Outbox`
+
+{/* docs: signature */}
+```ts
+interface Outbox<D extends Record<string, OutboxDef<any>>> extends AsyncDisposable_ {
+  readonly topics: { readonly [K in keyof D]: OutboxTopic<PayloadOf<D[K]>> }
+  topic<T>(def: OutboxDef<T>): OutboxTopic<T>
+  start(): Promise<void>
+  migrate(): Promise<{ from: number; to: number }>
+  close(): Promise<void>
+}
+```
+
+`start()` migrates (or, with `autoMigrate: false`, checks) the schema and creates the declared
+topics; call it once at boot, outside any transaction. `topic(def)` returns the handle for any
+definition, declared or not; an undeclared one needs its own `start()`. `migrate()` applies the DDL
+whatever `autoMigrate` says. `close()` closes every relay this outbox started.
+
+### `migrationSql`
+
+{/* docs: signature */}
+```ts
+function migrationSql(opts?: { schema?: string }): OwnedSchemaFile[]
+```
+
+The migrations as SQL files (`{ version, name, sql }`) for vendoring into kit migrations. They write
+the same ledger rows as `start()`, so the two converge.
+
+## Topics
+
+### `OutboxTopic`
+
+{/* docs: signature */}
+```ts
+interface OutboxTopic<T> {
+  readonly name: string
+  start(): Promise<void>
+  write(payload: T, opts: WriteOptions): Promise<WriteResult>
+  writeMany(items: readonly ({ payload: T } & Omit<WriteOptions, 'tx'>)[], opts: { tx: Queryable<any> }): Promise<WriteResult[]>
+  relay(sink: OutboxSink<T>, opts?: RelayOptions): Relay
+  parked(opts?: { limit?: number; after?: bigint }): Promise<ParkedRecord<T>[]>
+  replay(ids: readonly bigint[]): Promise<number>
+  discard(ids: readonly bigint[]): Promise<number>
+  pause(): Promise<void>
+  resume(): Promise<void>
+  stats(): Promise<OutboxStats>
+}
+```
+
+`write` and `writeMany` run in the caller's transaction and throw `NotStartedError` when the topic's
+`start()` has not resolved (with the root `db` as `tx` they start it lazily instead). On an
+`ordered` topic each call locks its keys in sorted order until commit; separate calls are not
+sorted against each other, so write a transaction's keys with one `writeMany` or in a consistent
+order to avoid deadlocks (`40P01`). `replay` moves parked records back to pending and `discard`
+deletes them; both return how many they changed and unblock the records' keys. `parked` lists 100
+records by default, in id order after `after`.
+
+### `WriteOptions`
+
+{/* docs: signature */}
+```ts
+interface WriteOptions {
+  tx: Queryable<any>
+  key?: string
+  idempotencyKey?: string
+  headers?: Record<string, string>
+}
+```
+
+### `WriteResult`
+
+{/* docs: signature */}
+```ts
+interface WriteResult {
+  id: bigint
+  idem: string
+  duplicate: boolean
+}
+```
+
+`duplicate: true` means a record with this `idempotencyKey` already existed; `id` is that record's.
+
+### `OutboxStats`
+
+{/* docs: signature */}
+```ts
+interface OutboxStats {
+  readonly paused: boolean
+  readonly pending: number
+  readonly parked: number
+  readonly blockedKeys: number
+  readonly partitions: readonly PartitionStats[]
+}
+```
+
+### `PartitionStats`
+
+{/* docs: signature */}
+```ts
+interface PartitionStats {
+  readonly partition: number
+  readonly pending: number
+  readonly oldestAt: Date | null
+  readonly owner: string | null
+  readonly epoch: bigint
+  readonly leaseUntil: Date | null
+}
+```
+
+## Delivery
+
+### `OutboxRecord`
+
+{/* docs: signature */}
+```ts
+interface OutboxRecord<T> {
+  readonly id: bigint
+  readonly key: string | null
+  readonly idem: string
+  readonly payload: T
+  readonly headers: Record<string, string> | null
+  readonly attempts: number
+  readonly createdAt: Date
+}
+```
+
+`attempts` counts earlier failed deliveries.
+
+### `ParkedRecord`
+
+{/* docs: signature */}
+```ts
+type ParkedRecord<T> = Omit<OutboxRecord<T>, 'payload'> & {
+  readonly error: string | null
+} & (
+    | { readonly decoded: true; readonly payload: T }
+    | { readonly decoded: false; readonly payload: unknown }
+  )
+```
+
+A `payload` the `codec` cannot decode is the stored JSON, with `decoded: false`; check `decoded`
+before treating `payload` as `T`.
+
+### `OutboxSink`
+
+{/* docs: signature */}
+```ts
+interface OutboxSink<T> {
+  deliver(wave: readonly OutboxRecord<T>[], ctx: DeliveryContext): Promise<DeliveryResult>
+}
+```
+
+A wave never holds two records of one key. Resolving reports every record delivered; `{ failed }`
+names the ones that failed; a throw fails them all.
+
+### `DeliveryResult`
+
+{/* docs: signature */}
+```ts
+type DeliveryResult = void | { failed: ReadonlyMap<bigint, unknown> }
+```
+
+### `DeliveryContext`
+
+{/* docs: signature */}
+```ts
+interface DeliveryContext {
+  readonly signal: AbortSignal
+  readonly epoch: bigint
+  readonly partition: number
+}
+```
+
+`signal` aborts when the partition's lease is lost (reason `OutboxLeaseLostError`) or the relay
+closes past its grace period. `epoch` is the partition's fencing token.
+
+### `functionSink`
+
+{/* docs: signature */}
+```ts
+function functionSink<T>(fn: (wave: readonly OutboxRecord<T>[], ctx: DeliveryContext) => Promise<DeliveryResult>): OutboxSink<T>
+```
+
+### `webhookSink`
+
+{/* docs: signature */}
+```ts
+function webhookSink<T>(opts: WebhookSinkOptions<T>): OutboxSink<T>
+```
+
+POSTs JSON (`{ id, key, idem, payload, headers, createdAt }`, `id` as a string) through the global
+`fetch`, with `Idempotency-Key` (record mode) and `X-Outbox-Epoch`.
+
+### `WebhookSinkOptions`
+
+{/* docs: signature */}
+```ts
+interface WebhookSinkOptions<T> {
+  url: string | ((r: OutboxRecord<T>) => string)
+  mode?: 'batch' | 'record'
+  headers?: Record<string, string>
+  timeoutMs?: number
+  sign?: { secret: string; header?: string }
+  retryable?: (status: number) => boolean
+}
+```
+
+`mode: 'record'` (default) sends one request per record; `'batch'` one JSON array per URL. `sign`
+adds a hex HMAC-SHA256 of the body in `header` (default `X-Signature`). `retryable` defaults to
+408, 425, 429 and 5xx; any other non-2xx parks the record. `timeoutMs` defaults to 10 000.
+
+### `Relay`
+
+{/* docs: signature */}
+```ts
+interface Relay extends AsyncDisposable_ {
+  readonly partitions: readonly number[]
+  close(): Promise<void>
+}
+```
+
+`partitions` is what this relay holds right now.
+
+### `RelayOptions`
+
+{/* docs: signature */}
+```ts
+interface RelayOptions {
+  batchSize?: number
+  concurrency?: number
+  leaseMs?: number
+  pollMs?: number
+  retry?: RetryOptions
+  graceMs?: number
+  owner?: string
+  signal?: AbortSignal
+}
+```
+
+Defaults: `batchSize` 100 records per partition per round, `concurrency` 4 partitions at once,
+`leaseMs` 30 000 (heartbeat every third), `pollMs` 1 000, `graceMs` 10 000, `owner`
+`hostname:pid:random`. Aborting `signal` closes the relay.
+
+### `RetryOptions`
+
+{/* docs: signature */}
+```ts
+interface RetryOptions {
+  maxAttempts?: number
+  baseDelayMs?: number
+  maxDelayMs?: number
+  jitter?: 'full' | 'equal' | 'none'
+}
+```
+
+Defaults 10, 1 000, 300 000 and `'full'`: attempt `n` waits up to
+`min(maxDelayMs, baseDelayMs · 2ⁿ⁻¹)`.
+
+## Hooks
+
+### `OutboxHooks`
+
+{/* docs: signature */}
+```ts
+interface OutboxHooks {
+  onWrite?(e: { topic: string; count: number; duplicates: number }): void
+  onDeliver?(e: { topic: string; partition: number; count: number; durationMs: number }): void
+  onFail?(e: { topic: string; id: bigint; key: string | null; attempt: number; error: unknown }): void
+  onPark?(e: { topic: string; id: bigint; key: string | null; error: unknown }): void
+  onLease?(e: { topic: string; acquired: readonly number[]; released: readonly number[] }): void
+  onInternal?(e: { kind: InternalKind; message: string; cause?: unknown }): void
+}
+```
+
+A throwing hook is reported through `onInternal` as `hook-failed`.
+
+### `InternalKind`
+
+{/* docs: signature */}
+```ts
+type InternalKind = 'listen-unavailable' | 'heartbeat-failed' | 'relay-failed' | 'hook-failed'
+```
+
+## Errors
+
+All extend `PgPrimeError`.
+
+### `NotStartedError`
+
+{/* docs: signature */}
+```ts
+class NotStartedError extends UsageError {}
+```
+
+Code `OUTBOX_NOT_STARTED`: a write carrying a transaction before the topic's `start()` resolved, or
+to a topic whose row is gone. The caller's transaction rolls back.
+
+### `SchemaVersionError`
+
+{/* docs: signature */}
+```ts
+class SchemaVersionError extends PgPrimeError {}
+```
+
+Code `OUTBOX_SCHEMA_VERSION`: the schema is behind (with `autoMigrate: false`), ahead of this
+client, or its ledger checksum differs.
+
+### `PayloadError`
+
+{/* docs: signature */}
+```ts
+class PayloadError extends PgPrimeError {
+  readonly issues: readonly { readonly message: string }[]
+}
+```
+
+Code `OUTBOX_PAYLOAD`: the topic's `schema` rejected a payload.
+
+### `NonRetryableSinkError`
+
+{/* docs: signature */}
+```ts
+class NonRetryableSinkError extends PgPrimeError {}
+```
+
+Code `OUTBOX_NON_RETRYABLE`: throw it (or report it in `failed`) from a sink to park a record at
+once.
+
+### `OutboxLeaseLostError`
+
+{/* docs: signature */}
+```ts
+class OutboxLeaseLostError extends PgPrimeError {}
+```
+
+Code `OUTBOX_LEASE_LOST`: the abort reason of `DeliveryContext.signal` when another relay took the
+partition over.

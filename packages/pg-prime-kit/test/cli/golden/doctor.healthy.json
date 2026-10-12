@@ -37,10 +37,14 @@
     },
     {
       "kind": "role",
-      "count": 1
+      "count": "<masked>"
     }
   ],
   "unmodeled": [],
+  "declared": {
+    "findings": [],
+    "pruneDeletable": false
+  },
   "findings": [],
   "error": null
 }

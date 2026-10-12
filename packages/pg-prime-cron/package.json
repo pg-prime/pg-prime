@@ -1,0 +1,64 @@
+{
+  "name": "@pg-prime/cron",
+  "version": "0.1.0",
+  "description": "Distributed cron for pg-prime: schedules that fire exactly once per tick across instances. Pre-alpha — the API will change.",
+  "keywords": [
+    "cron",
+    "jobs",
+    "pg-prime",
+    "postgres",
+    "postgresql",
+    "scheduler"
+  ],
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-prime/pg-prime.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "node ../../tools/build-package.mjs",
+    "clean": "node ../../tools/build-package.mjs --clean",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --project unit",
+    "test:live": "vitest run --project unit --project live",
+    "test:pg": "vitest run"
+  },
+  "dependencies": {
+    "croner": "^10.0.1"
+  },
+  "devDependencies": {
+    "@pg-prime/mq": "workspace:*",
+    "@pg-prime/testing": "workspace:*",
+    "pg-prime": "workspace:*",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "@pg-prime/mq": ">=0.2.0",
+    "pg-prime": ">=0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@pg-prime/mq": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}

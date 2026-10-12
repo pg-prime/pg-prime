@@ -341,6 +341,53 @@ jobs:
           path: bench/compare/report.json
           if-no-files-found: warn
 
+  bench-addons:
+    # Plans 15–17's benches (`bench/{events,outbox,mq}`), each a workspace package with a `bench`
+    # script that writes `report.json`. Informational like `compare`; a bench not built yet is skipped.
+    name: bench · events, outbox, mq
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: pgprime
+          POSTGRES_PASSWORD: pgprime
+          POSTGRES_DB: pgprime
+          TZ: UTC
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pgprime"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_PRIME_TEST_URL: postgres://pgprime:pgprime@127.0.0.1:5432/pgprime
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Run each add-on bench
+        run: |
+          for b in events outbox mq; do
+            if [ -f "bench/$b/package.json" ]; then pnpm --dir "bench/$b" run bench; else echo "bench/$b does not exist yet"; fi
+          done
+      - name: Upload the add-on bench reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-addons-report-${{ github.run_id }}
+          path: |
+            bench/events/report.json
+            bench/outbox/report.json
+            bench/mq/report.json
+          if-no-files-found: ignore
+
   types:
     # The type budgets run on every PR too; here they run on the default branch so a merge that
     # crossed two green PRs into one breach is caught the same night rather than by the next PR.

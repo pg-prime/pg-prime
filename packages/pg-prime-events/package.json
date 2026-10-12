@@ -1,0 +1,56 @@
+{
+  "name": "@pg-prime/events",
+  "version": "0.1.0",
+  "description": "Typed LISTEN/NOTIFY channels, a durable event log with subscriptions, and tails for pg-prime. Pre-alpha — the API will change.",
+  "keywords": [
+    "event-log",
+    "events",
+    "listen-notify",
+    "pg-prime",
+    "postgres",
+    "postgresql",
+    "pubsub"
+  ],
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-prime/pg-prime.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "node ../../tools/build-package.mjs",
+    "clean": "node ../../tools/build-package.mjs --clean",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --project unit",
+    "test:live": "vitest run --project unit --project live",
+    "test:pg": "vitest run"
+  },
+  "devDependencies": {
+    "@pg-prime/testing": "workspace:*",
+    "fast-check": "^4.10.2",
+    "pg-prime": "workspace:*",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "pg-prime": ">=0.2.0"
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}

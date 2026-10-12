@@ -1,0 +1,19 @@
+{
+  "when": "2026-10-08T12:58:59.235Z",
+  "server": "17.11",
+  "results": {
+    "publish, 1 per statement": {
+      "perSec": 977
+    },
+    "publish, 100 per transaction": {
+      "perSec": 20632
+    },
+    "reader, batch 1000": {
+      "perSec": 39979,
+      "entries": 108193
+    },
+    "cursor pending, 200 producers": {
+      "maxPending": 29
+    }
+  }
+}

@@ -8,7 +8,7 @@
  * real negative control rather than a branch nobody has executed.
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -16,12 +16,15 @@ import {
   ENV_VAR,
   findConfigFile,
   loadConfig,
+  loadSchema,
   parseDatabaseUrl,
   resolveConfig,
   STRIP_TYPES_MARKER,
   tsSpecifierAdvice,
 } from "../../src/config/load.js";
 import { defineConfig } from "../../src/config/define.js";
+import { renderDeclared } from "../../src/schema/declared.js";
+import type { SchemaLike } from "../../src/schema/types.js";
 import { enableTsSpecifiers, typeScriptSibling, typeScriptSiblingUrl } from "../../src/config/ts-specifiers.js";
 import { runCli } from "../support/cli.js";
 import { EXIT } from "../../src/cli/exit.js";
@@ -397,5 +400,22 @@ describe("the binary reads the config file", () => {
     const plain = await runCli(args);
     expect(plain.code).toBe(EXIT.error);
     expect((JSON.parse(plain.stdout) as { error: { message: string } }).error.message).toContain("pg-prime.config.mjs");
+  });
+});
+
+describe("loadSchema", () => {
+  it("keeps two distinct policies with one identity, so the render refuses them", async () => {
+    const policy = (using: string): string =>
+      `{ kind: "policy", name: "p", $: { name: "p", table: t.$, roles: ["public"], ddl: () => "CREATE POLICY ${using}" } }`;
+    const dir = await project("policies", {
+      "a.mjs": `export const t = { $: { name: "docs", columns: [], extras: [] } };\nexport const p = ${policy("a")};\n`,
+      "b.mjs": `import { t } from "./a.mjs";\nexport { p as again } from "./a.mjs";\nexport const p = ${policy("b")};\n`,
+    });
+    const { schema } = await loadSchema(["a.mjs", "b.mjs"], await realpath(dir));
+    expect(schema.policies).toHaveLength(2);
+    const { diagnostics } = renderDeclared(schema as unknown as SchemaLike);
+    expect(diagnostics.filter((d) => d.severity === "error").map((d) => `${d.code} ${d.subject}`)).toEqual([
+      "declared_conflict public.docs.p",
+    ]);
   });
 });

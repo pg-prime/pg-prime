@@ -1,0 +1,63 @@
+---
+title: "Cron in production"
+description: Time zones, DST, downtime and PgBouncer for @pg-prime/cron.
+---
+
+## Clocks and time zones
+
+Only the database's clock decides when a tick is due. The loop reads `now()` with the due
+schedules, computes the next tick from that, and stores it; instances never compare their own clocks.
+Clock skew between hosts, or a host in another zone, cannot move or double a tick.
+
+A cron pattern is evaluated in its `tz`, which defaults to `'UTC'` — never the process's zone, so the
+same code means the same thing on a laptop and in a container.
+
+## Daylight saving
+
+Patterns are evaluated by [croner](https://github.com/Hexagon/croner). Across the two transitions:
+
+| Transition | Example (`America/New_York`) | What fires |
+|---|---|---|
+| Spring forward: a local time that does not exist | `30 2 * * *` on 8 March 2026 | 03:30 EDT, once |
+| Spring forward, hourly | `0 * * * *` | 01:00 EST, then 03:00 EDT; never twice |
+| Fall back: a local time that happens twice | `30 1 * * *` on 1 November 2026 | the first 01:30 (EDT) only |
+| Fall back, every 30 minutes | `*/30 * * * *` | 01:00 and 01:30 EDT, then 02:00 EST; the repeated hour is not re-run |
+
+These are pinned by unit goldens for `America/New_York` and `Europe/Berlin`. A job that must run
+every real hour across transitions is an `everyMs` schedule, which knows nothing about local time.
+
+## Downtime and restarts
+
+- **A restart** keeps every schedule's grid: `everyMs` ticks stay on the anchor, and a stored `nextAt`
+  is reused when the definition did not change.
+- **Downtime shorter than `misfireGraceMs`** is caught up tick by tick.
+- **Longer downtime** applies the misfire policy: `'once'` runs the latest missed tick with
+  `run.missed` counting the rest; `'skip'` records one `missed` run. No tick after `endAt` fires.
+- **A crash mid-run** leaves the run `running` until its lease expires; maintenance on another
+  instance then marks it `failed` / `'lease-expired'` and frees the overlap slot. It is not re-run.
+- **Deploys:** `close()` stops claiming, waits `graceMs` for handlers, then aborts their `signal`,
+  marks them `cancelling` and waits `graceMs` again. Wire it to your shutdown signal, or pass
+  `signal` to `pgCron`. A handler still running after that keeps heartbeating its lease until it
+  settles, without keeping the process alive; if `db` is ended before then, the lease expires instead.
+
+## Maintenance
+
+Every `maintenanceMs` one instance — whichever wins a compare-and-set on `pgprime_cron.meta` — runs:
+
+1. lease expiry, as above;
+2. counter reconcile: each schedule's `running` is recounted from its open runs under the schedule's
+   row lock, so a drifted counter corrects itself;
+3. retention: finished runs beyond `history.keep` or older than `history.ageMs`, in batches.
+
+## PgBouncer and other transaction poolers
+
+Every statement and transaction cron issues works in transaction mode. `LISTEN` does not: without a
+`directConnection`, cron reports `onInternal('listen-unavailable')` once and polls every `pollMs`.
+Due ticks are unaffected — the loop sleeps until the next due time anyway — only `trigger()`,
+`update()` and the other admin calls reach other instances a little later.
+
+## Schema and upgrades
+
+The schema (`pgprime_cron` by default) has its own ledger, `pgprime_cron.migrations`. With
+`autoMigrate: false`, `start()` refuses a missing or older schema with `SchemaVersionError`;
+uninstalling is `drop schema pgprime_cron cascade`.

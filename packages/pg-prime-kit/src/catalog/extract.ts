@@ -1,5 +1,6 @@
 import { CATALOG_PROVENANCE, SchemaIR, type DependencyEdge, type Fact, type Provenance } from "../ir/fact.js";
 import { commentId, encodeId, type StableId } from "../ir/stable-id.js";
+import { makeRemapper } from "../schema/remap.js";
 import { defaultNotNullName, quoteQualified } from "../sql/ident.js";
 import { GENERATED_NAME } from "./payloads.js";
 import type {
@@ -140,8 +141,10 @@ SELECT n.nspname AS schema, c.relname AS "table", a.attname AS name, a.attnum,
        pg_get_expr(ad.adbin, ad.adrelid) AS default_expr,
        nullif(a.attidentity, '') AS identity,
        nullif(a.attgenerated, '') AS generated,
-       CASE WHEN a.attcollation <> t.typcollation AND a.attcollation <> 0
-            THEN coll.collname ELSE NULL END AS collation,
+       CASE WHEN a.attcollation = t.typcollation OR a.attcollation = 0 THEN NULL
+            WHEN coll.collnamespace = 'pg_catalog'::regnamespace THEN coll.collname
+            ELSE format('"%s"."%s"', replace(cn.nspname, '"', '""'), replace(coll.collname, '"', '""'))
+       END AS collation,
        ut.typtype AS type_typtype,
        un.nspname AS type_schema,
        ut.typname AS type_name
@@ -152,6 +155,7 @@ JOIN pg_type t ON t.oid = a.atttypid
 LEFT JOIN pg_type ut ON ut.oid = a.atttypid
 LEFT JOIN pg_namespace un ON un.oid = ut.typnamespace
 LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
+LEFT JOIN pg_namespace cn ON cn.oid = coll.collnamespace
 LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
 LEFT JOIN pg_constraint nn ON nn.conrelid = a.attrelid
                           AND nn.contype = 'n' AND nn.conkey = array[a.attnum]
@@ -1154,6 +1158,8 @@ async function observe(
  */
 export async function probeEmptiness(client: CatalogClient, tables: readonly StableId[]): Promise<Set<string>> {
   const empty = new Set<string>();
+  // Under RLS a filtered table reads as empty; `off` makes it a 42501 instead (design/20 D20).
+  await client.query("SET row_security = off");
   for (const t of tables) {
     if (t.kind !== "table") continue;
     try {
@@ -1166,6 +1172,7 @@ export async function probeEmptiness(client: CatalogClient, tables: readonly Sta
       // conservative direction: the MF hazard stays and has to be acknowledged.
     }
   }
+  await client.query("RESET row_security");
   return empty;
 }
 
@@ -1238,4 +1245,279 @@ function mentionsType(expr: string, schema: string, type: string): boolean {
     }
   }
   return false;
+}
+
+/* ------------------------------------------------------------------ */
+/* RLS and declared-lane state (design/20 D25, §5.3)                    */
+/* ------------------------------------------------------------------ */
+
+export type RlsCommand = "select" | "insert" | "update" | "delete";
+export const RLS_COMMANDS: readonly RlsCommand[] = ["select", "insert", "update", "delete"];
+
+export interface TableRlsState {
+  readonly schema: string;
+  readonly name: string;
+  readonly enabled: boolean;
+  /** `relforcerowsecurity`: read here, never an IR fact (design/20 D4) */
+  readonly forced: boolean;
+  readonly owner: string;
+}
+
+export interface PolicyState {
+  readonly schema: string;
+  readonly table: string;
+  readonly name: string;
+  readonly command: "all" | RlsCommand;
+  readonly permissive: boolean;
+  /** role names, `public` for PUBLIC, sorted */
+  readonly roles: readonly string[];
+  /** `pg_get_expr` text, null when the clause is absent */
+  readonly using: string | null;
+  readonly withCheck: string | null;
+  /** the `pg-prime:declared …` comment, null on an unmarked policy */
+  readonly marker: string | null;
+  /** encoded `table` / `column` ids its expressions depend on (`pg_depend`) */
+  readonly dependsOn: readonly string[];
+}
+
+export interface LaneState {
+  readonly tables: readonly TableRlsState[];
+  readonly policies: readonly PolicyState[];
+  /** marked `pgprime_set_<column>` triggers */
+  readonly updatedAtTriggers: readonly { readonly schema: string; readonly table: string; readonly column: string }[];
+  /** every role, predefined ones too → the roles whose privileges it has, itself included */
+  readonly memberOf: ReadonlyMap<string, readonly string[]>;
+  /** superusers and `BYPASSRLS` roles */
+  readonly bypass: ReadonlySet<string>;
+}
+
+const MARKER = "pg-prime:declared ";
+
+const Q_RLS_TABLES = `
+SELECT n.nspname AS schema, c.relname AS name, c.relrowsecurity AS enabled,
+       c.relforcerowsecurity AS forced, pg_get_userbyid(c.relowner) AS owner
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r','p') AND n.nspname = ANY($1) AND c.oid NOT IN (${EXCLUDED_RELS})
+ORDER BY 1, 2`;
+
+const Q_POLICIES = `
+SELECT n.nspname AS schema, c.relname AS "table", p.polname AS name, p.polcmd AS cmd,
+       p.polpermissive AS permissive,
+       ARRAY(SELECT CASE WHEN r = 0 THEN 'public' ELSE pg_get_userbyid(r)::text END
+               FROM unnest(p.polroles) r ORDER BY 1) AS roles,
+       pg_get_expr(p.polqual, p.polrelid) AS using_expr,
+       pg_get_expr(p.polwithcheck, p.polrelid) AS check_expr,
+       obj_description(p.oid, 'pg_policy') AS comment
+FROM pg_policy p
+JOIN pg_class c ON c.oid = p.polrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = ANY($1) AND c.oid NOT IN (${EXCLUDED_RELS})
+ORDER BY 1, 2, 3`;
+
+/** The policy's own table arrives as an `a` (auto) edge and is not a dependency to report. */
+const Q_POLICY_DEPS = `
+SELECT n.nspname AS schema, c.relname AS "table", p.polname AS name,
+       rn.nspname AS ref_schema, rc.relname AS ref_table, a.attname AS ref_column
+FROM pg_depend d
+JOIN pg_policy p ON p.oid = d.objid
+JOIN pg_class c ON c.oid = p.polrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_class rc ON rc.oid = d.refobjid
+JOIN pg_namespace rn ON rn.oid = rc.relnamespace
+LEFT JOIN pg_attribute a ON a.attrelid = rc.oid AND a.attnum = d.refobjsubid AND d.refobjsubid > 0
+WHERE d.classid = 'pg_policy'::regclass AND d.refclassid = 'pg_class'::regclass AND d.deptype = 'n'
+  AND rc.relkind IN ('r','p') AND n.nspname = ANY($1)
+ORDER BY 1, 2, 3, 4, 5, 6`;
+
+const Q_UPDATED_AT_TRIGGERS = `
+SELECT n.nspname AS schema, c.relname AS "table", substr(t.tgname, 13) AS column
+FROM pg_trigger t
+JOIN pg_class c ON c.oid = t.tgrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = ANY($1) AND NOT t.tgisinternal AND t.tgname LIKE 'pgprime\\_set\\_%'
+  AND obj_description(t.oid, 'pg_trigger') LIKE 'pg-prime:declared %'
+ORDER BY 1, 2, 3`;
+
+/** `USAGE`: policies apply through inherited privileges, as `has_privs_of_role` does. */
+const Q_ROLES = `
+SELECT r.rolname AS role, r.rolsuper OR r.rolbypassrls AS bypass,
+       ARRAY(SELECT g.rolname::text FROM pg_roles g WHERE pg_has_role(r.oid, g.oid, 'USAGE') ORDER BY 1) AS member_of
+FROM pg_roles r`;
+
+const COMMAND: Readonly<Record<string, PolicyState["command"]>> = {
+  r: "select",
+  a: "insert",
+  w: "update",
+  d: "delete",
+  "*": "all",
+};
+
+/**
+ * Tables' RLS flags and owners, every policy, the marked `updatedAt` triggers and role membership,
+ * in one read-only snapshot. `reverse` maps shadow schemas back to the user's (tier 3).
+ */
+export async function readLaneState(
+  client: CatalogClient,
+  schemas: readonly string[],
+  reverse: ReadonlyMap<string, string> = new Map(),
+): Promise<LaneState> {
+  const queries = [Q_RLS_TABLES, Q_POLICIES, Q_POLICY_DEPS, Q_UPDATED_AT_TRIGGERS, Q_ROLES];
+  const rows: Record<string, unknown>[][] = [];
+  await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+  try {
+    await client.query("SET LOCAL search_path = pg_catalog");
+    for (const q of queries) rows.push((await client.query(q, q === Q_ROLES ? [] : [[...schemas]])).rows);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  }
+  const [tables = [], policies = [], deps = [], triggers = [], roles = []] = rows;
+  const text = makeRemapper(reverse).text;
+  const sch = (v: unknown): string => reverse.get(str(v)) ?? str(v);
+  const key = (row: Record<string, unknown>): string =>
+    `${sch(row["schema"])}.${str(row["table"])}.${str(row["name"])}`;
+
+  const dependsOn = new Map<string, string[]>();
+  for (const d of deps) {
+    const schema = sch(d["ref_schema"]);
+    const table = str(d["ref_table"]);
+    const column = nstr(d["ref_column"]);
+    const target = encodeId(
+      column === null ? { kind: "table", schema, name: table } : { kind: "column", schema, table, name: column },
+    );
+    const list = dependsOn.get(key(d)) ?? [];
+    if (!list.includes(target)) list.push(target);
+    dependsOn.set(key(d), list);
+  }
+
+  const memberOf = new Map<string, readonly string[]>();
+  const bypass = new Set<string>();
+  for (const row of roles) {
+    memberOf.set(str(row["role"]), row["member_of"] as string[]);
+    if (bool(row["bypass"])) bypass.add(str(row["role"]));
+  }
+  const expr = (v: unknown): string | null => (v === null || v === undefined ? null : text(str(v)));
+
+  return {
+    tables: tables.map((t) => ({
+      schema: sch(t["schema"]),
+      name: str(t["name"]),
+      enabled: bool(t["enabled"]),
+      forced: bool(t["forced"]),
+      owner: str(t["owner"]),
+    })),
+    policies: policies.map((row) => {
+      const comment = nstr(row["comment"]);
+      return {
+        schema: sch(row["schema"]),
+        table: str(row["table"]),
+        name: str(row["name"]),
+        command: COMMAND[str(row["cmd"])] ?? "all",
+        permissive: bool(row["permissive"]),
+        roles: row["roles"] as string[],
+        using: expr(row["using_expr"]),
+        withCheck: expr(row["check_expr"]),
+        marker: comment?.startsWith(MARKER) === true ? comment : null,
+        dependsOn: dependsOn.get(key(row)) ?? [],
+      };
+    }),
+    updatedAtTriggers: triggers.map((t) => ({
+      schema: sch(t["schema"]),
+      table: str(t["table"]),
+      column: str(t["column"]),
+    })),
+    memberOf,
+    bypass,
+  };
+}
+
+/**
+ * design/20 D25's after-state: the shadow's policies (hand `sql/` + declared) plus every unmarked
+ * target policy the shadow lacks, since no lane drops it. Owners and roles are the target's.
+ */
+export function afterLaneState(target: LaneState, shadow: LaneState): LaneState {
+  const owner = new Map(target.tables.map((t) => [`${t.schema}.${t.name}`, t.owner]));
+  const inShadow = new Set(shadow.policies.map((p) => `${p.schema}.${p.table}.${p.name}`));
+  return {
+    tables: shadow.tables.map((t) => ({ ...t, owner: owner.get(`${t.schema}.${t.name}`) ?? t.owner })),
+    policies: [
+      ...shadow.policies,
+      ...target.policies.filter((p) => p.marker === null && !inShadow.has(`${p.schema}.${p.table}.${p.name}`)),
+    ],
+    updatedAtTriggers: shadow.updatedAtTriggers,
+    memberOf: target.memberOf,
+    bypass: target.bypass,
+  };
+}
+
+export interface CoverageLoss {
+  /** RL101 for any role, RL108 for the owner of a table FORCE'd after */
+  readonly code: "RL101" | "RL108";
+  readonly schema: string;
+  readonly table: string;
+  readonly role: string;
+  readonly command: RlsCommand;
+  /** `<schema>.<table>:<role>:<command>`, the acknowledgement subject */
+  readonly subject: string;
+}
+
+/** Does a permissive policy give `role` this command on the table (PUBLIC, itself, or a role it is in)? */
+export function covers(state: LaneState, schema: string, table: string, role: string, command: RlsCommand): boolean {
+  const groups = role === "public" ? ["public"] : ["public", ...(state.memberOf.get(role) ?? [role])];
+  return state.policies.some(
+    (p) =>
+      p.schema === schema &&
+      p.table === table &&
+      p.permissive &&
+      (p.command === "all" || p.command === command) &&
+      p.roles.some((r) => groups.includes(r)),
+  );
+}
+
+/**
+ * design/20 §6 RL101/RL108 per (table, role, command), on tables RLS-enabled after, present before
+ * and not in `emptyTables` (encoded `table` ids). A table being enabled loses every command for
+ * `public` when it has no permissive policy at all; one enabled before loses each (role, command)
+ * a permissive policy gave and none gives after. RL108 is the owner of a table FORCE'd after.
+ */
+export function coverageLost(before: LaneState, after: LaneState, emptyTables: ReadonlySet<string>): CoverageLoss[] {
+  const out: CoverageLoss[] = [];
+  const prior = new Map(before.tables.map((t) => [`${t.schema}.${t.name}`, t]));
+  const lose = (code: CoverageLoss["code"], t: TableRlsState, role: string, command: RlsCommand): void => {
+    out.push({
+      code,
+      schema: t.schema,
+      table: t.name,
+      role,
+      command,
+      subject: `${t.schema}.${t.name}:${role}:${command}`,
+    });
+  };
+  for (const t of after.tables) {
+    const was = prior.get(`${t.schema}.${t.name}`);
+    if (!t.enabled || was === undefined) continue;
+    if (emptyTables.has(encodeId({ kind: "table", schema: t.schema, name: t.name }))) continue;
+    const on = (p: PolicyState): boolean => p.schema === t.schema && p.table === t.name && p.permissive;
+    if (!was.enabled) {
+      if (!after.policies.some(on)) for (const c of RLS_COMMANDS) lose("RL101", t, "public", c);
+    } else {
+      const roles = [...new Set(before.policies.filter(on).flatMap((p) => p.roles))].sort();
+      // The owner bypasses an unforced table and is RL108's subject on a forced one.
+      for (const role of roles.filter((r) => r !== t.owner && !after.bypass.has(r))) {
+        for (const c of RLS_COMMANDS) {
+          if (covers(before, t.schema, t.name, role, c) && !covers(after, t.schema, t.name, role, c)) {
+            lose("RL101", t, role, c);
+          }
+        }
+      }
+    }
+    if (t.forced && !after.bypass.has(t.owner)) {
+      for (const c of RLS_COMMANDS) {
+        const had = !was.enabled || !was.forced || covers(before, t.schema, t.name, t.owner, c);
+        if (had && !covers(after, t.schema, t.name, t.owner, c)) lose("RL108", t, t.owner, c);
+      }
+    }
+  }
+  return out;
 }

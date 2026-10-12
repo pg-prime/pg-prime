@@ -1,0 +1,28 @@
+{
+  "_why": "design/08 §2.4 step 3 — the exact set of input modules esbuild pulled into this fixture, bundled through the published export map. A diff here on a PR is the signal; `node tools/treeshake-check.mjs --update` re-records it and the diff goes in the review.",
+  "_bundler": "esbuild --bundle --format=esm --minify --platform=node --metafile",
+  "modules": [
+    "node_modules/@pg-prime/outbox/dist/context.js",
+    "node_modules/@pg-prime/outbox/dist/define.js",
+    "node_modules/@pg-prime/outbox/dist/errors.js",
+    "node_modules/@pg-prime/outbox/dist/outbox.js",
+    "node_modules/@pg-prime/outbox/dist/relay/deliver.js",
+    "node_modules/@pg-prime/outbox/dist/relay/lease.js",
+    "node_modules/@pg-prime/outbox/dist/relay/relay.js",
+    "node_modules/@pg-prime/outbox/dist/relay/waker.js",
+    "node_modules/@pg-prime/outbox/dist/schema.js",
+    "node_modules/@pg-prime/outbox/dist/sql/admin.js",
+    "node_modules/@pg-prime/outbox/dist/sql/write.js",
+    "node_modules/pg-prime/dist/codec/array.js",
+    "node_modules/pg-prime/dist/codec/builtins.js",
+    "node_modules/pg-prime/dist/codec/types.js",
+    "node_modules/pg-prime/dist/compile/nodes.js",
+    "node_modules/pg-prime/dist/errors/base.js",
+    "node_modules/pg-prime/dist/session/owned-schema.js",
+    "node_modules/pg-prime/dist/session/transaction.js",
+    "node_modules/pg-prime/dist/sql/errors.js",
+    "node_modules/pg-prime/dist/sql/fragment.js",
+    "node_modules/pg-prime/dist/sql/ident.js",
+    "outbox-write/entry.ts"
+  ]
+}

@@ -16,10 +16,21 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.7",
+    "@nestjs/common": "^12.1.2",
+    "@nestjs/core": "^12.1.2",
+    "@nestjs/testing": "^12.1.2",
+    "@pg-prime/context": "workspace:*",
+    "@pg-prime/cron": "workspace:*",
+    "@pg-prime/events": "workspace:*",
     "@pg-prime/kit": "workspace:*",
+    "@pg-prime/mq": "workspace:*",
+    "@pg-prime/nestjs": "workspace:*",
+    "@pg-prime/outbox": "workspace:*",
     "@pg-prime/testing": "workspace:*",
     "@types/pg": "^8.21.0",
     "pg": "^8.23.0",
-    "pg-prime": "workspace:*"
+    "pg-prime": "workspace:*",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
   }
 }

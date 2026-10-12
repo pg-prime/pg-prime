@@ -1,0 +1,47 @@
+---
+title: "Operating queues"
+description: Sizing pools, controlDb, the NOTIFY ceiling, vacuum, PgBouncer and retention for @pg-prime/mq.
+---
+
+## Sizing
+
+A worker needs up to `concurrency` connections for settles that happen at once, plus one for its
+claim loop and one for heartbeats, plus whatever its handlers query. Size the pool at
+`poolOptions.max ≥ min(concurrency, 10) + 2`.
+
+The trap is a heartbeat queued behind a saturated pool: a heartbeat later than `leaseMs` lets the
+lease expire and the message runs twice. `controlDb`, a second small `pgPrime` instance passed in
+`WorkerOptions`, takes the claims, heartbeats and expiry scans off the main pool.
+
+## Wake-ups and the NOTIFY ceiling
+
+Sends, promotions, retries, released parents and freed group or global capacity send a NOTIFY on
+an engine channel; idle workers wake on it, on a LISTEN gap, or after `pollMs`. PostgreSQL
+serializes the commits of notifying transactions, so a very hot producer can set
+`pgMq({ notify: false })` and let workers poll. Measured on a laptop PostgreSQL 17 (`bench/mq`),
+processing rates were within noise of each other with NOTIFY on and off.
+
+## Behind PgBouncer
+
+| | Direct or session pooler | PgBouncer transaction mode |
+|---|---|---|
+| sends, claims, settles, flows, bindings, `migrate` | ✓ | ✓ |
+| wake-ups, `watch()`, `result()` | ✓ | only with pg-prime's `directConnection`; otherwise workers poll every `pollMs`, `result()` re-reads every `pollMs`, and `watch()` is refused |
+
+## Retention and vacuum
+
+Finished messages carry an `expire_at` from the queue's `keep` setting (completed: 1 day, failed
+and cancelled: 7 days). Each worker's maintenance, gated to one per queue per `maintenanceMs`,
+deletes expired rows and rows beyond `keep.{completed,failed}.count` in batches of at most 1 000,
+reconciles the group and queue counters, and drops expired dedup windows.
+
+`keep.completed: false` deletes a message at its completion; its result still reaches a flow
+parent. `messages` is created with `fillfactor = 70` and aggressive autovacuum thresholds:
+heartbeats, progress and counter updates touch no indexed column, so they stay HOT updates.
+
+## Admin
+
+`pause()` stops every new claim; `drop()` refuses while a message is active unless `force`.
+`list({ state: 'failed' })`, `retry({ state: 'failed' })` and `purge({ states: ['failed'] })`
+manage the dead-letter state. Every statement is labelled `mq.<op>` in `db.observe`, the slow log
+and OpenTelemetry spans; `spanAttributes(e)` maps a settle to the messaging attributes.

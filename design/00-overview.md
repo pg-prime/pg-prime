@@ -32,13 +32,13 @@ reading a test.
 | Schema DSL | 11 column types + `t.raw(pgType)` for the rest of PostgreSQL, 8 modifiers, table extras incl. the full index options / `clusterOn` / partitions, `pgDomain` · `pgSequence` · `pgExtension`, relations. Type budget gated, and K4's seven additions moved not one per-declaration number |
 | Codecs | 29 built-ins, `decodeJson` required and golden-tested at depth 0 and 3 |
 | Driver | `execute` · `stream` (real cursors) · `describe` · `cancel` · `copyIn`/`copyOut` (pg's own connection-level COPY messages, no optional peer) · `connect` (a connection the pool does not own, for LISTEN) · error taxonomy |
-| SQL + compiler | `sql` tag with `ident`/`lit`/`join`/`unsafeRaw`; SELECT and INSERT compile. **UPDATE and DELETE do not** — the AST nodes exist, the compiler throws |
+| SQL + compiler | `sql` tag with `ident`/`lit`/`join`/`unsafeRaw`; SELECT, INSERT, UPDATE and DELETE compile (`src/query/update.ts`, `src/query/delete.ts`) |
 | Migration engine | **[06](./06-migrations.md)'s whole v1 cut line is built (2026-08-29).** `pg-prime migrate generate → apply → status → check → verify` runs from a `pg-prime.config.ts` with no `desired` database and no `CREATEDB`, and `apply` refuses a transaction-mode pooler. **All twelve** of [06 §6.2](./06-migrations.md)'s commands ship, and `pull` besides; Tier M is complete, Tier R applies repeatables, Tier O is observed, Tier U is counted; all 35 hazard codes and all 7 lock-safe rewrites are built, three of them by emitting a `txmode none` companion file at the same `seq`. Nothing reaches disk unproven (D6) and `pg_dump` witnesses every plan (D10). **405 kit tests** on PG 17 and 18 |
 | Migration engine — data, seeds, checkpoints, pull | **Done (2026-08-29, [12 §3 K4](./12-v1-completion-plan.md)).** `-- pg-prime:batch` is a runner feature, not a template: one transaction per iteration, the `{ rows_done, watermark }` committed *with* the batch, replica-lag aware, so a SIGKILLed 50 000-row backfill resumes at the row it reached and touches none twice — asserted with `max(touched) = 1` over every row. `db seed` runs `.sql` and typed `.ts` seeds and records nothing. `migrate checkpoint` gives a fresh database the jump and `apply`/`status` the ability to **name** the drifted objects, which [11](./11-kit-v1-loop-plan.md) K1 could not |
 | Migration engine — the 1.0 gate | [01 §11.6 #5](./01-features.md) is **met twice over**: `baseline` → `verify` is green on Pagila, Northwind, AdventureWorks and Chinook, committed under `fixtures/corpus/` from pinned upstreams (empty IR diff on all four; `pg_dump` byte-equal on two and differing only by Tier-R objects on the other two). And `pull` now round-trips **all four** the other way — introspect → TypeScript → `generate` reports `up_to_date`, a second `pull` is byte-identical, and the `-- pull: unsupported` block is **empty** on every one. The corpus found four Tier-M bugs, all fixed ([06 §2.2](./06-migrations.md), [06 §4.5](./06-migrations.md)) |
 | Runtime — the session layer | **Done (2026-08-29).** [07](./07-runtime.md) end to end: `pgPrime(config)` with `connection` / `pool` / `driver`, the `Db`/`Tx`/`Session` handles, `TxOptions` + savepoints + `40001` retry + `setLocal` + advisory locks + `rollbackWith`, the §4.2 error tree with constraint→schema-object resolution, `POOLER_PROFILES` + `diagnosePooler()`/`diagnose()`, `AbortSignal` and per-statement timeouts, `streamBatches`, `listen`/`notify` on a dedicated connection, `copyFrom`/`copyTo`, hooks + `spanAttributes()` + the slow-query log + call-site capture, and the `AsyncLocalStorage` dev guard. `07` §0's snippet runs unchanged on a direct connection **and** through PgBouncer transaction mode. `07` §9's last two open questions are closed by measurement. **914 offline / 1 658 live / 1 718 on PG 17 + PgBouncer**, green on PG 15/16/17/18 |
 | Documentation | **Done (2026-08-29, [12 §4 D](./12-v1-completion-plan.md)).** The site of [08 §6.4](./08-architecture.md) is built and is a **gate**, not a folder: 45 Astro Starlight pages (getting started · 7 concepts · 15 guides · 6 operations · 11 reference · 5 comparison), **531 fenced `ts` blocks compiled on TypeScript 5.9.3 — the consumer floor — against the BUILT packages' export maps**, **83 examples executed against PostgreSQL** (tier-1 PGlite, one clean database each) and **1 181 / 1 181 exported names** with a reference entry, checked in both directions against the api-snapshot goldens. The CLI reference is the binary's own `--help`, the hazard table is the kit's own code list, the pooler matrix is generated from `POOLER_PROFILES`, and every internal link is resolved — four things that can rot, four mechanical checks. [08 §6.2 #10](./08-architecture.md) is met |
-| Packaging | **Done (2026-08-28).** Both packages build (`tsc` → unbundled ESM + `.d.ts` + maps), ship an `exports` map with the `types@<5.9` gate first on every subpath, and install from a `pnpm pack` tarball into a throwaway project — proved on every PR by the `package` CI job. `@pg-prime/testing` and `@pg-prime/create` are still README-only |
+| Packaging | **Done (2026-08-28).** Both packages build (`tsc` → unbundled ESM + `.d.ts` + maps), ship an `exports` map with the `types@<5.9` gate first on every subpath, and install from a `pnpm pack` tarball into a throwaway project — proved on every PR by the `package` CI job. `@pg-prime/testing` and `@pg-prime/create` build and ship too, and all four packages are published to npm at `0.1.0` |
 
 **4 881 tests green** (958 runtime offline, 1 729 runtime live, 1 789 runtime on PostgreSQL 17 +
 PgBouncer — green on 15/16/17/18 — and 405 kit on 17 and 18, +6 pooler-gated); workspace typecheck clean.
@@ -60,7 +60,7 @@ tree-shake golden contains no `pg` and no `node:async_hooks`. `@pg-prime/kit` de
    `pg-orm`, and **a 404 does not prove a name is available**. The rule compares names with `.`, `-`
    and `_` stripped, so `pg-prime` was checked together with `pgprime`, `pg_prime` and `pg.prime` (all
    unregistered). `pgormjs@0.0.0`, the pre-rename placeholder, is published and to be deprecated; the
-   four new names are unclaimed until their `0.0.0` placeholders publish.
+   four new names are published at `0.1.0`.
 2. **TypeScript.** Build with tsgo (TS 7); **consumer floor 5.9**. The floor is what a *user* needs
    to typecheck against our `.d.ts`, enforced by a `types@<5.9` export gate. Lowering a floor later
    is non-breaking; raising one is not.
@@ -105,21 +105,21 @@ tree-shake golden contains no `pg` and no `node:async_hooks`. `@pg-prime/kit` de
 
 ## What is actually next
 
-1–3. **The builder track is sequenced in [09](./09-query-builder-implementation-plan.md)**: unify the
+1–3. ~~**The builder track is sequenced in [09](./09-query-builder-implementation-plan.md)**: unify the
    two `Codec` types and wire `schema/` → `compile/` (WS2, and nothing else can start before it),
    then the `Query<S,O>` type engine, the `Ref` operator surface, the runtime builders including
    UPDATE and DELETE, and relation accessors. That plan also carries the three unresolved 03-vs-04
-   API forks, to be settled by measurement rather than fiat.
+   API forks, to be settled by measurement rather than fiat.~~ **Done**, UPDATE and DELETE included.
 4. ~~Package entry points and a build, so any of this is installable.~~ **Done 2026-08-28.**
    `pg-prime` exports `.` / `./schema` / `./sql` / `./codecs` / `./driver` / `./package.json` and
    `@pg-prime/kit` exports `.` / `./package.json`, all ESM-only with `"types@<5.9"` first in every
    condition object; `pnpm build` emits unbundled `tsc` output; `pnpm package:check` gates size
    budgets, the public-API golden, emit parity (5.9.3 vs 7.0.2, every `.js` byte-identical),
    `check:dts`, the tree-shake goldens, `publint --strict`, `attw --profile esm-only`, and a real
-   tarball install that compiles and runs a consumer. Still `0.0.0` and not on npm. See
+   tarball install that compiles and runs a consumer. Published to npm at `0.1.0`. See
    [08 §2.1, §2.4, §3.1, §3.2, §4.6 AS BUILT](./08-architecture.md).
-5. CI. There is none: every gate in these documents is currently run by hand.
-6. Claim `@pg-prime/kit`, `@pg-prime/testing`, `@pg-prime/create` on npm.
+5. ~~CI.~~ **Done**: `.github/workflows/ci.yml` runs the gates on every PR.
+6. ~~Claim `@pg-prime/kit`, `@pg-prime/testing`, `@pg-prime/create` on npm.~~ **Done**: all four are at `0.1.0`.
 7. ~~**K4, the migration engine's last workstream**: data migrations, seeding,
    `migrate checkpoint`, `pull`.~~ **Done 2026-08-29** ([12 §3 K4](./12-v1-completion-plan.md)).
    All twelve of [06 §6.2](./06-migrations.md)'s commands ship, so **the whole of 06's v1 cut

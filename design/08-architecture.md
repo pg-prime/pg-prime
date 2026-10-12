@@ -32,9 +32,15 @@ These changed the answers materially versus what round-1 research assumed. Read 
 
 ### 1.1 The split
 
-**Four published packages at 1.0. Hard cap: never more than six.** MikroORM ships 21 packages / 8 MB
+**Four published packages at 1.0. Hard cap for the core: never more than six.** MikroORM ships 21 packages / 8 MB
 and pays for it in every install-doc and every version-skew bug report; Drizzle ships two and that is
 the right number. We copy the count, not the contents.
+
+**Add-ons are not counted against the cap.** An add-on (`@pg-prime/events`, `outbox`, `mq`, `cron`, …;
+design/15–18) is a standalone capability most ORM users never install, not a slice of the core. Each one
+peers `pg-prime`, joins the changesets `fixed` group (so no version skew is possible), keeps its runtime
+deps minimal and has its own size budget. A subpath is still the answer when the code has no deps of its
+own; a package is the answer when it would otherwise push a dep or a schema onto users who do not need it.
 
 | Package | Role | Deps | Build | Budget (unpacked) |
 |---|---|---|---|---|
@@ -118,8 +124,7 @@ punctuation-equivalent (`pg-prime` ≡ `pgprime` ≡ `pg_prime` ≡ `pg.prime`, 
 unpublished 2026-08-04, and npm forbids reuse of unpublished names.
 
 **Status:** `pgormjs@0.0.0` (the pre-rename placeholder) is published and will be deprecated.
-`pg-prime`, `@pg-prime/kit`, `@pg-prime/testing` and `@pg-prime/create` are unclaimed — placeholders
-are free and the names are not.
+`pg-prime`, `@pg-prime/kit`, `@pg-prime/testing` and `@pg-prime/create` are published at `0.1.0`.
 
 ### 1.4 Monorepo tooling
 
@@ -140,7 +145,7 @@ are free and the names are not.
   - `pg-prime` and `@pg-prime/kit` are a **`fixed` version group** — they always publish the same version.
     Version skew between an ORM and its CLI is a permanent support tax (it is the top confusion in
     Drizzle's tracker); we design it away.
-  - `@pg-prime/testing` and `@pg-prime/create` version independently.
+  - `@pg-prime/create` is in that group too (`.changeset/config.json`); `@pg-prime/testing` versions independently.
   - CI enforces `changeset status --since=origin/main` on every PR touching `packages/`.
 - **`pkg-pr-new`** on every PR → installable preview builds
   (`pnpm add https://pkg.pr.new/pg-prime@<sha>`). For a migration tool, "try my fix against your real

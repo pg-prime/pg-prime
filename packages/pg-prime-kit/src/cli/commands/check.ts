@@ -19,7 +19,7 @@
  */
 
 import { ConfigError, loadSchema, type ResolvedConfig } from "../../config/load.js";
-import { generate, GenerateRefusedError } from "../../generate.js";
+import { generate, GenerateRefusedError, LaneRefusedError } from "../../generate.js";
 import { isEmptyDiff } from "../../diff/diff.js";
 import { createRepeatablesPass } from "../../repeatables/index.js";
 import { readMigrationsDir } from "../../runner/files.js";
@@ -43,6 +43,8 @@ export const CHECK_OPTIONS: readonly OptionSpec[] = [
   { name: "strict-unmodeled", type: "boolean", describe: "a non-empty Tier-U census becomes an error" },
   { name: "no-schema", type: "boolean", describe: "skip question (a); check only checksums and pending files" },
 ];
+
+const LANE_CODES = new Set(["declared_lane_stale", "declared_conflict"]);
 
 export async function runCheck(config: ResolvedConfig, argv: ParseResult): Promise<CommandOutput> {
   const started = Date.now();
@@ -111,8 +113,26 @@ export async function runCheck(config: ResolvedConfig, argv: ParseResult): Promi
         .flatMap((f) => f.plan?.hazards ?? [])
         .filter((h) => h.severity === "error" && !h.acknowledged)
         .map((h) => ({ code: h.code, subject: h.subject, message: h.message }));
+      // design/20 §5.5: a stale or conflicting declared lane fails the lint gate.
+      for (const d of result.diagnostics) {
+        if (!LANE_CODES.has(d.code)) continue;
+        if (!hazards.some((h) => h.code === d.code && h.subject === (d.subject ?? ""))) {
+          hazards.push({ code: d.code, subject: d.subject ?? "", message: d.message });
+        }
+      }
     } catch (err) {
-      if (err instanceof OfflineShadowError || err instanceof GenerateRefusedError || err instanceof ConfigError) {
+      if (err instanceof LaneRefusedError) {
+        hazards = [
+          ...err.diagnostics.map((d) => ({ code: d.code, subject: d.subject ?? "", message: d.message })),
+          ...err.hazards
+            .filter((h) => !h.acknowledged)
+            .map((h) => ({ code: h.code, subject: h.subject, message: h.message })),
+        ];
+      } else if (
+        err instanceof OfflineShadowError ||
+        err instanceof GenerateRefusedError ||
+        err instanceof ConfigError
+      ) {
         generateError = err.message;
       } else {
         throw err;

@@ -1,0 +1,72 @@
+---
+title: "Channels"
+description: Typed LISTEN/NOTIFY channels with reconnect and gap handling.
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+A channel is a typed name over PostgreSQL's `LISTEN`/`NOTIFY`: the payload is encoded, validated
+and decoded for you, and the listener runs on pg-prime's one dedicated `LISTEN` connection. The raw
+API is [LISTEN and NOTIFY](/pg-prime/guides/listen-notify/); this page is the typed layer from
+`@pg-prime/events`.
+
+<Aside type="caution">
+Delivery is **live only**. A notification sent while a listener was disconnected is lost; the
+listener is told through `onGap`. Anything that must survive a disconnect belongs in a
+[topic](/pg-prime/guides/event-log/).
+</Aside>
+
+## Declaring and notifying
+
+{/* docs: use=blog */}
+```ts title="notify.ts"
+import { defineChannel, pgEvents } from '@pg-prime/events'
+
+const cacheBust = defineChannel<{ table: string; id: number }>('cache-bust')
+const events = pgEvents({ db, define: { channels: { cacheBust } } })
+
+await events.channels.cacheBust.notify({ table: 'posts', id: 1 })
+
+// Inside a transaction the notification goes out at commit, and not at all on rollback.
+await db.transaction(async (tx) => {
+  await events.channels.cacheBust.notify({ table: 'posts', id: 2 }, { tx })
+})
+await db.end()
+```
+
+The name is the literal channel, so a SQL trigger can `pg_notify('cache-bust', …)` into the same
+typed channel. Channels need no schema and no `start()`.
+
+## Listening
+
+{/* docs: use=blog */}
+```ts title="listen.ts"
+// no-run: PGlite delivers a NOTIFY only to the sending socket; delivery across sessions is test/pg/channel-gap.test.ts
+import { defineChannel, pgEvents } from '@pg-prime/events'
+
+const cacheBust = defineChannel<{ table: string; id: number }>('cache-bust')
+const events = pgEvents({ db, define: { channels: { cacheBust } } })
+
+const sub = await events.channels.cacheBust.listen(
+  (p) => console.log(`invalidate ${p.table}#${p.id}`),
+  { onGap: ({ downMs }) => console.log(`missed up to ${downMs} ms: reload everything`) },
+)
+sub.on('error', (e) => console.error(e))
+await sub.close()
+```
+
+A payload that fails its schema or is not JSON goes to the subscription's `error` event, never to
+the handler. Several listeners on one channel share the connection and each gets its own `gap`.
+
+## Validating payloads
+
+`schema` takes any [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType,
+…) and infers the payload type from it. It runs on both sides: before a notification is encoded
+and after one is decoded. `codec` maps a value to and from its JSON form, for a `Date` or a class.
+A `PayloadError` carries the failing `path`.
+
+## Behind a transaction pooler
+
+`notify` works under every pooler profile. `listen` needs a session; behind PgBouncer in
+transaction mode set pg-prime's `directConnection` and the `LISTEN` connection is routed there,
+otherwise `listen` throws pg-prime's `UnsupportedInPoolerModeError`.

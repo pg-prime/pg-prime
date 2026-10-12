@@ -52,7 +52,7 @@ import {
 import { assertPayloadSize } from './listen.js'
 import { quoteIdentPart } from '../sql/ident.js'
 import type { AnyMaterializedView } from '../schema/index.js'
-import { ASYNC_DISPOSE, ensureGuardStore, withFrame, withoutFrames } from './guard.js'
+import { ASYNC_DISPOSE, ensureGuardStore, txFrames, withFrame, withoutFrames } from './guard.js'
 import { ConnRunner, PoolRunner, acquire, release } from './runner.js'
 import type { SessionState, StatementOptions, TxRuntime } from './runner.js'
 import {
@@ -665,6 +665,7 @@ export function makeTxHandle(
   const handle = makeExecutor(ctx, deps.handles)
   attachDeps(runner, deps)
   installQueryable(handle, state, runner, 'tx')
+  txFrames.set(handle, { txId: tx.txId, label: shape.label, openedAt: undefined, depth: tx.depth })
 
   installGetter(handle, 'attempt', () => tx.attempt)
   installGetter(handle, 'depth', () => tx.depth)

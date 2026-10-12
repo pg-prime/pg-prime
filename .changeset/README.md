@@ -14,7 +14,7 @@ Three rules that are ours rather than the tool's, all from `design/08-architectu
 - **`pg-prime` and `@pg-prime/kit` are a `fixed` group** (§1.1). They always publish the same
   version, because version skew between an ORM and its CLI is a permanent support tax. Bumping
   either one bumps both; write the changeset for whichever package actually changed and let the
-  tool do the rest. `@pg-prime/testing` and `@pg-prime/create` version independently.
+  tool do the rest. `@pg-prime/create` is in the same group; `@pg-prime/testing` versions independently.
 - **Breaking changes land in a MINOR (`0.N.0`) while we are pre-1.0, never in a PATCH** (§6.1).
   So a breaking change is `minor`, and the changeset body carries a `BREAKING:` section, a
   before/after entry for `MIGRATING.md`, and — wherever the change is mechanical — a codemod.

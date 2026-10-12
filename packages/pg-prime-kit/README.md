@@ -3,8 +3,8 @@
 Migration engine for [pg-prime](https://github.com/pg-prime/pg-prime) — catalog diffing, plan
 generation, prove-on-shadow-clone, apply.
 
-> **Status: pre-alpha.** The package builds and installs — ESM-only, TypeScript ≥ 5.9, `pg` as its
-> one runtime dependency — but it is still `0.0.0` and the API will change. All twelve of
+> **Status: pre-alpha.** Published on npm — ESM-only, TypeScript ≥ 5.9, `pg` as its one runtime
+> dependency — and the API will change. All twelve of
 > [design/06 §6.2](../../design/06-migrations.md)'s commands ship, and `pull` besides.
 > Follow progress at <https://github.com/pg-prime/pg-prime>.
 

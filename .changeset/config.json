@@ -5,7 +5,19 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "fixed": [["pg-prime", "@pg-prime/kit", "@pg-prime/create"]],
+  "fixed": [
+    [
+      "pg-prime",
+      "@pg-prime/kit",
+      "@pg-prime/create",
+      "@pg-prime/events",
+      "@pg-prime/outbox",
+      "@pg-prime/mq",
+      "@pg-prime/cron",
+      "@pg-prime/context",
+      "@pg-prime/nestjs"
+    ]
+  ],
   "linked": [],
   "ignore": [],
   "privatePackages": { "version": false, "tag": false }

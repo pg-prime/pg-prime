@@ -68,6 +68,8 @@ export interface ColumnDdl {
   readonly checks: readonly CheckSpec[]
   /** `.comment(text)` — `COMMENT ON COLUMN`. */
   readonly comment: string | undefined
+  /** `.collate(name)` — `COLLATE "<name>"`; `undefined` is the type's default collation. */
+  readonly collation: string | undefined
   /** `.renamedFrom(old)` — the rename annotation of design/05 §5.1. */
   readonly renamedFrom: string | undefined
 }
@@ -145,6 +147,17 @@ export interface GeneratedAlwaysAsOptions {
     | true
     | OrmTypeError<'{ stored: false } means VIRTUAL, which is PostgreSQL 18+ and is not emitted: a generated column cannot be converted in place, so only STORED is declarable'>
 }
+
+/** The text types PostgreSQL gives a collation. */
+type CollatablePg = 'text' | 'varchar' | 'citext' | 'bpchar' | 'name'
+
+/** The `string` arm admits `t.raw()`, whose `pg` is `string` (or `${string}[]`). */
+type CollateFn<M extends ColMeta> = M['pg'] extends
+  | CollatablePg
+  | `${CollatablePg}[]`
+  | (`${string}[]` extends M['pg'] ? string : never)
+  ? (name: string) => Col<M>
+  : OrmTypeError<'.collate() on a non-collatable type: only text, varchar, citext, their arrays and t.raw() types take a collation'>
 
 /** A default after `GENERATED ALWAYS` is dead code: the database always supplies the value. */
 type DefaultableFn<M extends ColMeta, F> = M['ro'] extends true
@@ -233,6 +246,8 @@ export interface Col<M extends ColMeta> {
   check(expression: AnyFragment, name?: string): Col<M>
   /** `COMMENT ON COLUMN`. */
   comment(text: string): Col<M>
+  /** `COLLATE "<name>"` — e.g. `t.text().collate('C')` for byte-order sorting. */
+  collate: CollateFn<M>
   /** Rename annotation (design/05 §5.1): fires iff `old` exists and this column does not. */
   renamedFrom(old: string): Col<M>
   /**
@@ -445,6 +460,12 @@ class ColumnBuilder implements ColumnRuntime, Bodies {
     }
     return this.#next({ comment: text })
   }
+  collate(name: string): ColumnBuilder {
+    checkName(name, `.collate("${name}")`)
+    if (this.ddl.enumName !== undefined)
+      throw new SchemaError(`pg-prime: enum "${this.ddl.enumName}" cannot take .collate().`)
+    return this.#next({ collation: name })
+  }
   renamedFrom(old: string): ColumnBuilder {
     checkName(old, `.renamedFrom("${String(old)}")`)
     return this.#next({ renamedFrom: old })
@@ -470,7 +491,7 @@ function baseDdl(pgType: string, dbName: string | undefined): ColumnDdl {
   return {
     pgType,
     dbName,
-    notNull: true, // NOT NULL by default — design/00 sign-off #4, design/04 D4
+    notNull: true,
     default: undefined,
     identity: undefined,
     generatedAs: undefined,
@@ -485,6 +506,7 @@ function baseDdl(pgType: string, dbName: string | undefined): ColumnDdl {
     references: undefined,
     checks: [],
     comment: undefined,
+    collation: undefined,
     renamedFrom: undefined,
   }
 }

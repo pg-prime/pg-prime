@@ -22,6 +22,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ROOT, readAllPages } from './docs-blocks.mjs'
+import { PACKAGES } from './packages.mjs'
 
 const WRITE = process.argv.includes('--write')
 /** `--missing <entry>` prints one name per line, for whoever is writing that page. */
@@ -50,12 +51,7 @@ const pages = readAllPages()
 
 // ── 1. API coverage ──────────────────────────────────────────────────────────
 const entries = new Map()
-for (const file of [
-  'pg-prime.json',
-  'pg-prime-kit.json',
-  'pg-prime-create.json',
-  'pg-prime-testing.json',
-]) {
+for (const file of PACKAGES.map((p) => p.golden)) {
   const golden = JSON.parse(readFileSync(join(ROOT, 'tools', 'api-snapshot', file), 'utf8'))
   for (const [subpath, entry] of Object.entries(golden.entries)) {
     entries.set(`${golden.package}#${subpath}`, {

@@ -46,6 +46,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildPackage, listFiles, TSC_59, TSC_7 } from './build-package.mjs'
+import { PACKAGES } from './packages.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -125,15 +126,7 @@ export function parity(pkgDir, { keep = false } = {}) {
 if (process.argv[1] && process.argv[1].endsWith('emit-parity.mjs')) {
   const argv = process.argv.slice(2)
   const i = argv.indexOf('--package')
-  const packages =
-    i === -1
-      ? [
-          'packages/pg-prime',
-          'packages/pg-prime-kit',
-          'packages/pg-prime-create',
-          'packages/pg-prime-testing',
-        ]
-      : [argv[i + 1]]
+  const packages = i === -1 ? PACKAGES.map((p) => p.dir) : [argv[i + 1]]
   let bad = 0
   for (const rel of packages) {
     const r = parity(join(ROOT, rel), { keep: argv.includes('--keep') })

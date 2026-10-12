@@ -106,7 +106,7 @@ const COMMANDS: readonly Command[] = [
     summary: "build a migration from the TypeScript schema: diff, order, lock-safe rewrite, prove, write.",
     options: GENERATE_OPTIONS,
     exits:
-      "0 written or nothing to do · 1 error · 2 a rename or data-loss decision is missing · 3 lint · 7 proof failed",
+      "0 written or nothing to do · 1 error · 2 a rename, data-loss or declared-lane decision is missing · 3 lint · 7 proof failed",
     run: runGenerate,
   },
   {
@@ -148,7 +148,7 @@ const COMMANDS: readonly Command[] = [
     aliases: [],
     summary: "replay every migration from empty into an ephemeral database and assert the result matches the schema.",
     options: VERIFY_OPTIONS,
-    exits: "0 verified · 1 error or no ephemeral database available · 4 non-empty diff",
+    exits: "0 verified · 1 error or no ephemeral database available · 4 non-empty diff or declared-lane drift",
     run: runVerify,
   },
   {
@@ -172,7 +172,7 @@ const COMMANDS: readonly Command[] = [
     name: "doctor",
     aliases: [],
     summary:
-      "read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables.",
+      "read-only health report: INVALID indexes, _ccnew leftovers, NOT VALID constraints, drift, stale leases, orphaned repeatables, declared-lane markers.",
     options: DOCTOR_OPTIONS,
     exits: "0 healthy · 4 findings",
     run: runDoctor,

@@ -313,6 +313,31 @@ const CASES: Readonly<Record<string, Case>> = {
     oracle: `u.email = 'bob@example.com'::text`,
     rows: 1,
   },
+  // Names sort Ada < Bob < Cyd (id 3) < Dee < Eve < O'Hara; the oracle is the bare-paren form.
+  tupleGt: {
+    expr: () => q.tupleGt([u().name, u().id], ['Cyd', 3n]),
+    pred: () => q.tupleGt([u().name, u().id], ['Cyd', 3n]),
+    oracle: `(u.name, u.id) > ('Cyd', 3)`,
+    rows: 3,
+  },
+  tupleLt: {
+    expr: () => q.tupleLt([u().name, u().id], ['Cyd', 3n]),
+    pred: () => q.tupleLt([u().name, u().id], ['Cyd', 3n]),
+    oracle: `(u.name, u.id) < ('Cyd', 3)`,
+    rows: 2,
+  },
+  tupleGte: {
+    expr: () => q.tupleGte([u().name, u().id], ['Cyd', 3n]),
+    pred: () => q.tupleGte([u().name, u().id], ['Cyd', 3n]),
+    oracle: `(u.name, u.id) >= ('Cyd', 3)`,
+    rows: 4,
+  },
+  tupleLte: {
+    expr: () => q.tupleLte([u().name, u().id], ['Cyd', 3n]),
+    pred: () => q.tupleLte([u().name, u().id], ['Cyd', 3n]),
+    oracle: `(u.name, u.id) <= ('Cyd', 3)`,
+    rows: 3,
+  },
 
   // ── text ─────────────────────────────────────────────────────────────────
   like: {
@@ -542,6 +567,22 @@ const CASES: Readonly<Record<string, Case>> = {
     oracle: `u.meta ? 'billing' and ((u.meta #- array['billing','country']) #> array['billing','country']) is null`,
     rows: 1,
   },
+  jsonbSet: {
+    expr: () => q.jsonbSet(u().meta, ['billing', 'country'], 'FR'),
+    pred: () =>
+      q.and(
+        q.hasKey(u().meta, 'billing'),
+        q.eq(
+          q.jsonPathText(q.jsonbSet(u().meta, ['billing', 'country'], 'FR'), [
+            'billing',
+            'country',
+          ]),
+          'FR',
+        ),
+      ),
+    oracle: `u.meta ? 'billing' and jsonb_set(u.meta, '{billing,country}', '"FR"') #>> '{billing,country}' = 'FR'`,
+    rows: 1,
+  },
 
   // ── numeric ──────────────────────────────────────────────────────────────
   add: {
@@ -598,6 +639,13 @@ const CASES: Readonly<Record<string, Case>> = {
     expr: () => q.tsRankCd(TSV(), TSQ()),
     pred: () => q.gt(q.tsRankCd(TSV(), TSQ()), 0),
     oracle: `ts_rank_cd(to_tsvector('english', u.name), websearch_to_tsquery('english', 'Ada')) > 0`,
+    rows: 1,
+  },
+  tsHeadline: {
+    expr: () => q.tsHeadline('english', u().name, TSQ()),
+    pred: () =>
+      q.eq(q.tsHeadline('english', u().name, TSQ(), { startSel: '[', stopSel: ']' }), '[Ada]'),
+    oracle: `ts_headline('english', u.name, websearch_to_tsquery('english', 'Ada'), 'StartSel=[, StopSel=]') = '[Ada]'`,
     rows: 1,
   },
 
@@ -1070,5 +1118,55 @@ describe('the cases `03` §2.9 names by hand', () => {
       OPS.length - OPS.filter((o) => o.deferred || o.kind === 'order').length,
     )
     expect(CONFIRMABLE.length).toBeGreaterThan(75)
+  })
+})
+
+describe('tsHeadline / jsonbSet / keyset, end to end', () => {
+  async function one(e: unknown): Promise<unknown> {
+    const c = compiled(e)
+    const r = await conn.execute({
+      text: `select ${c.sql} as v from ${fx.ns}.users as u where u.name = 'Ada'`,
+      params: c.params,
+      paramTypes: c.oids,
+    })
+    return r.rows[0]![0]
+  }
+
+  it('tsHeadline: option strings holding `"`, `\'`, `,` and `\\` survive the option parser', async () => {
+    const startSel = `<b a="1", b='2' \\>`
+    expect(await one(q.tsHeadline('english', u().name, TSQ(), { startSel, stopSel: '</b>' }))).toBe(
+      `${startSel}Ada</b>`,
+    )
+  })
+
+  it('jsonbSet: a JS null writes the JSON null, not an SQL NULL document', async () => {
+    const set = q.jsonbSet(u().meta, ['billing'], null)
+    expect(await one(q.jsonGetText(set, 'billing'))).toBe(null)
+    expect(await one(q.hasKey(set, 'billing'))).toBe('t')
+    expect(await one(q.isNotNull(set))).toBe('t')
+  })
+
+  it('tupleGt walks every row exactly once, in ORDER BY order', async () => {
+    const page = async (after?: [string, bigint]) => {
+      const c = compiled(after ? q.tupleGt([u().name, u().id], after) : q.and())
+      const r = await conn.execute({
+        text: `select u.name, u.id::text from ${fx.ns}.users as u where ${c.sql} order by u.name, u.id limit 2`,
+        params: c.params,
+        paramTypes: c.oids,
+      })
+      return r.rows.map((row) => [String(row[0]), BigInt(String(row[1]))] as [string, bigint])
+    }
+    const walked: string[] = []
+    let rows = await page()
+    while (rows.length > 0) {
+      walked.push(...rows.map(([, id]) => String(id)))
+      rows = await page(rows.at(-1))
+    }
+    const all = await conn.execute({
+      text: `select u.id::text from ${fx.ns}.users as u order by u.name, u.id`,
+      params: [],
+    })
+    expect(walked).toStrictEqual(all.rows.map((row) => String(row[0])))
+    expect(walked).toHaveLength(6)
   })
 })

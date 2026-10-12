@@ -377,6 +377,14 @@ The enum's own schema travels with it, so a shared enum does not move because on
 
 {/* docs: signature */}
 ```ts
+type CollatablePg = 'text' | 'varchar' | 'citext' | 'bpchar' | 'name'
+type CollateFn<M extends ColMeta> = M['pg'] extends
+  | CollatablePg
+  | `${CollatablePg}[]`
+  | (`${string}[]` extends M['pg'] ? string : never)
+  ? (name: string) => Col<M>
+  : OrmTypeError<'.collate() on a non-collatable type: only text, varchar, citext, their arrays and t.raw() types take a collation'>
+
 interface Col<M extends ColMeta> {
   readonly [META]: M
   readonly $: ColumnRuntime
@@ -394,6 +402,7 @@ interface Col<M extends ColMeta> {
   references(target: () => RefLike, options?: ForeignKeyOptions): Col<M>
   check(expression: AnyFragment, name?: string): Col<M>
   comment(text: string): Col<M>
+  collate: CollateFn<M>
   renamedFrom(old: string): Col<M>
   array(): Col<{
     t: Exclude<M['t'], null>[] | Extract<M['t'], null>
@@ -469,6 +478,17 @@ Four modifiers worth reading twice:
   `.nullable()` **before** it: a stored generated column may be nullable, but `ro: true` closes
   `.nullable()` for the same reason it closes `.default()`. PostgreSQL 18's `VIRTUAL` is refused —
   see [`GeneratedAlwaysAsOptions`](#generatedalwaysasoptions).
+- **`.collate(name)`** emits `COLLATE "<name>"` after the type: `t.text().collate('C')` sorts by
+  byte order, which is what a fractional-index `position` column needs. It exists only on `text`,
+  `varchar`, `citext`, their arrays and `t.raw()` columns; on any other type it is an
+  [`OrmTypeError`](#OrmTypeError). The name is a single unqualified identifier and must be a
+  collation in `pg_catalog` (`C`, `POSIX`, `default`, the `pg_collation` rows initdb created):
+  migrations run under `search_path = pg_catalog`, so a collation you created in another schema
+  does not resolve, and `pull` lists a column that uses one as unsupported. Changing it on an
+  existing column plans `ALTER COLUMN … TYPE … COLLATE`, which rebuilds the column's indexes but
+  not the table — hazard [`LK113`](/pg-prime/reference/hazard-codes/#LK113), plus
+  [`MF107`](/pg-prime/reference/hazard-codes/#MF107) when a unique index or a `CHECK` covers the
+  column.
 
 ### `GeneratedAlwaysAsOptions`
 
@@ -583,6 +603,8 @@ type TableExtra =
       readonly parentSchema: string | undefined
       readonly bound: string
     }
+  | { readonly node: 'rls'; readonly force: boolean }
+  | { readonly node: 'updatedAtTrigger'; readonly column: string }
 ```
 
 One heterogeneous array of tagged nodes, so an extension pack can add a node kind without an API
@@ -913,6 +935,152 @@ one, so `` sql`${userInput} > 0` `` cannot mean what it looks like it means. Wit
 failure is a `42P02` from PostgreSQL at apply time, three steps and one shadow database away from the
 line that wrote it. A column *reference* in a hole is the one interpolated value this position can
 render, because it is an identifier whose resolved name the schema layer knows.
+
+## Row-level security and triggers
+
+Policies and the `updated_at` trigger ride the migration kit's `sql/` repeatable lane: plain SQL,
+nothing in the query path. Generic by design — no tenant model, setting name or role is assumed. See
+[`setting`](/pg-prime/reference/query/#setting) for the session value a policy usually reads.
+
+```ts no-run="a schema module runs nothing on its own"
+import { definePolicy, eq, pgTable, rls, setting, updatedAtTrigger, uuidCodec } from 'pg-prime'
+
+export const orgId = setting('app.org_id', uuidCodec)
+
+export const documents = pgTable(
+  'documents',
+  (t) => ({ id: t.uuid().primaryKey(), orgId: t.uuid(), updatedAt: t.timestamptz() }),
+  (t) => [rls.force(), updatedAtTrigger(t.updatedAt)],
+)
+
+export const documentsTenant = definePolicy('tenant', {
+  on: documents,
+  to: ['app_user'],
+  using: (t) => eq(t.orgId, orgId.current()),
+  withCheck: (t) => eq(t.orgId, orgId.current()),
+})
+```
+
+### `rls`
+
+{/* docs: signature */}
+```ts
+const rls: { enable(): TableExtra; force(): TableExtra }
+```
+
+`rls.enable()` is `ALTER TABLE … ENABLE ROW LEVEL SECURITY`, planned by the migration like any other
+table fact. `rls.force()` implies it and also applies the policies to the table owner (`FORCE ROW
+LEVEL SECURITY`), which the kit states in the table's policy file so it commits together with the
+policies. Superusers and `BYPASSRLS` roles bypass both.
+
+### `definePolicy`
+
+{/* docs: signature */}
+```ts
+function definePolicy<T extends AnyTable>(name: string, spec: PolicySpec<T>): Policy<T>
+```
+
+One `CREATE POLICY` on `spec.on`. Export it from a schema module; `migrate generate` finds it like a
+view. The name, roles, command and predicate shape are checked here, with a `SchemaError`; the
+predicate bodies run when the policy is rendered.
+
+### `PolicySpec`
+
+{/* docs: signature */}
+```ts
+type Pred<T extends AnyTable> = (t: T['cols']) => PolicyExpr
+interface PolicyBase<T extends AnyTable> {
+  readonly on: T
+  readonly as?: 'permissive' | 'restrictive'
+  readonly to?: readonly PolicyRole[]
+}
+type PolicySpec<T extends AnyTable> = PolicyBase<T> &
+  (
+    | { readonly for?: 'all' | 'update'; readonly using?: Pred<T>; readonly withCheck?: Pred<T> }
+    | { readonly for: 'select' | 'delete'; readonly using?: Pred<T>; readonly withCheck?: never }
+    | { readonly for: 'insert'; readonly withCheck?: Pred<T>; readonly using?: never }
+  )
+```
+
+`as` defaults to permissive, `to` to `PUBLIC`, `for` to `all`. The predicates are thunks so a policy
+can reference a table declared later in the file. Both are optional, as in PostgreSQL: a permissive
+policy without one grants nothing, a restrictive one restricts nothing.
+
+Every column renders qualified by its table name — `"documents"."org_id"` — so a subquery over a
+differently named table that also has an `org_id` cannot capture it. A raw subquery over the policy's
+*own* table, or a same-named table in another schema, must alias it (`FROM documents d`); a typed
+subquery whose FROM alias (its `defineSchema` key) is the policy's table name is a `SchemaError`. A value becomes a typed literal (`'f'::boolean`); a prepared
+placeholder, an aggregate, a window call or a `bytea` value is a `SchemaError`.
+
+### `PolicyExpr`
+
+{/* docs: signature */}
+```ts
+type PolicyExpr = { readonly [OUT]: boolean | null } | AnyFragment
+```
+
+A boolean operator result, a boolean column, or any `sql` fragment.
+
+### `PolicyRole`
+
+{/* docs: signature */}
+```ts
+type PolicyRole = 'public' | 'current_user' | 'current_role' | 'session_user' | (string & {})
+```
+
+The four keywords render bare; any other name is a quoted role, which must exist.
+
+### `PolicyCommand`
+
+{/* docs: signature */}
+```ts
+type PolicyCommand = 'all' | 'select' | 'insert' | 'update' | 'delete'
+```
+
+### `Policy`
+
+{/* docs: signature */}
+```ts
+interface Policy<T extends AnyTable> {
+  readonly kind: 'policy'
+  readonly name: string
+  readonly $: PolicyRuntime
+  readonly __table?: T
+}
+```
+
+`__table` is a phantom: it ties the value to its table's type and is never present at runtime.
+
+### `PolicyRuntime`
+
+{/* docs: signature */}
+```ts
+interface PolicyRuntime {
+  readonly name: string
+  readonly table: TableRuntime
+  readonly command: PolicyCommand
+  readonly permissive: boolean
+  readonly roles: readonly string[]
+  ddl(schemaOf: (schema: string | undefined) => string): string
+}
+```
+
+`ddl` returns the statement without a trailing semicolon, evaluating the predicates on every call.
+`schemaOf` maps the table's declared schema (`undefined` for the default) to the one to emit; a
+typed subquery's FROM tables go through it too.
+
+### `updatedAtTrigger`
+
+{/* docs: signature */}
+```ts
+function updatedAtTrigger(
+  column: AnyRef & { readonly [META]: { readonly pg: 'timestamptz' | 'timestamp' } },
+): TableExtra
+```
+
+A `BEFORE UPDATE … FOR EACH ROW` trigger that sets the column to `now()`, through a static plpgsql
+function `pgprime_set_<column>()` in the table's schema. An explicit value in the `UPDATE` is
+overwritten, `$onUpdate` included.
 
 ## Enums
 
@@ -1879,7 +2047,7 @@ which is the rule that keeps the type budget flat as the DSL grows.
 |---|---|---|
 | <a id="TableRuntime"/>`TableRuntime` | `table.$` | `name`, `schema`, `columns`, `extras`, and `column(key)`. |
 | <a id="ColumnRuntime"/>`ColumnRuntime` | `col.$`, `ref.$.column` | `ddl` and `ts` — the two halves of the `$` law. |
-| <a id="ColumnDdl"/>`ColumnDdl` | `col.$.ddl` | Everything a column contributes to DDL: `pgType`, `dbName`, `notNull`, `default`, `identity`, `primaryKey`, `unique`, `uniqueSpec`, the three `enum*` fields, `arrayDim`, `references`, `checks`, `comment`, `renamedFrom`. No `$`-prefixed modifier may ever write here. |
+| <a id="ColumnDdl"/>`ColumnDdl` | `col.$.ddl` | Everything a column contributes to DDL: `pgType`, `dbName`, `notNull`, `default`, `identity`, `primaryKey`, `unique`, `uniqueSpec`, the three `enum*` fields, `arrayDim`, `references`, `checks`, `comment`, `collation`, `renamedFrom`. No `$`-prefixed modifier may ever write here. |
 | <a id="ColumnTsMeta"/>`ColumnTsMeta` | `col.$.ts` | `defaultFn`, `onUpdateFn`, `narrowed`. Never reaches DDL or the migration IR. |
 | <a id="RefRuntime"/>`RefRuntime` | `ref.$` | `table`, `schema`, `key`, `dbName`, `column`. The schema is carried here as well as on the table because `.references()` hands the emitter a column reference and nothing else, and guessing a cross-schema target by table name is ambiguous the moment two schemas hold a table of the same name. |
 | <a id="DefaultSpec"/>`DefaultSpec` | `ColumnDdl.default` | `{ kind: 'value', value }` from `.default()`, or `{ kind: 'expr', expr }` from `.defaultSql()`. |

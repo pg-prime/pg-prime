@@ -81,6 +81,7 @@ PgPrimeError                                          the root; message, code, c
 │   ├── QueryTimeoutError                             TIMEOUT  our client-side timer fired
 │   └── TransactionTimeoutError                       TIMEOUT  a signal around a whole transaction
 ├── AbortError                                        ABORT
+├── VersionConflictError                              VERSION_CONFLICT — .ifVersion() matched no row
 ├── CodecMismatchError                                CODEC_MISMATCH
 ├── UsageError                                        USAGE — programmer error, never the database's
 │   ├── HandleMisuseError                             USAGE
@@ -470,6 +471,29 @@ separates them: `'statement_timeout'` means the backend gave up and is no longer
 statement is definitely over; the third is yours. [Timeouts](/pg-prime/operations/timeouts/) has the
 budget-setting version of this.
 
+## Version conflicts
+
+### `VersionConflictError`
+
+{/* docs: signature */}
+```ts
+class VersionConflictError extends PgPrimeError {
+  readonly code: 'VERSION_CONFLICT'
+  readonly context: ErrorContext
+  readonly table: string
+  readonly expected?: unknown
+}
+```
+
+An update or delete built with `.ifVersion()` affected no row: the row was changed or removed since
+you read its version. Raised by the runner on every execute path, so `execute()`, `run(q)` and
+`prepare().execute()` all see it, and inside `db.transaction()` it rolls the whole batch back.
+`table` is the target table's name; `expected` is the version you passed, and is present only under
+`errors.includeParams` because it is a bind value. It is not a `UsageError` and not a server error,
+so it never poisons the transaction. It is not retried by default; `retry: { on: ['VERSION_CONFLICT'] }`
+or a `shouldRetry` predicate that accepts it opts in, which only helps if the callback re-reads the
+version.
+
 ## Usage errors
 
 Programmer error — ours or yours, never the database's. The distinction is operational rather than
@@ -662,6 +686,7 @@ type PgPrimeErrorCode =
   | 'CODEC_MISMATCH'
   | 'CONFIG'
   | 'USAGE'
+  | 'VERSION_CONFLICT'
 ```
 
 The vocabulary for the errors that have **no** SQLSTATE, because they never reached a server.

@@ -18,6 +18,7 @@ import type {
   PgExtension,
   PgSchema,
   PgSequence,
+  PolicyRuntime,
   RefRuntime,
   TableExtra,
   TableRuntime,
@@ -32,6 +33,7 @@ export type {
   PgExtension,
   PgSchema,
   PgSequence,
+  PolicyRuntime,
   RefRuntime,
   TableExtra,
   TableRuntime,
@@ -53,6 +55,13 @@ export interface TableLike {
  */
 export interface ViewLike {
   readonly $: ViewRuntime;
+}
+
+/** One `definePolicy(...)` declaration, rendered into the declared lane (`schema/declared.ts`). */
+export interface PolicyLike {
+  readonly kind: "policy";
+  readonly name: string;
+  readonly $: PolicyRuntime;
 }
 
 /**
@@ -90,4 +99,6 @@ export interface SchemaLike {
    * which views are modelled.
    */
   readonly views?: readonly ViewLike[];
+  /** `definePolicy(...)` exports, discovered like views and rendered into `sql/050_policies/`. */
+  readonly policies?: readonly PolicyLike[];
 }

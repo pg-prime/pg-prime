@@ -27,6 +27,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, relative } from 'node:path'
 import { DOCS, ROOT, compose, pageSetupsOf, readAllPages, readSnippets } from './docs-blocks.mjs'
+import { PACKAGES } from './packages.mjs'
 
 const require = createRequire(import.meta.url)
 const KEEP = process.argv.includes('--keep')
@@ -47,12 +48,7 @@ const TS_VERSION = JSON.parse(
  */
 function typeNamesByEntry() {
   const out = new Map()
-  for (const file of [
-    'pg-prime.json',
-    'pg-prime-kit.json',
-    'pg-prime-create.json',
-    'pg-prime-testing.json',
-  ]) {
+  for (const file of PACKAGES.map((p) => p.golden)) {
     const golden = JSON.parse(readFileSync(join(ROOT, 'tools', 'api-snapshot', file), 'utf8'))
     for (const [subpath, entry] of Object.entries(golden.entries)) {
       const spec = subpath === '.' ? golden.package : `${golden.package}/${subpath.slice(2)}`
@@ -140,6 +136,8 @@ function main() {
           // and on TS 7. Re-checking them here would report the same error once per block.
           skipLibCheck: true,
           types: ['node'],
+          // Nest's DI needs legacy decorators; no other block uses decorators.
+          experimentalDecorators: true,
           allowJs: false,
           verbatimModuleSyntax: false,
         },

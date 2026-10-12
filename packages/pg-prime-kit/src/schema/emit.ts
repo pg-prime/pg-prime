@@ -394,6 +394,8 @@ export function emitSchema(schema: SchemaLike, options: EmitOptions = {}): EmitR
       const parent = quoteQualified(mapped(parentSchema, `table ${qualify(parentSchema, child.parent)}`), child.parent);
       sql.push(`ALTER TABLE ${parent} ATTACH PARTITION ${target} ${child.bound}`);
     }
+    // `rls.force()` implies ENABLE; FORCE itself is stated by the declared lane (design/20 D4, D5).
+    if (decl.runtime.extras.some((e) => e.node === "rls")) sql.push(`ALTER TABLE ${target} ENABLE ROW LEVEL SECURITY`);
   }
 
   // The cycle breaker (design/11 §3 K2a: "deferred FKs for cycles").
@@ -586,6 +588,7 @@ function buildTable(decl: TableDecl, ctx: BuildContext): void {
     const ddl = ref.column.ddl;
     const typeSql = columnType(ddl, ctx, decl);
     const bits: string[] = [quoteIdent(ref.dbName), typeSql];
+    if (ddl.collation !== undefined) bits.push(`COLLATE ${quoteIdent(ddl.collation)}`);
 
     if (ddl.generatedAs !== undefined) {
       // Opaque text, exactly like `defaultSql`: the tier-3 schema map is NOT applied to it
@@ -752,15 +755,17 @@ function buildTable(decl: TableDecl, ctx: BuildContext): void {
         break;
       }
       // `index` / `uniqueIndex` / `clusterOn` are separate statements; `comment` and
-      // `renamedFrom` are not DDL of the table itself; `partitionBy` / `partitionOf` are
-      // read directly off the runtime when the CREATE TABLE is assembled. All are handled
-      // after every table exists.
+      // `renamedFrom` are not DDL of the table itself; `partitionBy` / `partitionOf` / `rls` are
+      // read directly off the runtime when the CREATE TABLE is assembled; `updatedAtTrigger`
+      // belongs to the declared lane.
       case "index":
       case "comment":
       case "renamedFrom":
       case "clusterOn":
       case "partitionBy":
       case "partitionOf":
+      case "rls":
+      case "updatedAtTrigger":
         break;
       default:
         ctx.diagnostics.push({

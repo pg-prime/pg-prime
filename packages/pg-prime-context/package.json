@@ -1,0 +1,60 @@
+{
+  "name": "@pg-prime/context",
+  "version": "0.1.0",
+  "description": "Ambient transactions for pg-prime on AsyncLocalStorage: a TransactionHost with propagation and scoped settings. Pre-alpha — the API will change.",
+  "keywords": [
+    "async-local-storage",
+    "context",
+    "pg-prime",
+    "postgres",
+    "postgresql",
+    "rls",
+    "transactions"
+  ],
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pg-prime/pg-prime.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types@<5.9": "./dist/unsupported-typescript.d.ts",
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "node ../../tools/build-package.mjs",
+    "clean": "node ../../tools/build-package.mjs --clean",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --project unit",
+    "test:live": "vitest run --project unit --project live",
+    "test:pg": "vitest run"
+  },
+  "devDependencies": {
+    "@pg-prime/testing": "workspace:*",
+    "pg-prime": "workspace:*",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "pg-prime": ">=0.2.0"
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}

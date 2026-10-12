@@ -559,6 +559,19 @@ interface AdvisoryLockOptions {
 `try: true` selects the `try_` family, which returns `false` instead of blocking; `shared: true`
 selects the `_shared` family. [Locks](/pg-prime/operations/locks/) has the decision table.
 
+### `inTransactionFrame`
+
+{/* docs: signature */}
+```ts
+function inTransactionFrame<R>(tx: Tx, fn: () => R): R
+```
+
+Runs `fn` as if it were inside `tx`'s callback, so the development misuse guard still throws
+`HandleMisuseError` when `fn` reaches for a captured root `Db`. For code that keeps one transaction
+open across many callbacks — a test that pins every request to one transaction — where the guard
+would otherwise see no open transaction. Without the guard (production, or a runtime without
+`AsyncLocalStorage`) it is a plain call. A value that is not a `Tx` handle is a `UsageError`.
+
 ## Execution options
 
 Options compose downward: what you pass to `pgPrime()` is the default for the handle, what you pass
@@ -784,6 +797,101 @@ PostgreSQL's own limit, checked client-side rather than left to produce a confus
 an **exclusive** bound, measured on PostgreSQL 17.11: the backend test is
 `strlen(payload) >= NOTIFY_PAYLOAD_MAX_LENGTH`, so a payload of exactly 8000 bytes is already
 `payload string too long` and 7999 is the largest that works.
+
+Each subscription has its own `reconnect`, `gap` and `error` handlers, so two subscriptions on one
+channel both hear about a reconnect, and closing one leaves the other's handlers in place.
+
+## Owned schemas
+
+A package that keeps tables of its own (`@pg-prime/events`, `@pg-prime/mq`, …) puts them in one
+schema it owns and versions that schema with these two functions. The ledger is
+`<schema>.migrations`; uninstalling is `drop schema … cascade`.
+
+{/* docs: use=blog */}
+```ts title="owned-schema.ts"
+import { migrateOwnedSchema, ownedSchemaSql } from 'pg-prime'
+import type { OwnedMigration } from 'pg-prime'
+
+const migrations: OwnedMigration[] = [
+  { version: 1, name: 'init', up: (s) => [`create table ${s}.jobs (id bigint primary key)`] },
+]
+
+const first = await migrateOwnedSchema(db, { schema: 'acme_jobs', migrations })
+const again = await migrateOwnedSchema(db, { schema: 'acme_jobs', migrations })
+console.log(first, again)
+// { from: 0, to: 1 } { from: 1, to: 1 }
+
+// The same version as a file for a kit migration; its ledger insert is `on conflict do nothing`.
+console.log(ownedSchemaSql({ schema: 'acme_jobs', migrations })[0]!.sql.includes('acme_jobs'))
+// true
+```
+
+### `migrateOwnedSchema`
+
+{/* docs: signature */}
+```ts
+function migrateOwnedSchema<Sc extends AnySchema>(
+  db: Db<Sc>,
+  opts: OwnedSchemaOptions & { readonly apply?: boolean },
+): Promise<{ from: number; to: number }>
+```
+
+Applies every version missing from the ledger, each in its own transaction under
+`pg_advisory_xact_lock`, so concurrent migrators serialize and a transaction pooler is fine. It
+refuses, with a `ConfigError`, a ledger row whose checksum differs from the client's DDL and a
+schema whose `min_client` is above the client's latest version. `from` is the ledger's version
+before the call, `to` after it. `apply: false` creates nothing and only reads and checks, so
+`to === from`. A version that needs `CREATE INDEX CONCURRENTLY` cannot run here: every version is
+transactional.
+
+### `ownedSchemaSql`
+
+{/* docs: signature */}
+```ts
+function ownedSchemaSql(opts: OwnedSchemaOptions): OwnedSchemaFile[]
+```
+
+The same versions as SQL text, one file per version: the advisory lock, the schema and ledger
+bootstrap, the DDL, and an `insert … on conflict do nothing` ledger row. Vendored into kit
+migrations and applied first, they converge with `migrateOwnedSchema`, which then sees the versions
+as applied.
+
+### `OwnedMigration`
+
+{/* docs: signature */}
+```ts
+interface OwnedMigration {
+  readonly version: number
+  readonly name: string
+  readonly minClient?: number
+  readonly up: (schema: string) => readonly string[]
+}
+```
+
+`version` counts from 1 and strictly increases. `up` receives the schema already quoted and returns
+one statement per element. `minClient` (default 1) is the oldest client, by its latest known
+version, that still works against the schema; raise it on a version older clients cannot run on.
+
+### `OwnedSchemaOptions`
+
+{/* docs: signature */}
+```ts
+interface OwnedSchemaOptions {
+  readonly schema: string
+  readonly migrations: readonly OwnedMigration[]
+}
+```
+
+### `OwnedSchemaFile`
+
+{/* docs: signature */}
+```ts
+interface OwnedSchemaFile {
+  readonly version: number
+  readonly name: string
+  readonly sql: string
+}
+```
 
 ## COPY
 

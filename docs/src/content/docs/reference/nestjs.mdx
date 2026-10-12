@@ -1,0 +1,213 @@
+---
+title: "@pg-prime/nestjs"
+description: Every export of @pg-prime/nestjs.
+apiEntry:
+  - "@pg-prime/nestjs#."
+  - "@pg-prime/nestjs#./testing"
+  - "pg-prime#."
+---
+
+A Nest module for pg-prime. [NestJS](/pg-prime/guides/nestjs/) is the guide; this page is the
+surface.
+
+```sh
+pnpm add pg-prime @pg-prime/nestjs
+```
+
+Peers: `pg-prime`, `@nestjs/common` and `@nestjs/core` (`^11 || ^12`), `rxjs` (`^7.8`). The package
+depends on `@pg-prime/context` and re-exports its host, error and settings types. `src/` uses no
+decorator syntax, so it works whatever decorator settings the application compiles with; Nest's own
+injection needs `experimentalDecorators`.
+
+## The module
+
+### `PgPrimeModule`
+
+{/* docs: signature */}
+```ts
+type DynamicModule = import('@nestjs/common').DynamicModule
+class PgPrimeModule {
+  static forRoot<Sc extends AnySchema>(opts: PgPrimeModuleOptions<Sc> & { name?: string }): DynamicModule
+  static forRootAsync<Sc extends AnySchema>(opts: PgPrimeModuleAsyncOptions<Sc> & { name?: string }): DynamicModule
+}
+```
+
+A global module. Per `name` (default `'default'`) it provides:
+
+| Token | Value |
+|---|---|
+| `getDbToken(name)` | The `Db`: `opts.db`, or `pgPrime(opts.config)`. Both or neither → `ConfigError` at boot |
+| `getHostToken(name)` | A `TransactionHost` over it with the module's `propagation` and `strict`. For the default name the token is the `TransactionHost` class |
+| `APP_INTERCEPTOR` | The request interceptor; a pass-through while `request` is unset and no test pins the host |
+
+On `onApplicationShutdown` it unregisters the host and, unless `end: false`, awaits `db.end()`.
+
+### `PgPrimeModuleOptions`
+
+{/* docs: signature */}
+```ts
+interface PgPrimeModuleOptions<Sc extends AnySchema = AnySchema> {
+  db?: Db<Sc>
+  config?: PgPrimeOptions<Sc>
+  end?: boolean
+  propagation?: Propagation
+  strict?: boolean
+  request?: RequestOptions
+}
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `db`, `config` | — | Exactly one |
+| `end` | `true` | `db.end()` on shutdown |
+| `propagation` | `'join'` | The host default; `@Transactional({ propagation })` overrides it |
+| `strict` | `true` | The host's strict mode |
+| `request` | unset | Request settings and transaction mode |
+
+### `PgPrimeModuleAsyncOptions`
+
+{/* docs: signature */}
+```ts
+type ModuleMetadata = import('@nestjs/common').ModuleMetadata
+type InjectionToken = import('@nestjs/common').InjectionToken
+type OptionalFactoryDependency = import('@nestjs/common').OptionalFactoryDependency
+interface PgPrimeModuleAsyncOptions<Sc extends AnySchema = AnySchema> {
+  imports?: ModuleMetadata['imports']
+  inject?: (InjectionToken | OptionalFactoryDependency)[]
+  useFactory(...args: any[]): PgPrimeModuleOptions<Sc> | Promise<PgPrimeModuleOptions<Sc>>
+}
+```
+
+### `RequestOptions`
+
+{/* docs: signature */}
+```ts
+type ExecutionContext = import('@nestjs/common').ExecutionContext
+interface RequestOptions {
+  settings?(ctx: ExecutionContext): Settings | undefined | Promise<Settings | undefined>
+  transaction?: RequestTxMode | ((ctx: ExecutionContext) => boolean | Promise<boolean>)
+}
+```
+
+Per request, after guards: resolve `settings(ctx)`, then the mode (`@RequestTransaction` on the
+handler, then on the class, then `transaction`, then `'whenSettings'`). With a transaction the
+handler runs in `host.request({ settings, transaction: { retry: false, label } })`, collapsed to its
+last value and committed before the response; without one it runs in `host.request({ settings })`
+with its observable intact, until the observable ends. Under a pin every request runs in one
+savepoint.
+
+### `RequestTxMode`
+
+{/* docs: signature */}
+```ts
+type RequestTxMode = 'never' | 'whenSettings' | 'always'
+```
+
+`'whenSettings'` opens a request transaction exactly when the resolved settings are non-empty.
+
+## Decorators and tokens
+
+### `Transactional`
+
+{/* docs: signature */}
+```ts
+function Transactional(opts?: HostTxOptions & { connection?: string }): MethodDecorator
+```
+
+Wraps an async method in `host.transaction(fn, { label: 'Class.method', ...opts })`, copying the
+method's `reflect-metadata` entries (route metadata) and name to the wrapper. The host is the
+instance's own `TransactionHost` for `connection` (default `'default'`), else the one live host
+registered under it: none → `CONTEXT_NOT_REGISTERED`, two → `CONTEXT_DUPLICATE_HOST`.
+
+### `RequestTransaction`
+
+{/* docs: signature */}
+```ts
+type CustomDecorator = import('@nestjs/common').CustomDecorator
+function RequestTransaction(mode: RequestTxMode): CustomDecorator
+```
+
+On a controller, resolver or handler; the handler's wins. Needs `request` set on the module.
+
+### `InjectDb`
+
+{/* docs: signature */}
+```ts
+function InjectDb(name?: string): ParameterDecorator & PropertyDecorator
+```
+
+`Inject(getDbToken(name))`.
+
+### `InjectHost`
+
+{/* docs: signature */}
+```ts
+function InjectHost(name?: string): ParameterDecorator & PropertyDecorator
+```
+
+`Inject(getHostToken(name))`. For the default connection a `TransactionHost`-typed parameter is
+enough when the build emits decorator metadata.
+
+### `getDbToken`
+
+{/* docs: signature */}
+```ts
+type InjectionToken = import('@nestjs/common').InjectionToken
+function getDbToken(name?: string): InjectionToken
+```
+
+### `getHostToken`
+
+{/* docs: signature */}
+```ts
+type InjectionToken = import('@nestjs/common').InjectionToken
+function getHostToken(name?: string): InjectionToken
+```
+
+The `TransactionHost` class for the default name, a string token otherwise.
+
+### `provideAddOn`
+
+{/* docs: signature */}
+```ts
+type InjectionToken = import('@nestjs/common').InjectionToken
+type Provider = import('@nestjs/common').Provider
+function provideAddOn<T extends {
+  start?(): Promise<unknown>
+  close?(): Promise<unknown>
+}>(token: InjectionToken, factory: (db: Db) => T, opts?: {
+  connection?: string
+  start?: boolean
+}): Provider[]
+```
+
+Provides `factory(db)` under `token`, calls `start()` in `onApplicationBootstrap` unless
+`start: false`, and `close()` in `beforeApplicationShutdown`, which Nest runs before the module's
+`onApplicationShutdown` ends the pool.
+
+## Re-exported from `@pg-prime/context`
+
+| Name | |
+|---|---|
+| <a id="TransactionHost"/>`TransactionHost` | The ambient-transaction host ([reference](/pg-prime/reference/context/#transactionhost)) |
+| <a id="ContextError"/>`ContextError` | Its error class, including the nestjs codes `CONTEXT_NOT_REGISTERED` and `CONTEXT_DUPLICATE_HOST` ([reference](/pg-prime/reference/context/#contexterror)) |
+| <a id="HostTxOptions"/>`HostTxOptions` | `TxOptions & { propagation? }` |
+| <a id="Propagation"/>`Propagation` | `'join' \| 'savepoint' \| 'new'` |
+| <a id="Setting"/>`Setting` | `string \| number \| boolean` |
+| <a id="Settings"/>`Settings` | `Readonly<Record<string, Setting>>` |
+
+## `@pg-prime/nestjs/testing`
+
+### `rollbackScopeFor`
+
+{/* docs: signature */}
+```ts
+function rollbackScopeFor(app: {
+  get(token: any): any
+}, name?: string): Promise<RollbackScope>
+```
+
+`rollbackScope(app.get(getHostToken(name)))`: pins the application's host until `rollback()`. See
+[testing](/pg-prime/guides/nestjs/#testing).
+
+<a id="RollbackScope"/>`RollbackScope` is re-exported from `@pg-prime/context/testing`: `{ tx, rollback() }`.

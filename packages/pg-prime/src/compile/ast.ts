@@ -115,6 +115,8 @@ export interface UpdateNode {
   from?: readonly FromItem[] | undefined
   where?: Expr | undefined
   returning?: readonly ProjectionItem[] | undefined
+  /** Set by `.ifVersion()`: the runner throws `VersionConflictError` when 0 rows match. */
+  versionCheck?: { readonly table: string; readonly expected: unknown } | undefined
 }
 
 export interface DeleteNode {
@@ -124,6 +126,8 @@ export interface DeleteNode {
   using?: readonly FromItem[] | undefined
   where?: Expr | undefined
   returning?: readonly ProjectionItem[] | undefined
+  /** See {@link UpdateNode.versionCheck}. */
+  versionCheck?: { readonly table: string; readonly expected: unknown } | undefined
 }
 
 export interface SetOpNode {

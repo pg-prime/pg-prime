@@ -38,6 +38,7 @@ export {
   clusterOn,
   comment,
   date,
+  definePolicy,
   defineRelations,
   defineSchema,
   enumColumn,
@@ -64,6 +65,7 @@ export {
   raw,
   renamedFrom,
   resolveRelations,
+  rls,
   smallint,
   snakeCase,
   table,
@@ -71,6 +73,7 @@ export {
   timestamptz,
   unique,
   uniqueIndex,
+  updatedAtTrigger,
   uuid,
   varchar,
   vector,
@@ -132,6 +135,12 @@ export type {
   PgSchemaOptions,
   PgSequence,
   PgSequenceOptions,
+  Policy,
+  PolicyCommand,
+  PolicyExpr,
+  PolicyRole,
+  PolicyRuntime,
+  PolicySpec,
   PrimaryKeyInput,
   Projectable,
   Ref,
@@ -415,6 +424,11 @@ export type {
   TxOptionsBase,
 } from './session/types.js'
 export { MAX_NOTIFY_PAYLOAD_BYTES } from './session/listen.js'
+export { setting } from './session/setting.js'
+export type { SettingKey } from './session/setting.js'
+export { inTransactionFrame } from './session/guard.js'
+export { migrateOwnedSchema, ownedSchemaSql } from './session/owned-schema.js'
+export type { OwnedMigration, OwnedSchemaFile, OwnedSchemaOptions } from './session/owned-schema.js'
 
 /**
  * The error hierarchy (`07` §4.2), the SQLSTATE table as data (§4.5), the redaction policy (§4.3)
@@ -487,6 +501,7 @@ export {
   UnknownQueryError,
   UnsupportedInPoolerModeError,
   UsageError,
+  VersionConflictError,
   classForSqlState,
   isCheckViolation,
   isForeignKeyViolation,
@@ -625,6 +640,7 @@ export {
   jsonPathExists,
   jsonPathMatch,
   jsonPathText,
+  jsonbSet,
   l1,
   l2,
   like,
@@ -650,13 +666,21 @@ export {
   rangeUpper,
   regex,
   similarTo,
+  similarity,
   startsWith,
   strictlyLeft,
   strictlyRight,
   sub,
+  trgmSimilar,
+  tsHeadline,
   tsRank,
   tsRankCd,
+  tupleGt,
+  tupleGte,
+  tupleLt,
+  tupleLte,
   val,
+  wordSimilarity,
 } from './query/ops.js'
 export { and, asc, desc, exists, fn, not, notExists, or, toOrderItem } from './query/fn.js'
 export type { Fn } from './query/fn.js'
@@ -671,8 +695,10 @@ export type {
   BitOperand,
   BoolOperand,
   ClassOperand,
+  HeadlineOptions,
   JsonOperand,
   JsonbOperand,
+  JsonValue,
   NetOperand,
   NonNullOperand,
   NumOperand,

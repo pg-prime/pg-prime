@@ -1,0 +1,164 @@
+---
+title: "Event log"
+description: Publishing to topics, subscriptions, tails, resuming and parking.
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+A **topic** is an append-only log in your database. Publishing is one insert, and it joins your
+transaction: the entry exists exactly when your write does. A **subscription** is a named, durable
+cursor over a topic with one active reader; it acknowledges, retries, parks entries that keep
+failing, and resumes where it stopped. A **tail** is the same cursor kept in memory.
+
+## Publish and subscribe
+
+{/* docs: use=blog */}
+```ts title="publish-and-subscribe.ts"
+import { defineSubscription, defineTopic, pgEvents } from '@pg-prime/events'
+
+const orders = defineTopic<{ id: string; total: number }>('orders')
+const billing = defineSubscription(orders, 'billing', { from: 'beginning' })
+const events = pgEvents({ db, define: { topics: { orders }, subscriptions: { billing } } })
+await events.start()
+
+await events.topics.orders.publish({ id: 'o-1', total: 42 }, { type: 'order.paid', key: 'o-1' })
+await db.transaction(async (tx) => {
+  await events.topics.orders.publish({ id: 'o-2', total: 7 }, { tx, type: 'order.paid' })
+})
+
+const seen: string[] = []
+const reader = events.subscriptions.billing.run(async (e) => void seen.push(e.payload.id), {
+  pollMs: 50,
+})
+while (seen.length < 2) await new Promise((r) => setTimeout(r, 20))
+await reader.close()
+console.log(seen)
+// [ 'o-1', 'o-2' ]
+await db.end()
+```
+
+`await events.start()` once at boot migrates the `pgprime_events` schema and creates the declared
+topics and subscriptions. Calls without `{ tx }` start lazily; a call with `{ tx }` before
+`start()` throws `NotStartedError`, because migrating from inside your transaction would need a
+second connection while yours is held.
+
+`run` returns a `Reader`. Entry handlers run one at a time, in order; resolving acknowledges, and
+offsets are committed once per read. Several instances may run the same subscription: one holds
+its lease and the rest stand by and take over once its lease expires if it dies.
+
+## Exactly-once effects in the same database
+
+`ctx.commit({ tx })` writes the offset inside your transaction, so the effect and the
+acknowledgement commit together or not at all. If the handler throws after that transaction
+committed (an `IndeterminateCommitError` whose commit landed included), the reader checks the
+stored offset and does not redeliver what it covered.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="exactly-once.ts"
+import { defineSubscription, defineTopic, pgEvents } from '@pg-prime/events'
+
+const published = defineTopic<{ title: string }>('posts.published')
+const feed = defineSubscription(published, 'feed', { from: 'beginning' })
+const events = pgEvents({ db, define: { subscriptions: { feed } } })
+await events.start()
+await events.topic(published).publish({ title: 'Hello' })
+
+const reader = events.subscriptions.feed.run(async (e, ctx) => {
+  await db.transaction(async (tx) => {
+    await tx.insertInto(tx.h.users).values({ email: `${e.payload.title}@example.com`, name: e.payload.title }).execute()
+    await ctx.commit({ tx })
+  })
+}, { pollMs: 50 })
+while ((await events.subscriptions.feed.lag()).entries > 0) await new Promise((r) => setTimeout(r, 20))
+await reader.close()
+console.log(await db.from(db.h.users).select(({ users: u }) => ({ email: u.email })).execute())
+// [ { email: 'Hello@example.com' } ]
+await db.end()
+```
+
+## Types, keys and filters
+
+`publish(payload, { type, key, headers })` stores an optional event type, a key and string
+headers next to the payload. `defineSubscription(topic, name, { types: ['order.paid'] })` delivers
+only those types; the cursor still moves past every other entry. Batch handlers,
+`{ batch: async (entries, ctx) => … }`, take a whole read at once.
+
+## Failures, retries and parking
+
+A handler that throws is retried with backoff (`retry: { maxAttempts: 3, baseDelayMs: 1000,
+maxDelayMs: 60_000, jitter: 'full' }`). The attempt is recorded before the handler runs, so an
+entry that crashes the process counts too. After `maxAttempts` the entry is **parked** and the
+subscription moves on.
+
+{/* docs: use=blog */}
+```ts title="parking.ts"
+import { defineSubscription, defineTopic, pgEvents } from '@pg-prime/events'
+
+const jobs = defineTopic<{ n: number }>('jobs')
+const worker = defineSubscription(jobs, 'worker', {
+  from: 'beginning',
+  retry: { maxAttempts: 2, baseDelayMs: 10, maxDelayMs: 10 },
+})
+const events = pgEvents({ db, define: { subscriptions: { worker } } })
+await events.start()
+await events.topic(jobs).publishMany([{ payload: { n: 1 } }, { payload: { n: 2 } }])
+
+const reader = events.subscriptions.worker.run(async (e) => {
+  if (e.payload.n === 1) throw new Error('cannot handle 1')
+}, { pollMs: 20 })
+while ((await events.subscriptions.worker.lag()).entries > 0) await new Promise((r) => setTimeout(r, 20))
+await reader.close()
+
+const parked = await events.subscriptions.worker.parked()
+console.log(parked.map((p) => [p.entry.payload.n, p.attempts, p.error]))
+// [ [ 1, 2, 'Error: cannot handle 1' ] ]
+await events.subscriptions.worker.discard(parked.map((p) => p.entry.id))
+await db.end()
+```
+
+A batch that fails is never charged as a whole: the reader retries its entries one by one, so only
+the entry that fails on its own is counted and parked. Re-processing a parked entry is your code:
+read it from `parked()`, handle it, `discard()` it.
+
+## Tails and resuming
+
+`topic.tail(handler, { from })` follows a topic without a subscription row: from `'now'`, or from
+the `cursor` of an entry you stored. Every delivered `Entry` carries `cursor`, the exact cursor
+state after it; `subscription.reset({ after: cursor })` moves a subscription there.
+
+{/* docs: use=blog */}
+```ts title="tail.ts"
+import { defineTopic, pgEvents } from '@pg-prime/events'
+import type { Entry } from '@pg-prime/events'
+
+const audit = defineTopic<string>('audit')
+const events = pgEvents({ db })
+const topic = events.topic(audit)
+
+const seen: Entry<string>[] = []
+const tail = await topic.tail((e) => void seen.push(e), { pollMs: 20 })
+await topic.publishMany(['a', 'b', 'c'].map((payload) => ({ payload })))
+while (seen.length < 3) await new Promise((r) => setTimeout(r, 20))
+await tail.close()
+
+const resumed: string[] = []
+const again = await topic.tail((e) => void resumed.push(e.payload), {
+  from: { after: seen[0]!.cursor },
+  pollMs: 20,
+})
+while (resumed.length < 2) await new Promise((r) => setTimeout(r, 20))
+await again.close()
+console.log(resumed)
+// [ 'b', 'c' ]
+await db.end()
+```
+
+<Aside>
+Entries of one transaction arrive in insertion order. There is no order across concurrent
+transactions, and a read's batch limit may split a large transaction, with a transaction that
+committed late arriving between its parts. Order by `key` downstream if you need it; for parallel
+consumers per key, bind the subscription to a queue with `@pg-prime/mq`.
+</Aside>
+
+Why a subscription never skips an entry of a transaction that committed late is
+[The event cursor](/pg-prime/concepts/event-cursor/).

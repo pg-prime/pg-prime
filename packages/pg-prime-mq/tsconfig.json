@@ -1,0 +1,15 @@
+{
+  "//": "Typecheck project: pg-prime and the siblings resolve to source, so nothing needs building first. tsconfig.build.json switches `paths` off and emits against the built peers.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "pg-prime": ["../pg-prime/src/index.ts"],
+      "@pg-prime/testing": ["../pg-prime-testing/src/index.ts"],
+      "@pg-prime/events": ["../pg-prime-events/src/index.ts"],
+      "@pg-prime/mq": ["./src/index.ts"]
+    }
+  },
+  "include": ["src", "test"]
+}

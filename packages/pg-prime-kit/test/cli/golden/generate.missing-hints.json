@@ -15,14 +15,14 @@
       "kind": "DS106",
       "entity": "constraint:public.widgets.widgets_name_key",
       "reason": "DS106 on: ALTER TABLE \"public\".\"widgets\" DROP CONSTRAINT IF EXISTS \"widgets_name_key\"",
-      "fix": "re-run with --allow-data-loss, or record the acknowledgement in a --hints-file"
+      "fix": "re-run with --allow-data-loss --reason <text>, or list the subject in acknowledge.dataLoss"
     },
     {
       "type": "confirm_data_loss",
       "kind": "DS103",
       "entity": "column:public.widgets.name",
       "reason": "DS103 on: ALTER TABLE \"public\".\"widgets\" DROP COLUMN IF EXISTS \"name\"",
-      "fix": "re-run with --allow-data-loss, or record the acknowledgement in a --hints-file"
+      "fix": "re-run with --allow-data-loss --reason <text>, or list the subject in acknowledge.dataLoss"
     }
   ],
   "candidates": [],

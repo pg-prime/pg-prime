@@ -130,6 +130,7 @@ export declare const UnsupportedInPoolerModeError: Unsupported
 export declare const UnsupportedNodeError: Unsupported
 export declare const UsageError: Unsupported
 export declare const VECTOR_MAX_DIMENSIONS: Unsupported
+export declare const VersionConflictError: Unsupported
 export declare const abs: Unsupported
 export declare const add: Unsupported
 export declare const adjacent: Unsupported
@@ -174,6 +175,7 @@ export declare const dateCodec: Unsupported
 export declare const daterangeCodec: Unsupported
 export declare const defaultRegistry: Unsupported
 export declare const definePgType: Unsupported
+export declare const definePolicy: Unsupported
 export declare const defineRelations: Unsupported
 export declare const defineSchema: Unsupported
 export declare const desc: Unsupported
@@ -202,6 +204,7 @@ export declare const hasNul: Unsupported
 export declare const ilike: Unsupported
 export declare const inList: Unsupported
 export declare const inQuery: Unsupported
+export declare const inTransactionFrame: Unsupported
 export declare const index: Unsupported
 export declare const inetCodec: Unsupported
 export declare const innerProduct: Unsupported
@@ -246,6 +249,7 @@ export declare const jsonPathMatch: Unsupported
 export declare const jsonPathText: Unsupported
 export declare const jsonb: Unsupported
 export declare const jsonbCodec: Unsupported
+export declare const jsonbSet: Unsupported
 export declare const jsonpathCodec: Unsupported
 export declare const kit: Unsupported
 export declare const l1: Unsupported
@@ -256,6 +260,7 @@ export declare const lte: Unsupported
 export declare const macaddr8Codec: Unsupported
 export declare const macaddrCodec: Unsupported
 export declare const matches: Unsupported
+export declare const migrateOwnedSchema: Unsupported
 export declare const mod: Unsupported
 export declare const moneyCodec: Unsupported
 export declare const mul: Unsupported
@@ -281,6 +286,7 @@ export declare const or: Unsupported
 export declare const over: Unsupported
 export declare const overlaps: Unsupported
 export declare const overlapsNet: Unsupported
+export declare const ownedSchemaSql: Unsupported
 export declare const parseArrayLiteral: Unsupported
 export declare const partitionBy: Unsupported
 export declare const partitionOf: Unsupported
@@ -313,7 +319,10 @@ export declare const raw: Unsupported
 export declare const regex: Unsupported
 export declare const renamedFrom: Unsupported
 export declare const resolveRelations: Unsupported
+export declare const rls: Unsupported
+export declare const setting: Unsupported
 export declare const similarTo: Unsupported
+export declare const similarity: Unsupported
 export declare const smallint: Unsupported
 export declare const snakeCase: Unsupported
 export declare const spanAttributes: Unsupported
@@ -336,15 +345,22 @@ export declare const timetzCodec: Unsupported
 export declare const toNode: Unsupported
 export declare const toOrderItem: Unsupported
 export declare const toServerErrorData: Unsupported
+export declare const trgmSimilar: Unsupported
+export declare const tsHeadline: Unsupported
 export declare const tsRank: Unsupported
 export declare const tsRankCd: Unsupported
 export declare const tsqueryCodec: Unsupported
 export declare const tsrangeCodec: Unsupported
 export declare const tstzrangeCodec: Unsupported
 export declare const tsvectorCodec: Unsupported
+export declare const tupleGt: Unsupported
+export declare const tupleGte: Unsupported
+export declare const tupleLt: Unsupported
+export declare const tupleLte: Unsupported
 export declare const unique: Unsupported
 export declare const uniqueIndex: Unsupported
 export declare const unknownCodec: Unsupported
+export declare const updatedAtTrigger: Unsupported
 export declare const utf8ByteLength: Unsupported
 export declare const uuid: Unsupported
 export declare const uuidCodec: Unsupported
@@ -354,6 +370,7 @@ export declare const varchar: Unsupported
 export declare const varcharCodec: Unsupported
 export declare const vector: Unsupported
 export declare const vectorCodec: Unsupported
+export declare const wordSimilarity: Unsupported
 export declare const writeArrayLiteral: Unsupported
 export declare const xmlCodec: Unsupported
 
@@ -472,6 +489,7 @@ export type Grouping = Unsupported
 export type Handle<T0 = any, T1 = any> = Unsupported
 export type HandleKind = Unsupported
 export type HandleMisuseError = Unsupported
+export type HeadlineOptions = Unsupported
 export type IdentRejectReason = Unsupported
 export type IdleInTransactionTimeoutError = Unsupported
 export type InFailedTransactionError = Unsupported
@@ -502,6 +520,7 @@ export type InvalidTextRepresentationError = Unsupported
 export type IsolationLevel = Unsupported
 export type JsonEncode = Unsupported
 export type JsonOperand = Unsupported
+export type JsonValue = Unsupported
 export type JsonbOperand = Unsupported
 export type ListenOptions = Unsupported
 export type Loaded<T0 = any, T1 = any, T2 = any> = Unsupported
@@ -536,6 +555,9 @@ export type OrderArg = Unsupported
 export type OrderBy = Unsupported
 export type OrmTypeError<T0 = any> = Unsupported
 export type OutOfMemoryError = Unsupported
+export type OwnedMigration = Unsupported
+export type OwnedSchemaFile = Unsupported
+export type OwnedSchemaOptions = Unsupported
 export type PartitionOfOptions = Unsupported
 export type PgAcquireOptions = Unsupported
 export type PgArrayLiteral = Unsupported
@@ -585,6 +607,12 @@ export type PgTimestampString = Unsupported
 export type PgTypeDescriptor<T0 = any, T1 = any, T2 = any> = Unsupported
 export type PkOf<T0 = any> = Unsupported
 export type PlaceholderRef = Unsupported
+export type Policy<T0 = any> = Unsupported
+export type PolicyCommand = Unsupported
+export type PolicyExpr = Unsupported
+export type PolicyRole = Unsupported
+export type PolicyRuntime = Unsupported
+export type PolicySpec<T0 = any> = Unsupported
 export type PoolEvent = Unsupported
 export type PoolOptions = Unsupported
 export type PoolStats = Unsupported
@@ -673,6 +701,7 @@ export type SessionDefaults = Unsupported
 export type SetOps<T0 = any, T1 = any> = Unsupported
 export type SetPatch<T0 = any> = Unsupported
 export type SetQuery<T0 = any, T1 = any> = Unsupported
+export type SettingKey<T0 = any, T1 = any> = Unsupported
 export type Simplify<T0 = any> = Unsupported
 export type Sources = Unsupported
 export type SpanAttributes = Unsupported
@@ -734,6 +763,7 @@ export type Updateable<T0 = any> = Unsupported
 export type UsageError = Unsupported
 export type ValueRefs<T0 = any> = Unsupported
 export type VectorOperand = Unsupported
+export type VersionConflictError = Unsupported
 export type View<T0 = any, T1 = any> = Unsupported
 export type ViewBody<T0 = any, T1 = any> = Unsupported
 export type ViewBuilder<T0 = any> = Unsupported

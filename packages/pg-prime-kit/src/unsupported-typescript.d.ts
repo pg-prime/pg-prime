@@ -49,12 +49,15 @@ export declare const HISTORY_SCHEMA: Unsupported
 export declare const HISTORY_VERSION: Unsupported
 export declare const InvalidIdentifierError: Unsupported
 export declare const InvalidMigrationIdError: Unsupported
+export declare const LaneRefusedError: Unsupported
 export declare const MAX_IDENT_BYTES: Unsupported
 export declare const MIGRATION_FILE: Unsupported
 export declare const MIGRATION_NAME: Unsupported
 export declare const NO_REPEATABLES: Unsupported
 export declare const OfflineShadowError: Unsupported
 export declare const PHASE: Unsupported
+export declare const POLICIES_DIR: Unsupported
+export declare const PRUNE_FILE: Unsupported
 export declare const PoolRefusedError: Unsupported
 export declare const ProofRequiredError: Unsupported
 export declare const RUNNER_EXIT: Unsupported
@@ -68,6 +71,7 @@ export declare const SchemaIR: Unsupported
 export declare const ShadowNameTooLongError: Unsupported
 export declare const ShadowStrategyError: Unsupported
 export declare const SpawnFailure: Unsupported
+export declare const TRIGGERS_DIR: Unsupported
 export declare const UnacknowledgedHazardError: Unsupported
 export declare const UnsafeCloneNameError: Unsupported
 export declare const UnsafeDatabaseNameError: Unsupported
@@ -100,6 +104,7 @@ export declare const createRepeatablesPass: Unsupported
 export declare const currentFingerprint: Unsupported
 export declare const dataMigrationSql: Unsupported
 export declare const dataProgressSql: Unsupported
+export declare const declaredCensus: Unsupported
 export declare const declaredViewIdentities: Unsupported
 export declare const defaultId: Unsupported
 export declare const defaultNotNullName: Unsupported
@@ -187,6 +192,7 @@ export declare const remapDiagnostics: Unsupported
 export declare const remapIr: Unsupported
 export declare const remapObserved: Unsupported
 export declare const renameCandidates: Unsupported
+export declare const renderDeclared: Unsupported
 export declare const renderSql: Unsupported
 export declare const renderViewRepeatables: Unsupported
 export declare const resolveConfig: Unsupported
@@ -200,6 +206,7 @@ export declare const sha256: Unsupported
 export declare const slug: Unsupported
 export declare const splitStages: Unsupported
 export declare const splitStatements: Unsupported
+export declare const syncDeclared: Unsupported
 export declare const syncViewRepeatables: Unsupported
 export declare const terminateConnections: Unsupported
 export declare const tokenizeDefinition: Unsupported
@@ -238,6 +245,10 @@ export type DataProgressEntry = Unsupported
 export type DataStubInput = Unsupported
 export type DatabaseGenerateInput = Unsupported
 export type DatabaseGenerateResult = Unsupported
+export type DeclaredCensus = Unsupported
+export type DeclaredFile = Unsupported
+export type DeclaredKind = Unsupported
+export type DeclaredObject = Unsupported
 export type DeclaredView = Unsupported
 export type DefaultPayload = Unsupported
 export type Delta = Unsupported
@@ -283,6 +294,8 @@ export type InvalidMigrationIdError = Unsupported
 export type IssuedQuery = Unsupported
 export type LagEvent = Unsupported
 export type LagReading = Unsupported
+export type LaneAck = Unsupported
+export type LaneRefusedError = Unsupported
 export type LeaseInspection = Unsupported
 export type LintFinding = Unsupported
 export type LintFormat = Unsupported
@@ -311,6 +324,7 @@ export type PgPrimeConfig = Unsupported
 export type Plan = Unsupported
 export type PlanHazard = Unsupported
 export type PlanStatement = Unsupported
+export type PolicyLike = Unsupported
 export type PoolRefusedError = Unsupported
 export type PreflightReport = Unsupported
 export type Proof = Unsupported
@@ -327,7 +341,9 @@ export type RenameCandidate = Unsupported
 export type RenameConfidence = Unsupported
 export type RenameHint = Unsupported
 export type RenameRecord = Unsupported
+export type RenderDeclaredOptions = Unsupported
 export type RenderViewsOptions = Unsupported
+export type RenderedDeclared = Unsupported
 export type RenderedViews = Unsupported
 export type RepeatableApplyError = Unsupported
 export type RepeatableClient = Unsupported
@@ -364,7 +380,9 @@ export type Statement = Unsupported
 export type StatusEntry = Unsupported
 export type StatusOptions = Unsupported
 export type StatusReport = Unsupported
+export type SyncDeclaredOptions = Unsupported
 export type SyncViewsOptions = Unsupported
+export type SyncedDeclared = Unsupported
 export type SyncedViews = Unsupported
 export type TableExtra = Unsupported
 export type TableLike = Unsupported

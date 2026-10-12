@@ -25,19 +25,30 @@
 
 import type { AnyCodec, CodecRegistry } from '../codec/index.js'
 import { jsonCodecJson } from '../codec/index.js'
-import type { FromItem, SelectNode, SetOpNode } from '../compile/ast.js'
+import type { Expr, FromItem, SelectNode, SetOpNode } from '../compile/ast.js'
 import type { FieldPlan } from '../compile/contract.js'
-import { planSelect } from '../compile/hoist.js'
-import { col, cteRef, isAstNode, mkNode, subquery, table as tableFrom } from '../compile/nodes.js'
+import { codecOf, planSelect } from '../compile/hoist.js'
+import {
+  and,
+  col,
+  cteRef,
+  eq,
+  isAstNode,
+  mkNode,
+  param,
+  subquery,
+  table as tableFrom,
+} from '../compile/nodes.js'
 import type { ColumnRuntime, RefRuntime } from '../schema/index.js'
 import { NAME } from '../schema/index.js'
-import { BuilderError } from '../sql/errors.js'
-import type { BuilderCtx } from './builder-state.js'
+import { BuilderError, NullOperandError } from '../sql/errors.js'
+import type { BuilderCtx, VersionState } from './builder-state.js'
 import type { TableLike } from './meta.js'
 import { metaOf } from './meta.js'
 import type { RefNode, RefScope } from './ref.js'
 import { refsOf } from './ref.js'
 import { mergeAccessors } from './relations.js'
+import { toExprNode } from './projection.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sources
@@ -116,6 +127,7 @@ function derivedColumn(): ColumnRuntime {
       references: undefined,
       checks: [],
       comment: undefined,
+      collation: undefined,
       renamedFrom: undefined,
     },
     ts: { defaultFn: undefined, onUpdateFn: undefined, narrowed: false },
@@ -377,3 +389,35 @@ export {
   toExprNode,
   toOrderItems,
 } from './projection.js'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `.ifVersion()` (update and delete)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const VERSION_WITH_VALUES =
+  'pg-prime: .ifVersion() cannot be combined with fromValues(); compare executeRowCount() with ' +
+  'the row count instead.'
+
+export function versionOf(
+  current: VersionState | undefined,
+  e: unknown,
+  expected: unknown,
+): VersionState {
+  if (current !== undefined) throw new BuilderError('pg-prime: .ifVersion() is already set.')
+  if (expected === null || expected === undefined) throw new NullOperandError('ifVersion')
+  return { expr: toExprNode(e, 'ifVersion()'), expected }
+}
+
+/** The WHERE with `<expr> = $expected` ANDed in, and the node's `versionCheck` mark. */
+export function versioned(
+  where: Expr | undefined,
+  v: VersionState | undefined,
+  table: string,
+): { where: Expr | undefined; versionCheck: { table: string; expected: unknown } | undefined } {
+  if (v === undefined) return { where, versionCheck: undefined }
+  const check = eq(v.expr, param(v.expected, codecOf(v.expr)))
+  return {
+    where: where === undefined ? check : and(where, check),
+    versionCheck: { table, expected: v.expected },
+  }
+}

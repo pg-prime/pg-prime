@@ -151,6 +151,11 @@ const OPERATOR_SYMBOL: Readonly<Record<string, string>> = {
   notILike: 'not ilike',
   startsWith: '^@',
   between: 'between … and',
+  trgmSimilar: '%',
+  tupleGt: '>',
+  tupleLt: '<',
+  tupleGte: '>=',
+  tupleLte: '<=',
 }
 
 export class NullOperandError extends PgPrimeError {

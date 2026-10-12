@@ -17,6 +17,7 @@ import type { AnyCodec } from '../codec/index.js'
 import {
   BuilderError,
   InvalidFragmentError,
+  SchemaError,
   TooManyParametersError,
   UnsupportedNodeError,
 } from '../sql/errors.js'
@@ -40,9 +41,11 @@ import type {
   SetItem,
   SetOpNode,
   Statement,
+  TableMeta,
   UpdateNode,
   WindowDef,
 } from './ast.js'
+import { NAME } from '../schema/symbols.js'
 import type { Bind, Compiled, FieldOrigin, FieldPlan, ResultShape } from './contract.js'
 import { comparesWholeRows, exprDigest, planReturning, planSelect } from './hoist.js'
 
@@ -179,6 +182,12 @@ class Emitter {
     this.placeholders.push(name)
     this.chunks.push(dollarAt(this.binds.push({ k: 'slot', name, codec })))
   }
+
+  relation(t: TableMeta): string {
+    return t.qualified
+  }
+
+  fromAlias(_alias: string): void {}
 
   sql(): string {
     return this.chunks.join('')
@@ -523,10 +532,12 @@ function emitExpr(em: Emitter, e: Expr): void {
       return
 
     case 'agg':
+      if (em instanceof DdlEmitter) em.refuse('an aggregate')
       emitAgg(em, e)
       return
 
     case 'over':
+      if (em instanceof DdlEmitter) em.refuse('a window call')
       emitOver(em, e)
       return
 
@@ -781,10 +792,11 @@ function emitProjection(em: Emitter, items: readonly ProjectionItem[]): void {
 }
 
 function emitFromItem(em: Emitter, item: FromItem): void {
+  em.fromAlias(item.alias)
   switch (item.k) {
     case 'table':
       em.reads.push({ schema: item.table.schema, name: item.table.name })
-      em.push(`${item.table.qualified} as ${item.qAlias}`)
+      em.push(`${em.relation(item.table)} as ${item.qAlias}`)
       return
     case 'subquery':
       if (item.lateral) em.push('lateral ')
@@ -1462,6 +1474,7 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
   }
 
   if (em.binds.length > MAX_PARAMS) throw new TooManyParametersError(em.binds.length, kind)
+  const versionCheck = stmt.k === 'update' || stmt.k === 'delete' ? stmt.versionCheck : undefined
 
   return Object.freeze({
     sql: em.sql(),
@@ -1474,6 +1487,7 @@ export function compile<Row = unknown>(stmt: Statement): Compiled<Row> {
       writes: Object.freeze(em.writes),
       placeholders: Object.freeze(em.placeholders),
       usedUnsafeRaw: em.usedUnsafeRaw,
+      ...(versionCheck === undefined ? {} : { versionCheck }),
     }),
   }) as Compiled<Row>
 }
@@ -1499,4 +1513,74 @@ export function compileExpr(e: Expr): {
     placeholders: Object.freeze(em.placeholders),
     usedUnsafeRaw: em.usedUnsafeRaw,
   }
+}
+
+/** The relation a DDL expression belongs to: its column refs' alias and the schema mapping. */
+export interface DdlScope {
+  readonly alias: string
+  readonly schemaOf: (schema: string) => string
+}
+
+/** Emits catalog DDL: binds become typed literals, column refs stay identifiers, placeholders refuse. */
+class DdlEmitter extends Emitter {
+  readonly what: string
+  readonly scope: DdlScope | undefined
+  constructor(what: string, scope: DdlScope | undefined) {
+    super()
+    this.what = what
+    this.scope = scope
+  }
+
+  refuse(thing: string): never {
+    throw new SchemaError(
+      `pg-prime: ${this.what} contains ${thing}, which a catalog expression cannot hold.`,
+    )
+  }
+
+  override bindValue(value: unknown, codec: AnyCodec): void {
+    // Only a schema ref carries the symbol; data shaped like one stays data.
+    const ref =
+      typeof value === 'object' && value !== null && NAME in value
+        ? (value as { $?: { table?: unknown; dbName?: unknown } }).$
+        : undefined
+    if (typeof ref?.table === 'string' && typeof ref.dbName === 'string') {
+      this.push(`${quoteIdentPart(ref.table)}.${quoteIdentPart(ref.dbName)}`)
+      return
+    }
+    const encoded = value === null ? null : codec.encode(value as never)
+    if (encoded !== null && typeof encoded !== 'string') this.refuse('a binary bind')
+    const text = encoded === null ? 'NULL' : quoteStringLiteral(encoded)
+    this.push(codec.sqlName === 'unknown' ? text : `${text}::${codec.sqlName}`)
+  }
+
+  override bindSlot(): void {
+    this.refuse('a prepared-statement placeholder')
+  }
+
+  override relation(t: TableMeta): string {
+    if (this.scope === undefined) return t.qualified
+    return `${quoteIdentPart(this.scope.schemaOf(t.schema))}.${quoteIdentPart(t.name)}`
+  }
+
+  override fromAlias(alias: string): void {
+    if (alias !== this.scope?.alias) return
+    throw new SchemaError(
+      `pg-prime: ${this.what} has a FROM item aliased "${alias}", which captures the ` +
+        `"${alias}"."<column>" refs of the policy's own table; give it another alias.`,
+    )
+  }
+}
+
+/**
+ * An expression as catalog DDL text (policy `USING` / `WITH CHECK`).
+ *
+ * Columns render qualified by their relation name, so only a FROM item with the same alias can
+ * capture them; `scope.alias` names the one that would, and such an item is refused. Typed FROM
+ * tables go through `scope.schemaOf`. A bind is inlined as `'<encoded>'::<sqlName>`; placeholders,
+ * aggregates, window calls and binary binds are a `SchemaError`.
+ */
+export function compileDdlExpr(e: Expr, what: string, scope?: DdlScope): string {
+  const em = new DdlEmitter(what, scope)
+  emitExpr(em, e)
+  return em.sql()
 }

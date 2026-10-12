@@ -1,0 +1,397 @@
+---
+title: "NestJS"
+description: PgPrimeModule, @Transactional(), request settings, add-ons and testing.
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+`@pg-prime/nestjs` wires pg-prime into a Nest application: the configured `Db`, a
+[`TransactionHost`](/pg-prime/guides/ambient-transactions/) so the active transaction is ambient,
+`@Transactional()` service methods, request settings for row-level security, add-on lifecycle and
+rollback-per-test.
+
+```sh
+pnpm add pg-prime @pg-prime/nestjs
+```
+
+`@nestjs/common` and `@nestjs/core` (11 or 12) and `rxjs` are peers. `@pg-prime/context` comes with
+the package and is re-exported, so everything is imported from `@pg-prime/nestjs`. Node ≥ 22.12 and
+Bun are tested.
+
+## The module
+
+`PgPrimeModule.forRoot` takes either a ready `db` or the `config` passed to `pgPrime`:
+
+{/* docs: use=blog-schema */}
+```ts
+import { Module } from '@nestjs/common'
+import { PgPrimeModule } from '@pg-prime/nestjs'
+
+@Module({
+  imports: [PgPrimeModule.forRoot({ config: { connection: process.env['DATABASE_URL']!, schema } })],
+})
+export class AppModule {}
+```
+
+`forRootAsync` builds the options in a factory, with `imports` and `inject` as in any Nest dynamic
+module:
+
+{/* docs: use=blog-schema */}
+```ts
+import { Injectable, Module } from '@nestjs/common'
+import { PgPrimeModule } from '@pg-prime/nestjs'
+
+@Injectable()
+class Config {
+  readonly databaseUrl = process.env['DATABASE_URL']!
+}
+
+@Module({ providers: [Config], exports: [Config] })
+class ConfigModule {}
+
+@Module({
+  imports: [
+    PgPrimeModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [Config],
+      useFactory: (c: Config) => ({ config: { connection: c.databaseUrl, schema } }),
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `db` / `config` | — | Exactly one: a `Db`, or the options for `pgPrime(config)`. Both or neither is a `ConfigError` at boot |
+| `end` | `true` | `db.end()` on application shutdown. Set `false` for a `db` the application ends itself |
+| `propagation` | `'join'` | The default of every `@Transactional()` and `host.transaction()` |
+| `strict` | `true` | Reading `host.db` in a scope with settings but no transaction throws `CONTEXT_UNSCOPED_QUERY` |
+| `request` | unset | Request settings and the request transaction mode, [below](#request-settings). Unset, the request interceptor is a pass-through |
+| `name` | `'default'` | A second connection: its own tokens, host and lifecycle |
+
+The module is global: import it once in the root module.
+
+## Injection
+
+The default connection's host is provided under the `TransactionHost` class itself, so a typed
+constructor parameter is enough. `@InjectDb()` gives the root `Db`; named connections use
+`@InjectDb(name)` and `@InjectHost(name)`:
+
+{/* docs: use=blog-schema */}
+```ts
+import { Injectable } from '@nestjs/common'
+import { InjectDb, InjectHost, TransactionHost } from '@pg-prime/nestjs'
+import type { Db } from 'pg-prime'
+
+@Injectable()
+export class Reports {
+  constructor(
+    private readonly host: TransactionHost<typeof schema>,
+    @InjectDb() private readonly db: Db<typeof schema>,
+    @InjectHost('analytics') private readonly analytics: TransactionHost,
+  ) {}
+}
+```
+
+Prefer the host. `host.db` is the active transaction, or the root outside one; a captured root `Db`
+used inside a transaction throws `HandleMisuseError` under the dev guard, as it does in core.
+
+<Aside>
+Without `emitDecoratorMetadata` (Vitest with some transformers, esbuild), Nest cannot read the
+parameter's type: write `@Inject(TransactionHost)`, or `@InjectHost()`, explicitly.
+</Aside>
+
+## `@Transactional()`
+
+A decorated method runs in `host.transaction(…)`: with no active transaction it opens one, and with
+one it follows the propagation, `'join'` unless the module or the call says otherwise.
+
+{/* docs: use=blog-schema */}
+```ts
+import { Injectable } from '@nestjs/common'
+import { Transactional, TransactionHost } from '@pg-prime/nestjs'
+
+@Injectable()
+export class Users {
+  constructor(private readonly host: TransactionHost<typeof schema>) {}
+
+  @Transactional()
+  async register(email: string, name: string) {
+    const { db } = this.host
+    const [user] = await db.insertInto(db.h.users).values({ email, name }).returning((t) => t.users.$all).execute()
+    await this.welcome(user!.id)
+    return user!
+  }
+
+  @Transactional({ propagation: 'savepoint' })
+  async welcome(authorId: bigint) {
+    const { db } = this.host
+    await db.insertInto(db.h.posts).values({ authorId, title: 'Hello', body: '…' }).execute()
+  }
+}
+```
+
+- `register` opens the transaction, or joins the caller's. `welcome` runs in a savepoint, so a
+  caller can catch its failure and carry on.
+- The options are `host.transaction`'s: `propagation`, `isolation`, `timeoutMs`, `retry`, … A join
+  refuses options that would change the transaction (`CONTEXT_OPTIONS`); see
+  [propagation](/pg-prime/guides/ambient-transactions/#propagation).
+- The transaction's `label` is `Class.method` unless given, so it reaches `onTransactionStart`.
+- Async methods only: the method's result becomes the transaction's promise. Route metadata
+  survives, so `@Get()` works above or below `@Transactional()`.
+- **The host:** the instance's own injected `TransactionHost` (under the connection's name), so
+  several applications in one process each use their own. A class without one falls back to the
+  host registered under the name, and throws `CONTEXT_NOT_REGISTERED` when no application has one,
+  or `CONTEXT_DUPLICATE_HOST` when two live applications do. `{ connection: 'analytics' }` picks a
+  named connection.
+
+## Request settings
+
+With `request` set, a global interceptor runs each request in a settings scope, and in a request
+transaction when the mode says so:
+
+{/* docs: use=blog-schema */}
+```ts
+import { Module } from '@nestjs/common'
+import { PgPrimeModule } from '@pg-prime/nestjs'
+import { setting, uuidCodec } from 'pg-prime'
+
+export const tenantId = setting('app.tenant_id', uuidCodec)
+export const userId = setting('app.user_id', uuidCodec)
+
+@Module({
+  imports: [
+    PgPrimeModule.forRoot({
+      config: { connection: process.env['DATABASE_URL']!, schema },
+      request: {
+        settings: (ctx) => {
+          const auth = ctx.switchToHttp().getRequest().auth as { tenant: string; user: string } | undefined
+          return auth && { ...tenantId.set(auth.tenant), ...userId.set(auth.user) }
+        },
+      },
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+The keys are illustrative: `app.tenant_id`, `app.org_id`, `app.role`, whatever your policies read.
+The interceptor runs after guards, so the auth result exists; a guard that queries the database runs
+before the scope, on the root, which is right: it computes the settings.
+
+### The request transaction
+
+Settings apply only inside a transaction. Which requests get one:
+
+| Mode | Request transaction |
+|---|---|
+| `'whenSettings'` (default) | Exactly when the resolved settings are non-empty: free for anonymous requests, correct RLS for the rest |
+| `'always'` | Every request |
+| `'never'` | None: methods open their own with `@Transactional()`, and strict mode catches a read outside one |
+| `(ctx) => boolean` | Decided per request |
+
+Set it globally with `request.transaction`, and per controller or handler with
+`@RequestTransaction(mode)`; the handler's wins over the class's, which wins over the global one:
+
+```ts
+import { Controller, Get, Sse } from '@nestjs/common'
+import { RequestTransaction } from '@pg-prime/nestjs'
+import { interval, map } from 'rxjs'
+
+@Controller('feed')
+@RequestTransaction('always')
+export class FeedController {
+  @Get()
+  async latest() {
+    return []
+  }
+
+  @Sse('live')
+  @RequestTransaction('never')
+  live() {
+    return interval(1000).pipe(map((n) => ({ data: { n } })))
+  }
+}
+```
+
+- The request transaction commits before the response is sent, and an error response rolls it back.
+  It collapses the handler's observable to its last value, so streaming and SSE routes use
+  `'never'`.
+- It is opened with `retry: false`: re-running a whole handler is not idempotent. A route that needs
+  serializable retry uses `@RequestTransaction('never')` and
+  `@Transactional({ isolation: 'serializable' })`; inside a request transaction that decorator
+  throws `CONTEXT_OPTIONS` rather than silently joining a weaker transaction.
+- Every `@Transactional()` in the request joins the request transaction (the default
+  propagation).
+- `@RequestTransaction` takes effect only when `request` is set: without it the interceptor does
+  nothing at all, and under `rollbackScopeFor` it ignores the decorator too. `request: {}` enables
+  the decorator with no settings.
+
+### HTTP, RPC and GraphQL
+
+The interceptor is transport-agnostic: `settings(ctx)` reads whatever the transport carries
+(`ctx.switchToHttp()`, `ctx.switchToRpc().getData()`, or the GraphQL context).
+
+Query and mutation resolvers are scoped like routes. **Field resolvers (`@ResolveField`) are not**:
+graphql-js runs them outside the parent resolver's scope, so they see no settings and no
+transaction, and strict mode does not fire. Enable interceptors on them; each field then gets its
+own scope and, under `'whenSettings'`, its own transaction:
+
+{/* docs: skip-check="needs @nestjs/graphql and @nestjs/apollo, which the docs project does not install" */}
+```ts
+import { ApolloDriver, type ApolloDriverConfig } from '@nestjs/apollo'
+import { GqlExecutionContext, GraphQLModule } from '@nestjs/graphql'
+
+GraphQLModule.forRoot<ApolloDriverConfig>({
+  driver: ApolloDriver,
+  autoSchemaFile: true,
+  fieldResolverEnhancers: ['interceptors'],
+})
+
+PgPrimeModule.forRoot({
+  db,
+  request: { settings: (ctx) => tenantSettings(GqlExecutionContext.create(ctx).getContext().req) },
+})
+```
+
+## Add-ons
+
+`provideAddOn(token, factory)` provides an add-on built from the module's `Db`, calls its `start()`
+at bootstrap (`start: false` to skip) and its `close()` before the pool ends:
+
+{/* docs: use=blog-schema */}
+```ts
+import { Inject, Injectable, Module } from '@nestjs/common'
+import { PgPrimeModule, TransactionHost, provideAddOn } from '@pg-prime/nestjs'
+import type { Db } from 'pg-prime'
+
+/** Stands in for `pgOutbox`, `pgEvents`, `pgMq` or `pgCron`. */
+const createRelay = (db: Db) => ({
+  db,
+  start: async () => {},
+  close: async () => {},
+  write: async (_message: string, _opts: { tx: unknown }) => {},
+})
+const RELAY = Symbol('relay')
+
+@Injectable()
+class Orders {
+  constructor(
+    private readonly host: TransactionHost,
+    @Inject(RELAY) private readonly relay: ReturnType<typeof createRelay>,
+  ) {}
+
+  async place() {
+    await this.host.transaction(() => this.relay.write('order.placed', { tx: this.host.tx() }))
+  }
+}
+
+@Module({
+  imports: [PgPrimeModule.forRoot({ config: { connection: process.env['DATABASE_URL']!, schema } })],
+  providers: [...provideAddOn(RELAY, createRelay), Orders],
+})
+export class AppModule {}
+```
+
+Add-ons do not read the host: pass `{ tx: this.host.tx() }` (or `host.current()`, where the root is
+acceptable) explicitly.
+
+## Shutdown
+
+Call `app.enableShutdownHooks()` so a signal closes the application. Add-ons close in
+`beforeApplicationShutdown`; the module ends the `Db` in `onApplicationShutdown`, which Nest runs
+after every `before…` hook, so relays and workers stop before the pool drains. `app.close()` runs the
+same sequence.
+
+## Mapping errors to responses
+
+HTTP status mapping is application policy, so the package ships no exception filter. A filter for
+the cases you care about:
+
+```ts
+import { Catch, type ArgumentsHost, type ExceptionFilter } from '@nestjs/common'
+import { UniqueViolationError } from 'pg-prime'
+
+@Catch(UniqueViolationError)
+export class ConflictFilter implements ExceptionFilter {
+  catch(e: UniqueViolationError, host: ArgumentsHost) {
+    host.switchToHttp().getResponse().status(409).json({ message: 'already exists', constraint: e.constraintName })
+  }
+}
+```
+
+The request transaction has already rolled back when the filter runs.
+
+## Testing
+
+`rollbackScopeFor(app)` from `@pg-prime/nestjs/testing` pins the application's host on a transaction
+the test owns. Every request, `@Transactional()` and `host.transaction()` until `rollback()` runs in a
+savepoint inside it, and `rollback()` discards all of it:
+
+```ts
+import { Test } from '@nestjs/testing'
+import type { INestApplication } from '@nestjs/common'
+import { rollbackScopeFor, type RollbackScope } from '@pg-prime/nestjs/testing'
+
+// The application module and the runner's hooks (vitest, jest), declared so the block stands alone.
+declare const AppModule: new () => unknown
+declare const beforeAll: (fn: () => Promise<void>) => void
+declare const beforeEach: (fn: () => Promise<void>) => void
+declare const afterEach: (fn: () => Promise<void>) => void
+declare const afterAll: (fn: () => Promise<void>) => void
+
+let app: INestApplication
+let scope: RollbackScope
+beforeAll(async () => {
+  const ref = await Test.createTestingModule({ imports: [AppModule] }).compile()
+  app = ref.createNestApplication()
+  await app.listen(0)
+})
+beforeEach(async () => {
+  scope = await rollbackScopeFor(app)
+})
+afterEach(() => scope.rollback())
+afterAll(() => app.close())
+```
+
+- Requests are isolated from each other's settings, and a failed request rolls back only itself, so
+  a 409 does not break the next one.
+- One request at a time: concurrent requests queue and run in call order. Test real concurrency
+  without a pin. A streaming route keeps streaming and holds the queue until the stream ends or the
+  client hangs up.
+- Code that needs a real `COMMIT` (`NOTIFY`, deferred constraints, a second connection) needs a
+  scratch database. The [pin's caveats](/pg-prime/guides/ambient-transactions/#rollback-per-test)
+  apply unchanged.
+- `rollbackScopeFor(app, name)` pins a named connection.
+
+## Migrating from a hand-written module
+
+A typical hand-written module provides `pgPrime(...)` under a token and ends it in
+`onApplicationShutdown`. Replace it with `PgPrimeModule.forRoot({ db })` (or `config`), keep your
+token by providing it from `getDbToken()`, and move transactions to `@Transactional()` one service at
+a time: explicit `db.transaction(async (tx) => …)` code keeps working, and `host.within(tx, fn)`
+makes `tx` ambient for code that reads the host.
+
+{/* docs: use=blog-schema */}
+```ts
+import { Module } from '@nestjs/common'
+import { PgPrimeModule, getDbToken } from '@pg-prime/nestjs'
+
+export const DB = Symbol('db')
+
+@Module({
+  imports: [PgPrimeModule.forRoot({ config: { connection: process.env['DATABASE_URL']!, schema } })],
+  providers: [{ provide: DB, useExisting: getDbToken() }],
+  exports: [DB],
+})
+export class DatabaseModule {}
+```
+
+## Where to go next
+
+- [Ambient transactions](/pg-prime/guides/ambient-transactions/) — the host, propagation, strict mode
+  and the pin underneath this module.
+- [`@pg-prime/nestjs` reference](/pg-prime/reference/nestjs/) — every export, with its signature.
+- [Transactions and sessions](/pg-prime/guides/transactions/) — `setLocal`, row-level security and
+  the dev guard.

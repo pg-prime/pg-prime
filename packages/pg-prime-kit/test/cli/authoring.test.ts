@@ -16,7 +16,7 @@ import { withClient } from "../../src/db/pg.js";
 import { envelopeOf, runCli, urlOf } from "../support/cli.js";
 import { dbConn, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
 import { BASE_SCHEMA, makeProject, type Project } from "./_project.js";
-import { AUTHORING_MASKED, mask } from "./_mask.js";
+import { AUTHORING_MASKED, MASK, mask } from "./_mask.js";
 
 const T = 240_000;
 
@@ -24,6 +24,12 @@ const golden = (value: unknown): string => `${JSON.stringify(mask(value, AUTHORI
 const expectGolden = async (name: string, envelope: unknown): Promise<void> => {
   await expect(golden(envelope)).toMatchFileSnapshot(`./golden/${name}.json`);
 };
+
+/** Roles are cluster-wide, so any other suite moves doctor's role count; the kind stays evidence. */
+const withoutClusterRoles = (envelope: Record<string, unknown>): Record<string, unknown> => ({
+  ...envelope,
+  observed: (envelope["observed"] as { kind: string }[]).map((o) => (o.kind === "role" ? { ...o, count: MASK } : o)),
+});
 
 const databases: string[] = [];
 const projects: Project[] = [];
@@ -438,7 +444,7 @@ CREATE INDEX CONCURRENTLY widgets_name_idx ON public.widgets (name);
       const healthy = await cli(p, "doctor");
       expect(healthy.code, healthy.stdout + healthy.stderr).toBe(EXIT.ok);
       expect(envelopeOf(healthy)["status"]).toBe("healthy");
-      await expectGolden("doctor.healthy", envelopeOf(healthy));
+      await expectGolden("doctor.healthy", withoutClusterRoles(envelopeOf(healthy)));
 
       // An INVALID index is what a killed `CREATE INDEX CONCURRENTLY` leaves behind, and
       // it is the finding `doctor` exists for. Manufactured deterministically: a unique
@@ -456,7 +462,7 @@ CREATE INDEX CONCURRENTLY widgets_name_idx ON public.widgets (name);
       // The table was created behind the migration history's back, so the fingerprint of
       // record no longer describes this database. Both findings, one report.
       expect((e["history"] as { drift: boolean }).drift).toBe(true);
-      await expectGolden("doctor.findings", e);
+      await expectGolden("doctor.findings", withoutClusterRoles(e));
     },
     T,
   );

@@ -1,0 +1,247 @@
+---
+title: "Queues"
+description: Sending, working, retries, dedup, groups, flows, transactional completion and topic bindings with @pg-prime/mq.
+---
+
+import { Aside } from '@astrojs/starlight/components'
+
+`@pg-prime/mq` keeps work queues in your database. A send is one insert that joins your
+transaction; workers claim with `SKIP LOCKED`, hold a lease with a token, and settle with one
+statement. Everything here is at-least-once, and exactly-once for effects in the same database.
+
+## Send and work
+
+{/* docs: use=blog */}
+```ts title="send-and-work.ts"
+import { defineQueue, pgMq } from '@pg-prime/mq'
+
+const emails = defineQueue<{ to: string }, string>('emails')
+const mq = pgMq({ db, define: { emails } })
+await mq.start()
+
+await mq.queues.emails.send({ to: 'ada@example.com' })
+await db.transaction(async (tx) => {
+  await mq.queues.emails.send({ to: 'grace@example.com' }, { tx, priority: -1, delayMs: 10 })
+})
+
+const worker = mq.queues.emails.work(async (m) => `sent to ${m.payload.to}`, {
+  concurrency: 4,
+  pollMs: 50,
+})
+while ((await mq.queues.emails.counts()).completed < 2) await new Promise((r) => setTimeout(r, 20))
+await worker.close()
+console.log((await mq.queues.emails.list({ state: 'completed' })).map((m) => m.result))
+// [ 'sent to ada@example.com', 'sent to grace@example.com' ]
+await db.end()
+```
+
+`await mq.start()` once at boot migrates the `pgprime_mq` schema and records each declared
+queue's limits and retention. Calls without `{ tx }` start lazily; a `{ tx }` call before
+`start()` throws `NotStartedError`. A send inside your transaction is invisible, and wakes
+nobody, until it commits.
+
+Claims take the lowest `priority` first, then FIFO (`lifo: true` per message reverses it).
+`delayMs` and `runAt` are compared on the database clock.
+
+## Retries and the dead-letter state
+
+A handler that throws is retried with backoff (`retry: { maxAttempts: 3, baseDelayMs: 1000,
+maxDelayMs: 60_000, jitter: 'full' }`, also per message). After the last attempt, or at once for a
+`NonRetryableError`, the message is `failed`: list it, `retry` it or `purge` it.
+
+{/* docs: use=blog */}
+```ts title="retries.ts"
+import { NonRetryableError, defineQueue, pgMq } from '@pg-prime/mq'
+
+const jobs = defineQueue<{ n: number }>('jobs', {
+  retry: { maxAttempts: 2, baseDelayMs: 10, maxDelayMs: 10 },
+})
+const mq = pgMq({ db, define: { jobs } })
+await mq.queues.jobs.sendMany([{ payload: { n: 1 } }, { payload: { n: 2 } }])
+const worker = mq.queues.jobs.work(async (m, ctx) => {
+  if (m.payload.n === 2) throw new NonRetryableError('bad input')
+  if (ctx.attempt === 1) throw new Error('flaky')
+}, { pollMs: 20 })
+while ((await mq.queues.jobs.counts()).completed + (await mq.queues.jobs.counts()).failed < 2) {
+  await new Promise((r) => setTimeout(r, 20))
+}
+await worker.close()
+console.log((await mq.queues.jobs.list({ state: 'failed' })).map((m) => m.error))
+// [ 'bad input' ]
+await db.end()
+```
+
+A worker that dies mid-handler stops heartbeating; once its lease expires, a scanner counts the
+attempt and re-queues the message with backoff, or fails it on the last attempt.
+
+## Deduplication
+
+`key` names a message; with `dedup` it is also a dedup key. `'until-done'` holds the key until
+the message finishes, `{ windowMs }` throttles, and `{ windowMs, extend: true }` debounces.
+A duplicate returns the existing message with `deduplicated: true`.
+
+{/* docs: use=blog */}
+```ts title="dedup.ts"
+import { defineQueue, pgMq } from '@pg-prime/mq'
+
+const reindex = defineQueue<{ table: string }>('reindex')
+const mq = pgMq({ db, define: { reindex } })
+const a = await mq.queues.reindex.send({ table: 'users' }, { key: 'users', dedup: 'until-done' })
+const b = await mq.queues.reindex.send({ table: 'users' }, { key: 'users', dedup: 'until-done' })
+console.log(b.id === a.id, b.deduplicated)
+// true true
+await db.end()
+```
+
+## Groups and limits
+
+`group` makes messages FIFO within the group, and workers and manual `claim()` serve groups
+round-robin. A worker's
+`group: { concurrency, rate }` sets the default per group; `setGroupLimits(key, …)` overrides one
+group, and `pauseGroup` stops one. A queue's `concurrency` and `rate` are global across every
+worker and apply to grouped messages too.
+
+{/* docs: use=blog */}
+```ts title="groups.ts"
+import { defineQueue, pgMq } from '@pg-prime/mq'
+
+const sync = defineQueue<{ tenant: string; n: number }>('sync', { concurrency: 4 })
+const mq = pgMq({ db, define: { sync } })
+await mq.queues.sync.sendMany(
+  ['acme', 'acme', 'globex'].map((tenant, n) => ({ payload: { tenant, n }, opts: { group: tenant } })),
+)
+const order: string[] = []
+const worker = mq.queues.sync.work(async (m) => void order.push(`${m.payload.tenant}:${m.payload.n}`), {
+  concurrency: 4,
+  pollMs: 20,
+  group: { concurrency: 1 },
+})
+while (order.length < 3) await new Promise((r) => setTimeout(r, 20))
+await worker.close()
+console.log(order.filter((o) => o.startsWith('acme')))
+// [ 'acme:0', 'acme:1' ]
+await db.end()
+```
+
+## Flows
+
+`mq.flow` inserts a parent and its children in one statement. The parent waits (`blocked`) until
+every child has resolved, then runs and reads `ctx.childResults()`. A child's `onFail` decides what
+its failure does: `'wait'` keeps the parent waiting (retry the child), `'ignore'` releases it, and
+`'fail'` fails the parent too. A running handler can `ctx.spawn` children and return
+`ctx.waitForChildren()`.
+
+{/* docs: use=blog */}
+```ts title="flows.ts"
+import { defineQueue, pgMq } from '@pg-prime/mq'
+
+const resize = defineQueue<{ size: number }, string>('resize')
+const publish = defineQueue<{ post: string }, number>('publish')
+const mq = pgMq({ db })
+const root = await mq.flow({
+  queue: publish,
+  payload: { post: 'hello' },
+  children: [
+    { queue: resize, payload: { size: 64 } },
+    { queue: resize, payload: { size: 512 } },
+  ],
+})
+const workers = [
+  mq.queue(resize).work(async (m) => `${m.payload.size}px`, { pollMs: 20, concurrency: 2 }),
+  mq.queue(publish).work(async (_m, ctx) => Object.keys(await ctx.childResults()).length, {
+    pollMs: 20,
+  }),
+]
+while ((await mq.queue(publish).get(root))?.state !== 'completed') {
+  await new Promise((r) => setTimeout(r, 20))
+}
+await Promise.all(workers.map((w) => w.close()))
+console.log((await mq.queue(publish).get(root))?.result)
+// 2
+await db.end()
+```
+
+## Exactly-once effects in the same database
+
+`ctx.transaction(fn)` runs your writes and the completion in one transaction: either both commit
+or the message is retried. `ctx.complete(result, { tx })` does the same inside a transaction you
+open. It must be the transaction's last statement, and it is refused on a queue with a global
+`concurrency`.
+
+{/* docs: use=blog,blog-ddl */}
+```ts title="transactional-completion.ts"
+import { defineQueue, pgMq } from '@pg-prime/mq'
+
+const signups = defineQueue<{ email: string }>('signups')
+const mq = pgMq({ db, define: { signups } })
+await mq.queues.signups.send({ email: 'ada@example.com' })
+const worker = mq.queues.signups.work(
+  (m, ctx) =>
+    ctx.transaction(async (tx) => {
+      await tx.insertInto(tx.h.users).values({ email: m.payload.email, name: 'Ada' }).execute()
+    }),
+  { pollMs: 20 },
+)
+while ((await mq.queues.signups.counts()).completed < 1) await new Promise((r) => setTimeout(r, 20))
+await worker.close()
+console.log(await db.from(db.h.users).select(({ users: u }) => ({ email: u.email })).execute())
+// [ { email: 'ada@example.com' } ]
+await db.end()
+```
+
+<Aside>
+If the connection drops during that `COMMIT`, the outcome is unknown. The worker re-reads the
+message: completed means the transaction committed; still ours means it rolled back with your
+writes, so the attempt counts as failed and the handler runs again. It is never acknowledged
+without your writes.
+</Aside>
+
+## Topic → queue bindings
+
+`mq.bind(subscription, queue)` runs an `@pg-prime/events` subscription whose batches are sent as
+messages in the same transaction as the offset commit, so every matching entry becomes exactly one
+message, with retries, priorities and groups (`group: e.key` keeps per-key order).
+
+{/* docs: use=blog */}
+```ts title="bind.ts"
+import { defineSubscription, defineTopic, pgEvents } from '@pg-prime/events'
+import { defineQueue, pgMq } from '@pg-prime/mq'
+
+const orders = defineTopic<{ id: string }>('orders')
+const invoices = defineQueue<{ order: string }>('invoices')
+const events = pgEvents({ db })
+const mq = pgMq({ db, events })
+const binding = mq.bind(defineSubscription(orders, 'invoices', { from: 'beginning' }), invoices, {
+  map: (e) => ({ payload: { order: e.payload.id }, group: e.payload.id }),
+  pollMs: 20,
+})
+await events.topic(orders).publish({ id: 'o-1' })
+while ((await mq.queue(invoices).counts()).ready < 1) await new Promise((r) => setTimeout(r, 20))
+await binding.close()
+console.log((await mq.queue(invoices).list()).map((m) => m.payload))
+// [ { order: 'o-1' } ]
+await db.end()
+```
+
+## Watching and results
+
+A queue declared with `watch: true` sends `{ id, state }` on every transition, from every process.
+`handle.result(ref)` resolves with a message's result, re-reading the row on every gap and every
+`pollMs`, so a lost notification costs latency, never a hang; `handle.watch(handler)` is a live,
+best-effort stream.
+
+{/* docs: use=blog no-run="needs a worker in a second process; proven by 'resolves within 100 ms of the completion' in packages/pg-prime-mq/test/pg/listen-gap.test.ts" */}
+```ts title="result.ts"
+import { defineQueue, pgMq } from '@pg-prime/mq'
+
+const report = defineQueue<{ month: string }, string>('report', { watch: true })
+const mq = pgMq({ db, define: { report } })
+const ref = await mq.queues.report.send({ month: '2026-09' })
+console.log(await mq.queues.report.result(ref, { timeoutMs: 60_000 }))
+```
+
+## Vendoring the schema into kit
+
+`migrationSql({ schema })` returns the schema as migration files. Write them into your kit
+migrations and they converge with `mq.migrate()`; keep `autoMigrate: false` where the application
+must not run DDL.

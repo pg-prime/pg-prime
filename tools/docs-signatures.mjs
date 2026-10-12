@@ -44,36 +44,23 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { ROOT, readAllPages } from './docs-blocks.mjs'
+import { PACKAGES } from './packages.mjs'
 
 const require = createRequire(import.meta.url)
 const ts = require('typescript59')
 const LIST = process.argv.includes('--list')
 
-const PACKAGE_DIRS = {
-  'pg-prime': 'pg-prime',
-  '@pg-prime/kit': 'pg-prime-kit',
-  '@pg-prime/create': 'pg-prime-create',
-  '@pg-prime/testing': 'pg-prime-testing',
-}
-
 /** `pg-prime#./codecs` → the built `.d.ts` path, from the package's own exports map. */
 function entryDtsPaths() {
   const out = new Map()
-  for (const file of [
-    'pg-prime.json',
-    'pg-prime-kit.json',
-    'pg-prime-create.json',
-    'pg-prime-testing.json',
-  ]) {
+  for (const { dir, golden: file, pkg } of PACKAGES) {
     const golden = JSON.parse(readFileSync(join(ROOT, 'tools', 'api-snapshot', file), 'utf8'))
-    const dir = join(ROOT, 'packages', PACKAGE_DIRS[golden.package])
-    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
     for (const subpath of Object.keys(golden.entries)) {
       const exp = pkg.exports?.[subpath]
       // `types@<5.9` is the stub; `types` is the real surface — the one the docs describe.
       const types = exp?.types
       if (typeof types !== 'string') continue
-      out.set(`${golden.package}#${subpath}`, join(dir, types))
+      out.set(`${golden.package}#${subpath}`, join(ROOT, dir, types))
     }
   }
   return out

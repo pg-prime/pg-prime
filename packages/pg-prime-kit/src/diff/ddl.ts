@@ -1,4 +1,4 @@
-import type { Diagnostic } from "../catalog/extract.js";
+import { coverageLost, covers, RLS_COMMANDS, type Diagnostic, type LaneState } from "../catalog/extract.js";
 import { GENERATED_NAME } from "../catalog/payloads.js";
 import type {
   ColumnPayload,
@@ -74,6 +74,13 @@ export interface BuildOptions {
    * registry and passes it here, the same route `renamedFrom` takes to `renameHints`.
    */
   readonly noConcurrentIndexes?: ReadonlySet<string>;
+  /**
+   * The target's RLS / declared-lane state and the after-state (design/20 D25), from
+   * `readLaneState` / `afterLaneState`. Turns on RL101/RL102 for `ENABLE ROW LEVEL SECURITY`, RL106
+   * for a drop or retype a policy depends on, and the `pgprime_set_<col>` trigger pre-drop before a
+   * column drop or rename.
+   */
+  readonly lane?: { readonly before: LaneState; readonly after: LaneState };
 }
 
 const id = encodeId;
@@ -87,6 +94,9 @@ function evaluatesOf(ir: SchemaIR, subject: StableId): string[] {
 
 /* -------------------------- column clause -------------------------- */
 
+/** A collation outside `pg_catalog` arrives already quoted and qualified. */
+const collationSql = (name: string): string => (name.startsWith('"') ? name : quoteIdent(name));
+
 export function columnClause(
   colId: StableId & { kind: "column" },
   p: ColumnPayload,
@@ -94,7 +104,7 @@ export function columnClause(
   defaultExpr: string | null = null,
 ): string {
   const bits = [quoteIdent(colId.name), p.type];
-  if (p.collation) bits.push(`COLLATE ${quoteIdent(p.collation)}`);
+  if (p.collation) bits.push(`COLLATE ${collationSql(p.collation)}`);
   if (p.generated === "s" && p.generationExpr) {
     bits.push(`GENERATED ALWAYS AS (${p.generationExpr}) STORED`);
   } else if (p.identity) {
@@ -140,6 +150,15 @@ const VOLATILE_BUILTINS =
 
 export function mentionsVolatileFunction(expression: string): boolean {
   return VOLATILE_BUILTINS.test(expression);
+}
+
+/** Literals, then identifiers with any leading `.`, so a qualifier or a string never matches a column. */
+const DEF_TOKENS = /'(?:[^']|'')*'|\.?(?:"(?:[^"]|"")*"|[\w$]+)/g;
+
+/** Whether a constraint or index definition names column `col`: textual, so it can over-report. */
+function namesColumn(definition: string, col: string): boolean {
+  const quoted = quoteIdent(col);
+  return (definition.match(DEF_TOKENS) ?? []).some((t) => t === col || t === quoted);
 }
 
 /** The `default` fact hanging off a column, if the IR has one. */
@@ -190,6 +209,23 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
   const isVolatile = (defaultId: string, expression: string): boolean =>
     volatileDefaults.size > 0 ? volatileDefaults.has(defaultId) : mentionsVolatileFunction(expression);
   const emptyTables = options.emptyTables ?? new Set<string>();
+  const lane = options.lane;
+  const losses = lane === undefined ? [] : coverageLost(lane.before, lane.after, emptyTables);
+  /** RL102: a role the after-state covers and the target's policies do not sees 0 rows until the lane commits. */
+  const enableWindow = (t: StableId & { kind: "table" }): boolean =>
+    lane !== undefined &&
+    !emptyTables.has(id(t)) &&
+    lane.after.policies.some(
+      (p) =>
+        p.schema === t.schema &&
+        p.table === t.name &&
+        p.permissive &&
+        p.roles.some((role) =>
+          RLS_COMMANDS.some(
+            (c) => (p.command === "all" || p.command === c) && !covers(lane.before, t.schema, t.name, role, c),
+          ),
+        ),
+    );
 
   const createdTables = new Set(
     diff.deltas.filter((d) => d.op === "create" && d.id.kind === "table").map((d) => id(deltaId(d))),
@@ -261,10 +297,41 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
     return [...new Set(out)].filter((x) => x !== id(subject));
   };
 
+  /* plpgsql bodies have no `pg_depend` edge: a marked updatedAt trigger on a column being dropped
+   * or renamed fails every UPDATE until the lane recreates it (design/20 §6). */
+  const updatedAt = new Set(
+    (lane?.before.updatedAtTriggers ?? []).map((t) =>
+      id({ kind: "column", schema: t.schema, table: t.table, name: t.column }),
+    ),
+  );
+  const dropUpdatedAt = (c: StableId & { kind: "column" }): void => {
+    if (!updatedAt.has(id(c))) return;
+    statements.push(
+      simple(`DROP TRIGGER IF EXISTS ${quoteIdent(`pgprime_set_${c.name}`)} ON ${quoteQualified(c.schema, c.table)}`, {
+        verb: "drop",
+        kind: "trigger",
+        consumes: [id({ kind: "table", schema: c.schema, name: c.table })],
+        releases: [id(c)],
+        lockClass: "shareRowExclusive",
+        idempotent: true,
+        phase: PHASE.rename,
+      }),
+    );
+    diagnostics.push({
+      code: "updated_at_trigger_dropped",
+      severity: "info",
+      subject: id(c),
+      message:
+        `${c.schema}.${c.table}.${c.name} carries a declared updatedAt trigger; it is dropped before the ` +
+        `column changes, and updates do not bump the column until the declared lane recreates it`,
+    });
+  };
+
   /* ---- 0. RENAMEs, from the annotations (D5) — always first ---- */
   for (const r of diff.renames) {
     const from = parseId(r.from);
     const to = parseId(r.to);
+    if (from.kind === "column") dropUpdatedAt(from);
     if (from.kind === "table" && to.kind === "table") {
       statements.push({
         sql: `ALTER TABLE ${quoteQualified(from.schema, from.name)} RENAME TO ${quoteIdent(to.name)}`,
@@ -875,9 +942,26 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
               statements.push(
                 simple(
                   `ALTER TABLE ${quoteQualified(t.schema, t.name)} ${a.rowSecurity ? "ENABLE" : "DISABLE"} ROW LEVEL SECURITY`,
-                  { verb: "alter", kind: "table", consumes: [id(t)], phase: PHASE.alterTable },
+                  {
+                    verb: "alter",
+                    kind: "table",
+                    consumes: [id(t)],
+                    phase: PHASE.alterTable,
+                    hazards: !a.rowSecurity ? ["RL103"] : enableWindow(t) ? ["RL102"] : [],
+                  },
                 ),
               );
+              for (const l of losses) {
+                if (!a.rowSecurity || l.code !== "RL101" || l.schema !== t.schema || l.table !== t.name) continue;
+                diagnostics.push({
+                  code: "RL101",
+                  severity: "error",
+                  subject: l.subject,
+                  message:
+                    `enabling row-level security on ${t.schema}.${t.name} leaves ${l.role} with no permissive ` +
+                    `${l.command.toUpperCase()} policy, and the table is not proven empty`,
+                });
+              }
             }
             if ((b.clusterOn ?? null) !== (a.clusterOn ?? null)) {
               statements.push(
@@ -1002,6 +1086,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
           case "column": {
             if (droppedTables.has(parentTableId(f.id)!)) break;
             const c = f.id as StableId & { kind: "column" };
+            dropUpdatedAt(c);
             statements.push({
               sql: `ALTER TABLE ${quoteQualified(c.schema, c.table)} DROP COLUMN IF EXISTS ${quoteIdent(c.name)}`,
               verb: "drop",
@@ -1091,7 +1176,25 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
     }
   }
 
-  return { statements, diagnostics };
+  return { statements: policyDependents(statements, lane?.before), diagnostics };
+}
+
+/** RL106: a drop or retype a policy on a surviving table depends on (`pg_depend`) fails at apply. */
+function policyDependents(statements: Statement[], before: LaneState | undefined): Statement[] {
+  if (before === undefined) return statements;
+  const destroyed = new Set(statements.flatMap((s) => (s.verb === "drop" ? s.destroys : [])));
+  const deps = new Set(
+    before.policies
+      .filter((p) => !destroyed.has(id({ kind: "table", schema: p.schema, name: p.table })))
+      .flatMap((p) => p.dependsOn),
+  );
+  return statements.map((s) => {
+    const hit =
+      s.kind === "column" && s.verb === "alter"
+        ? / TYPE /.test(s.sql) && deps.has(s.consumes[0] ?? "")
+        : s.verb === "drop" && (s.kind === "column" || s.kind === "table") && s.destroys.some((d) => deps.has(d));
+    return hit ? { ...s, hazards: [...s.hazards, "RL106"] } : s;
+  });
 }
 
 /* ----------------------------- helpers ------------------------------ */
@@ -1846,12 +1949,27 @@ function alterColumn(
       ...extra,
     });
 
-  if (b.type !== a.type || b.collation !== a.collation) {
-    const collate = a.collation ? ` COLLATE ${quoteIdent(a.collation)}` : "";
+  const collate = a.collation ? ` COLLATE ${collationSql(a.collation)}` : "";
+  if (b.type !== a.type) {
     out.push(
       mk(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${a.type}${collate} USING ${col}::${a.type}`, {
         rewrite: true,
         hazards: ["LK108", "MF105", "BC103"],
+      }),
+    );
+  } else if (b.collation !== a.collation) {
+    // Same type: no table rewrite, but the column's indexes are rebuilt and its CHECKs re-checked.
+    const tableId = { kind: "table", schema: c.schema, name: c.table } as const;
+    const mayFail =
+      !emptyTables.has(id(tableId)) &&
+      desired.childrenOf(tableId).some((f) => {
+        const p = f.payload as unknown as IndexPayload | ConstraintPayload;
+        const guards = p.kind === "index" ? p.unique : p.kind === "constraint" && "pucx".includes(p.contype);
+        return guards && namesColumn(p.definition, c.name);
+      });
+    out.push(
+      mk(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${a.type}${collate}`, {
+        hazards: mayFail ? ["LK113", "MF107"] : ["LK113"],
       }),
     );
   }

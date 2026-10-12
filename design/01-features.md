@@ -179,7 +179,7 @@ This is where we pay back the Unit of Work we deliberately don't have. UoW's two
 | `upsert` / `upsertMany` on `INSERT … ON CONFLICT DO UPDATE` with exposed conflict target | **v1** | Conflict target by column list, constraint name, or expression; partial-index `WHERE` supported. |
 | `excluded` synthesised as a typed virtual table in `DO UPDATE SET` | **v1** | `set: { name: excluded.name }` typechecks against the target table. |
 | `RETURNING` reuses the full select expression language | **v1** | Any expression valid in `SELECT` is valid in `RETURNING`; no weaker second language. |
-| Optimistic concurrency without change tracking: `.ifVersion(n)` | **v1** | Emits `WHERE version = $n`, throws a typed conflict error on zero rows affected. |
+| Optimistic concurrency without change tracking: `.ifVersion(t => t.rev, n)` on update/delete | **v1** | ANDs `<expr> = $n` into the `WHERE` (still needs `.where()`/`.allRows()`); the runner throws `VersionConflictError` when the command tag reports 0 rows, on every execute path. No automatic bump. `executeRowCount()` returns the tag's count. |
 | Parameter-limit chunking with a single logical result | **v1** | >65535 parameters is transparently chunked inside a transaction, not an error the user must handle. |
 | `saveGraph(root)` — topologically sorted single-graph write | **v1.x** | — |
 | Nested writes (`create`/`connect`/`connectOrCreate` in one call) | **v1.x** | — |

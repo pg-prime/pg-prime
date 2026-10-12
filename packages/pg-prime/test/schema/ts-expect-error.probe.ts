@@ -4,7 +4,7 @@
  * build. This file is typechecked (not run) on TS 5.9.3 and TS 7.0.2.
  */
 import type { Insertable, Loaded } from '../../src/schema/index.js'
-import { defineRelations, pgTable, text } from '../../src/schema/index.js'
+import { citext, defineRelations, integer, jsonb, pgTable, raw, text } from '../../src/schema/index.js'
 import { posts, users, type PostsH, type UsersH } from './fixture.js'
 
 declare const full: Loaded<UsersH, 'posts'>
@@ -89,6 +89,21 @@ const badDefault = text().default(1)
 // @ts-expect-error — an array column's default must be an array of the element type
 const badArrayDefault = text().array().default(['a', 1])
 
+// ── .collate() only on collatable types ─────────────────────────────────────
+export const collatable = [
+  text().collate('C'),
+  text().array().collate('C'),
+  citext().collate('C'),
+  raw('character(4)').collate('C'),
+  raw('character(4)').array().collate('C'),
+]
+
+// @ts-expect-error — an integer has no collation
+const badCollateInt = integer().collate('C')
+
+// @ts-expect-error — nor does jsonb
+const badCollateJson = jsonb().collate('C')
+
 // ── defineRelations: `to` is a registry key, checked at declaration ─────────
 export const badRels = defineRelations({ users, posts }, (r) => ({
   // @ts-expect-error — 'comments' is not in this registry
@@ -108,6 +123,8 @@ export type _Probes = [
   typeof good,
   typeof badDefault,
   typeof badArrayDefault,
+  typeof badCollateInt,
+  typeof badCollateJson,
   Nope,
   NoCol,
 ]

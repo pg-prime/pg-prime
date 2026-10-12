@@ -27,5 +27,7 @@
   "deltas": [
     "create column:public.widgets.colour"
   ],
+  "census": [],
+  "warnings": [],
   "error": null
 }

@@ -15,7 +15,10 @@ export interface TablePayload extends Payload {
   readonly relkind: "r" | "p";
   /** `pg_class.relpersistence`: `p` permanent, `u` unlogged, `t` temp */
   readonly persistence: string;
-  /** `pg_class.relrowsecurity` */
+  /**
+   * `pg_class.relrowsecurity`. FORCE is not here: hashing it would move the fingerprint of every
+   * FORCE'd database (design/20 D4); `readLaneState` reads it instead.
+   */
   readonly rowSecurity: boolean;
   /**
    * `pg_partitioned_table.partstrat` — `r` range, `l` list, `h` hash — null when this
@@ -112,7 +115,10 @@ export interface ColumnPayload extends Payload {
   readonly identity: string | null;
   /** `pg_attribute.attgenerated`: `s` stored, `v` virtual (PG 18), null = not generated */
   readonly generated: string | null;
-  /** `pg_collation.collname`, only when it differs from the type's own collation */
+  /**
+   * `pg_collation.collname`, only when it differs from the type's own collation. Outside
+   * `pg_catalog` it is the quoted qualified name, `"schema"."name"`.
+   */
   readonly collation: string | null;
 }
 
