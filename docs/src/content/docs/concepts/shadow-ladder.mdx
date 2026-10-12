@@ -74,7 +74,8 @@ phantom diff. The locale row is read as `to_jsonb(pg_database)` so that `daticul
 `TEMPLATE template0` is required whenever the locale is stated explicitly, and it is also the
 spelling least likely to hit SQLSTATE `55006` — `CREATE DATABASE … TEMPLATE x` fails if *any* session
 is connected to the template, and nobody connects to `template0`. If it fires anyway, `auto` demotes
-to tier 3 rather than terminating somebody else's sessions.
+to tier 3 rather than terminating somebody else's sessions. So it does when the admin database
+(`postgres`) refuses the connection, as on a cluster that revoked `CONNECT` from `PUBLIC`.
 
 The shadow is dropped when the run ends.
 
@@ -166,8 +167,8 @@ export default defineConfig({
 `auto` decides in three steps:
 
 1. a URL was supplied → **tier 1**;
-2. `rolcreatedb OR rolsuper` on `current_user` → **tier 2** (demoting to tier 3 if `CREATE DATABASE`
-   raises `55006`);
+2. `rolcreatedb OR rolsuper` on `current_user`, read on the target → **tier 2** (demoting to tier 3
+   on `55006`, or when the admin database is closed to the role or absent: `42501`, `3D000`);
 3. otherwise → **tier 3**.
 
 `--shadow createdb` and `--shadow temp-schema` pin a tier instead of choosing one, which is what you

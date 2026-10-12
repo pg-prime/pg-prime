@@ -132,7 +132,7 @@ PostgreSQL is obtained.
 
 | Value | Tier | What it does |
 |---|---|---|
-| `"auto"` | 2, demoting to 3 | Uses `CREATE DATABASE` when the role has `CREATEDB`; falls back to the temp-schema tier on SQLSTATE `55006`, because the sessions attached to the template belong to somebody else. This is the default and it is almost always right. |
+| `"auto"` | 2, demoting to 3 | Uses `CREATE DATABASE` when the role has `CREATEDB`; falls back to the temp-schema tier on SQLSTATE `55006`, because the sessions attached to the template belong to somebody else, and when the admin database refuses the connection (`42501`, `3D000`). This is the default and it is almost always right. |
 | `"postgres://…"` or `{ url }` | 1 | A shadow database you supply. Both spellings are the same thing; see below. |
 | `"createdb"` | 2 | `CREATE DATABASE pgprime_shadow_<token>` with the target's locale copied. Copying the locale is not cosmetic: a different `LC_COLLATE` normalises index and constraint definitions differently, and every one of those is a phantom diff. |
 | `"temp-schema"` | 3 | `CREATE SCHEMA pgprime_shadow_<token>_<name>` **inside the target database**. Needs no `CREATEDB`, which is why the ladder exists at all. |

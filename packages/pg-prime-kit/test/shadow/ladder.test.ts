@@ -103,6 +103,21 @@ describe("tier selection", () => {
   );
 
   it(
+    "auto demotes to tier 3 when the role has CREATEDB but cannot reach the admin database",
+    async () => {
+      const admin = { ...ADMIN, database: `${PREFIX}unreachable` };
+      const shadow = await provisionShadow(admin, target, { schemas: SCHEMAS });
+      try {
+        expect(shadow.tier).toBe(3);
+        expect(shadow.reason).toContain("3D000");
+      } finally {
+        await shadow.dispose();
+      }
+    },
+    T,
+  );
+
+  it(
     "tier 2 copies the target's encoding and collation",
     async () => {
       const shadow = await provisionShadow(ADMIN, target, { schemas: SCHEMAS, shadow: "createdb" });
@@ -255,7 +270,9 @@ describe("tier 3 — a role WITHOUT CREATEDB (design/06 §3.2's managed-PostgreS
     "auto demotes to tier 3, loads the whole corpus, and reverses the map on the IR",
     async () => {
       const conn = asRole();
-      const shadow = await provisionShadow(conn, conn, { schemas: SCHEMAS, token: "cafe1234" });
+      // An admin database the role cannot reach, like `postgres` with CONNECT revoked from PUBLIC.
+      const admin = { ...conn, database: `${PREFIX}unreachable` };
+      const shadow = await provisionShadow(admin, conn, { schemas: SCHEMAS, token: "cafe1234" });
       let disposed = false;
       try {
         expect(shadow.tier).toBe(3);
