@@ -1,6 +1,6 @@
 {
   "name": "@pg-prime/context",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Ambient transactions for pg-prime on AsyncLocalStorage: a TransactionHost with propagation and scoped settings. Pre-alpha — the API will change.",
   "keywords": [
     "async-local-storage",
@@ -52,7 +52,7 @@
     "vitest": "^4.1.10"
   },
   "peerDependencies": {
-    "pg-prime": ">=0.2.0"
+    "pg-prime": ">=0.2.1"
   },
   "engines": {
     "node": ">=22.12"
