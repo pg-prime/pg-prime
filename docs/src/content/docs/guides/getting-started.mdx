@@ -132,7 +132,7 @@ pg-prime migrate generate --name init
 
 ```text frame="terminal"
 migrate generate — app (shadow tier 2: the admin role has CREATEDB)
-  0000_init.sql  main  7 statements  txmode transactional
+  0000_init.sql  main  6 statements  txmode transactional
   proof    passed
   witness  passed
 ```
@@ -158,7 +158,7 @@ The file it wrote is readable SQL with a header. Nothing is hidden in a binary j
 -- pg-prime:from      sha256:bcb83d0e69a2603084b68c868f2ae1ffa396f30223c9b258bb6606bfa4008926
 -- pg-prime:to        sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392
 -- pg-prime:txmode    transactional
--- pg-prime:timeout   lock=3s statement=per-statement
+-- pg-prime:timeout   lock=3s statement=30s
 -- pg-prime:requires-pg 150000
 
 SET search_path = pg_catalog;
@@ -177,16 +177,13 @@ CREATE TABLE "public"."posts" (
 -- … users, then the primary keys and the unique index …
 
 -- pg-prime:stmt 5 lock=accessExclusive non-idempotent
-ALTER TABLE "public"."posts" ADD CONSTRAINT "posts_author_id_fkey" FOREIGN KEY (author_id) REFERENCES public.users(id) NOT VALID;
-
--- pg-prime:stmt 6 lock=shareUpdateExclusive idempotent
-ALTER TABLE "public"."posts" VALIDATE CONSTRAINT "posts_author_id_fkey";
+ALTER TABLE "public"."posts" ADD CONSTRAINT "posts_author_id_fkey" FOREIGN KEY (author_id) REFERENCES public.users(id);
 ```
 
-The foreign key is added `NOT VALID` and validated in a second statement. That is not a stylistic
-choice: `ADD FOREIGN KEY` on a populated table holds a `SHARE ROW EXCLUSIVE` lock for the whole
-scan, and `NOT VALID` + `VALIDATE` takes a weaker lock and lets writes continue. pg-prime rewrites
-to the lock-safe form by default, and `migrate lint` explains any hazard it could not rewrite away.
+The foreign key is added in one statement because both tables are new: there are no rows to scan
+and nobody to block. On a table that already exists, `ADD FOREIGN KEY` holds a `SHARE ROW EXCLUSIVE`
+lock for the whole scan, so pg-prime writes it as `NOT VALID` + `VALIDATE`, which takes a weaker lock
+and lets writes continue. `migrate lint` explains any hazard it could not rewrite away.
 
 ## Apply it
 
@@ -197,7 +194,7 @@ pg-prime migrate apply
 ```text frame="terminal"
 migrate apply — app @ localhost:5432
 applied 1 migration in 136 ms:
-  0000_init  transactional  7 statements  14 ms
+  0000_init  transactional  6 statements  14 ms
   fingerprint  sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392
 ```
 

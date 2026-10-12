@@ -801,7 +801,8 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
             break;
           }
           case "index": {
-            statements.push(...createIndex(f, desired, [], indexConcurrentOk(desired, f.id)));
+            const fresh = createdTables.has(indexTableId(desired, f.id) ?? "");
+            statements.push(...createIndex(f, desired, [], indexConcurrentOk(desired, f.id), fresh));
             break;
           }
           default:
@@ -1619,7 +1620,8 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
   // a predicate the existing rows may violate, and it is the statement a reviewer has to
   // acknowledge. LK105/LK106 are what the rewrite ITSELF prevents, so they are recorded
   // only when `--no-safe-rewrite` puts the literal form back (see the fall-through).
-  if ((p.contype === "f" || p.contype === "c") && p.validated && !noSafeRewrite) {
+  // A table this plan creates is empty and unseen, so the literal ADD below is already safe.
+  if ((p.contype === "f" || p.contype === "c") && p.validated && !onFreshTable && !noSafeRewrite) {
     return [
       {
         ...base,
@@ -1845,6 +1847,7 @@ function createIndex(
   desired: SchemaIR,
   extraHazards: readonly string[] = [],
   concurrent = false,
+  fresh = false,
 ): Statement[] {
   const p = f.payload as unknown as IndexPayload;
   const i = f.id as StableId & { kind: "index" };
@@ -1876,7 +1879,7 @@ function createIndex(
         // LK101 is what the rewrite PREVENTS, so it rides on the literal form only —
         // reachable under `--no-safe-rewrite`, on a single-file caller, and wherever the
         // rewrite is refused (a partitioned parent, a definition we will not rewrite).
-        hazards: ["LK101", ...extraHazards],
+        hazards: fresh ? [...extraHazards] : ["LK101", ...extraHazards],
       },
     ];
   }

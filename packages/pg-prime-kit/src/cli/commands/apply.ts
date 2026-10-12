@@ -191,9 +191,11 @@ function text(config: ResolvedConfig, r: ApplyPendingResult): string {
       break;
     case "up_to_date":
       lines.push(
-        r.lock.acquired
-          ? "nothing to do — the database is up to date."
-          : "nothing to do — another deploy already applied everything.",
+        r.repeatables.applied.length > 0
+          ? "no migrations to apply."
+          : r.lock.acquired
+            ? "nothing to do — the database is up to date."
+            : "nothing to do — another deploy already applied everything.",
       );
       break;
     case "locked":
@@ -208,6 +210,7 @@ function text(config: ResolvedConfig, r: ApplyPendingResult): string {
 
   if (r.fingerprint) lines.push("", pairs([["fingerprint", r.fingerprint]]));
   const findings = [...r.preflight.invalidIndexes, ...r.preflight.notValidConstraints, ...r.preflight.ccnewLeftovers];
+  lines.push(bullets("repeatables applied:", r.repeatables.applied));
   lines.push(bullets("pre-flight findings:", findings));
   lines.push(bullets("warnings:", r.warnings));
   lines.push(bullets("pending:", r.pending));
