@@ -1,5 +1,14 @@
 # @pg-prime/kit
 
+## 0.2.2
+
+### Patch Changes
+
+- [#7](https://github.com/pg-prime/pg-prime/pull/7) [`06a5a92`](https://github.com/pg-prime/pg-prime/commit/06a5a9259c50c7a6f3b02b6fccbb2713418ffcb9) Thanks [@YohoCX](https://github.com/YohoCX)! - - `migrate generate` writes the literal FOREIGN KEY or CHECK, with no `NOT VALID` + `VALIDATE` pair, on a table the same migration creates, and its `CREATE INDEX` no longer carries LK101. Such a table is empty and unseen, so the lock-safe forms only added noise.
+  - When only `sql/` repeatables changed, `migrate apply` prints `no migrations to apply.` and lists them under `repeatables applied:`. Before, it printed "nothing to do — the database is up to date." while applying them.
+- Updated dependencies [[`820c13e`](https://github.com/pg-prime/pg-prime/commit/820c13e80fff4e7e010dcde70af06edabaab82db)]:
+  - pg-prime@0.2.2
+
 ## 0.2.1
 
 ### Patch Changes
