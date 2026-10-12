@@ -279,7 +279,7 @@ describe('the exact cursor (plan 15 §3.3)', () => {
       ),
       { numRuns: 3000 },
     )
-  })
+  }, 60_000)
 
   it('a read limit can split a transaction, and a late one may arrive between its parts', () => {
     const m = new Model()

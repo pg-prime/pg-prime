@@ -195,7 +195,7 @@ export function captureCallSite(boundary?: unknown): string | undefined {
     for (const f of frames as readonly CallSiteLike[]) {
       const file = f.getFileName?.()
       if (file === undefined || file === null) continue
-      if (file.startsWith('node:')) continue
+      if (file.startsWith('node:') || file === '[unknown]') continue
       if (INTERNAL.test(file)) continue
       return `at ${f.toString()}`
     }
@@ -214,7 +214,7 @@ function fromStackString(stack: string | undefined): string | undefined {
     const t = line.trim()
     if (!t.startsWith('at ')) continue
     if (INTERNAL.test(t)) continue
-    if (t.includes('node:internal')) continue
+    if (t.includes('node:internal') || t.endsWith('(native)')) continue
     return t
   }
   return undefined

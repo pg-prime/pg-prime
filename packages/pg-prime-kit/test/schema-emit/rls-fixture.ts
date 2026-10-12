@@ -1,7 +1,6 @@
 /** design/20 §3.3's example: tenant isolation, a restrictive policy, a raw subquery, `updated_at`. */
 
-import { definePolicy, defineSchema, eq, pgTable, rls, setting, sql, updatedAtTrigger } from "pg-prime";
-import { uuidCodec } from "pg-prime/codecs";
+import { definePolicy, defineSchema, eq, pgTable, rls, setting, sql, updatedAtTrigger, uuidCodec } from "pg-prime";
 import type { SchemaLike } from "../../src/schema/types.js";
 import { withAdmin } from "../support/db.js";
 

@@ -106,10 +106,10 @@ describe.skipIf(!canCreateRoles)("RLS on the structural side", () => {
     async () => {
       const s = await withClient(cur, (c) => readLaneState(c, ["public"]));
       expect(s.tables).toEqual([
-        { schema: "public", name: "closed", enabled: true, forced: false, owner: "postgres" },
+        { schema: "public", name: "closed", enabled: true, forced: false, owner: ADMIN.user },
         { schema: "public", name: "documents", enabled: true, forced: true, owner: OWNER },
-        { schema: "public", name: "open_data", enabled: false, forced: false, owner: "postgres" },
-        { schema: "public", name: "shares", enabled: false, forced: false, owner: "postgres" },
+        { schema: "public", name: "open_data", enabled: false, forced: false, owner: ADMIN.user },
+        { schema: "public", name: "shares", enabled: false, forced: false, owner: ADMIN.user },
       ]);
       const byName = new Map(s.policies.map((p) => [p.name, p]));
       expect(byName.get("ro")).toMatchObject({
@@ -140,7 +140,7 @@ describe.skipIf(!canCreateRoles)("RLS on the structural side", () => {
       expect(s.updatedAtTriggers).toEqual([{ schema: "public", table: "documents", column: "touched_at" }]);
       expect(s.memberOf.get(ADMIN_ROLE)).toEqual([ADMIN_ROLE, APP]);
       expect(s.memberOf.get("pg_read_all_data")).toEqual(["pg_read_all_data"]);
-      expect(s.bypass.has("postgres")).toBe(true);
+      expect(s.bypass.has(ADMIN.user)).toBe(true);
       expect(s.bypass.has(APP)).toBe(false);
     },
     T,

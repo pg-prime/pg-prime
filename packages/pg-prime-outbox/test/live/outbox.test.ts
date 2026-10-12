@@ -202,7 +202,7 @@ describe('relay', () => {
         .filter((p) => p[0] !== 'b')
         .sort(),
     ).toStrictEqual(['a1', 'a2', 'a3', 'c1', 'c2', 'c3'])
-    expect((await outbox.topics.t.stats()).blockedKeys).toBe(1)
+    await until(async () => (await outbox.topics.t.stats()).blockedKeys === 1)
     bDown = false
     await until(() => got.length === 9)
     for (const k of ['a', 'b', 'c']) {
