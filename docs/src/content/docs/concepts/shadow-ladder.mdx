@@ -74,7 +74,8 @@ phantom diff. The locale row is read as `to_jsonb(pg_database)` so that `daticul
 `TEMPLATE template0` is required whenever the locale is stated explicitly, and it is also the
 spelling least likely to hit SQLSTATE `55006` — `CREATE DATABASE … TEMPLATE x` fails if *any* session
 is connected to the template, and nobody connects to `template0`. If it fires anyway, `auto` demotes
-to tier 3 rather than terminating somebody else's sessions.
+to tier 3 rather than terminating somebody else's sessions. So it does when the admin database
+(`postgres`) refuses the connection, as on a cluster that revoked `CONNECT` from `PUBLIC`.
 
 The shadow is dropped when the run ends.
 
@@ -119,6 +120,40 @@ diffed. The statements are **re-derived** from remapped IRs rather than text-sub
 whole-identifier substitution over generated SQL cannot tell `public` the schema from `'public'`
 inside a CHECK's string literal. The statement count of each stage is compared against the artifact's
 so the two plans cannot silently diverge. See [Proof and witness](/pg-prime/concepts/proof/).
+
+### When temp schemas get it wrong
+
+Tier 3 renames the schemas in the DDL that pg-prime emits. It cannot rename names inside SQL text
+that you wrote, so that text is loaded exactly as written, inside the target database. An unqualified
+name resolves through `search_path` to your **live** schema, and a qualified one (`public.widgets`)
+names it directly. The text that carries such names:
+
+- a policy's `using` / `withCheck` that reads another table:
+  `EXISTS (SELECT 1 FROM document_shares s WHERE …)`;
+- a declared view's body: `select id, name from public.widgets where active`;
+- files in `sql/`: views, functions, triggers;
+- a default or CHECK that casts to one of your own types: `DEFAULT 'G'::mpaa_rating`.
+
+What happens next depends on the target:
+
+| The target… | Result |
+|---|---|
+| does not have the object yet (a first `generate`, a new table) | `generate` refuses: `repeatable_failed` or `desired_load`, `relation "document_shares" does not exist` |
+| has it, with a different type | `generate` refuses: `column "rating" is of type pgprime_shadow_…_public.mpaa_rating but default expression is of type mpaa_rating` |
+| has it | **no error**. The shadow object is built against the live table, not the desired one. If the same change alters that table, the normalized policy or view, and the proof, describe the old shape |
+
+The last row is the dangerous one, because nothing reports it. Two more side effects:
+
+- A declared extension is not normalized and is run as `CREATE EXTENSION IF NOT EXISTS` **in the
+  target itself**, so `generate` installs it there.
+- The shadow work runs in the target: it takes locks on the live tables that the shadow objects
+  reference, and a killed process can leave `pgprime_shadow_*` schemas behind.
+
+Schema-qualifying the names does not help. If your schema has any of the above, use a shadow
+database: `shadow: 'createdb'`, or a `postgres://…` URL on a role that cannot create databases.
+
+In the kit's own suite, the Pagila and AdventureWorks `pull` round trips and the declared-RLS lane
+with a cross-table policy pass on a shadow database and fail on temp schemas.
 
 ### Tier 4, refused
 
@@ -166,14 +201,18 @@ export default defineConfig({
 `auto` decides in three steps:
 
 1. a URL was supplied → **tier 1**;
-2. `rolcreatedb OR rolsuper` on `current_user` → **tier 2** (demoting to tier 3 if `CREATE DATABASE`
-   raises `55006`);
+2. `rolcreatedb OR rolsuper` on `current_user`, read on the target → **tier 2** (demoting to tier 3
+   on `55006`, or when the admin database is closed to the role or absent: `42501`, `3D000`);
 3. otherwise → **tier 3**.
 
 `--shadow createdb` and `--shadow temp-schema` pin a tier instead of choosing one, which is what you
 want in CI where "it worked on my machine because my role happened to have `CREATEDB`" is a real
 failure. `--shadow docker` is recognised and refused with a sentence: the kit has no testcontainers
 dependency, and both `createdb` and `temp-schema` need no Docker.
+
+`migrate verify` replays your committed migrations, and they name their schemas, so it always needs
+a whole database. It uses the `shadow` URL when the config has one and `CREATE DATABASE` otherwise,
+whatever keyword `shadow` holds.
 
 `generate` always says which tier it used and why, on its first line:
 

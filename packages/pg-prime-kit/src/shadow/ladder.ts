@@ -9,7 +9,7 @@
  * | tier | mechanism | selected when |
  * |---|---|---|
  * | 1 | a shadow database URL the caller supplies | `shadow: { url }`, or the same URL as a string |
- * | 2 | `CREATE DATABASE pgprime_shadow_<rand>` with the target's locale | the admin role has `rolcreatedb` |
+ * | 2 | `CREATE DATABASE pgprime_shadow_<rand>` with the target's locale | the role has `rolcreatedb` and reaches the admin database |
  * | 3 | `CREATE SCHEMA pgprime_shadow_<rand>_<name>` **inside the target database** | everything else |
  * | 4 | `--offline` | a typed refusal in this round (design/11 §3 K2a) |
  *
@@ -21,7 +21,7 @@
 import { randomBytes } from "node:crypto";
 import pg from "pg";
 import type { Diagnostic } from "../catalog/extract.js";
-import { dropDatabase, isObjectInUse, withClient, withDatabase, SHADOW_PREFIX, type ConnInfo } from "../db/pg.js";
+import { dropDatabase, withClient, withDatabase, SHADOW_PREFIX, type ConnInfo } from "../db/pg.js";
 import { quoteIdent } from "../sql/ident.js";
 
 /** `NAMEDATALEN - 1`: a shadow schema name that PostgreSQL would truncate is not reversible. */
@@ -136,6 +136,14 @@ export class ShadowNameTooLongError extends Error {
 /* ------------------------------------------------------------------ */
 
 const token = (supplied?: string): string => supplied ?? randomBytes(4).toString("hex");
+
+/**
+ * Tier-2 failures that `auto` demotes on: 55006, the template is in use (the sessions belong to
+ * somebody else, design/06 §3.2); 42501 and 3D000, the admin database is closed to this role or absent.
+ */
+const DEMOTE = new Set(["55006", "42501", "3D000"]);
+const sqlstate = (err: unknown): string | undefined =>
+  typeof err === "object" && err !== null ? (err as { code?: string }).code : undefined;
 
 /** `postgres://u:p@h:p/db` → `ConnInfo`. Tier 1's only input. */
 export function parseShadowUrl(url: string): ConnInfo {
@@ -285,20 +293,14 @@ export async function provisionShadow(
     return tier1(parseShadowUrl(strategy), target, schemas, "shadow url supplied");
   }
 
-  // 'auto': the ladder proper.
-  if (await canCreateDatabase(admin)) {
+  // 'auto': the ladder proper. The privilege is read on the target, which this role can always reach.
+  if (await canCreateDatabase(target)) {
     try {
       return await tier2(admin, target, schemas, options.token, "the admin role has CREATEDB");
     } catch (err) {
-      // 55006: something is attached to the template. design/06 §3.2 says demote rather than
-      // terminate — the sessions belong to somebody else.
-      if (!isObjectInUse(err)) throw err;
-      return tier3(
-        target,
-        schemas,
-        options.token,
-        "CREATE DATABASE raised 55006 (template in use); demoted to the temp-schema tier",
-      );
+      const code = sqlstate(err);
+      if (code === undefined || !DEMOTE.has(code)) throw err;
+      return tier3(target, schemas, options.token, `CREATE DATABASE raised ${code}; demoted to the temp-schema tier`);
     }
   }
   return tier3(target, schemas, options.token, "the admin role has no CREATEDB");
@@ -449,11 +451,18 @@ function identityMap(schemas: readonly string[]): ReadonlyMap<string, string> {
   return new Map(schemas.map((s) => [s, s]));
 }
 
+/** Keeps each schema's comment (initdb's on `public`), which the fingerprint covers. */
 async function resetSchemas(conn: ConnInfo, schemas: readonly string[]): Promise<void> {
   await withClient(conn, async (client) => {
     for (const s of schemas) {
+      const r = await client.query(
+        "SELECT obj_description(oid, 'pg_namespace') AS c FROM pg_namespace WHERE nspname = $1",
+        [s],
+      );
+      const comment = r.rows[0]?.["c"] as string | null | undefined;
       await client.query(`DROP SCHEMA IF EXISTS ${quoteIdent(s)} CASCADE`);
       await client.query(`CREATE SCHEMA ${quoteIdent(s)}`);
+      if (comment != null) await client.query(`COMMENT ON SCHEMA ${quoteIdent(s)} IS ${lit(comment)}`);
     }
   });
 }

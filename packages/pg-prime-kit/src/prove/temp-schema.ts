@@ -166,7 +166,17 @@ export async function proveInTempSchemas(input: TempSchemaProveInput): Promise<P
       ...(input.strictUnmodeled === undefined ? {} : { strictUnmodeled: input.strictUnmodeled }),
       ...(input.diagnostics === undefined ? {} : { diagnostics: input.diagnostics }),
     });
-    const shadowPlan = splitStages(buildStatements(shadowDiff, desired2, input.buildOptions ?? {}).statements);
+    // The id sets in the build options name the user's schemas; the shadow plan needs the mapped ones.
+    const ids = (set: ReadonlySet<string>): ReadonlySet<string> =>
+      new Set([...set].map((s) => encodeId(mapSchema(parseId(s)))));
+    const { volatileDefaults, emptyTables, noConcurrentIndexes } = input.buildOptions ?? {};
+    const shadowOptions: BuildOptions = {
+      ...input.buildOptions,
+      ...(volatileDefaults && { volatileDefaults: ids(volatileDefaults) }),
+      ...(emptyTables && { emptyTables: ids(emptyTables) }),
+      ...(noConcurrentIndexes && { noConcurrentIndexes: ids(noConcurrentIndexes) }),
+    };
+    const shadowPlan = splitStages(buildStatements(shadowDiff, desired2, shadowOptions).statements);
     if (input.expectedStages !== undefined) {
       const got = shadowPlan.files.map((f) => f.statements.length);
       const want = [...input.expectedStages];

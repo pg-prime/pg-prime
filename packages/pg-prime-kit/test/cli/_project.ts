@@ -35,6 +35,7 @@ export interface ProjectOptions {
   readonly schemas?: readonly string[];
   /** omit `schema` from the config entirely — the "pure SQL adopter" shape */
   readonly noSchema?: boolean;
+  readonly shadow?: string;
 }
 
 export async function makeProject(slug: string, options: ProjectOptions): Promise<Project> {
@@ -52,7 +53,7 @@ export async function makeProject(slug: string, options: ProjectOptions): Promis
 ${options.noSchema === true ? "" : "  schema: './db/schema.ts',\n"}  migrations: './migrations',
   repeatables: './sql',
   schemas: ${JSON.stringify(options.schemas ?? ["public"])},
-}
+${options.shadow === undefined ? "" : `  shadow: ${JSON.stringify(options.shadow)},\n`}}
 `,
     "utf8",
   );

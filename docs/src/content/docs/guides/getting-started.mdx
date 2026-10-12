@@ -114,8 +114,15 @@ export default defineConfig({
   schema: './schema.ts',
   migrations: './migrations',
   url: process.env['DATABASE_URL'] ?? 'postgres://postgres:postgres@localhost:5432/app',
+  // 'createdb' or a postgres:// URL: a shadow database. 'temp-schema': shadow schemas in this one.
+  // 'auto' takes a database when the role may create one.
+  shadow: 'auto',
 })
 ```
+
+`shadow` decides where the kit loads your schema to read it back in PostgreSQL's own form. A shadow
+database is exact; shadow schemas need no `CREATEDB` but have
+[limits](/pg-prime/concepts/shadow-ladder/#when-temp-schemas-get-it-wrong).
 
 ## Generate the first migration
 
