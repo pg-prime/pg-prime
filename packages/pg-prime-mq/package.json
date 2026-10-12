@@ -1,6 +1,6 @@
 {
   "name": "@pg-prime/mq",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Work queues on PostgreSQL for pg-prime: leases, retries, priorities, groups, flows and topic bindings. Pre-alpha — the API will change.",
   "keywords": [
     "job-queue",
