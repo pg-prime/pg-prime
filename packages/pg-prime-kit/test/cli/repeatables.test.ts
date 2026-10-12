@@ -105,6 +105,12 @@ describe("Tier R: the repeatables pass, through the binary", () => {
         return String(r.rows[0]?.["d"]);
       });
       expect(definition).toContain("upper(");
+
+      await p.writeRepeatable("030_widget_names.sql", VIEW_V2.replace("upper(", "lower("));
+      const text = await runCli(["migrate", "apply", "--config", p.config]);
+      expect(text.code, text.stderr).toBe(EXIT.ok);
+      expect(text.stdout).toContain("no migrations to apply.");
+      expect(text.stdout).toContain("repeatables applied:\n  - sql/030_widget_names.sql");
     },
     T,
   );
