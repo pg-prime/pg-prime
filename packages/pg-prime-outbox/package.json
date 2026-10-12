@@ -1,6 +1,6 @@
 {
   "name": "@pg-prime/outbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Transactional outbox for pg-prime: write in your transaction, relay in per-key order. Pre-alpha — the API will change.",
   "keywords": [
     "messaging",

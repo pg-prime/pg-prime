@@ -1,6 +1,6 @@
 {
   "name": "@pg-prime/events",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Typed LISTEN/NOTIFY channels, a durable event log with subscriptions, and tails for pg-prime. Pre-alpha — the API will change.",
   "keywords": [
     "event-log",

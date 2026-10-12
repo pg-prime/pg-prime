@@ -1,5 +1,104 @@
 # pg-prime
 
+## 0.2.0
+
+### Minor Changes
+
+- [#3](https://github.com/pg-prime/pg-prime/pull/3) [`a75e3a1`](https://github.com/pg-prime/pg-prime/commit/a75e3a19a2e9f615acdbc1d9e240bfc81bf9e9dd) Thanks [@YohoCX](https://github.com/YohoCX)! - **Column collations: `.collate(name)`.**
+  
+  `t.text().collate('C')` declares `position text COLLATE "C"`, the byte-order collation a
+  fractional-index `position` column needs. `.collate()` is available on `text`, `varchar`, `citext`,
+  their arrays and `t.raw()` columns. On any other type it is a compile error that says why. On an
+  enum column it throws a `SchemaError` when the schema is declared. The collation is recorded as
+  `ColumnDdl.collation`.
+  
+  `migrate generate` now handles a collation change on an existing column as its own case. Adding,
+  changing or removing a collation plans `ALTER TABLE … ALTER COLUMN … TYPE <same type> [COLLATE "…"]`
+  with the new warning **`LK113`**: the column's indexes are rebuilt under `ACCESS EXCLUSIVE`, but the
+  table is not rewritten. Before this release, a collation-only change was reported as a narrowing
+  type change (`MF105`, an error) together with `LK108` and `BC103`. A change of type keeps those
+  three hazards.
+  
+  When a unique index, a primary key, a unique or exclusion constraint, or a `CHECK` covers the column,
+  the statement also carries the new error **`MF107`**: rebuilding the index or re-checking the
+  constraint under the new collation can fail on existing rows, such as `'a'` and `'A'` under a
+  case-insensitive collation. It is not raised on a table proven empty.
+  
+  `pull` now emits `.collate("C")` for a column with a `pg_catalog` collation. Before, it listed the
+  column under `-- pull: unsupported`. A column whose collation lives in another schema stays listed
+  there.
+  
+  The collation name is a single identifier and must name a `pg_catalog` collation: migrations run
+  under `search_path = pg_catalog`, so a collation created in another schema does not resolve.
+  
+  **Upgrading a 0.1.0 migration history:** the catalog extractor now records a collation outside
+  `pg_catalog` as `"schema"."name"`, so a managed column that already uses one fingerprints
+  differently and the next `migrate apply` stops with `fingerprint_mismatch`. If your managed schemas
+  use such a collation, re-baseline once after upgrading (`pg-prime migrate baseline --force`).
+  Columns with `pg_catalog` collations, or none, are unaffected.
+
+- [#3](https://github.com/pg-prime/pg-prime/pull/3) [`6a7ed8e`](https://github.com/pg-prime/pg-prime/commit/6a7ed8e4f9e63e3437400848c0b743dad71a9708) Thanks [@YohoCX](https://github.com/YohoCX)! - **`migrateOwnedSchema()` and `ownedSchemaSql()`: versioned DDL for a schema a package owns.**
+  
+  `migrateOwnedSchema(db, { schema, migrations })` applies each missing version in its own
+  transaction under `pg_advisory_xact_lock`, so concurrent migrators and transaction poolers are
+  safe. It keeps a ledger in `<schema>.migrations` and refuses a checksum mismatch or a schema whose
+  `min_client` is newer than the client. It returns `{ from, to }`; `apply: false` only reads and
+  checks. `ownedSchemaSql()` emits the same versions as SQL files, ending in an idempotent ledger
+  insert, for vendoring into kit migrations. The `@pg-prime/*` add-ons build their schemas on it.
+  
+  **`db.listen()`: every subscription gets its own `gap`, `reconnect` and `error`.** Before this
+  release a second subscription on the same channel replaced the first one's handlers, so only the
+  latest subscriber heard about a reconnect. Each subscription now has its own handlers, a throwing
+  notification handler reports to its own subscription's `error`, and closing one subscription
+  removes only its handlers.
+
+- [#3](https://github.com/pg-prime/pg-prime/pull/3) [`60b99c8`](https://github.com/pg-prime/pg-prime/commit/60b99c86c94d5a720682e775f32913e0a1c7ce31) Thanks [@YohoCX](https://github.com/YohoCX)! - **Typed row-level security policies, setting keys and an `updated_at` trigger.**
+  
+  - `definePolicy(name, { on, for, as, to, using, withCheck })` declares a `CREATE POLICY`. The
+    predicates are thunks over the table's columns, typed like query predicates. Every column renders
+    qualified by its table name, so a subquery cannot capture it, and values render as typed literals.
+    `@pg-prime/kit` writes declared policies into the `sql/` repeatable lane.
+  - `rls.enable()` / `rls.force()` table extras turn row-level security on, and `force` applies it to
+    the table owner too.
+  - `updatedAtTrigger(t.updatedAt)` asks for a `BEFORE UPDATE` trigger that sets the column to `now()`.
+  - `setting(name, codec?)` returns a `SettingKey`: `.set(value)` gives the record for
+    `tx.setLocal(...)`, and `.current()` is the SQL expression
+    `nullif(current_setting(name, true), '')::<type>`, typed `T | null`, usable in queries and policies.
+  - Binary operators now accept a nullable expression on the right, as they already did on the left:
+    `eq(t.orgId, orgId.current())` compiles. The literal `null` is still refused.
+  - `inTransactionFrame(tx, fn)` runs `fn` under `tx`'s development guard frame, so a captured root
+    `Db` throws `HandleMisuseError` when a transaction is held open across callbacks.
+
+- [#3](https://github.com/pg-prime/pg-prime/pull/3) [`7667362`](https://github.com/pg-prime/pg-prime/commit/7667362fd19a099f294d79901e2e487efb58455e) Thanks [@YohoCX](https://github.com/YohoCX)! - Row counts and optimistic locking for `update` and `delete`.
+  
+  - `executeRowCount()` resolves with the command tag's row count (`UPDATE n` / `DELETE n`), with or
+    without `RETURNING`.
+  - `.ifVersion((t) => t.blocks.rev, 7)` ANDs `rev = $n` into the `WHERE` and throws the new
+    `VersionConflictError` (`code: 'VERSION_CONFLICT'`, `table`, and `expected` under
+    `errors.includeParams`) when no row matched — from `execute()`, `executeTakeFirst()`,
+    `executeRowCount()`, `db.run(q)`, `db.run(q.compile())` and `prepare().execute()` alike, so inside
+    `db.transaction()` a conflict rolls the batch back. You still write the bump (`rev: add(t.blocks.rev, 1)`)
+    and still need `.where()` or `.allRows()`. `stream()`, `streamBatches()`,
+    `explain({ analyze: true, rollback: false })`, CTE bodies and `fromValues` refuse an `.ifVersion()`
+    statement.
+
+- [#3](https://github.com/pg-prime/pg-prime/pull/3) [`7e93af3`](https://github.com/pg-prime/pg-prime/commit/7e93af378387d69d2d736276527def3d63fc9e63) Thanks [@YohoCX](https://github.com/YohoCX)! - Typed helpers for things that previously needed a raw `` sql`…`.as(codec) `` fragment:
+  
+  - `tsHeadline([config, ]doc, query, options?)` — `ts_headline`, with `HeadlineOptions`
+    (`startSel`, `maxWords`, `highlightAll`, …) bound as one option string.
+  - `similarity`, `wordSimilarity` and `trgmSimilar` (`%`) — pg_trgm on text operands; the two
+    similarity scores are nullable when an operand is.
+  - `jsonbSet(target, path, value, createMissing?)` — `jsonb_set` with the path as one `text[]` bind and
+    the value as `jsonb`; a JS `null` writes the JSON `null`. The result is `unknown` jsonb, so writing
+    it back into a `$type<T>()` column takes a cast.
+  - `tupleGt`, `tupleLt`, `tupleGte`, `tupleLte` — keyset pagination as one row comparison,
+    `row(a, b) > row($1, $2)`, each value bound with its column's codec and the arity checked by the
+    compiler.
+
+### Patch Changes
+
+- [#3](https://github.com/pg-prime/pg-prime/pull/3) [`98ad069`](https://github.com/pg-prime/pg-prime/commit/98ad069d689b69d4ad76a3c159bda5820341bf80) Thanks [@YohoCX](https://github.com/YohoCX)! - The package READMEs no longer claim `0.0.0` or "nothing is usable yet". `@pg-prime/testing`'s README now lists what it ships — `createMockPool`, `expectSql`, `startPglite`, `startPostgres`, `scratchDatabase` and the skip guards — with a minimal `startPglite` example, and `pg-prime`'s README names `pg` as the optional peer the `connection:` form needs.
+
 ## 0.1.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@pg-prime/cron",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Distributed cron for pg-prime: schedules that fire exactly once per tick across instances. Pre-alpha — the API will change.",
   "keywords": [
     "cron",
