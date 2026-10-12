@@ -32,6 +32,7 @@ import { withClient } from "../../db/pg.js";
 import { encodeId } from "../../ir/stable-id.js";
 import { shadowRepeatables } from "../../generate.js";
 import { applyRepeatables, createRepeatablesPass, scanRepeatables } from "../../repeatables/index.js";
+import { HISTORY_SCHEMA } from "../../history/schema.js";
 import { applyPending } from "../../runner/run.js";
 import { declaredCensus, isDeclared } from "../../schema/declared.js";
 import { loadDesired } from "../../schema/load.js";
@@ -48,7 +49,7 @@ export const VERIFY_OPTIONS: readonly OptionSpec[] = [
     type: "string",
     placeholder: "url",
     describe: "the ephemeral database to replay into",
-    defaultText: "CREATE DATABASE",
+    defaultText: "the config's shadow url, else CREATE DATABASE",
   },
   {
     name: "from-checkpoint",
@@ -144,13 +145,18 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
   }
 
   /* design/06 §10.2 — an ephemeral database, or a failure. Never a skip. */
-  const url = str(argv.values, "shadow");
+  // A replay needs a whole database, so a `shadow` keyword (temp-schema included) means CREATE DATABASE.
+  const configured = config.config.shadow;
+  const url =
+    str(argv.values, "shadow") ??
+    (typeof configured === "object" ? configured.url : configured?.includes("://") ? configured : undefined);
   const strategy: ShadowStrategy = url === undefined ? "createdb" : { url };
   let replayShadow: Shadow;
   try {
+    // The history schema is reset with the managed ones, or a reused shadow url replays nothing.
     replayShadow = await provisionShadow(config.connection, config.connection, {
       shadow: strategy,
-      schemas: config.schemas,
+      schemas: [...config.schemas, HISTORY_SCHEMA],
     });
   } catch (err) {
     return fail(

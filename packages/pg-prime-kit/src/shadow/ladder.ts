@@ -451,11 +451,18 @@ function identityMap(schemas: readonly string[]): ReadonlyMap<string, string> {
   return new Map(schemas.map((s) => [s, s]));
 }
 
+/** Keeps each schema's comment (initdb's on `public`), which the fingerprint covers. */
 async function resetSchemas(conn: ConnInfo, schemas: readonly string[]): Promise<void> {
   await withClient(conn, async (client) => {
     for (const s of schemas) {
+      const r = await client.query(
+        "SELECT obj_description(oid, 'pg_namespace') AS c FROM pg_namespace WHERE nspname = $1",
+        [s],
+      );
+      const comment = r.rows[0]?.["c"] as string | null | undefined;
       await client.query(`DROP SCHEMA IF EXISTS ${quoteIdent(s)} CASCADE`);
       await client.query(`CREATE SCHEMA ${quoteIdent(s)}`);
+      if (comment != null) await client.query(`COMMENT ON SCHEMA ${quoteIdent(s)} IS ${lit(comment)}`);
     }
   });
 }

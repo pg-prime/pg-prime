@@ -425,8 +425,9 @@ This catches a class of failure that drift detection cannot see: a file that was
 was generated, or a hand-written migration that does something other than what the schema says.
 
 It needs a real ephemeral database and fails rather than skipping when it cannot get one:
-`CREATE DATABASE` by default, `--shadow <url>` otherwise. A temp schema is explicitly refused,
-because the replayed migrations name their own schemas and would collide with the live ones.
+the `shadow` URL from the config or `--shadow <url>`, `CREATE DATABASE` otherwise. A temp schema is
+never used, because the replayed migrations name their own schemas and would collide with the live
+ones.
 `--keep` leaves the database behind for inspection. `--to <id>` replays only part of the history
 for bisecting, and exits **0** rather than 4 on the resulting non-empty diff — a partial replay is
 *expected* to differ, and exiting 4 would make the flag useless; the envelope's status is

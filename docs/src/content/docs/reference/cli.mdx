@@ -234,7 +234,7 @@ pg-prime migrate verify
 
 Options:
   --to <id>                  replay only up to this migration (bisecting)
-  --shadow <url>             the ephemeral database to replay into (default CREATE DATABASE)
+  --shadow <url>             the ephemeral database to replay into (default the config's shadow url, else CREATE DATABASE)
   --from-checkpoint          replay from the newest checkpoint instead of from empty (design/06 §4.5)
   --keep                     leave the ephemeral database behind for inspection
   --against <schema|target>  what the replay is compared to: the TypeScript schema, or the live target database (default schema, or target when the config names no schema)

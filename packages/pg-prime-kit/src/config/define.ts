@@ -30,7 +30,11 @@ export interface PgPrimeConfig {
    * Default `["public"]`.
    */
   readonly schemas?: readonly string[];
-  /** `--shadow <url|docker|temp-schema|none>`; consumed by K2a's ladder, carried here. */
+  /**
+   * Where the desired state is normalized: `'auto'` (default), `'createdb'` (a shadow database),
+   * `'temp-schema'` (shadow schemas inside the target) or a shadow database URL. `migrate verify`
+   * uses the URL when there is one and CREATE DATABASE otherwise.
+   */
   readonly shadow?: ShadowStrategy;
   /** Path(s) to the TypeScript schema module. Consumed by K2b's `generate`. */
   readonly schema?: string | readonly string[];

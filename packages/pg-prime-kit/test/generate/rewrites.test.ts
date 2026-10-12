@@ -96,13 +96,16 @@ const rowSeven: Case = {
   ),
 };
 
-async function run(c: Case): Promise<{
+async function run(
+  c: Case,
+  shadow?: "temp-schema",
+): Promise<{
   files: Awaited<ReturnType<typeof generate>>["files"];
   result: Awaited<ReturnType<typeof generate>>;
   dir: string;
   database: string;
 }> {
-  const database = `pgprime_k2b_rw_${c.slug}`;
+  const database = `pgprime_k2b_rw_${c.slug}${shadow ? "_t3" : ""}`;
   await makeDatabase(database);
   await withClient(dbConn(database), async (client) => {
     await client.query(c.current);
@@ -119,6 +122,7 @@ async function run(c: Case): Promise<{
     name: c.slug,
     outDir: dir,
     dumpOracle: "strict",
+    ...(shadow && { shadow }),
   });
   return { files: result.files, result, dir, database };
 }
@@ -182,6 +186,21 @@ describe("design/06 §3.5 — the three rewrites that need a second file", () =>
 
         const applied = await applyPending(dbConn(database), dir, { schemas: ["public"] });
         expect(applied.status, applied.error?.message).toBe("applied");
+      } finally {
+        await destroyDatabase(database).catch(() => undefined);
+      }
+    },
+    T,
+  );
+
+  it(
+    "concurrently(false) holds in the tier-3 proof too",
+    async () => {
+      const { files, result, database } = await run(rowOneOptOut, "temp-schema");
+      try {
+        expect(result.shadow.tier).toBe(3);
+        expect(result.proof?.status, result.proof?.error).toBe("passed");
+        expect(files.map((f) => `${f.id}:${f.stage}`)).toEqual(["0001_cicoff:main"]);
       } finally {
         await destroyDatabase(database).catch(() => undefined);
       }
