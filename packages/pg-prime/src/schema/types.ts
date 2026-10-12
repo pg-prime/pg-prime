@@ -64,6 +64,8 @@ export interface ColMeta {
   readonly opt: boolean
   readonly ro: boolean
   readonly pk: boolean
+  /** Set by `.nullable()` on an `unknown` column (`jsonb`), where `unknown | null` cannot show it. */
+  readonly nl?: true
 }
 
 /** A record of column metas — the flattened payload a `Table` carries. */

@@ -158,6 +158,11 @@ export class InsertBuilder {
   // ── sources ───────────────────────────────────────────────────────────────
 
   values(row: Record<string, unknown>): InsertBuilder {
+    if (Array.isArray(row)) {
+      throw new BuilderError(
+        'pg-prime: .values() takes one row; pass an array of rows to .valuesMany().',
+      )
+    }
     return this.#withRows([row], undefined, false)
   }
 

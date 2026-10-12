@@ -58,6 +58,22 @@ describe('SelectRow ($inferSelect)', () => {
     expectTypeOf<Selectable<typeof users>['id']>().toEqualTypeOf<UserId>()
   })
 
+  it('a nullable jsonb keeps its `| null` through `$type` and `array`, in either order', () => {
+    type V = { via: string }
+    const j = pgTable('j', (t) => ({
+      id: t.integer().primaryKey(),
+      before: t.jsonb().nullable().$type<V>(),
+      after: t.jsonb().$type<V>().nullable(),
+      strict: t.jsonb().$type<V>(),
+      list: t.jsonb().nullable().array(),
+    }))
+    expectTypeOf<Selectable<typeof j>['before']>().toEqualTypeOf<V | null>()
+    expectTypeOf<Selectable<typeof j>['after']>().toEqualTypeOf<V | null>()
+    expectTypeOf<Selectable<typeof j>['strict']>().toEqualTypeOf<V>()
+    expectTypeOf<Selectable<typeof j>['list']>().toEqualTypeOf<unknown[] | null>()
+    expectTypeOf<Updateable<typeof j>['before']>().toEqualTypeOf<V | null | undefined>()
+  })
+
   it('arrays and enums', () => {
     expectTypeOf<Selectable<typeof users>['tags']>().toEqualTypeOf<string[]>()
     expectTypeOf<Selectable<typeof users>['role']>().toEqualTypeOf<'owner' | 'admin' | 'member'>()
