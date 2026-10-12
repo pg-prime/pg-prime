@@ -109,7 +109,7 @@ pg-prime migrate generate --name init
 
 ```text frame="terminal"
 migrate generate — docs_guides (shadow tier 2: the admin role has CREATEDB)
-  0000_init.sql  main  7 statements  txmode transactional
+  0000_init.sql  main  6 statements  txmode transactional
   proof    passed
   witness  passed
 ```
@@ -254,7 +254,7 @@ pg-prime migrate apply
 ```text frame="terminal"
 migrate apply — docs_guides @ 127.0.0.1:54333
 applied 1 migration in 119 ms:
-  0000_init  transactional  7 statements  11 ms
+  0000_init  transactional  6 statements  11 ms
   fingerprint  sha256:201b38ad4b691e4a80ef1de041e310634524412513c026d8e97fc9c25036e392
 ```
 
@@ -463,7 +463,7 @@ database connection when you name files on the command line.
 LIMIT 1)` probe against the target. With no connection the set of empty tables is empty and every
 `MF` rule stays at `error`, which is the safe direction. Most `LK` hazards never reach you at all,
 because the generator rewrites them into the lock-safe form instead of reporting them — that is
-what the `NOT VALID` + `VALIDATE` pair in a generated foreign key is. The whole table is in the
+what the `NOT VALID` + `VALIDATE` pair in a foreign key on an existing table is. The whole table is in the
 [hazard-code reference](/pg-prime/reference/hazard-codes/).
 
 ```sh
@@ -562,7 +562,7 @@ pg-prime migrate push --dev
 
 ```text frame="terminal"
 !!! push --dev → 127.0.0.1:54333/docs_dev !!!
-applied 7 statements DIRECTLY. No migration file was written
+applied 6 statements DIRECTLY. No migration file was written
 and no history row was recorded — this database is now ahead of your repository.
   schemas  public
 

@@ -54,7 +54,8 @@ decision.
 
 5. **The plan is rewritten to its lock-safe form** and every remaining hazard is classified. This is
    where `ADD FOREIGN KEY` becomes `ADD … NOT VALID` plus `VALIDATE CONSTRAINT`, and where a plain
-   `CREATE INDEX` becomes a `CONCURRENTLY` build in its own file.
+   `CREATE INDEX` becomes a `CONCURRENTLY` build in its own file. A table the same plan creates is
+   empty and unseen, so it keeps the literal forms and carries no lock hazard.
 
 6. **The plan is proven.** It is replayed on a fresh clone of the recorded starting state and the
    result is diffed against the desired state. See [Proof and
@@ -206,10 +207,7 @@ ALTER TABLE "public"."users" ADD CONSTRAINT "users_email_key" UNIQUE (email);
 ALTER TABLE "public"."users" ADD CONSTRAINT "users_pkey" PRIMARY KEY (id);
 
 -- pg-prime:stmt 5 lock=accessExclusive non-idempotent
-ALTER TABLE "public"."posts" ADD CONSTRAINT "posts_author_id_fkey" FOREIGN KEY (author_id) REFERENCES public.users(id) NOT VALID;
-
--- pg-prime:stmt 6 lock=shareUpdateExclusive idempotent
-ALTER TABLE "public"."posts" VALIDATE CONSTRAINT "posts_author_id_fkey";
+ALTER TABLE "public"."posts" ADD CONSTRAINT "posts_author_id_fkey" FOREIGN KEY (author_id) REFERENCES public.users(id);
 ```
 
 ### What each header line means
@@ -241,7 +239,7 @@ you reviewed. The splitter is the fallback for hand-written files, and taking it
 
 The `.plan.json` is the same migration as data: what each statement does, what it produces and
 consumes, what it locks, which hazards fired, which renames were resolved and how, and the verdict
-of the proof. Trimmed here to one of the seven statements:
+of the proof. Trimmed here to one of the six statements:
 
 ```json title="migrations/0000_init.plan.json"
 {
@@ -259,11 +257,11 @@ of the proof. Trimmed here to one of the seven statements:
   "normalized": true,
   "shadowTier": 2,
   "txmode": "transactional",
-  "segments": [{ "index": 0, "transactional": true, "statements": [0, 1, 2, 3, 4, 5, 6] }],
+  "segments": [{ "index": 0, "transactional": true, "statements": [0, 1, 2, 3, 4, 5] }],
   "statements": [
     {
       "index": 5,
-      "sql": "ALTER TABLE \"public\".\"posts\" ADD CONSTRAINT \"posts_author_id_fkey\" FOREIGN KEY (author_id) REFERENCES public.users(id) NOT VALID",
+      "sql": "ALTER TABLE \"public\".\"posts\" ADD CONSTRAINT \"posts_author_id_fkey\" FOREIGN KEY (author_id) REFERENCES public.users(id)",
       "verb": "alter",
       "kind": "constraint",
       "produces": ["constraint:public.posts.posts_author_id_fkey"],

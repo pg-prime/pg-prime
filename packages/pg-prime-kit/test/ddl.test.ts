@@ -80,6 +80,38 @@ describe("index names containing $ are inserted, not expanded", () => {
   });
 });
 
+describe("a table this plan creates skips the lock-safe rewrites", () => {
+  const check: Fact = {
+    id: { kind: "constraint", schema: "public", table: "t", name: "t_a_ck" },
+    parent: { kind: "table", schema: "public", name: "t" },
+    payload: { kind: "constraint", contype: "c", definition: "CHECK ((a > 0))", validated: true, deferrable: false },
+    provenance: CATALOG_PROVENANCE,
+  };
+  const desired = (): SchemaIR => {
+    const base = irWithIndex("t_a_idx");
+    return SchemaIR.build([...base.facts(), check], base.edges());
+  };
+  const plan = (current: SchemaIR) => buildStatements(diffIR(current, desired()), desired()).statements;
+
+  it("a CHECK is one literal ADD, and the index carries no LK101", () => {
+    const s = plan(SchemaIR.build([], [])).filter((x) => x.kind === "constraint" || x.kind === "index");
+    expect(s.map((x) => x.sql)).toEqual([
+      'ALTER TABLE "public"."t" ADD CONSTRAINT "t_a_ck" CHECK ((a > 0))',
+      'CREATE INDEX "t_a_idx" ON public.t USING btree (a)',
+    ]);
+    expect(s.flatMap((x) => x.hazards)).toEqual([]);
+  });
+
+  it("an existing table still gets NOT VALID + VALIDATE, and LK101", () => {
+    const table = desired()
+      .facts()
+      .filter((f) => f.id.kind === "schema" || f.id.kind === "table");
+    const s = plan(SchemaIR.build(table, []));
+    expect(s.map((x) => x.sql)).toContain('ALTER TABLE "public"."t" VALIDATE CONSTRAINT "t_a_ck"');
+    expect(s.find((x) => x.kind === "index")?.hazards).toContain("LK101");
+  });
+});
+
 describe("ordering, end to end", () => {
   beforeAll(async () => {
     expect(await serverAvailable(), `no PostgreSQL at ${ADMIN.host}:${ADMIN.port}`).toBe(true);
