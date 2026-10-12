@@ -1,5 +1,17 @@
 # @pg-prime/create
 
+## 0.2.1
+
+### Patch Changes
+
+- [#5](https://github.com/pg-prime/pg-prime/pull/5) [`e997a0a`](https://github.com/pg-prime/pg-prime/commit/e997a0afbe0707451aabb088939581bad6fdac7a) Thanks [@YohoCX](https://github.com/YohoCX)! - **`shadow` config: shadow database or shadow schemas, and where temp schemas go wrong.**
+  
+  - `migrate verify` replays into the `shadow` URL from `pg-prime.config.ts` when there is one, and uses `CREATE DATABASE` otherwise. It resets the `pgprime` history schema along with the managed schemas, so the same shadow URL can be verified again.
+  - A tier-1 shadow keeps each schema's comment when it is reset, so a replay into a URL no longer reports drift on `public`.
+  - The tier-3 proof keeps `index().concurrently(false)`; before this it re-derived a different plan and failed.
+  - The scaffolded `pg-prime.config.ts` sets `shadow: 'auto'`, with a comment listing the choices.
+  - Docs: a new section, "When temp schemas get it wrong", covers policy expressions, view bodies, `sql/` files and casts to your own types, which are not renamed and read the live schema.
+
 ## 0.2.0
 
 ### Patch Changes
