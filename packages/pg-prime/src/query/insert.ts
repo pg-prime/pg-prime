@@ -99,6 +99,12 @@ function compact<T extends Record<string, unknown>>(o: T): T {
   return out as T
 }
 
+/** A key whose value is `undefined` counts as absent. Copies only a row that has one. */
+function present(row: Record<string, unknown>): Record<string, unknown> {
+  for (const k of Object.keys(row)) if (row[k] === undefined) return compact(row)
+  return row
+}
+
 function call<R>(f: Lambda<R>, ...args: readonly unknown[]): R {
   return (f as unknown as (...a: readonly unknown[]) => R)(...args)
 }
@@ -169,6 +175,7 @@ export class InsertBuilder {
     bulk: BulkOpts | undefined,
     castFirstRow: boolean,
   ): InsertBuilder {
+    rows = rows.map(present)
     const filled = this.#withClientDefaults(rows, this.#keysFor(rows))
     return this.#next({
       columns: this.#columnsByKey(filled.keys, 'values()'),
@@ -542,7 +549,8 @@ export class InsertBuilder {
       if (!same) {
         throw new BuilderError(
           `pg-prime: every row of a bulk insert must set the same columns. Row ${r} sets ` +
-            `[${rowKeys.join(', ')}]; row 0 sets [${keys.join(', ')}].`,
+            `[${rowKeys.join(', ')}]; row 0 sets [${keys.join(', ')}]. A key set to undefined counts ` +
+            `as absent; pass null to insert NULL.`,
         )
       }
     }
@@ -809,7 +817,7 @@ export function setItemsOf(
   const out: SetItem[] = []
   for (let i = 0; i < meta.keys.length; i++) {
     const key = meta.keys[i] as string
-    if (!Object.hasOwn(patch, key)) continue
+    if (!Object.hasOwn(patch, key) || patch[key] === undefined) continue
     const column = meta.columns[i] as ColumnMeta
     out.push(setItem(column, valueExpr(patch[key], column.codec, `${where} column "${key}"`)))
   }

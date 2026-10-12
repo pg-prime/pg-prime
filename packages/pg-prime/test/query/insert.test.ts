@@ -402,6 +402,30 @@ describe('`.$default()` is applied on insert (05 §6.2; design/12 §4 D finding 
     expect(vals(built)).toStrictEqual(['1', 's1'])
   })
 
+  it('an explicit `undefined` on a column with no `$default` is absent too', () => {
+    const built = dDb
+      .insertInto(dSchema.h.defaulted)
+      .values({ id: 1, slug: 'a', note: undefined } as never)
+    expect(sqlOf(built)).toBe('insert into "public"."defaulted" ("id", "slug") values ($1, $2)')
+  })
+
+  it('a bulk row with an `undefined` key sets fewer columns, and says why', () => {
+    expect(() =>
+      dDb.insertInto(dSchema.h.defaulted).valuesMany([
+        { id: 1, note: 'x' },
+        { id: 2, note: undefined },
+      ] as never),
+    ).toThrowError(/counts as absent; pass null/)
+  })
+
+  it('`.set()` skips an `undefined` key', () => {
+    const built = dDb
+      .update(dSchema.h.defaulted)
+      .set(() => ({ slug: 'b', note: undefined }) as never)
+      .where(({ defaulted: d }) => q.eq(d.id, 1))
+    expect(sqlOf(built)).toMatch(/set "slug" = \$1\nwhere/)
+  })
+
   it('runs once per builder, not once per compile — `.compile()` stays pure (03 §1.3)', () => {
     seq = 0
     const built = dDb.insertInto(dSchema.h.defaulted).values({ id: 1 })
