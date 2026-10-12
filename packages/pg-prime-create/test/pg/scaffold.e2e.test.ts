@@ -215,7 +215,7 @@ suite('the scaffolded project, installed from tarballs', () => {
     )
   })
 
-  it('writes the SQL the page shows: a NOT VALID foreign key and its VALIDATE', () => {
+  it('writes the SQL the page shows', () => {
     const sql = readFileSync(join(app, 'migrations', '0000_init.sql'), 'utf8')
     const onPage = PAGE.blocks.find(
       (b: { attrs: Record<string, unknown> }) => b.attrs['title'] === 'migrations/0000_init.sql',
