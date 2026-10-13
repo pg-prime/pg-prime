@@ -54,6 +54,19 @@ CREATE TABLE public.will_be_rolled_back (id int PRIMARY KEY);
 CREATE TABLE public.locked_t (id int PRIMARY KEY);
 `;
 
+const RETRIED = `-- pg-prime:migration 0002_retried
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=100ms statement=30s
+
+-- pg-prime:segment 0
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+CREATE TABLE public.retry_committed_t (id int PRIMARY KEY);
+
+-- pg-prime:segment 1
+-- pg-prime:stmt 1 lock=accessExclusive non-idempotent
+ALTER TABLE public.locked_t ADD COLUMN note text;
+`;
+
 /** Hold ACCESS EXCLUSIVE on `public.locked_t` from a second connection. */
 async function holdTableLock(conn: ConnInfo): Promise<() => Promise<void>> {
   const client = new pg.Client({ ...conn });
@@ -229,6 +242,27 @@ describe("failures, retries and what the row says afterwards", () => {
       await rm(join(dir, "0002_broken.sql"));
       expect((await migrationStatus(conn, dir)).status).toBe("up_to_date");
       expect((await applyPending(conn, dir)).status).toBe("up_to_date");
+    },
+    T,
+  );
+
+  it(
+    "a segment committed by an attempt that was retried still counts, so the file cannot be withdrawn",
+    async () => {
+      // Attempt 1 commits segment 0 and times out on the lock in segment 1; attempt 2 fails on segment 0 itself.
+      const { conn, dir } = await project("retried", "0002_retried.sql", RETRIED);
+      expect((await applyPending(conn, dir, { to: "0001" })).status).toBe("applied");
+      const release = await holdTableLock(conn);
+      try {
+        const r = await applyPending(conn, dir, { retryBaseMs: 1 });
+        expect(r.error?.sqlState).toBe("42P07");
+      } finally {
+        await release();
+      }
+      const row = (await withClient(conn, readMigrationRows)).find((x) => x.id === "0002_retried")!;
+      expect(row.statementsApplied).toBe(1);
+      await rm(join(dir, "0002_retried.sql"));
+      expect((await migrationStatus(conn, dir)).missingFiles).toEqual(["0002_retried"]);
     },
     T,
   );

@@ -962,6 +962,8 @@ async function runFile(
   else segments.push({ index: segments.length, transactional: true, statements: [total] });
 
   let retries = 0;
+  // A failed transaction rolls back alone: the segments before it, in any attempt of any run, may have committed.
+  let committed = row?.status === "failed" ? row.statementsApplied : 0;
   for (;;) {
     const report = await applySegments(client, statements, segments, {
       lockTimeout: ctx.lockTimeout,
@@ -971,6 +973,13 @@ async function runFile(
       // The synthetic history statement is not part of the migration.
       return outcome(Date.now() - startedAt, null, retries, null);
     }
+    const at = segments.findIndex((s) => s.statements.includes(report.error?.statementIndex ?? -1));
+    committed = Math.max(
+      committed,
+      segments[at]?.transactional === false
+        ? Math.min(report.appliedStatements, total)
+        : segments.slice(0, Math.max(at, 0)).reduce((n, s) => n + s.statements.length, 0),
+    );
     const state = report.error?.sqlState;
     const budget = RETRY[state ?? ""] ?? 1;
     if (retries + 1 < budget) {
@@ -984,12 +993,6 @@ async function runFile(
       await ctx.sleep(backoff(retries, ctx.retryBaseMs, ctx.random));
       continue;
     }
-    // A failed transaction rolls back alone: the segments before it, and earlier failed attempts, may have committed.
-    const at = segments.findIndex((s) => s.statements.includes(report.error?.statementIndex ?? -1));
-    const committed =
-      segments[at]?.transactional === false
-        ? Math.min(report.appliedStatements, total)
-        : segments.slice(0, Math.max(at, 0)).reduce((n, s) => n + s.statements.length, 0);
     await markFailed(
       client,
       { ...record, status: "failed" },
@@ -1000,7 +1003,7 @@ async function runFile(
         ...(report.error === undefined ? {} : { statementIndex: report.error.statementIndex, sql: report.error.sql }),
         attempts: retries + 1,
       },
-      Math.max(committed, row?.status === "failed" ? row.statementsApplied : 0),
+      committed,
     ).catch(() => undefined);
     return outcome(Date.now() - startedAt, null, retries, {
       code: "sql_error",
