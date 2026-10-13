@@ -958,7 +958,6 @@ async function runFile(
   const statements = [...exec.statements, history];
   const segments = exec.segments.map((s) => ({ ...s, statements: [...s.statements] }));
   const last = [...segments].reverse().find((s) => s.transactional);
-  const atomic = last !== undefined;
   if (last) last.statements.push(total);
   else segments.push({ index: segments.length, transactional: true, statements: [total] });
 
@@ -985,7 +984,12 @@ async function runFile(
       await ctx.sleep(backoff(retries, ctx.retryBaseMs, ctx.random));
       continue;
     }
-    const applied = Math.min(report.appliedStatements, total);
+    // A failed transaction rolls back alone: the segments before it, and earlier failed attempts, may have committed.
+    const at = segments.findIndex((s) => s.statements.includes(report.error?.statementIndex ?? -1));
+    const committed =
+      segments[at]?.transactional === false
+        ? Math.min(report.appliedStatements, total)
+        : segments.slice(0, Math.max(at, 0)).reduce((n, s) => n + s.statements.length, 0);
     await markFailed(
       client,
       { ...record, status: "failed" },
@@ -996,7 +1000,7 @@ async function runFile(
         ...(report.error === undefined ? {} : { statementIndex: report.error.statementIndex, sql: report.error.sql }),
         attempts: retries + 1,
       },
-      atomic ? 0 : applied,
+      Math.max(committed, row?.status === "failed" ? row.statementsApplied : 0),
     ).catch(() => undefined);
     return outcome(Date.now() - startedAt, null, retries, {
       code: "sql_error",

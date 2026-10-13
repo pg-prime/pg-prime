@@ -48,7 +48,7 @@ describe("withdrawing a failed migration by deleting its file", () => {
     for (const db of databases) await destroyDatabase(db).catch(() => undefined);
   }, T);
 
-  const failThenDelete = async (slug: string, body: string) => {
+  const failThenDelete = async (slug: string, ...attempts: string[]) => {
     expect(await serverAvailable()).toBe(true);
     const database = `pgprime_withdraw_${slug}`;
     databases.push(database);
@@ -56,9 +56,11 @@ describe("withdrawing a failed migration by deleting its file", () => {
     const p = await makeProject(`withdraw-${slug}`, { url: urlOf(dbConn(database)), noSchema: true });
     projects.push(p);
     await writeHandMigration(p.migrations, "0001_seed.sql", SEED);
-    await writeHandMigration(p.migrations, "0002_broken.sql", body);
     const cli = (cmd: string) => runCli(["migrate", cmd, "--config", p.config, "--output", "json"]);
-    expect((await cli("apply")).code).toBe(EXIT.error);
+    for (const body of attempts) {
+      await writeHandMigration(p.migrations, "0002_broken.sql", body);
+      expect((await cli("apply")).code).toBe(EXIT.error);
+    }
     await rm(join(p.migrations, "0002_broken.sql"));
     return { status: await cli("status"), apply: await cli("apply"), doctor: await cli("doctor") };
   };
@@ -74,10 +76,15 @@ describe("withdrawing a failed migration by deleting its file", () => {
     T,
   );
 
-  it(
-    "a segmented file whose first segment committed stays a missing file",
-    async () => {
-      const { status, apply, doctor } = await failThenDelete("seg", SPLIT);
+  it.each([
+    ["seg", [SPLIT]],
+    ["mislabeled", [SPLIT.replace("txmode    segmented", "txmode    transactional")]],
+    ["retried", [BROKEN, SPLIT]],
+    ["rerun", [SPLIT, SPLIT]],
+  ])(
+    "a failed file with a committed segment stays a missing file (%s)",
+    async (slug, attempts) => {
+      const { status, apply, doctor } = await failThenDelete(slug, ...attempts);
       expect(status.code, status.stdout).toBe(EXIT.drift);
       expect(envelopeOf(status)["missingFiles"]).toEqual(["0002_broken"]);
       expect(apply.code, apply.stdout).not.toBe(EXIT.ok);
