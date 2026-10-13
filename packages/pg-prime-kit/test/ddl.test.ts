@@ -155,9 +155,9 @@ describe("an FK onto a FORCE'd table lifts FORCE while it checks (RL109)", () =>
     [schema, table("documents"), table("refs"), fk],
     [edge(fk, "refs"), edge(fk, "documents")],
   );
-  const lane = (owner: string, bypass: string[]) => {
+  const lane = (owner: string, bypass: string[], forced = ["documents"]) => {
     const state = {
-      tables: [{ schema: "public", name: "documents", enabled: true, forced: true, owner }],
+      tables: forced.map((name) => ({ schema: "public", name, enabled: true, forced: true, owner })),
       policies: [],
       updatedAtTriggers: [],
       memberOf: new Map<string, readonly string[]>(),
@@ -165,18 +165,25 @@ describe("an FK onto a FORCE'd table lifts FORCE while it checks (RL109)", () =>
     };
     return { before: state, after: state };
   };
-  const validate = (owner: string, bypass: string[]) =>
-    buildStatements(diffIR(current, desired), desired, { lane: lane(owner, bypass) }).statements.find((s) =>
+  const validate = (owner: string, bypass: string[], forced?: string[]) =>
+    buildStatements(diffIR(current, desired), desired, { lane: lane(owner, bypass, forced) }).statements.find((s) =>
       s.sql.includes("VALIDATE CONSTRAINT"),
     );
 
   it("wraps the VALIDATE in a DO block that lifts and restores FORCE only where it is set", () => {
     const s = validate("app", []);
-    expect(s?.sql).toContain('IF forced THEN ALTER TABLE "public"."documents" NO FORCE ROW LEVEL SECURITY; END IF;');
+    expect(s?.sql).toContain('IF f0 THEN ALTER TABLE "public"."documents" NO FORCE ROW LEVEL SECURITY; END IF;');
     expect(s?.sql).toContain('ALTER TABLE "public"."refs" VALIDATE CONSTRAINT "refs_doc_fkey";');
-    expect(s?.sql).toContain('IF forced THEN ALTER TABLE "public"."documents" FORCE ROW LEVEL SECURITY; END IF;');
+    expect(s?.sql).toContain('IF f0 THEN ALTER TABLE "public"."documents" FORCE ROW LEVEL SECURITY; END IF;');
+    expect(s?.sql).not.toContain('"public"."refs" NO FORCE');
     expect(s?.hazards).toEqual(["RL109"]);
     expect(s?.lockClass).toBe("accessExclusive");
+  });
+
+  it("lifts FORCE from the referencing table too when both are forced", () => {
+    const sql = validate("app", [], ["documents", "refs"])?.sql ?? "";
+    expect(sql).toContain('ALTER TABLE "public"."refs" NO FORCE ROW LEVEL SECURITY');
+    expect(sql).toContain('ALTER TABLE "public"."documents" NO FORCE ROW LEVEL SECURITY');
   });
 
   it("leaves it alone when the owner bypasses RLS", () => {

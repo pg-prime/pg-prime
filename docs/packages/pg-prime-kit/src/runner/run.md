@@ -26,7 +26,7 @@ Callees: `runner/files.ts` (read and shape files), `runner/apply.ts` (segments, 
 3. `ensureHistory`, or under `--dry-run` only `historyPresent` plus a warning (`:487`); `readMigrationsDir` (`:495`).
 4. Lock (skipped under dry-run): poll `acquireSessionLock` every 250 ms until `lockWaitMs` (`:511-518`). The loser re-reads history and returns `up_to_date` when nothing is pending, else `locked` with stale-lease advice (`:521-542`).
 5. Winner calls `takeLease` and starts a `setInterval` heartbeat on the second connection, or on the migration connection with a warning if it cannot open (`:549-568`).
-6. Reconcile: a history row without a file is `missing_file`; a settled row whose checksum differs is `checksum_drift` (a warning under `dev`) (`:589-620`).
+6. Reconcile: a history row without a file is `missing_file` unless `leftNothing` (a `transactional` file that failed and rolled back whole); a settled row whose checksum differs is `checksum_drift` (a warning under `dev`) (`:589-620`).
 7. Checkpoints: empty history + `checkpoints !== "ignore"` jumps to the newest `NNNN_checkpoint`; files before it, or unrecorded checkpoint files otherwise, are written `superseded` (`:637-664`).
 8. Select pending; `--to` trims at the target or fails `unknown_target` (`:667-683`). The session gets `row_security = off` (design/20 D20) (`:686`); pre-flight `sweep` lists INVALID indexes, NOT VALID constraints and `_ccnew` leftovers (`:687`, `:1155`), and `rlsDataFiles` adds an `RL107` diagnostic plus warning for each pending data/batch file naming an RLS-enabled table when the role is neither superuser nor `BYPASSRLS` (`:691`, `:1203`).
 9. Per file: `executionPlan` error → `plan_invalid`; plan sha256 ≠ file checksum → `checksum_drift`; plan `schemas` ≠ run schemas → `fingerprint_mismatch` (`:702-766`).
@@ -38,7 +38,7 @@ Callees: `runner/files.ts` (read and shape files), `runner/apply.ts` (segments, 
 
 ## Gotchas
 - Retry budgets count the first try: `55P03` 5, `40001` 5, `40P01` 2, `57014` 1, anything else 1 (`packages/pg-prime-kit/src/runner/run.ts:261`). Transactional files retry whole; bare files retry one statement.
-- Transactional and segmented files have no partial resume: every run re-executes all segments. A failure records `statements_applied = 0` whenever the file has a transactional segment (`:997`), even if earlier segments committed.
+- Transactional and segmented files have no partial resume: every run re-executes all segments. A file with several segments writes a `running` row with `statement_uncertain` set before it starts; only the applied record clears it, so a row any multi-segment attempt touched is never withdrawable. A failure records the statements of the segments that committed before the failing one, never fewer than an earlier attempt, in this run or a previous one, committed.
 - A resumed `txmode none` file with `statement_uncertain` set restarts at statement 0 (`:333`); correctness relies on every statement being idempotent (TX201).
 - `--dry-run` executes the real path against `CaptureClient` (`:279`), which returns no rows. It still runs the pooler probe, reads history, and may `extractCatalog` once for the gate.
 - The lock deadline counts from the run start, so probe and `ensureHistory` time eat into `lockWaitMs` (`:512`).

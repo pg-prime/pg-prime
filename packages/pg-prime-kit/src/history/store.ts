@@ -35,6 +35,10 @@ export interface MigrationRow {
   readonly engineVersion: string;
 }
 
+/** A failed single-transaction run rolled back whole: its file may be deleted. Segmented runs commit per segment. */
+export const leftNothing = (r: MigrationRow): boolean =>
+  r.txmode === "transactional" && r.status === "failed" && r.statementsApplied === 0 && r.statementUncertain === null;
+
 export interface LockRow {
   readonly runId: string;
   readonly holder: string;
@@ -166,15 +170,23 @@ export function recordAppliedSql(row: NewMigrationRow): string {
     engine_version = EXCLUDED.engine_version`;
 }
 
-/** The `running` row a non-transactional file needs before it can record any progress. */
-export async function beginRow(client: CatalogClient, row: NewMigrationRow): Promise<void> {
+/**
+ * The `running` row a non-transactional file needs before it can record any progress.
+ * `uncertain` marks a statement whose outcome is unknown until the row is recorded applied.
+ */
+export async function beginRow(
+  client: CatalogClient,
+  row: NewMigrationRow,
+  uncertain: number | null = null,
+): Promise<void> {
   await client.query(
     `INSERT INTO ${HISTORY_SCHEMA}.migrations (
        id, seq, name, checksum, plan_id, fingerprint_from, fingerprint_to, txmode,
        statements_total, statements_applied, statement_uncertain, segment_applied,
        status, started_at, applied_from, error, engine_version
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,'running',now(),$12,NULL,$13)
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$14,$11,'running',now(),$12,NULL,$13)
      ON CONFLICT (id) DO UPDATE SET
+       statement_uncertain = COALESCE(EXCLUDED.statement_uncertain, ${HISTORY_SCHEMA}.migrations.statement_uncertain),
        checksum = EXCLUDED.checksum, plan_id = EXCLUDED.plan_id,
        fingerprint_from = EXCLUDED.fingerprint_from, fingerprint_to = EXCLUDED.fingerprint_to,
        txmode = EXCLUDED.txmode, statements_total = EXCLUDED.statements_total,
@@ -195,6 +207,7 @@ export async function beginRow(client: CatalogClient, row: NewMigrationRow): Pro
       row.segmentApplied,
       row.appliedFrom,
       row.engineVersion,
+      uncertain,
     ],
   );
 }

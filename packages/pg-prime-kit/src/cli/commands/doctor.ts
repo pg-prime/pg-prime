@@ -15,7 +15,7 @@ import { extractCatalog, observedCounts, type CatalogClient } from "../../catalo
 import type { ResolvedConfig } from "../../config/load.js";
 import { withClient } from "../../db/pg.js";
 import { historyPresent } from "../../history/schema.js";
-import { currentFingerprint, readMigrationRows, readRepeatableRows } from "../../history/store.js";
+import { currentFingerprint, leftNothing, readMigrationRows, readRepeatableRows } from "../../history/store.js";
 import { planRepeatables } from "../../repeatables/index.js";
 import { declaredCensus, isDeclared, PRUNE_FILE, readMarks } from "../../schema/declared.js";
 import { inspectLease } from "../../runner/run.js";
@@ -95,7 +95,7 @@ export async function runDoctor(config: ResolvedConfig, argv: ParseResult): Prom
     /* files on disk vs recorded rows. */
     const { files } = await readMigrationsDir(config.migrationsDir);
     const onDisk = new Set(files.map((f) => f.id));
-    const missingFiles = rows.filter((r) => !onDisk.has(r.id)).map((r) => r.id);
+    const missingFiles = rows.filter((r) => !onDisk.has(r.id) && !leftNothing(r)).map((r) => r.id);
     const partial = rows
       .filter((r) => r.status === "running" || (r.status === "failed" && r.statementsApplied > 0))
       .map((r) => `${r.id} (${String(r.statementsApplied)}/${String(r.statementsTotal)})`);

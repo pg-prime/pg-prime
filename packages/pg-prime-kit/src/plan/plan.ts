@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import type { Diagnostic } from "../catalog/extract.js";
 import type { RenameRecord } from "../diff/delta.js";
@@ -7,7 +8,25 @@ import type { LockClass, Statement, Transactionality } from "../diff/statement.j
 import { canonicalize, sha256 } from "../ir/hash.js";
 import type { DumpOracleVerdict } from "../prove/pg-dump.js";
 
-export const ENGINE = { name: "pg-prime-kit", version: "0.0.0-spike", backend: "in-house", irVersion: 1 } as const;
+/** The kit's package version, from the package.json beside `dist/` (and `src/`). */
+function kitVersion(): string {
+  try {
+    const parsed = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
+      version?: unknown;
+    };
+    if (typeof parsed.version === "string") return parsed.version;
+  } catch {
+    /* running from a tree without a package.json beside dist/ */
+  }
+  return "0.0.0";
+}
+
+export const ENGINE: {
+  readonly name: "pg-prime-kit";
+  readonly version: string;
+  readonly backend: "in-house";
+  readonly irVersion: 1;
+} = { name: "pg-prime-kit", version: kitVersion(), backend: "in-house", irVersion: 1 };
 
 /**
  * `--by`'s advertised default: the operating-system user (design/12 F2 item g).

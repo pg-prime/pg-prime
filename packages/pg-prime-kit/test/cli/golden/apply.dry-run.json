@@ -118,13 +118,13 @@
       ]
     },
     {
-      "text": "INSERT INTO pgprime.migrations (\n    id, seq, name, checksum, plan_id, fingerprint_from, fingerprint_to, txmode,\n    statements_total, statements_applied, statement_uncertain, segment_applied,\n    status, started_at, finished_at, duration_ms, applied_from, error, engine_version\n  ) VALUES (\n    '0001_create_widgets', 1, 'create_widgets', 'sha256:4dfc2450362d8592e3beea85f137b6bc347350c46ef6e6131027fc72740e91bf', NULL,\n    NULL, NULL, 'transactional',\n    2, 2, NULL, 0,\n    'applied', transaction_timestamp(), clock_timestamp(),\n    (EXTRACT(EPOCH FROM (clock_timestamp() - transaction_timestamp())) * 1000)::int,\n    'k1-golden', NULL, '0.0.0-spike'\n  )\n  ON CONFLICT (id) DO UPDATE SET\n    checksum = EXCLUDED.checksum, plan_id = EXCLUDED.plan_id,\n    fingerprint_from = EXCLUDED.fingerprint_from, fingerprint_to = EXCLUDED.fingerprint_to,\n    txmode = EXCLUDED.txmode, statements_total = EXCLUDED.statements_total,\n    statements_applied = EXCLUDED.statements_applied, statement_uncertain = NULL,\n    segment_applied = EXCLUDED.segment_applied, status = EXCLUDED.status,\n    started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at,\n    duration_ms = EXCLUDED.duration_ms, applied_by = current_user,\n    applied_from = EXCLUDED.applied_from, error = NULL,\n    engine_version = EXCLUDED.engine_version"
+      "text": "INSERT INTO pgprime.migrations (\n    id, seq, name, checksum, plan_id, fingerprint_from, fingerprint_to, txmode,\n    statements_total, statements_applied, statement_uncertain, segment_applied,\n    status, started_at, finished_at, duration_ms, applied_from, error, engine_version\n  ) VALUES (\n    '0001_create_widgets', 1, 'create_widgets', 'sha256:4dfc2450362d8592e3beea85f137b6bc347350c46ef6e6131027fc72740e91bf', NULL,\n    NULL, NULL, 'transactional',\n    2, 2, NULL, 0,\n    'applied', transaction_timestamp(), clock_timestamp(),\n    (EXTRACT(EPOCH FROM (clock_timestamp() - transaction_timestamp())) * 1000)::int,\n    'k1-golden', NULL, '<engine-version>'\n  )\n  ON CONFLICT (id) DO UPDATE SET\n    checksum = EXCLUDED.checksum, plan_id = EXCLUDED.plan_id,\n    fingerprint_from = EXCLUDED.fingerprint_from, fingerprint_to = EXCLUDED.fingerprint_to,\n    txmode = EXCLUDED.txmode, statements_total = EXCLUDED.statements_total,\n    statements_applied = EXCLUDED.statements_applied, statement_uncertain = NULL,\n    segment_applied = EXCLUDED.segment_applied, status = EXCLUDED.status,\n    started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at,\n    duration_ms = EXCLUDED.duration_ms, applied_by = current_user,\n    applied_from = EXCLUDED.applied_from, error = NULL,\n    engine_version = EXCLUDED.engine_version"
     },
     {
       "text": "COMMIT"
     },
     {
-      "text": "INSERT INTO pgprime.migrations (\n       id, seq, name, checksum, plan_id, fingerprint_from, fingerprint_to, txmode,\n       statements_total, statements_applied, statement_uncertain, segment_applied,\n       status, started_at, applied_from, error, engine_version\n     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,'running',now(),$12,NULL,$13)\n     ON CONFLICT (id) DO UPDATE SET\n       checksum = EXCLUDED.checksum, plan_id = EXCLUDED.plan_id,\n       fingerprint_from = EXCLUDED.fingerprint_from, fingerprint_to = EXCLUDED.fingerprint_to,\n       txmode = EXCLUDED.txmode, statements_total = EXCLUDED.statements_total,\n       status = 'running', started_at = now(), finished_at = NULL, duration_ms = NULL,\n       applied_by = current_user, applied_from = EXCLUDED.applied_from, error = NULL,\n       engine_version = EXCLUDED.engine_version",
+      "text": "INSERT INTO pgprime.migrations (\n       id, seq, name, checksum, plan_id, fingerprint_from, fingerprint_to, txmode,\n       statements_total, statements_applied, statement_uncertain, segment_applied,\n       status, started_at, applied_from, error, engine_version\n     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$14,$11,'running',now(),$12,NULL,$13)\n     ON CONFLICT (id) DO UPDATE SET\n       statement_uncertain = COALESCE(EXCLUDED.statement_uncertain, pgprime.migrations.statement_uncertain),\n       checksum = EXCLUDED.checksum, plan_id = EXCLUDED.plan_id,\n       fingerprint_from = EXCLUDED.fingerprint_from, fingerprint_to = EXCLUDED.fingerprint_to,\n       txmode = EXCLUDED.txmode, statements_total = EXCLUDED.statements_total,\n       status = 'running', started_at = now(), finished_at = NULL, duration_ms = NULL,\n       applied_by = current_user, applied_from = EXCLUDED.applied_from, error = NULL,\n       engine_version = EXCLUDED.engine_version",
       "values": [
         "0002_index_widgets",
         2,
@@ -138,7 +138,8 @@
         0,
         0,
         "k1-golden",
-        "0.0.0-spike"
+        "<engine-version>",
+        null
       ]
     },
     {

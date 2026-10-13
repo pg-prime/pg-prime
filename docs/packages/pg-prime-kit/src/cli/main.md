@@ -30,7 +30,7 @@ Called by `packages/pg-prime-kit/src/cli.ts`. Calls `parseArgs`/`renderOptions` 
 - `--version` and `--help`/`-h` are detected anywhere in argv, including after `--` (`packages/pg-prime-kit/src/cli/main.ts:305`, `packages/pg-prime-kit/src/cli/main.ts:318`).
 - `earlyFormat` only recognizes `--output json` / `--output=json`; after parsing, a bad `--output` value is reported in text because `format` falls back to `text` (`packages/pg-prime-kit/src/cli/main.ts:395`).
 - Usage errors carry `durationMs: 0` and a fresh `at`; `command` is `pg-prime`, the noun, or the spelled command (`migrate apply`, `db seed`, `pull`) depending on how far routing got (`packages/pg-prime-kit/src/cli/main.ts:278`).
-- `version()` reads `../../package.json` relative to the module URL and falls back to `ENGINE.version` (`0.0.0-spike`) when absent (`packages/pg-prime-kit/src/cli/main.ts:221`).
+- `version()` returns `ENGINE.version`, which `plan.ts` reads from the kit's `package.json` (`packages/pg-prime-kit/src/cli/main.ts:221`).
 - The strip-types re-exec uses `stdio: "inherit"`, so the parent emits nothing; the marker env var prevents a second fork (`packages/pg-prime-kit/src/cli/main.ts:429`).
 - Command noun defaults to `migrate`; `seed` is under `db`, `pull` is bare (`packages/pg-prime-kit/src/cli/main.ts:199`, `packages/pg-prime-kit/src/cli/main.ts:208`). The only alias is `deploy` for `apply`.
 - Each command's `exits` string is help text only; the codes actually returned come from the command's `CommandOutput.exitCode`.

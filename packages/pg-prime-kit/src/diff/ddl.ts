@@ -1567,18 +1567,23 @@ interface AddConstraintContext {
 }
 
 /**
- * Runs an FK check with FORCE lifted from the referenced table while the check runs. The owner of a
- * FORCE'd table without BYPASSRLS cannot read it under the runner's `row_security = off` (42501),
- * and with `on` the check is filtered by the policies. The table is re-checked at apply time, so a
- * database where it is not FORCE'd is left alone.
+ * Runs an FK check with FORCE lifted from both of its tables while the check runs: it reads the
+ * referencing and the referenced table. The owner of a FORCE'd table without BYPASSRLS cannot read
+ * it under the runner's `row_security = off` (42501), and with `on` the check is filtered by the
+ * policies. Each table is re-checked at apply time, so one that is not FORCE'd there is left alone.
  */
-function unforced(table: string, sql: string): string {
+function unforced(tables: readonly string[], sql: string): string {
+  const each = (f: (t: string, i: number) => string): string => tables.map(f).join("");
   return (
-    `DO $pgprime$ DECLARE forced boolean := (SELECT relforcerowsecurity FROM pg_class WHERE oid = ${quoteLiteral(table)}::regclass);\n` +
+    `DO $pgprime$ DECLARE\n` +
+    each(
+      (t, i) =>
+        `  f${i} boolean := (SELECT relforcerowsecurity FROM pg_class WHERE oid = ${quoteLiteral(t)}::regclass);\n`,
+    ) +
     `BEGIN\n` +
-    `  IF forced THEN ALTER TABLE ${table} NO FORCE ROW LEVEL SECURITY; END IF;\n` +
+    each((t, i) => `  IF f${i} THEN ALTER TABLE ${t} NO FORCE ROW LEVEL SECURITY; END IF;\n`) +
     `  ${sql};\n` +
-    `  IF forced THEN ALTER TABLE ${table} FORCE ROW LEVEL SECURITY; END IF;\n` +
+    each((t, i) => `  IF f${i} THEN ALTER TABLE ${t} FORCE ROW LEVEL SECURITY; END IF;\n`) +
     `END $pgprime$`
   );
 }
@@ -1623,11 +1628,16 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
   const table = quoteQualified(c.schema, c.table);
   const refs = desired.outgoingEdges(f.id).map((e) => id(e.to));
   const uniquenessRefs = p.contype === "f" ? uniquenessProviders(desired, f.id) : [];
-  const forcedRef = p.contype === "f" ? refs.find((r) => ctx.forcedTables?.has(r)) : undefined;
-  const forced = forcedRef === undefined ? null : (parseId(forcedRef) as StableId & { kind: "table" });
-  /** The statement that runs the FK check, with FORCE lifted when the referenced table needs it. */
-  const checked = (sql: string): string =>
-    forced === null ? sql : unforced(quoteQualified(forced.schema, forced.name), sql);
+  const own = id({ kind: "table", schema: c.schema, name: c.table });
+  const forced =
+    p.contype === "f"
+      ? [...new Set([own, ...refs])]
+          .filter((r) => ctx.forcedTables?.has(r))
+          .map((r) => parseId(r) as StableId & { kind: "table" })
+          .map((t) => quoteQualified(t.schema, t.name))
+      : [];
+  /** The statement that runs the FK check, with FORCE lifted from whichever of its tables needs it. */
+  const checked = (sql: string): string => (forced.length === 0 ? sql : unforced(forced, sql));
   const base = {
     verb: "alter" as const,
     kind: "constraint",
@@ -1667,9 +1677,9 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
         // about the constraint, not about its table
         consumes: [id(f.id), ...base.consumes],
         produces: [],
-        lockClass: forced === null ? "shareUpdateExclusive" : "accessExclusive",
+        lockClass: forced.length === 0 ? "shareUpdateExclusive" : "accessExclusive",
         idempotent: true,
-        hazards: forced === null ? [] : ["RL109"],
+        hazards: forced.length === 0 ? [] : ["RL109"],
         phase: PHASE.validateConstraint,
       },
     ];
@@ -1770,7 +1780,7 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
     if (mayFail && p.validated && (p.contype === "f" || p.contype === "c")) hazards.push("MF106");
   }
   const add = `ALTER TABLE ${table} ADD CONSTRAINT ${quoteIdent(c.name)} ${p.definition}${suffix}`;
-  if (forced !== null && p.validated) hazards.push("RL109");
+  if (forced.length > 0 && p.validated) hazards.push("RL109");
   return [
     {
       ...base,
