@@ -1,6 +1,6 @@
 {
   "name": "@pg-prime/outbox",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Transactional outbox for pg-prime: write in your transaction, relay in per-key order. Pre-alpha — the API will change.",
   "keywords": [
     "messaging",
@@ -46,7 +46,7 @@
     "vitest": "^4.1.10"
   },
   "peerDependencies": {
-    "pg-prime": ">=0.2.2"
+    "pg-prime": ">=0.2.3"
   },
   "engines": {
     "node": ">=22.12"

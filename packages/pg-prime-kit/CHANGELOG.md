@@ -1,5 +1,13 @@
 # @pg-prime/kit
 
+## 0.2.3
+
+### Patch Changes
+
+- [#9](https://github.com/pg-prime/pg-prime/pull/9) [`5db4885`](https://github.com/pg-prime/pg-prime/commit/5db48853d6bc7db59f4c742a3a3f6548a8b6d9ec) Thanks [@YohoCX](https://github.com/YohoCX)! - A foreign key onto a FORCE RLS table now applies when the migration role owns that table and has no `BYPASSRLS`. Before, the FK check failed with `42501` under the runner's `row_security = off`, and `--no-safe-rewrite` did not help. The statement that runs the check (the `VALIDATE`, or a literal `ADD`) is wrapped in a `DO` block that lifts FORCE on the referenced table while the check runs and puts it back, only if the table is forced at apply time. The new warning RL109 reports this, because the referenced table stays `ACCESS EXCLUSIVE` until the migration commits.
+- Updated dependencies [[`ae10bcb`](https://github.com/pg-prime/pg-prime/commit/ae10bcb575712c41afbc5831ddac66ec2da6d105)]:
+  - pg-prime@0.2.3
+
 ## 0.2.2
 
 ### Patch Changes

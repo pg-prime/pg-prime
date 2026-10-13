@@ -1,5 +1,12 @@
 # @pg-prime/events
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [[`ae10bcb`](https://github.com/pg-prime/pg-prime/commit/ae10bcb575712c41afbc5831ddac66ec2da6d105)]:
+  - pg-prime@0.2.3
+
 ## 0.2.2
 
 ### Patch Changes
