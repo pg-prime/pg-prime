@@ -7,7 +7,7 @@
  * message text (design/09 R13).
  */
 
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
@@ -15,6 +15,7 @@ import { EXIT } from "../../src/cli/exit.js";
 import { withClient, type ConnInfo } from "../../src/db/pg.js";
 import { readMigrationRows } from "../../src/history/store.js";
 import { applyPending, backoff, resumeFrom } from "../../src/runner/run.js";
+import { migrationStatus } from "../../src/runner/status.js";
 import { dbConn, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
 import { tempDir, writeHandMigration } from "../support/migrations.js";
 
@@ -223,6 +224,11 @@ describe("failures, retries and what the row says afterwards", () => {
       expect(row.statementsApplied).toBe(0);
       expect(row.error).toMatchObject({ code: "sql_error", sqlState: "42P07", statementIndex: 1 });
       expect(row.finishedAt).not.toBeNull();
+
+      // Nothing of it is in the database, so deleting the file is how it is withdrawn.
+      await rm(join(dir, "0002_broken.sql"));
+      expect((await migrationStatus(conn, dir)).status).toBe("up_to_date");
+      expect((await applyPending(conn, dir)).status).toBe("up_to_date");
     },
     T,
   );

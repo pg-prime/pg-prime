@@ -35,6 +35,10 @@ export interface MigrationRow {
   readonly engineVersion: string;
 }
 
+/** A failed run that applied nothing and left nothing uncertain: its file may be deleted. */
+export const leftNothing = (r: MigrationRow): boolean =>
+  r.status === "failed" && r.statementsApplied === 0 && r.statementUncertain === null;
+
 export interface LockRow {
   readonly runId: string;
   readonly holder: string;

@@ -19,6 +19,7 @@ import {
   readRepeatableRows,
   type DataProgress,
   type MigrationRow,
+  leftNothing,
 } from "../history/store.js";
 import { inspectLease, NO_REPEATABLES, type LeaseInspection } from "./run.js";
 import type { RepeatablesPass } from "../repeatables/index.js";
@@ -131,6 +132,7 @@ export async function migrationStatusOn(
   const checksumDrift: string[] = [];
 
   for (const row of rows) {
+    if (!fileIds.has(row.id) && leftNothing(row)) continue;
     if (!fileIds.has(row.id)) {
       missingFiles.push(row.id);
       migrations.push({

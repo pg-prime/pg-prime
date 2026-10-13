@@ -11,7 +11,6 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { ConfigError, loadConfig, resolveConfig, STRIP_TYPES_MARKER, type ResolvedConfig } from "../config/load.js";
 import { ENGINE } from "../plan/plan.js";
 import { bool, list, parseArgs, renderOptions, str, type OptionSpec, type ParseResult } from "./args.js";
@@ -218,16 +217,7 @@ const bare = (c: Command): boolean => c.noun === null;
 const under = (noun: string): Command[] => COMMANDS.filter((c) => (c.noun ?? "migrate") === noun);
 const spell = (c: Command): string => (c.noun === null ? c.name : `${c.noun ?? "migrate"} ${c.name}`);
 
-function version(): string {
-  try {
-    const text = readFileSync(new URL("../../package.json", import.meta.url), "utf8");
-    const parsed = JSON.parse(text) as { version?: unknown };
-    if (typeof parsed.version === "string") return parsed.version;
-  } catch {
-    /* running from a tree without a package.json beside dist/ */
-  }
-  return ENGINE.version;
-}
+const version = (): string => ENGINE.version;
 
 function rootHelp(): string {
   const width = Math.max(...COMMANDS.map((c) => spell(c).length));

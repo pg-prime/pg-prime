@@ -50,6 +50,7 @@ import {
   type LockRow,
   type MigrationRow,
   type NewMigrationRow,
+  leftNothing,
 } from "../history/store.js";
 import { ENGINE, type PlanStatement } from "../plan/plan.js";
 import {
@@ -591,6 +592,7 @@ export async function applyPendingOn(
     const byFile = new Map(files.map((f) => [f.id, f]));
     for (const row of rows) {
       const file = byFile.get(row.id);
+      if (!file && leftNothing(row)) continue;
       if (!file) {
         return await finish(
           done("drift", {
