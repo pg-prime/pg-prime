@@ -1,6 +1,6 @@
 {
   "name": "@pg-prime/cron",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Distributed cron for pg-prime: schedules that fire exactly once per tick across instances. Pre-alpha — the API will change.",
   "keywords": [
     "cron",
@@ -50,8 +50,8 @@
     "vitest": "^4.1.10"
   },
   "peerDependencies": {
-    "@pg-prime/mq": ">=0.2.2",
-    "pg-prime": ">=0.2.2"
+    "@pg-prime/mq": ">=0.2.3",
+    "pg-prime": ">=0.2.3"
   },
   "peerDependenciesMeta": {
     "@pg-prime/mq": {
