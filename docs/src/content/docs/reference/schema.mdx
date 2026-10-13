@@ -377,6 +377,8 @@ The enum's own schema travels with it, so a shared enum does not move because on
 
 {/* docs: signature */}
 ```ts
+type NotNull<T> = Exclude<T, null>
+type NullPart<M extends ColMeta> = M extends { nl: true } ? null : Extract<M['t'], null>
 type CollatablePg = 'text' | 'varchar' | 'citext' | 'bpchar' | 'name'
 type CollateFn<M extends ColMeta> = M['pg'] extends
   | CollatablePg
@@ -388,7 +390,9 @@ type CollateFn<M extends ColMeta> = M['pg'] extends
 interface Col<M extends ColMeta> {
   readonly [META]: M
   readonly $: ColumnRuntime
-  nullable(): Col<{ t: M['t'] | null; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+  nullable: unknown extends M['t']
+    ? () => Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk']; nl: true }>
+    : () => Col<{ t: M['t'] | null; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
   default(v: M['t']): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
   defaultSql(expr: string): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
   generatedAlways(): Col<{ t: M['t']; pg: M['pg']; opt: true; ro: true; pk: M['pk'] }>
@@ -405,14 +409,14 @@ interface Col<M extends ColMeta> {
   collate: CollateFn<M>
   renamedFrom(old: string): Col<M>
   array(): Col<{
-    t: Exclude<M['t'], null>[] | Extract<M['t'], null>
+    t: NotNull<M['t']>[] | NullPart<M>
     pg: `${M['pg']}[]`
     opt: M['opt']
     ro: M['ro']
     pk: M['pk']
   }>
-  $type<T extends Exclude<M['t'], null>>(): Col<{
-    t: T | Extract<M['t'], null>
+  $type<T extends NotNull<M['t']>>(): Col<{
+    t: T | NullPart<M>
     pg: M['pg']
     opt: M['opt']
     ro: M['ro']
@@ -518,12 +522,14 @@ interface ColMeta {
   readonly opt: boolean
   readonly ro: boolean
   readonly pk: boolean
+  readonly nl?: true
 }
 ```
 
 The flat five-field payload every column carries, and the only thing about a column the type layer
 reads. `t` is the type *as read*, already including `| null` when the column is nullable, so the row
-shapes need no conditionals. `opt` is "optional at insert" (nullable, defaulted, or identity by
+shapes need no conditionals. The one exception is `unknown` (`jsonb`), which absorbs `| null`, so
+`.nullable()` there sets `nl` instead and `.$type()` / `.array()` read it. `opt` is "optional at insert" (nullable, defaulted, or identity by
 default); `ro` is "never writable" (`GENERATED ALWAYS`); `pk` records primary-key membership **as
 declared per column**, and is deliberately incomplete — a composite key declared through the
 [`primaryKey`](#primarykey) extra is runtime-only and leaves every `pk` false. The one consumer, the

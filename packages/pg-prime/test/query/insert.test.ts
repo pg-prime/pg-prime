@@ -426,6 +426,12 @@ describe('`.$default()` is applied on insert (05 §6.2; design/12 §4 D finding 
     expect(sqlOf(built)).toMatch(/set "slug" = \$1\nwhere/)
   })
 
+  it('an array passed to `.values()` points at `.valuesMany()`', () => {
+    expect(() => dDb.insertInto(dSchema.h.defaulted).values([{ id: 1 }] as never)).toThrowError(
+      /takes one row; pass an array of rows to \.valuesMany\(\)/,
+    )
+  })
+
   it('runs once per builder, not once per compile — `.compile()` stays pure (03 §1.3)', () => {
     seq = 0
     const built = dDb.insertInto(dSchema.h.defaulted).values({ id: 1 })

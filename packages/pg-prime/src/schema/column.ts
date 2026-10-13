@@ -110,7 +110,7 @@ export interface AnyCol {
  */
 type NotNull<T> = Exclude<T, null>
 /** `null` when the column opted into it, `never` otherwise. */
-type NullPart<T> = Extract<T, null>
+type NullPart<M extends ColMeta> = M extends { nl: true } ? null : Extract<M['t'], null>
 
 // NOTE: every resulting meta below is written out inline rather than behind a named alias.
 // TypeScript prints a named alias **unexpanded** (`src/query/errors.ts`'s header measures the same
@@ -128,7 +128,9 @@ type NullableFn<M extends ColMeta> = M['pk'] extends true
   ? OrmTypeError<'.nullable() after .primaryKey(): a primary key column is NOT NULL by definition'>
   : M['ro'] extends true
     ? OrmTypeError<'.nullable() after .generatedAlways()/.generatedAlwaysAs(): an identity column is never null, and a generated expression column takes .nullable() BEFORE it'>
-    : () => Col<{ t: M['t'] | null; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
+    : unknown extends M['t']
+      ? () => Col<{ t: M['t']; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk']; nl: true }>
+      : () => Col<{ t: M['t'] | null; pg: M['pg']; opt: true; ro: M['ro']; pk: M['pk'] }>
 
 /**
  * `.generatedAlwaysAs(expr, { stored: true })` — and `stored` has exactly one legal value.
@@ -256,7 +258,7 @@ export interface Col<M extends ColMeta> {
    * mean two different things, and `.nullable()` set the *column*, not the element.
    */
   array(): Col<{
-    t: NotNull<M['t']>[] | NullPart<M['t']>
+    t: NotNull<M['t']>[] | NullPart<M>
     pg: `${M['pg']}[]`
     opt: M['opt']
     ro: M['ro']
@@ -271,7 +273,7 @@ export interface Col<M extends ColMeta> {
    * carries — order-dependent, and a `NOT NULL` violation at insert time.
    */
   $type<T extends NotNull<M['t']>>(): Col<{
-    t: T | NullPart<M['t']>
+    t: T | NullPart<M>
     pg: M['pg']
     opt: M['opt']
     ro: M['ro']

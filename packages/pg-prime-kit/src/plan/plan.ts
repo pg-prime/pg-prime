@@ -195,6 +195,7 @@ const HAZARD_SEVERITY: Record<string, "error" | "warn"> = {
   RL106: "error",
   RL107: "warn",
   RL108: "error",
+  RL109: "warn",
 };
 
 /** An unknown code is a bug in the emitter, not an advisory — it must not be silent. */
