@@ -124,7 +124,7 @@
       "text": "COMMIT"
     },
     {
-      "text": "INSERT INTO pgprime.migrations (\n       id, seq, name, checksum, plan_id, fingerprint_from, fingerprint_to, txmode,\n       statements_total, statements_applied, statement_uncertain, segment_applied,\n       status, started_at, applied_from, error, engine_version\n     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,'running',now(),$12,NULL,$13)\n     ON CONFLICT (id) DO UPDATE SET\n       checksum = EXCLUDED.checksum, plan_id = EXCLUDED.plan_id,\n       fingerprint_from = EXCLUDED.fingerprint_from, fingerprint_to = EXCLUDED.fingerprint_to,\n       txmode = EXCLUDED.txmode, statements_total = EXCLUDED.statements_total,\n       status = 'running', started_at = now(), finished_at = NULL, duration_ms = NULL,\n       applied_by = current_user, applied_from = EXCLUDED.applied_from, error = NULL,\n       engine_version = EXCLUDED.engine_version",
+      "text": "INSERT INTO pgprime.migrations (\n       id, seq, name, checksum, plan_id, fingerprint_from, fingerprint_to, txmode,\n       statements_total, statements_applied, statement_uncertain, segment_applied,\n       status, started_at, applied_from, error, engine_version\n     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$14,$11,'running',now(),$12,NULL,$13)\n     ON CONFLICT (id) DO UPDATE SET\n       statement_uncertain = COALESCE(EXCLUDED.statement_uncertain, pgprime.migrations.statement_uncertain),\n       checksum = EXCLUDED.checksum, plan_id = EXCLUDED.plan_id,\n       fingerprint_from = EXCLUDED.fingerprint_from, fingerprint_to = EXCLUDED.fingerprint_to,\n       txmode = EXCLUDED.txmode, statements_total = EXCLUDED.statements_total,\n       status = 'running', started_at = now(), finished_at = NULL, duration_ms = NULL,\n       applied_by = current_user, applied_from = EXCLUDED.applied_from, error = NULL,\n       engine_version = EXCLUDED.engine_version",
       "values": [
         "0002_index_widgets",
         2,
@@ -138,7 +138,8 @@
         0,
         0,
         "k1-golden",
-        "<engine-version>"
+        "<engine-version>",
+        null
       ]
     },
     {

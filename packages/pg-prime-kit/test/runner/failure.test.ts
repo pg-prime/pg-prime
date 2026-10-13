@@ -281,7 +281,7 @@ describe("failures, retries and what the row says afterwards", () => {
   );
 
   it(
-    "a rerun killed between segments leaves a row that cannot be withdrawn",
+    "a rerun killed between segments, then failing again, leaves a row that cannot be withdrawn",
     async () => {
       const { conn, dir } = await project("crashed", "0002_crashed.sql", CRASHED);
       expect((await applyPending(conn, dir, { to: "0001" })).status).toBe("applied");
@@ -311,6 +311,8 @@ describe("failures, retries and what the row says afterwards", () => {
       } finally {
         await release();
       }
+      // The next run fails on segment 0 itself: the table it creates is already there.
+      expect((await applyPending(conn, dir)).error?.sqlState).toBe("42P07");
       await rm(join(dir, "0002_crashed.sql"));
       expect((await migrationStatus(conn, dir)).missingFiles).toEqual(["0002_crashed"]);
     },

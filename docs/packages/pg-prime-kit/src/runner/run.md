@@ -38,7 +38,7 @@ Callees: `runner/files.ts` (read and shape files), `runner/apply.ts` (segments, 
 
 ## Gotchas
 - Retry budgets count the first try: `55P03` 5, `40001` 5, `40P01` 2, `57014` 1, anything else 1 (`packages/pg-prime-kit/src/runner/run.ts:261`). Transactional files retry whole; bare files retry one statement.
-- Transactional and segmented files have no partial resume: every run re-executes all segments. A file with several segments writes a `running` row before it starts, so a crash between commits never leaves a row that reads as withdrawable. A failure records the statements of the segments that committed before the failing one, never fewer than an earlier attempt, in this run or a previous one, committed.
+- Transactional and segmented files have no partial resume: every run re-executes all segments. A file with several segments writes a `running` row with `statement_uncertain` set before it starts; only the applied record clears it, so a row any multi-segment attempt touched is never withdrawable. A failure records the statements of the segments that committed before the failing one, never fewer than an earlier attempt, in this run or a previous one, committed.
 - A resumed `txmode none` file with `statement_uncertain` set restarts at statement 0 (`:333`); correctness relies on every statement being idempotent (TX201).
 - `--dry-run` executes the real path against `CaptureClient` (`:279`), which returns no rows. It still runs the pooler probe, reads history, and may `extractCatalog` once for the gate.
 - The lock deadline counts from the run start, so probe and `ensureHistory` time eat into `lockWaitMs` (`:512`).
