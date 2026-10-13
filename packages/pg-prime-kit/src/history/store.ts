@@ -35,9 +35,9 @@ export interface MigrationRow {
   readonly engineVersion: string;
 }
 
-/** A failed run that applied nothing and left nothing uncertain: its file may be deleted. */
+/** A failed single-transaction run rolled back whole: its file may be deleted. Segmented runs commit per segment. */
 export const leftNothing = (r: MigrationRow): boolean =>
-  r.status === "failed" && r.statementsApplied === 0 && r.statementUncertain === null;
+  r.txmode === "transactional" && r.status === "failed" && r.statementsApplied === 0 && r.statementUncertain === null;
 
 export interface LockRow {
   readonly runId: string;

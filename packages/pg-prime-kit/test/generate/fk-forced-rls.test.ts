@@ -6,7 +6,6 @@ import { afterAll, describe, expect, it } from "vitest";
 import { defineSchema, pgTable, rls } from "pg-prime";
 import { withClient } from "../../src/db/pg.js";
 import { generate } from "../../src/generate.js";
-import { createRepeatablesPass } from "../../src/repeatables/index.js";
 import { applyPendingOn } from "../../src/runner/run.js";
 import type { SchemaLike } from "../../src/schema/types.js";
 import { ADMIN, dbConn, destroyDatabase, makeDatabase, serverAvailable, withAdmin } from "../support/db.js";
@@ -79,10 +78,9 @@ describe.skipIf(!canCreateRoles)("RL109: an FK between two FORCE'd tables, as th
     expect(g.status).toBe("generated");
     const result = await withClient(conn, async (c) => {
       await c.query(`SET ROLE ${ROLE}`);
+      // No repeatables pass: its declared FORCE statements would mask a DO block that fails to restore it.
       return applyPendingOn(c, migrations, {
         schemas: ["public"],
-        repeatablesDir: sql,
-        repeatables: createRepeatablesPass(),
         // oxlint-disable-next-line typescript/require-await -- implements the async poolerProbe seam
         poolerProbe: async (): Promise<boolean> => false,
       });

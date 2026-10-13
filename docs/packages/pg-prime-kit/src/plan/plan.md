@@ -4,7 +4,7 @@
 Defines the `.plan.json` artifact (`Plan`) and builds it from ordered statements, and renders the executable `.sql` text with its `-- pg-prime:` header and per-statement markers. Called by `generate.ts`, `checkpoint/checkpoint.ts`, `prove/*`, `cli/commands/baseline.ts`; read back by `plan/emit.ts`, `lint/*`, `runner/{apply,run,files}.ts` and `cli/main.ts`.
 
 ## Public API
-- `ENGINE` — `{ name: "pg-prime-kit", version: "0.0.0-spike", backend: "in-house", irVersion: 1 }`, stamped into every plan.
+- `ENGINE` — `{ name: "pg-prime-kit", version: <kit package.json version, "0.0.0" if unreadable>, backend: "in-house", irVersion: 1 }`, stamped into every plan.
 - `osUser(env?)` — `USER`, then `USERNAME`, then `os.userInfo().username`, then `"unknown"`; blank values are skipped.
 - `PlanStatement` — a `Statement` minus `phase`/`stage`, plus `index` and `timeouts: { lock, statement }`.
 - `PlanHazard` — `{ code, severity, statement, subject, message, acknowledged }`; `statement` is `-1` for a diagnostic-derived hazard.

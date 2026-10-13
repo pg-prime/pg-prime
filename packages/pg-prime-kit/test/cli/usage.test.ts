@@ -6,10 +6,12 @@
  * apply anything.
  */
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EXIT } from "../../src/cli/exit.js";
 import { parseArgs, parseDuration, type OptionSpec } from "../../src/cli/args.js";
-import { runCli } from "../support/cli.js";
+import { PKG_DIR, runCli } from "../support/cli.js";
 
 describe("parseArgs", () => {
   const specs: readonly OptionSpec[] = [
@@ -105,10 +107,11 @@ describe("the binary's usage surface", () => {
     expect(wrong.stderr).toContain("unknown command `migrate seed`");
   });
 
-  it("--version prints something semver-shaped", async () => {
+  it("--version prints the kit's package version", async () => {
     const r = await runCli(["--version"]);
     expect(r.code).toBe(EXIT.ok);
-    expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+    const { version } = JSON.parse(await readFile(join(PKG_DIR, "package.json"), "utf8")) as { version: string };
+    expect(r.stdout.trim()).toBe(version);
   });
 
   it("lists design/06 §6.2's twelve commands plus `pull`, and no 'not in this release' section", async () => {

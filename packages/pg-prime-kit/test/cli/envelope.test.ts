@@ -16,8 +16,8 @@ import { EXIT } from "../../src/cli/exit.js";
 import { withClient } from "../../src/db/pg.js";
 import { readMigrationRows, takeLease } from "../../src/history/store.js";
 import { ensureHistory } from "../../src/history/schema.js";
-import { ENGINE, osUser } from "../../src/plan/plan.js";
-import { envelopeOf, runCli, urlOf } from "../support/cli.js";
+import { osUser } from "../../src/plan/plan.js";
+import { envelopeOf, PKG_DIR, runCli, urlOf } from "../support/cli.js";
 import { dbConn, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
 import { emptyMigrations, migrationsFixture } from "./_fixture.js";
 import { golden } from "./_mask.js";
@@ -116,10 +116,8 @@ describe("the JSON envelope, through the binary", () => {
       expect(stream.some((t) => t.startsWith("INSERT INTO pgprime.migrations"))).toBe(true);
       expect(stream.some((t) => t.includes("statement_uncertain = $2"))).toBe(true);
       // The engine version is the kit's own package version, which every release moves.
-      await expectGolden(
-        "apply.dry-run",
-        JSON.parse(JSON.stringify(envelope).replaceAll(ENGINE.version, "<engine-version>")),
-      );
+      const { version } = JSON.parse(await readFile(join(PKG_DIR, "package.json"), "utf8")) as { version: string };
+      await expectGolden("apply.dry-run", JSON.parse(JSON.stringify(envelope).replaceAll(version, "<engine-version>")));
 
       // Nothing was created, not even the history schema, and no lock was taken.
       const after = await runCli(["migrate", "status", "--url", url, "--migrations", dir, "--output", "json"]);
