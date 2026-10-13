@@ -1,5 +1,15 @@
 # @pg-prime/kit
 
+## 0.2.4
+
+### Patch Changes
+
+- [#11](https://github.com/pg-prime/pg-prime/pull/11) [`218c6c5`](https://github.com/pg-prime/pg-prime/commit/218c6c5f8ed3c1cf99b6890ac97ad5f35d7da3f0) Thanks [@YohoCX](https://github.com/YohoCX)! - - RL109 lifts FORCE from both tables of a foreign key. The check reads the referencing table as well as the referenced one, so 0.2.3 still failed with `42501` when both were forced: it lifted FORCE from one table only, whichever came first.
+  - A transactional migration that failed and rolled back can now be withdrawn by deleting its file. Before, its `failed` history row made `migrate status` and `migrate doctor` report it as orphaned (exit 4) and made `migrate apply` refuse with `missing_file`. A failed segmented migration now records the statements its committed segments applied, so one whose earlier segments committed is still reported: those segments stay in the database.
+  - History rows and plans record the kit's real version in `engine_version` instead of `0.0.0-spike`.
+- Updated dependencies []:
+  - pg-prime@0.2.4
+
 ## 0.2.3
 
 ### Patch Changes

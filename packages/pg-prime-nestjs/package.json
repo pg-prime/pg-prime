@@ -1,6 +1,6 @@
 {
   "name": "@pg-prime/nestjs",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "NestJS module for pg-prime: the configured Db, ambient transactions, @Transactional(), request settings and rollback-per-test. Pre-alpha — the API will change.",
   "keywords": [
     "nest",
@@ -68,7 +68,7 @@
   "peerDependencies": {
     "@nestjs/common": "^11.0.0 || ^12.0.0",
     "@nestjs/core": "^11.0.0 || ^12.0.0",
-    "pg-prime": ">=0.2.3",
+    "pg-prime": ">=0.2.4",
     "rxjs": "^7.8.0"
   },
   "engines": {
