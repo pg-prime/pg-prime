@@ -14,7 +14,7 @@ import pg from "pg";
 import { EXIT } from "../../src/cli/exit.js";
 import { withClient, type ConnInfo } from "../../src/db/pg.js";
 import { readMigrationRows } from "../../src/history/store.js";
-import { applyPending, backoff, resumeFrom } from "../../src/runner/run.js";
+import { applyPending, applyPendingOn, backoff, resumeFrom } from "../../src/runner/run.js";
 import { migrationStatus } from "../../src/runner/status.js";
 import { dbConn, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
 import { tempDir, writeHandMigration } from "../support/migrations.js";
@@ -65,6 +65,19 @@ CREATE TABLE public.retry_committed_t (id int PRIMARY KEY);
 -- pg-prime:segment 1
 -- pg-prime:stmt 1 lock=accessExclusive non-idempotent
 ALTER TABLE public.locked_t ADD COLUMN note text;
+`;
+
+const CRASHED = `-- pg-prime:migration 0002_crashed
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=30s statement=60s
+
+-- pg-prime:segment 0
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+CREATE TABLE public.crash_t (id int PRIMARY KEY);
+
+-- pg-prime:segment 1
+-- pg-prime:stmt 1 lock=accessExclusive non-idempotent
+ALTER TABLE public.locked_t ADD COLUMN crash_note text;
 `;
 
 /** Hold ACCESS EXCLUSIVE on `public.locked_t` from a second connection. */
@@ -263,6 +276,43 @@ describe("failures, retries and what the row says afterwards", () => {
       expect(row.statementsApplied).toBe(1);
       await rm(join(dir, "0002_retried.sql"));
       expect((await migrationStatus(conn, dir)).missingFiles).toEqual(["0002_retried"]);
+    },
+    T,
+  );
+
+  it(
+    "a rerun killed between segments leaves a row that cannot be withdrawn",
+    async () => {
+      const { conn, dir } = await project("crashed", "0002_crashed.sql", CRASHED);
+      expect((await applyPending(conn, dir, { to: "0001" })).status).toBe("applied");
+      // The first run fails on segment 0 and commits nothing.
+      await withClient(conn, (c) => c.query("CREATE TABLE public.crash_t (id int)"));
+      expect((await applyPending(conn, dir)).error?.sqlState).toBe("42P07");
+      await withClient(conn, (c) => c.query("DROP TABLE public.crash_t"));
+      // The rerun commits segment 0, then its backend is killed while segment 1 waits on a lock.
+      const release = await holdTableLock(conn);
+      try {
+        const victim = new pg.Client({ ...conn });
+        victim.on("error", () => undefined);
+        await victim.connect();
+        // oxlint-disable-next-line typescript/require-await -- implements the async poolerProbe seam
+        const run = applyPendingOn(victim, dir, { poolerProbe: async () => false }).catch(() => undefined);
+        await withClient(conn, async (c) => {
+          for (;;) {
+            const q = await c.query(
+              "SELECT pg_terminate_backend(pid) AS ok FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%crash_note%'",
+            );
+            if (q.rows.length > 0) break;
+            await new Promise((r) => setTimeout(r, 50));
+          }
+        });
+        await run;
+        await victim.end().catch(() => undefined);
+      } finally {
+        await release();
+      }
+      await rm(join(dir, "0002_crashed.sql"));
+      expect((await migrationStatus(conn, dir)).missingFiles).toEqual(["0002_crashed"]);
     },
     T,
   );

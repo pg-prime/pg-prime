@@ -963,7 +963,9 @@ async function runFile(
 
   let retries = 0;
   // A failed transaction rolls back alone: the segments before it, in any attempt of any run, may have committed.
-  let committed = row?.status === "failed" ? row.statementsApplied : 0;
+  let committed = row?.status === "failed" || row?.status === "running" ? row.statementsApplied : 0;
+  // Several commits: a crash between them must not leave a stale row that reads as withdrawable.
+  if (segments.length > 1) await beginRow(client, { ...record, statementsApplied: committed, status: "running" });
   for (;;) {
     const report = await applySegments(client, statements, segments, {
       lockTimeout: ctx.lockTimeout,
