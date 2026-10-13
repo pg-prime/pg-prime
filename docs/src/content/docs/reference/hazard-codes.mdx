@@ -169,6 +169,7 @@ it gave up, so losing it again is asked again. A table proven empty is never rep
 | <a id="RL106"/>`RL106` | error | The plan drops or retypes a column, or drops a table, that a policy depends on. PostgreSQL refuses the statement at apply time. Change or drop the policy in an earlier deploy. |
 | <a id="RL107"/>`RL107` | warn | A data migration touches a table with row-level security, and the role running `apply` has no `BYPASSRLS`. The runner sets `row_security = off`, so the statement fails with `42501` instead of silently skipping rows. Run migrations as a role with `BYPASSRLS`, or as a superuser. Reported by the pre-flight check in `migrate apply`. |
 | <a id="RL108"/>`RL108` | error | A forced table whose owner had a command before (by owning an unforced table, or through a policy) and has no permissive policy for it after. The owner's own queries, including your migrations if they run as the owner, see zero rows. |
+| <a id="RL109"/>`RL109` | warn | A foreign key onto a forced table whose owner lacks `BYPASSRLS`. The statement that runs the FK check is wrapped in a `DO` block that lifts FORCE on the referenced table while it runs and restores it, only if the table is forced at apply time; otherwise the owner's check fails with `42501` under `row_security = off`. The referenced table is `ACCESS EXCLUSIVE` until the migration commits. |
 
 ## ST — style
 

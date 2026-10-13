@@ -209,6 +209,12 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
   const isVolatile = (defaultId: string, expression: string): boolean =>
     volatileDefaults.size > 0 ? volatileDefaults.has(defaultId) : mentionsVolatileFunction(expression);
   const emptyTables = options.emptyTables ?? new Set<string>();
+  /** FORCE'd tables whose owner cannot bypass RLS: an FK check against them needs FORCE lifted. */
+  const forcedTables = new Set(
+    (options.lane?.before.tables ?? [])
+      .filter((t) => t.forced && !options.lane!.before.bypass.has(t.owner))
+      .map((t) => id({ kind: "table", schema: t.schema, name: t.name })),
+  );
   const lane = options.lane;
   const losses = lane === undefined ? [] : coverageLost(lane.before, lane.after, emptyTables);
   /** RL102: a role the after-state covers and the target's policies do not sees 0 rows until the lane commits. */
@@ -796,6 +802,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
                 provenEmpty: emptyTables.has(parentTableId(f.id)!),
                 noSafeRewrite: options.noSafeRewrite ?? false,
                 concurrent: concurrentOk(parentTableId(f.id)),
+                forcedTables,
               }),
             );
             break;
@@ -1556,6 +1563,24 @@ interface AddConstraintContext {
   readonly noSafeRewrite: boolean;
   /** the caller can carry a `txmode none` companion file (design/06 §3.5 row 6) */
   readonly concurrent: boolean;
+  readonly forcedTables?: ReadonlySet<string>;
+}
+
+/**
+ * Runs an FK check with FORCE lifted from the referenced table while the check runs. The owner of a
+ * FORCE'd table without BYPASSRLS cannot read it under the runner's `row_security = off` (42501),
+ * and with `on` the check is filtered by the policies. The table is re-checked at apply time, so a
+ * database where it is not FORCE'd is left alone.
+ */
+function unforced(table: string, sql: string): string {
+  return (
+    `DO $pgprime$ DECLARE forced boolean := (SELECT relforcerowsecurity FROM pg_class WHERE oid = ${quoteLiteral(table)}::regclass);\n` +
+    `BEGIN\n` +
+    `  IF forced THEN ALTER TABLE ${table} NO FORCE ROW LEVEL SECURITY; END IF;\n` +
+    `  ${sql};\n` +
+    `  IF forced THEN ALTER TABLE ${table} FORCE ROW LEVEL SECURITY; END IF;\n` +
+    `END $pgprime$`
+  );
 }
 
 /**
@@ -1598,6 +1623,11 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
   const table = quoteQualified(c.schema, c.table);
   const refs = desired.outgoingEdges(f.id).map((e) => id(e.to));
   const uniquenessRefs = p.contype === "f" ? uniquenessProviders(desired, f.id) : [];
+  const forcedRef = p.contype === "f" ? refs.find((r) => ctx.forcedTables?.has(r)) : undefined;
+  const forced = forcedRef === undefined ? null : (parseId(forcedRef) as StableId & { kind: "table" });
+  /** The statement that runs the FK check, with FORCE lifted when the referenced table needs it. */
+  const checked = (sql: string): string =>
+    forced === null ? sql : unforced(quoteQualified(forced.schema, forced.name), sql);
   const base = {
     verb: "alter" as const,
     kind: "constraint",
@@ -1631,15 +1661,15 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
       },
       {
         ...base,
-        sql: `ALTER TABLE ${table} VALIDATE CONSTRAINT ${quoteIdent(c.name)}`,
+        sql: checked(`ALTER TABLE ${table} VALIDATE CONSTRAINT ${quoteIdent(c.name)}`),
         // the constraint leads: `consumes[0]` is what a reader (and the oracle
         // harness) treats as the statement's subject, and this statement is
         // about the constraint, not about its table
         consumes: [id(f.id), ...base.consumes],
         produces: [],
-        lockClass: "shareUpdateExclusive",
+        lockClass: forced === null ? "shareUpdateExclusive" : "accessExclusive",
         idempotent: true,
-        hazards: [],
+        hazards: forced === null ? [] : ["RL109"],
         phase: PHASE.validateConstraint,
       },
     ];
@@ -1739,10 +1769,12 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
     if (p.validated && p.contype === "c") hazards.push("LK106");
     if (mayFail && p.validated && (p.contype === "f" || p.contype === "c")) hazards.push("MF106");
   }
+  const add = `ALTER TABLE ${table} ADD CONSTRAINT ${quoteIdent(c.name)} ${p.definition}${suffix}`;
+  if (forced !== null && p.validated) hazards.push("RL109");
   return [
     {
       ...base,
-      sql: `ALTER TABLE ${table} ADD CONSTRAINT ${quoteIdent(c.name)} ${p.definition}${suffix}`,
+      sql: p.validated ? checked(add) : add,
       lockClass: "accessExclusive",
       hazards,
     },

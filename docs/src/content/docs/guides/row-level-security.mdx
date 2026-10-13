@@ -327,6 +327,7 @@ never reported.
 | [RL106](/pg-prime/reference/hazard-codes/#RL106) | error | the migration drops or retypes a column, or drops a table, a policy depends on | change the policy in an earlier deploy |
 | [RL107](/pg-prime/reference/hazard-codes/#RL107) | warn | a data migration touches an RLS table and the migration role lacks `BYPASSRLS` | see [the migration role](#the-migration-role) |
 | [RL108](/pg-prime/reference/hazard-codes/#RL108) | error | a forced table's owner loses a command it had | add an owner policy, or do not force |
+| [RL109](/pg-prime/reference/hazard-codes/#RL109) | warn | a foreign key onto a forced table is checked with FORCE lifted | none needed; mind the lock on a large table |
 
 RL101 and RL108 subjects read `schema.table:role:command`, e.g. `public.documents:app_user:select`.
 Losing `SELECT` is reported on its own, because `UPDATE` and `DELETE` with a `WHERE` or `RETURNING`
@@ -394,6 +395,13 @@ mistaken for an empty one. `apply`'s pre-flight reports RL107 for each pending d
 RLS table when the role cannot bypass. If migrations run as the owner of a forced table, RL108 is the
 warning that its own statements would be filtered.
 
+A foreign key onto a forced table is the one statement the generator adjusts for this. Its check reads
+the referenced table, which the owner cannot do under FORCE: `42501` with `row_security = off`,
+false violations with `on`. So the statement that runs the check is wrapped in a `DO` block that lifts
+FORCE while it runs and puts it back, only if the table is forced at apply time. The referenced
+table is `ACCESS EXCLUSIVE` until the migration commits, which RL109 reports. A migration role with
+`BYPASSRLS` needs none of this and gets none of it.
+
 ## Poolers
 
 - `setLocal` and `localSettings` are `set_config(…, true)`: transaction-local and safe behind
@@ -452,7 +460,7 @@ guide](/pg-prime/guides/schema/#updatedattrigger).
 
 - **Owner bypass.** Without FORCE the table owner sees every row: `rls_not_forced`.
 - **Superusers and `BYPASSRLS` bypass FORCE.** Test as an ordinary role.
-- **FORCE filters the owner's own statements**, migrations included: RL107, RL108.
+- **FORCE filters the owner's own statements**, migrations included: RL107, RL108, RL109.
 - **Unset is zero rows.** `current()` is NULL, never an error. `current_setting('x')` without `true`
   errors on a fresh connection, and `''::uuid` errors on a reused one; `current()` avoids both.
 - **Filtering is not an error.** A policy that hides a row returns zero rows; only `WITH CHECK` and

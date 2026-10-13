@@ -112,6 +112,80 @@ describe("a table this plan creates skips the lock-safe rewrites", () => {
   });
 });
 
+describe("an FK onto a FORCE'd table lifts FORCE while it checks (RL109)", () => {
+  const table = (name: string): Fact => ({
+    id: { kind: "table", schema: "public", name },
+    parent: { kind: "schema", schema: "public" },
+    payload: {
+      kind: "table",
+      relkind: "r",
+      persistence: "p",
+      rowSecurity: true,
+      partitionStrategy: null,
+      partitionKey: null,
+      partitionOf: null,
+      partitionBound: null,
+    },
+    provenance: CATALOG_PROVENANCE,
+  });
+  const fk: Fact = {
+    id: { kind: "constraint", schema: "public", table: "refs", name: "refs_doc_fkey" },
+    parent: { kind: "table", schema: "public", name: "refs" },
+    payload: {
+      kind: "constraint",
+      contype: "f",
+      definition: "FOREIGN KEY (doc) REFERENCES public.documents(id)",
+      validated: true,
+      deferrable: false,
+    },
+    provenance: CATALOG_PROVENANCE,
+  };
+  const schema: Fact = {
+    id: { kind: "schema", schema: "public" },
+    payload: { kind: "schema" },
+    provenance: CATALOG_PROVENANCE,
+  };
+  const edge = (from: Fact, name: string) => ({
+    from: from.id,
+    to: { kind: "table" as const, schema: "public", name },
+    kind: "depends" as const,
+  });
+  const current = SchemaIR.build([schema, table("documents"), table("refs")], []);
+  const desired = SchemaIR.build(
+    [schema, table("documents"), table("refs"), fk],
+    [edge(fk, "refs"), edge(fk, "documents")],
+  );
+  const lane = (owner: string, bypass: string[]) => {
+    const state = {
+      tables: [{ schema: "public", name: "documents", enabled: true, forced: true, owner }],
+      policies: [],
+      updatedAtTriggers: [],
+      memberOf: new Map<string, readonly string[]>(),
+      bypass: new Set(bypass),
+    };
+    return { before: state, after: state };
+  };
+  const validate = (owner: string, bypass: string[]) =>
+    buildStatements(diffIR(current, desired), desired, { lane: lane(owner, bypass) }).statements.find((s) =>
+      s.sql.includes("VALIDATE CONSTRAINT"),
+    );
+
+  it("wraps the VALIDATE in a DO block that lifts and restores FORCE only where it is set", () => {
+    const s = validate("app", []);
+    expect(s?.sql).toContain('IF forced THEN ALTER TABLE "public"."documents" NO FORCE ROW LEVEL SECURITY; END IF;');
+    expect(s?.sql).toContain('ALTER TABLE "public"."refs" VALIDATE CONSTRAINT "refs_doc_fkey";');
+    expect(s?.sql).toContain('IF forced THEN ALTER TABLE "public"."documents" FORCE ROW LEVEL SECURITY; END IF;');
+    expect(s?.hazards).toEqual(["RL109"]);
+    expect(s?.lockClass).toBe("accessExclusive");
+  });
+
+  it("leaves it alone when the owner bypasses RLS", () => {
+    const s = validate("app", ["app"]);
+    expect(s?.sql).toBe('ALTER TABLE "public"."refs" VALIDATE CONSTRAINT "refs_doc_fkey"');
+    expect(s?.hazards).toEqual([]);
+  });
+});
+
 describe("ordering, end to end", () => {
   beforeAll(async () => {
     expect(await serverAvailable(), `no PostgreSQL at ${ADMIN.host}:${ADMIN.port}`).toBe(true);
