@@ -412,8 +412,8 @@ function stringCodec<N extends string>(
 
 export const textCodec = stringCodec('text', 25, 1009, 'text')
 export const varcharCodec = stringCodec('varchar', 1043, 1015, 'varchar')
-/** PG SPACE-PADS `bpchar` — measured `"ab   "`. Do not trim. */
-export const bpcharCodec = stringCodec('bpchar', 1042, 1014, 'char')
+/** PG SPACE-PADS `bpchar` — measured `"ab   "`. Do not trim. Cast as `bpchar`: `::char` is `char(1)`. */
+export const bpcharCodec = stringCodec('bpchar', 1042, 1014, 'bpchar')
 export const nameCodec = stringCodec('name', 19, 1003, 'name')
 export const xmlCodec = stringCodec('xml', 142, 143, 'xml')
 export const inetCodec = stringCodec('inet', 869, 1041, 'inet')
@@ -436,7 +436,10 @@ export const timetzCodec = stringCodec('timetz', 1266, 1270, 'timetz')
 export const charCodec = stringCodec('char', 18, 1002, '"char"')
 export const macaddrCodec = stringCodec('macaddr', 829, 1040, 'macaddr')
 export const macaddr8Codec = stringCodec('macaddr8', 774, 775, 'macaddr8')
-/** `bit(n)`; `null::bit` is `bit(1)`. Text is the digit string, e.g. `101`. */
+/**
+ * `bit(n)`; text is the digit string, e.g. `101`. `::bit` is `bit(1)` and no cast spells a
+ * length-free bit, so the first-row / unnest casts refuse (22026) a bulk insert into `bit(n > 1)`.
+ */
 export const bitCodec = stringCodec('bit', 1560, 1561, 'bit')
 export const varbitCodec = stringCodec('varbit', 1562, 1563, 'varbit')
 export const pgLsnCodec = stringCodec('pg_lsn', 3220, 3221, 'pg_lsn')
@@ -627,8 +630,21 @@ function normaliseTsSeparator(s: string): string {
   return /^-?\d{4,}-\d{2}-\d{2}T/.test(s) ? s.replace('T', ' ') : s
 }
 
-const TSTZ_RE =
-  /^(-?\d{4,})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(?:(Z)|([+-])(\d{2})(?::?(\d{2}))?(?::?(\d{2}))?)?( BC)?$/
+/** `s[from, to)` as a number, or -1 unless every character is a digit. */
+function digits(s: string, from: number, to: number): number {
+  if (to > s.length) return -1
+  let n = 0
+  for (let i = from; i < to; i++) {
+    const c = s.charCodeAt(i) - 48
+    if (c < 0 || c > 9) return -1
+    n = n * 10 + c
+  }
+  return n
+}
+
+function unrecognised(codecName: string, raw: string): PgDecodeError {
+  return new PgDecodeError(codecName, raw, 'unrecognised timestamptz text')
+}
 
 /**
  * `timestamptz` → `Date` (sign-off 00 §6) — the one temporal type where `Date` is semantically
@@ -652,33 +668,79 @@ function parseTimestamptz(raw: string, ctx: CodecContext | undefined, codecName:
       `${ctx?.column ? `column "${ctx.column}" ` : ''}holds a ${raw} timestamptz, which has no JavaScript Date representation. Use the 'timestamptz:string' codec for this column.`,
     )
   }
-  const m = TSTZ_RE.exec(raw)
-  if (!m) throw new PgDecodeError(codecName, raw, 'unrecognised timestamptz text')
-  const [, yStr, moStr, dStr, hStr, miStr, sStr, frac, zulu, sign, offH, offM, offS, bc] = m
-  let year = Number(yStr)
-  if (bc) year = 1 - year
-  const ms = frac ? Number(frac.padEnd(6, '0').slice(0, 3)) : 0
-  let t = Date.UTC(
-    2000,
-    Number(moStr) - 1,
-    Number(dStr),
-    Number(hStr),
-    Number(miStr),
-    Number(sStr),
-    ms,
-  )
-  const d = new Date(t)
-  d.setUTCFullYear(year)
-  t = d.getTime()
-  if (!zulu && sign) {
-    const offsetSec =
-      (Number(offH) * 3600 + Number(offM ?? 0) * 60 + Number(offS ?? 0)) * (sign === '-' ? -1 : 1)
-    t -= offsetSec * 1000
+  // `[-]YYYY+-MM-DD[ T]HH:MI:SS[.f+][Z|±HH[[:]MM[[:]SS]]][ BC]`, hand-parsed: the regex it
+  // replaces allocated a 14-slot match plus two Dates per cell of the most common column type.
+  const len = raw.length
+  const neg = raw.charCodeAt(0) === 45
+  const y0 = neg ? 1 : 0
+  const yEnd = raw.indexOf('-', y0)
+  let year = yEnd - y0 >= 4 ? digits(raw, y0, yEnd) : -1
+  const month = digits(raw, yEnd + 1, yEnd + 3)
+  const day = digits(raw, yEnd + 4, yEnd + 6)
+  const sep = raw.charCodeAt(yEnd + 6)
+  let i = yEnd + 7
+  const hour = digits(raw, i, i + 2)
+  const minute = digits(raw, i + 3, i + 5)
+  const second = digits(raw, i + 6, i + 8)
+  if (
+    (year | month | day | hour | minute | second) < 0 ||
+    raw.charCodeAt(yEnd + 3) !== 45 ||
+    (sep !== 32 && sep !== 84) ||
+    raw.charCodeAt(i + 2) !== 58 ||
+    raw.charCodeAt(i + 5) !== 58
+  ) {
+    throw unrecognised(codecName, raw)
   }
-  const out = new Date(t)
-  if (Number.isNaN(out.getTime()))
-    throw new PgDecodeError(codecName, raw, 'produced an Invalid Date')
-  return out
+  i += 8
+  let ms = 0
+  if (raw.charCodeAt(i) === 46) {
+    const start = ++i
+    while (i < len && raw.charCodeAt(i) >= 48 && raw.charCodeAt(i) <= 57) i++
+    const width = Math.min(i - start, 3)
+    if (width === 0) throw unrecognised(codecName, raw)
+    ms = digits(raw, start, start + width) * (width === 1 ? 100 : width === 2 ? 10 : 1)
+  }
+  let offsetMs = 0
+  const z = raw.charCodeAt(i)
+  if (z === 90) i++
+  else if (z === 43 || z === 45) {
+    const oh = digits(raw, i + 1, i + 3)
+    if (oh < 0) throw unrecognised(codecName, raw)
+    i += 3
+    let om = 0
+    let os = 0
+    let colon = raw.charCodeAt(i) === 58 ? 1 : 0
+    const m = digits(raw, i + colon, i + colon + 2)
+    if (m >= 0) {
+      om = m
+      i += colon + 2
+      colon = raw.charCodeAt(i) === 58 ? 1 : 0
+      const s = digits(raw, i + colon, i + colon + 2)
+      if (s >= 0) {
+        os = s
+        i += colon + 2
+      }
+    }
+    offsetMs = (z === 45 ? -1000 : 1000) * (oh * 3600 + om * 60 + os)
+  }
+  if (neg) year = -year
+  if (raw.startsWith(' BC', i)) {
+    year = 1 - year
+    i += 3
+  }
+  if (i !== len) throw unrecognised(codecName, raw)
+  let t: number
+  if (year >= 0 && year < 100) {
+    // `Date.UTC` maps 0–99 to 1900–1999.
+    const d = new Date(Date.UTC(2000, month - 1, day, hour, minute, second, ms))
+    d.setUTCFullYear(year)
+    t = d.getTime()
+  } else {
+    t = Date.UTC(year, month - 1, day, hour, minute, second, ms)
+  }
+  t -= offsetMs
+  if (Number.isNaN(t)) throw new PgDecodeError(codecName, raw, 'produced an Invalid Date')
+  return new Date(t)
 }
 
 export const timestamptzCodec = def({

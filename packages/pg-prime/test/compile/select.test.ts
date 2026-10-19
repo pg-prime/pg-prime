@@ -18,6 +18,8 @@ import {
   inList,
   inQuery,
   isNull,
+  jsonGet,
+  jsonGetText,
   isTrue,
   not,
   or,
@@ -322,6 +324,17 @@ describe('aliasing and self-joins', () => {
       { schema: 'public', name: 'users' },
       { schema: 'public', name: 'users' },
     ])
+  })
+})
+
+describe('json accessors bind the key by its JavaScript type', () => {
+  it('a numeric key is int4 — the array-index overload — and a string key is text', () => {
+    for (const build of [jsonGet, jsonGetText]) {
+      const idx = compile(select({ projection: [projection('v', build(u('meta'), 0))] }))
+      expect(idx.binds).toEqual([{ k: 'value', encoded: '0', oid: 23 }])
+      const key = compile(select({ projection: [projection('v', build(u('meta'), 'a'))] }))
+      expect(key.binds).toEqual([{ k: 'value', encoded: 'a', oid: 25 }])
+    }
   })
 })
 

@@ -123,11 +123,13 @@ function jsonDecoder(plan: JsonPlan, ctx: CodecContext): (v: unknown) => unknown
       }
     }
     case 'obj': {
-      // Precompute the field decoders once, not per row.
-      const fields = plan.fields.map((f) => {
+      // Precomputed once, not per row; parallel arrays keep the row loop free of destructuring.
+      const keys = plan.fields.map((f) => f.key)
+      const decs = plan.fields.map((f) => {
         assertPlanKey(f.key)
-        return [f.key, jsonDecoder(f.plan, forColumn(ctx, f.key))] as const
+        return jsonDecoder(f.plan, forColumn(ctx, f.key))
       })
+      const n = keys.length
       const nullable = plan.nullable
       return (v) => {
         if (v === null || v === undefined) {
@@ -138,7 +140,10 @@ function jsonDecoder(plan: JsonPlan, ctx: CodecContext): (v: unknown) => unknown
         }
         const src = v as Record<string, unknown>
         const out: Record<string, unknown> = {}
-        for (const [key, dec] of fields) out[key] = dec(src[key])
+        for (let i = 0; i < n; i++) {
+          const key = keys[i] as string
+          out[key] = (decs[i] as (v: unknown) => unknown)(src[key])
+        }
         return out
       }
     }
@@ -193,7 +198,9 @@ function rowFieldDecoder(f: FieldPlan, parent: CodecContext): (row: readonly unk
   }
   assertPlanKey(f.key)
   const ctx = forColumn(parent, f.key)
-  const members = f.fields.map((c) => [c.key, rowFieldDecoder(c, ctx)] as const)
+  const keys = f.fields.map((c) => c.key)
+  const decs = f.fields.map((c) => rowFieldDecoder(c, ctx))
+  const n = keys.length
   // Explicit witnesses win over the sentinel, which wins over "every column of the group":
   // only the builder knows whether the group came from a LEFT JOIN at all.
   const witnesses = f.witnesses ?? (f.sentinel === undefined ? leafIndexes(f.fields) : [f.sentinel])
@@ -212,7 +219,9 @@ function rowFieldDecoder(f: FieldPlan, parent: CodecContext): (row: readonly unk
       if (allNull) return null
     }
     const out: Record<string, unknown> = {}
-    for (const [key, dec] of members) out[key] = dec(row)
+    for (let i = 0; i < n; i++) {
+      out[keys[i] as string] = (decs[i] as (row: readonly unknown[]) => unknown)(row)
+    }
     return out
   }
 }

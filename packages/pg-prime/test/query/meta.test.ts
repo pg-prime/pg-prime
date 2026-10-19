@@ -12,7 +12,14 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { Registry, arrayCodecOf, int4Codec, int8Codec, textCodec } from '../../src/codec/index.js'
+import {
+  Registry,
+  arrayCodecOf,
+  bpcharCodec,
+  int4Codec,
+  int8Codec,
+  textCodec,
+} from '../../src/codec/index.js'
 import { metaOf, codecFor } from '../../src/query/meta.js'
 import { kit, pgEnum, pgTable } from '../../src/schema/index.js'
 import type { AnyCol } from '../../src/schema/column.js'
@@ -214,6 +221,45 @@ describe('metaOf — enums', () => {
     r.register(element)
     r.register({ ...arrayCodecOf(element), name: 'mood[]', oid: 99002 })
     expect(metaOf(t, r).byKey['moods']?.codec.oid).toBe(99002)
+  })
+})
+
+describe('codecFor — SQL-standard spellings and typmods', () => {
+  const t = pgTable('legacy', (c) => ({
+    charN: c.raw('char(10)'),
+    charBare: c.raw('char'),
+    character: c.raw('character(3)'),
+    internalChar: c.raw('"char"'),
+    varying: c.raw('character varying(40)'),
+    bits: c.raw('bit(4)'),
+    varbits: c.raw('bit varying(8)'),
+    dp: c.raw('double precision'),
+    tstz: c.raw('timestamp with time zone'),
+    charArr: c.raw('char(2)').array(),
+  }))
+  const m = metaOf(t, new Registry())
+  const codecOf = (key: string) => m.byKey[key]?.codec
+
+  it('char(n), char and character(n) are bpchar — only "char" is the one-byte type (OID 18)', () => {
+    expect(codecOf('charN')).toBe(bpcharCodec)
+    expect(codecOf('charBare')).toBe(bpcharCodec)
+    expect(codecOf('character')).toBe(bpcharCodec)
+    expect(codecOf('internalChar')?.oid).toBe(18)
+    expect(codecOf('charArr')?.name).toBe('bpchar[]')
+  })
+
+  it('the other format_type spellings reach their registry names', () => {
+    expect(['varying', 'bits', 'varbits', 'dp', 'tstz'].map((k) => codecOf(k)?.name)).toEqual([
+      'varchar',
+      'bit',
+      'varbit',
+      'float8',
+      'timestamptz',
+    ])
+  })
+
+  it('bpchar casts as bpchar: `::char` is char(1) and would truncate every bound value', () => {
+    expect(bpcharCodec.sqlName).toBe('bpchar')
   })
 })
 

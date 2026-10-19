@@ -94,6 +94,20 @@ describe('ownership and allocation', () => {
   })
 })
 
+describe('an invalid escape in the template text is a mistake, not an empty chunk', () => {
+  it('throws, naming the hole, instead of deleting the rest of the statement', () => {
+    // `'\xZZ'` cooks to undefined; copied into the node it rendered as '' and the statement
+    // compiled to `select $1`.
+    expect(() => sql`select ${1} as a, '\xZZ' as b from t`).toThrow(InvalidFragmentError)
+    expect(() => sql`select ${1} as a, '\xZZ' as b from t`).toThrow(/after hole 0/)
+    expect(() => sql`select '\u00ZZ'`).toThrow(/before hole 0/)
+  })
+
+  it('NEGATIVE CONTROL — a doubled backslash is the SQL text the caller meant', () => {
+    expect(render(sql`select '\\xZZ' as b`).sql).toBe(`select '\\xZZ' as b`)
+  })
+})
+
 describe('literals and identifiers keep their existing contracts', () => {
   it('NEGATIVE CONTROL — sql.lit and sql.ident are unchanged', () => {
     expect(render(sql.lit(-1)).sql).toBe('-1')

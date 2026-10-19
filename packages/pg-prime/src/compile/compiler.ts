@@ -608,16 +608,18 @@ function emitExpr(em: Emitter, e: Expr): void {
       return
 
     case 'jsonBuild': {
-      em.push(e.variant === 'jsonb' ? 'jsonb_build_object(' : 'json_build_object(')
-      for (let i = 0; i < e.entries.length; i++) {
-        const entry = e.entries[i] as readonly [string, Expr]
-        if (i > 0) em.push(', ')
-        // Compiler-generated key from a compile-time object literal, never caller data.
-        em.push(quoteStringLiteral(entry[0]))
-        em.push(', ')
-        emitExpr(em, entry[1])
+      const n = e.entries.length
+      if (n <= JSON_BUILD_MAX_ENTRIES) {
+        emitJsonBuild(em, e.variant, e.entries, 0, n)
+        return
       }
-      em.push(')')
+      // Past the 100-argument limit (54023) the object is built in jsonb pieces: `json` has no `||`.
+      em.push('(')
+      for (let i = 0; i < n; i += JSON_BUILD_MAX_ENTRIES) {
+        if (i > 0) em.push(' || ')
+        emitJsonBuild(em, 'jsonb', e.entries, i, Math.min(i + JSON_BUILD_MAX_ENTRIES, n))
+      }
+      em.push(e.variant === 'jsonb' ? ')' : ')::json')
       return
     }
 
@@ -728,6 +730,28 @@ function emitFrameBound(em: Emitter, b: FrameBound): void {
     return
   }
   em.push(frameBoundKeyword(b.k))
+}
+
+/** `json_build_object` takes 2 arguments per entry and PostgreSQL allows 100 per call. */
+const JSON_BUILD_MAX_ENTRIES = 50
+
+function emitJsonBuild(
+  em: Emitter,
+  variant: 'json' | 'jsonb',
+  entries: readonly (readonly [string, Expr])[],
+  from: number,
+  to: number,
+): void {
+  em.push(variant === 'jsonb' ? 'jsonb_build_object(' : 'json_build_object(')
+  for (let i = from; i < to; i++) {
+    const entry = entries[i] as readonly [string, Expr]
+    if (i > from) em.push(', ')
+    // Compiler-generated key from a compile-time object literal, never caller data.
+    em.push(quoteStringLiteral(entry[0]))
+    em.push(', ')
+    emitExpr(em, entry[1])
+  }
+  em.push(')')
 }
 
 /**

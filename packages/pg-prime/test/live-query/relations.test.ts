@@ -61,6 +61,27 @@ async function userIds(): Promise<Record<string, bigint>> {
 // The per-parent LIMIT oracle
 // ─────────────────────────────────────────────────────────────────────────────
 
+describe('a relation projecting more than 50 members', () => {
+  it('executes (PostgreSQL allows 100 function arguments) and decodes every key', async () => {
+    const keys = Array.from({ length: 51 }, (_, i) => `k${i}`)
+    const built = live.db
+      .from(h().users, 'u')
+      .select((t) => ({
+        id: t.u.id,
+        posts: t.u.posts.many((sub) =>
+          sub.select((p) => Object.fromEntries(keys.map((k) => [k, p.id]))).limit(1),
+        ),
+      }))
+      .orderBy((t) => q.asc(t.u.id))
+    expect(built.compile().sql).toContain(') || jsonb_build_object(')
+    const rows = await built.execute()
+    const post = rows.find((r) => r.posts.length > 0)?.posts[0] as Record<string, unknown>
+    expect(Object.keys(post)).toEqual(keys)
+    expect(typeof post['k50']).toBe('bigint')
+    expect(post['k50']).toBe(post['k0'])
+  })
+})
+
 describe('per-parent pagination', () => {
   it('matches a hand-written row_number() window, pair for pair and in order', async () => {
     const rows = await live.db

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   boolCodec,
+  bpcharCodec,
   byteaCodec,
   int4Codec,
   jsonbCodec,
@@ -61,6 +62,12 @@ describe('compileDdlExpr', () => {
     expect(ddl(fn('f', [param({ a: 1 }, jsonbCodec)], boolCodec))).toBe(`f('{"a":1}'::jsonb)`)
     expect(ddl(fn('f', [param(new Date(0), timestamptzCodec)], boolCodec))).toBe(
       `f('1970-01-01 00:00:00.000Z'::timestamptz)`,
+    )
+  })
+
+  it('casts a bpchar bind as bpchar — `::char` is char(1) and kept one character', () => {
+    expect(ddl(bin('=', col('t', 'code', bpcharCodec), param('hello', bpcharCodec)))).toBe(
+      `"t"."code" = 'hello'::bpchar`,
     )
   })
 
