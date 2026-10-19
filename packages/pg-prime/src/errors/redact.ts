@@ -151,6 +151,9 @@ const CAPTURE = (Error as { captureStackTrace?: (t: object, f?: unknown) => void
 const INTERNAL =
   /[/\\]pg-prime[/\\](?:src|dist)[/\\](?:query|session|errors|driver|observe|pooler|compile|codec|sql)[/\\]/
 
+/** Exported for the test that pins which paths count as ours. */
+export const isInternalFrame = (file: string): boolean => INTERNAL.test(file)
+
 /**
  * How deep to look for the caller's frame. At most four of our own frames sit between the boundary
  * and user code on any path that captures, so eight is generous; lowering it is the one change

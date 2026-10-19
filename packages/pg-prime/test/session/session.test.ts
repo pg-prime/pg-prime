@@ -79,10 +79,10 @@ import { HookBus, SEMCONV, spanAttributes, spanName } from '../../src/observe/in
 import { POOLER_MODES, POOLER_PROFILES } from '../../src/pooler/index.js'
 import { eq } from '../../src/query/ops.js'
 import { compileOnly, pgPrime } from '../../src/query/run.js'
-import { defineSchema, pgTable } from '../../src/schema/index.js'
+import { defineSchema, pgSchema, pgTable } from '../../src/schema/index.js'
 import { resolveSessionSettings } from '../../src/session/gucs.js'
 import { resetGuardForTests } from '../../src/session/guard.js'
-import { captureCallSite } from '../../src/errors/redact.js'
+import { captureCallSite, isInternalFrame } from '../../src/errors/redact.js'
 import {
   advisoryFn,
   advisoryKey,
@@ -866,6 +866,14 @@ describe('redaction (07 §4.3)', () => {
     expect(e.sql).toBe('select 123… [7 more characters elided]')
   })
 
+  it('only pg-prime frames are internal; an application with its own src/query is not', () => {
+    expect(isInternalFrame('/repo/packages/pg-prime/src/session/runner.ts')).toBe(true)
+    expect(isInternalFrame('/app/node_modules/pg-prime/dist/query/select.js')).toBe(true)
+    expect(isInternalFrame('C:\\app\\node_modules\\pg-prime\\dist\\errors\\map.js')).toBe(true)
+    expect(isInternalFrame('/app/src/query/users.ts')).toBe(false)
+    expect(isInternalFrame('/app/node_modules/@pg-prime/kit/dist/cli.js')).toBe(false)
+  })
+
   it('captureCallSite defaults to on outside production and off inside', () => {
     expect(resolveErrorOptions(undefined, false).captureCallSite).toBe(true)
     expect(resolveErrorOptions(undefined, true).captureCallSite).toBe(false)
@@ -953,6 +961,30 @@ describe('constraint → schema object (07 §4.4)', () => {
     expect(e.table?.$.name).toBe('b')
     expect(isUniqueViolation(e, b.cols.email)).toBe(true)
     expect(isUniqueViolation(e, a.cols.email)).toBe(false)
+  })
+
+  it('an unqualified table answers for the schema the server reports; a qualified one only for its own', () => {
+    const users = pgTable('users', (t) => ({ id: t.bigint().primaryKey() }))
+    const audit = pgSchema('audit').table('users', (t) => ({ id: t.bigint().primaryKey() }))
+    const o = {
+      context: { handle: 'db' as const },
+      errors: resolveErrorOptions(undefined, false),
+      schema: defineSchema({ audit, users }),
+    }
+    const pk = (schema: string) =>
+      mapError(
+        pgError('23505', { constraint: 'users_pkey', table: 'users', schema }),
+        o,
+      ) as UniqueViolationError
+    expect(pk('public').table).toBe(users)
+    expect(pk('audit').table).toBe(audit)
+    const nn = (schema: string) =>
+      mapError(
+        pgError('23502', { table: 'users', column: 'id', schema }),
+        o,
+      ) as NotNullViolationError
+    expect(nn('public').table).toBe(users)
+    expect(nn('audit').table).toBe(audit)
   })
 
   it('a foreign key names the table it references', () => {
@@ -1359,6 +1391,40 @@ describe('QueryHooks (07 §7.1)', () => {
     })
     await expect(db.sql`select 1`.execute()).resolves.toBeDefined()
     await expect(db.transaction((tx) => tx.sql`select 1`.execute())).resolves.toBeDefined()
+    expect(calls).toBe(1)
+    expect(error).toHaveBeenCalledTimes(1)
+    error.mockRestore()
+  })
+
+  it('rejections from calls in flight when the first one lands are reported once', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { db } = setup({
+      hooks: {
+        onQueryEnd: () =>
+          new Promise((_, reject) => setTimeout(() => reject(new Error('late')), 5)),
+      },
+    })
+    await Promise.all([db.sql`select 1`.execute(), db.sql`select 1`.execute()])
+    await new Promise((r) => setTimeout(r, 20))
+    expect(error).toHaveBeenCalledTimes(1)
+    error.mockRestore()
+  })
+
+  it('an async log sink that rejects is disabled and reported like a throwing one', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let calls = 0
+    const { db } = setup({
+      log: {
+        slowQueryMs: 0,
+        sink: async () => {
+          calls++
+          throw new Error('sink boom')
+        },
+      },
+    })
+    await db.sql`select 1`.execute()
+    await new Promise((r) => setImmediate(r))
+    await db.sql`select 1`.execute()
     expect(calls).toBe(1)
     expect(error).toHaveBeenCalledTimes(1)
     error.mockRestore()

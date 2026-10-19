@@ -236,8 +236,11 @@ describe('a transaction profile only ever restricts (07 §5.2, §5.3)', () => {
       // …and `diagnose()` says what was skipped rather than leaving the user to wonder.
       const d = await pooled.diagnose()
       expect(d.notes.join('\n')).toMatch(/ALTER ROLE/)
-      // Only client backends count against max_connections.
+      // Only client backends count against max_connections; the raw row count includes the
+      // checkpointer, walwriter and friends.
+      const [all] = await pooled.sql`select count(*)::int as n from pg_stat_activity`.execute()
       expect(d.connections.inUse).toBeGreaterThanOrEqual(1)
+      expect(d.connections.inUse).toBeLessThan(all?.['n'] as number)
     },
     60_000,
   )

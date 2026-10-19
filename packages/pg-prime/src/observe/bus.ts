@@ -76,6 +76,8 @@ export class HookBus {
       const fn = reg.hooks[name]
       if (fn === undefined || reg.disabled.has(name)) continue
       const fail = (cause: unknown): void => {
+        // Calls in flight when the first one rejects all land here; report once.
+        if (reg.disabled.has(name)) return
         reg.disabled.add(name)
         this.#reportHookFailure(reg, name, cause)
       }
@@ -104,10 +106,17 @@ export class HookBus {
       if (reg === failed) continue
       const fn = reg.hooks.onInternal
       if (fn === undefined || reg.disabled.has('onInternal')) continue
+      const off = (): void => void reg.disabled.add('onInternal')
       try {
-        fn.call(reg.hooks, { kind: 'hook-failed', message, cause, hook: name })
+        const r = (fn as (e: unknown) => unknown).call(reg.hooks, {
+          kind: 'hook-failed',
+          message,
+          cause,
+          hook: name,
+        })
+        if (r instanceof Promise) r.catch(off)
       } catch {
-        reg.disabled.add('onInternal')
+        off()
       }
     }
     console.error(message, cause)

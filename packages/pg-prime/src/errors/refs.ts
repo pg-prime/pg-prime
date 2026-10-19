@@ -116,8 +116,8 @@ function indexTable(
 ): void {
   const t = handle.$
   const byName = columnsByDbName(t)
-  // Keyed three ways: PostgreSQL only requires a constraint name to be unique per table, so the
-  // bare name is the fallback for a server that reported no table.
+  // Keyed three ways: PostgreSQL only requires a constraint name to be unique per table. The bare
+  // name is the fallback, see resolveConstraint.
   const add = (name: string | undefined, ref: Omit<ConstraintRef, 'name'>): void => {
     if (name === undefined || name === '') return
     const entry = { ...ref, name }
@@ -265,10 +265,14 @@ export function resolveConstraint(
 ): ConstraintRef | undefined {
   const index = constraintIndex(schema)
   if (constraintName !== undefined) {
+    // An unqualified table lives on the search_path, so it answers for any reported schema no
+    // declared table claims. The bare name is last: a partition inherits its parent's constraint
+    // under the parent's name, and the server reports the partition.
     const byTable =
       tableName === undefined
         ? undefined
         : (index.get(`${schemaName ?? ''}/${tableName}/${constraintName}`) ??
+          index.get(`/${tableName}/${constraintName}`) ??
           index.get(`${tableName}/${constraintName}`))
     const hit = byTable ?? index.get(constraintName)
     if (hit !== undefined) return hit
@@ -276,9 +280,12 @@ export function resolveConstraint(
   if (tableName === undefined || columnName === undefined) return undefined
   const tables = (schema as { tables?: Readonly<Record<string, TableRef>> } | undefined)?.tables
   if (tables === undefined) return undefined
+  const sameTable = (t: TableRef): boolean =>
+    t.$.name === tableName &&
+    (schemaName === undefined || t.$.schema === undefined || t.$.schema === schemaName)
   for (const key of Object.keys(tables)) {
     const t = tables[key]
-    if (t === undefined || t.$.name !== tableName) continue
+    if (t === undefined || !sameTable(t)) continue
     for (const c of t.$.columns) {
       if (c.dbName !== columnName) continue
       return {

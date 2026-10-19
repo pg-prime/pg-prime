@@ -351,13 +351,15 @@ export async function diagnose(inputs: DiagnoseInputs): Promise<DbDiagnosis> {
   const conn = await inputs.driver.acquire()
   const settings: Record<string, string> = {}
   try {
-    // One round trip, as documented; only client backends occupy max_connections slots.
+    // One round trip, as documented. Only client backends occupy max_connections slots, but a
+    // role without pg_read_all_stats sees NULL for other sessions' backend_type: count those too,
+    // since overcounting beats overstating headroom.
     const rows = await exec(
       conn,
       `select name, setting from pg_catalog.pg_settings where name = any($1)
        union all select 'version()', version()
-       union all select 'client backends', count(*)::text
-         from pg_catalog.pg_stat_activity where backend_type = 'client backend'`,
+       union all select 'client backends', count(*)::text from pg_catalog.pg_stat_activity
+         where backend_type = 'client backend' or backend_type is null`,
       [`{${[...EFFECTIVE, 'max_connections', 'superuser_reserved_connections'].join(',')}}`],
     )
     for (const row of rows) settings[String(row[0])] = String(row[1])
