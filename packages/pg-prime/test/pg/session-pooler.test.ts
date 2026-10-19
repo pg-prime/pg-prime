@@ -236,6 +236,8 @@ describe('a transaction profile only ever restricts (07 §5.2, §5.3)', () => {
       // …and `diagnose()` says what was skipped rather than leaving the user to wonder.
       const d = await pooled.diagnose()
       expect(d.notes.join('\n')).toMatch(/ALTER ROLE/)
+      // Only client backends count against max_connections.
+      expect(d.connections.inUse).toBeGreaterThanOrEqual(1)
     },
     60_000,
   )

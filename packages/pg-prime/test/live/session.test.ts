@@ -452,6 +452,7 @@ describe('db.diagnose() (07 §5.4)', () => {
     expect(d.serverVersion).toMatch(/PostgreSQL/)
     expect(d.effectiveSettings['TimeZone']).toBeDefined()
     expect(d.connections.maxConnections).toBeGreaterThan(0)
+    expect(d.effectiveSettings['max_connections']).toBeUndefined()
     expect(d.statements.statement).toBe('unnamed')
     expect(d.statements.downgraded).toBe(false)
     expect(d.poolerMode).toBe('none')

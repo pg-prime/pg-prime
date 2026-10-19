@@ -32,6 +32,18 @@ import type {
 
 type HookName = keyof QueryHooks
 
+const HOOK_NAMES: readonly HookName[] = [
+  'onQueryStart',
+  'onQueryEnd',
+  'onQueryError',
+  'onTransactionStart',
+  'onTransactionEnd',
+  'onRetry',
+  'onPool',
+  'onNotice',
+  'onInternal',
+]
+
 interface Registration {
   readonly hooks: QueryHooks
   /** Members that threw and are therefore off. Per registration, not per bus. */
@@ -47,7 +59,7 @@ export class HookBus {
   enabled = false
 
   add(hooks: QueryHooks | undefined): () => void {
-    if (hooks === undefined) return noop
+    if (hooks === undefined || !HOOK_NAMES.some((n) => typeof hooks[n] === 'function')) return noop
     const reg: Registration = { hooks, disabled: new Set() }
     this.#regs = [...this.#regs, reg]
     this.enabled = true
@@ -63,11 +75,16 @@ export class HookBus {
     for (const reg of this.#regs) {
       const fn = reg.hooks[name]
       if (fn === undefined || reg.disabled.has(name)) continue
-      try {
-        ;(fn as (e: unknown) => void).call(reg.hooks, payload)
-      } catch (cause) {
+      const fail = (cause: unknown): void => {
         reg.disabled.add(name)
         this.#reportHookFailure(reg, name, cause)
+      }
+      try {
+        const r = (fn as (e: unknown) => unknown).call(reg.hooks, payload)
+        // An async hook that rejects would otherwise be an unhandled rejection.
+        if (r instanceof Promise) r.catch(fail)
+      } catch (cause) {
+        fail(cause)
       }
     }
   }

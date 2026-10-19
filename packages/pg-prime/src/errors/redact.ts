@@ -149,7 +149,7 @@ const CAPTURE = (Error as { captureStackTrace?: (t: object, f?: unknown) => void
 
 /** Frames belonging to this library, elided so the first line is the user's own code. */
 const INTERNAL =
-  /[/\\](?:src|dist)[/\\](?:query|session|errors|driver|observe|pooler|compile|codec|sql)[/\\]/
+  /[/\\]pg-prime[/\\](?:src|dist)[/\\](?:query|session|errors|driver|observe|pooler|compile|codec|sql)[/\\]/
 
 /**
  * How deep to look for the caller's frame. At most four of our own frames sit between the boundary

@@ -109,12 +109,21 @@ function pick(byName: Map<string, ColumnRef>, names: readonly string[]): readonl
  * constraint, because which one the server reports depends on whether the migration named it —
  * and we would rather resolve a constraint twice than not at all.
  */
-function indexTable(handle: TableRef, out: Map<string, ConstraintRef>): void {
+function indexTable(
+  handle: TableRef,
+  out: Map<string, ConstraintRef>,
+  tables: readonly TableRef[],
+): void {
   const t = handle.$
   const byName = columnsByDbName(t)
+  // Keyed three ways: PostgreSQL only requires a constraint name to be unique per table, so the
+  // bare name is the fallback for a server that reported no table.
   const add = (name: string | undefined, ref: Omit<ConstraintRef, 'name'>): void => {
     if (name === undefined || name === '') return
-    if (!out.has(name)) out.set(name, { ...ref, name })
+    const entry = { ...ref, name }
+    for (const key of [name, `${t.name}/${name}`, `${t.schema ?? ''}/${t.name}/${name}`]) {
+      if (!out.has(key)) out.set(key, entry)
+    }
   }
 
   const pkCols: string[] = []
@@ -134,7 +143,7 @@ function indexTable(handle: TableRef, out: Map<string, ConstraintRef>): void {
         kind: 'foreignKey',
         table: handle,
         columns: cols,
-        ...resolveTarget(ddl.references.target),
+        ...resolveTarget(ddl.references.target, tables),
       })
     }
     for (const check of ddl.checks) {
@@ -180,7 +189,7 @@ function indexTable(handle: TableRef, out: Map<string, ConstraintRef>): void {
           kind: 'foreignKey',
           table: handle,
           columns: pick(byName, extra.columns),
-          ...resolveTarget(extra.references),
+          ...resolveTarget(extra.references, tables),
         })
         break
       default:
@@ -194,7 +203,10 @@ function indexTable(handle: TableRef, out: Map<string, ConstraintRef>): void {
  * schema file with a circular import can make it throw, and an error path that throws while
  * building a nicer message is strictly worse than the original error.
  */
-function resolveTarget(target: (() => readonly unknown[]) | undefined): {
+function resolveTarget(
+  target: (() => readonly unknown[]) | undefined,
+  tables: readonly TableRef[],
+): {
   referencedTable?: TableRef
   referencedColumns?: readonly ColumnRef[]
 } {
@@ -210,7 +222,12 @@ function resolveTarget(target: (() => readonly unknown[]) | undefined): {
     if (typeof r === 'object' && r !== null && '$' in r) columns.push(r as ColumnRef)
   }
   if (columns.length === 0) return {}
-  return { referencedColumns: Object.freeze(columns) }
+  const [{ $: c }] = columns as [ColumnRef]
+  const referencedTable = tables.find((x) => x.$.name === c.table && x.$.schema === c.schema)
+  return {
+    ...(referencedTable === undefined ? {} : { referencedTable }),
+    referencedColumns: Object.freeze(columns),
+  }
 }
 
 /**
@@ -222,13 +239,10 @@ export function constraintIndex(schema: object | undefined): ReadonlyMap<string,
   const hit = INDEXES.get(schema)
   if (hit !== undefined) return hit
   const out = new Map<string, ConstraintRef>()
-  const tables = (schema as { tables?: Readonly<Record<string, TableRef>> }).tables
-  if (tables !== undefined) {
-    for (const key of Object.keys(tables)) {
-      const t = tables[key]
-      if (t !== undefined && typeof t.$ === 'object') indexTable(t, out)
-    }
-  }
+  const tables = Object.values(
+    (schema as { tables?: Readonly<Record<string, TableRef>> }).tables ?? {},
+  ).filter((t): t is TableRef => typeof (t as Partial<TableRef>).$ === 'object')
+  for (const t of tables) indexTable(t, out, tables)
   const frozen: ReadonlyMap<string, ConstraintRef> = out
   INDEXES.set(schema, frozen)
   return frozen
@@ -247,10 +261,16 @@ export function resolveConstraint(
   constraintName: string | undefined,
   tableName: string | undefined,
   columnName: string | undefined,
+  schemaName?: string,
 ): ConstraintRef | undefined {
   const index = constraintIndex(schema)
   if (constraintName !== undefined) {
-    const hit = index.get(constraintName)
+    const byTable =
+      tableName === undefined
+        ? undefined
+        : (index.get(`${schemaName ?? ''}/${tableName}/${constraintName}`) ??
+          index.get(`${tableName}/${constraintName}`))
+    const hit = byTable ?? index.get(constraintName)
     if (hit !== undefined) return hit
   }
   if (tableName === undefined || columnName === undefined) return undefined

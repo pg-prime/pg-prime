@@ -17,7 +17,8 @@
       "dtsWarnBytes": 768000,
       "dtsFiles": 200,
       "largestDtsBytes": 79872,
-      "jsBytes": 1007616,
+      "jsBytes": 1009664,
+      "_jsBytesBaselined": "2026-10-20: 985.6 KB measured after the errors/observability fixes (guarded log sink, hook-name list, table-keyed constraint index); 984 -> 986 KB by the ceil(measured / 1024) * 1024 rule.",
       "zeroDependencies": true,
       "optionalPeers": ["pg"]
     },

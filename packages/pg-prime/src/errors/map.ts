@@ -149,7 +149,6 @@ export function mapDriverError(
 
   const server = data.server
   const state = server?.sqlstate ?? ''
-  const Ctor = classForSqlState(state)
   // Never an empty message. The seam's `server.message` is the good one, `data.message` the next
   // best, and the underlying `Error`'s own the last resort — a mapped error that says nothing is
   // strictly worse than the raw one it replaced, and an adapter (or a test double) that fills only
@@ -159,6 +158,12 @@ export function mapDriverError(
     data.message,
     cause instanceof Error ? cause.message : '',
   )
+  // A backend that says it is going away (class 08, or 57P01 that took the socket with it) is a
+  // connection failure, whatever the message's kind.
+  if (state.startsWith('08') || (state === '57P01' && data.connectionUnusable)) {
+    return new ConnectionTerminatedError(text, { ...base, code: state })
+  }
+  const Ctor = classForSqlState(state)
   const { detail, detailRedacted } = redactDetail(server?.detail, state, o.errors)
 
   const init: QueryErrorInit = {
@@ -184,7 +189,13 @@ export function mapDriverError(
 
   const Integrity = Ctor as unknown as typeof IntegrityConstraintError
   if (isIntegrity(Ctor)) {
-    const resolved = resolveConstraint(o.schema, server?.constraint, server?.table, server?.column)
+    const resolved = resolveConstraint(
+      o.schema,
+      server?.constraint,
+      server?.table,
+      server?.column,
+      server?.schema,
+    )
     return new Integrity(constraintMessage(text, server?.constraint, resolved), {
       ...init,
       ...(resolved === undefined ? {} : { resolved }),
@@ -313,12 +324,7 @@ function connectionError(
   ) {
     return new AuthenticationError(message, base)
   }
-  if (
-    osCode === 'ECONNRESET' ||
-    data.server?.sqlstate === '08006' ||
-    data.server?.sqlstate === '57P01' ||
-    message.startsWith('Connection terminated')
-  ) {
+  if (osCode === 'ECONNRESET' || message.startsWith('Connection terminated')) {
     return new ConnectionTerminatedError(message, base)
   }
   return new ConnectionError(message, {

@@ -1125,8 +1125,8 @@ function paramValuesOf<Row>(
 }
 
 /** Anything that leaves the transaction in the aborted state, i.e. anything the server rejected. */
-function isPoisoning(e: PgPrimeError): boolean {
-  return e.code.length === 5 && e.code !== '25P02'
+function isPoisoning(e: unknown): boolean {
+  return e instanceof PgPrimeErrorClass && e.code.length === 5 && e.code !== '25P02'
 }
 
 /** After a cancel, a protocol error or a dead socket, the connection must not go back to the pool. */
