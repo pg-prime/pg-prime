@@ -280,23 +280,20 @@ export function resolveConstraint(
   if (tableName === undefined || columnName === undefined) return undefined
   const tables = (schema as { tables?: Readonly<Record<string, TableRef>> } | undefined)?.tables
   if (tables === undefined) return undefined
-  const sameTable = (t: TableRef): boolean =>
-    t.$.name === tableName &&
-    (schemaName === undefined || t.$.schema === undefined || t.$.schema === schemaName)
-  for (const key of Object.keys(tables)) {
-    const t = tables[key]
-    if (t === undefined || !sameTable(t)) continue
-    for (const c of t.$.columns) {
-      if (c.dbName !== columnName) continue
-      return {
-        kind: 'notNull',
-        name: constraintName ?? `${tableName}.${columnName} NOT NULL`,
-        table: t,
-        columns: Object.freeze([asColumnRef(c)]),
-      }
-    }
+  // The exact schema first, then an unqualified table (it lives on the search_path).
+  const named = Object.values(tables).filter((t) => t.$.name === tableName)
+  const t =
+    named.find((x) => x.$.schema === schemaName) ??
+    named.find((x) => x.$.schema === undefined) ??
+    (schemaName === undefined ? named[0] : undefined)
+  const c = t?.$.columns.find((x) => x.dbName === columnName)
+  if (t === undefined || c === undefined) return undefined
+  return {
+    kind: 'notNull',
+    name: constraintName ?? `${tableName}.${columnName} NOT NULL`,
+    table: t,
+    columns: Object.freeze([asColumnRef(c)]),
   }
-  return undefined
 }
 
 /** `users(email)` — the human half of `07` §4.4's improved message. */

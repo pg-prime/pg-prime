@@ -966,25 +966,31 @@ describe('constraint → schema object (07 §4.4)', () => {
   it('an unqualified table answers for the schema the server reports; a qualified one only for its own', () => {
     const users = pgTable('users', (t) => ({ id: t.bigint().primaryKey() }))
     const audit = pgSchema('audit').table('users', (t) => ({ id: t.bigint().primaryKey() }))
-    const o = {
-      context: { handle: 'db' as const },
-      errors: resolveErrorOptions(undefined, false),
-      schema: defineSchema({ audit, users }),
+    // Both declaration orders: the answer must not depend on which table comes first.
+    for (const tables of [
+      { audit, users },
+      { users, audit },
+    ]) {
+      const o = {
+        context: { handle: 'db' as const },
+        errors: resolveErrorOptions(undefined, false),
+        schema: defineSchema(tables),
+      }
+      const pk = (schema: string) =>
+        mapError(
+          pgError('23505', { constraint: 'users_pkey', table: 'users', schema }),
+          o,
+        ) as UniqueViolationError
+      expect(pk('public').table).toBe(users)
+      expect(pk('audit').table).toBe(audit)
+      const nn = (schema: string) =>
+        mapError(
+          pgError('23502', { table: 'users', column: 'id', schema }),
+          o,
+        ) as NotNullViolationError
+      expect(nn('public').table).toBe(users)
+      expect(nn('audit').table).toBe(audit)
     }
-    const pk = (schema: string) =>
-      mapError(
-        pgError('23505', { constraint: 'users_pkey', table: 'users', schema }),
-        o,
-      ) as UniqueViolationError
-    expect(pk('public').table).toBe(users)
-    expect(pk('audit').table).toBe(audit)
-    const nn = (schema: string) =>
-      mapError(
-        pgError('23502', { table: 'users', column: 'id', schema }),
-        o,
-      ) as NotNullViolationError
-    expect(nn('public').table).toBe(users)
-    expect(nn('audit').table).toBe(audit)
   })
 
   it('a foreign key names the table it references', () => {
