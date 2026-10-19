@@ -175,11 +175,15 @@ describe('transactions', () => {
     let arrived = 0
     let go!: () => void
     const both = new Promise<void>((r) => (go = r))
+    let won!: () => void
+    const winnerCommitted = new Promise<void>((r) => (won = r))
     const attempts: [string, number, unknown][] = []
     const writer = (name: string, t: number) =>
       host.run({ settings: tenantId.set(tenant(t)) }, () =>
         host.transaction(
           async () => {
+            // Retries start after the winner commits, so they cannot keep overlapping it.
+            if (host.attempt > 1) await winnerCommitted
             attempts.push([name, host.attempt, await settingOf(host.db)])
             await host.db.sql`select count(*) from ${docs} where title like 'ser%'`.execute()
             if (host.attempt === 1 && ++arrived === 2) go()
@@ -190,7 +194,7 @@ describe('transactions', () => {
           { isolation: 'serializable', retry: { baseDelayMs: 1 } },
         ),
       )
-    await Promise.all([writer('a', 1), writer('b', 2)])
+    await Promise.all([writer('a', 1).then(won), writer('b', 2).then(won)])
     const retried = attempts.filter(([, a]) => a === 2)
     expect(retried).toHaveLength(1)
     const [name] = retried[0]!
