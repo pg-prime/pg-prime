@@ -17,8 +17,8 @@
       "dtsWarnBytes": 768000,
       "dtsFiles": 200,
       "largestDtsBytes": 79872,
-      "jsBytes": 1009664,
-      "_jsBytesBaselined": "2026-10-20: 985.6 KB measured after the errors/observability fixes (guarded log sink, hook-name list, table-keyed constraint index); 984 -> 986 KB by the ceil(measured / 1024) * 1024 rule.",
+      "jsBytes": 1015808,
+      "_jsBytesBaselined": "2026-10-20: 984 -> 992 KB for the four audit-fix branches landing together (errors/observability 985.6 KB, query 985.2 KB measured alone; compile/codec and session/driver follow). Set once with headroom because each PR's CI measures the merge commit; ratchet down to ceil(measured / 1024) * 1024 once they are merged.",
       "zeroDependencies": true,
       "optionalPeers": ["pg"]
     },
