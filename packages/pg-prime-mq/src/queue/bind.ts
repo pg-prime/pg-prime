@@ -60,6 +60,7 @@ export function bind<E, T>(
     await reader.close()
   }
   const binding = {
+    queue: def.name,
     get active() {
       return reader.active
     },

@@ -110,7 +110,7 @@ The schema as migration files to vendor into a kit project; they converge with `
 | `promote(ref)` | a delayed message becomes ready now |
 | `remove(ref)` | deletes the message and its descendants; refuses while any is active |
 | `purge({ states, olderThanMs? })` | batched deletes; refuses `active` |
-| `drop({ force? })` | deletes the queue; refuses while a message is active unless `force` |
+| `drop({ force? })` | deletes the queue; refuses while a message is active unless `force`; closes this instance's workers and bindings of it first, so none re-creates it |
 | `pauseGroup(key)`, `resumeGroup(key)`, `setGroupLimits(key, limits)` | per-group control; `limits` is a `GroupLimits` |
 
 ### `SendOptions`

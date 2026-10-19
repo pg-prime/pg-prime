@@ -57,8 +57,8 @@ export interface Core {
   readonly db: Db
   readonly sql: Statements
   readonly hooks: Hooks
-  /** Readers and tails, closed by `events.close()`. */
-  readonly running: Set<{ close(): Promise<void> }>
+  /** Readers and tails, closed by `events.close()`; `remove()` closes the readers of its subscription. */
+  readonly running: Set<{ close(): Promise<void>; readonly subscription?: string }>
   topicChannel(topic: string): string
   /** Ensures the schema, then upserts the topic, or the subscription with its cursor seeded once. */
   ready(def: TopicDef<any> | SubscriptionDef<any>): Promise<void>

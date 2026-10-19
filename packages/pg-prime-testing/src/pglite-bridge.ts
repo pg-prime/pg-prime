@@ -182,6 +182,8 @@ export function serve(db: PgliteLike, host = '127.0.0.1'): Promise<PgliteBridge>
     message: Buffer<ArrayBufferLike>,
     type: number,
   ): Promise<Uint8Array> {
+    // The rest of a refused socket's batch is still queued; its Sync must not run (or own a transaction).
+    if (socket.destroyed) return EMPTY
     if (crossesTransaction(socket, type)) {
       console.error(
         `[live] PGlite is ONE backend: this connection tried to run a message while another ` +
@@ -193,7 +195,7 @@ export function serve(db: PgliteLike, host = '127.0.0.1'): Promise<PgliteBridge>
       return EMPTY
     }
     const out = await db.execProtocolRaw(new Uint8Array(message))
-    txOwner = db.isInTransaction() ? socket : undefined
+    txOwner = db.isInTransaction() ? (txOwner ?? socket) : undefined
     const strip = spuriousReadyForQuery(type, out)
     if (TRACE) {
       appendFileSync(

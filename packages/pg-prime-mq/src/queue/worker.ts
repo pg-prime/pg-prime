@@ -19,7 +19,7 @@ import {
 } from '../sql/maintain.js'
 import { holder } from '../sql/read.js'
 import type { MsgRow } from '../sql/read.js'
-import { ASYNC_DISPOSE, limiter } from '../util.js'
+import { ASYNC_DISPOSE, limiter, sleep } from '../util.js'
 import { isDeferral, message, workContext } from './context.js'
 import type { Deferral, Message, Running, WorkContext } from './context.js'
 import {
@@ -399,14 +399,20 @@ export function startWorker<T, R>(
       stop.abort()
       await loop
       const all = (): Promise<unknown> => Promise.all(inflight)
-      if (o.graceMs === undefined) await all()
+      const grace = o.graceMs
+      if (grace === undefined) await all()
       else {
-        await Promise.race([all(), new Promise((r) => setTimeout(r, o.graceMs))])
+        const within = async (): Promise<void> => {
+          const ac = new AbortController()
+          await Promise.race([all(), sleep(grace, ac.signal)])
+          ac.abort()
+        }
+        await within()
         for (const e of held.values()) {
           e.shutdown = true
           e.abort.abort(new CancelledError(`@pg-prime/mq: the ${queue} worker is closing.`))
         }
-        await Promise.race([all(), new Promise((r) => setTimeout(r, o.graceMs))])
+        await within()
       }
       clearInterval(beat)
       opts.signal?.removeEventListener('abort', onAbort)
@@ -414,6 +420,7 @@ export function startWorker<T, R>(
     })())
 
   const worker = {
+    queue,
     get running() {
       return held.size
     },

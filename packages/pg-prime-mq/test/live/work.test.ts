@@ -10,6 +10,8 @@ import {
   pgMq,
 } from '../../src/index.js'
 import type { Message, MqHooks, QueueDef, SettleOutcome } from '../../src/index.js'
+import { expire } from '../../src/sql/lease.js'
+import { tables } from '../../src/sql/tables.js'
 import { freshSchema, racing, sleep, until, useServer } from '../_db.js'
 
 const server = useServer()
@@ -607,5 +609,46 @@ describe('worker lifecycle and hooks', () => {
     await sleep(60)
     expect([(await q.counts()).ready, w.running, early.running]).toStrictEqual([1, 0, 0])
     await Promise.all([w.close(), early.close()])
+  })
+})
+
+describe('lease expiry (S9)', () => {
+  it('requeues with a huge maxAttempts and attempts past the float8 exponent', async () => {
+    const retry = { maxAttempts: 2 ** 31, baseDelayMs: 1, maxDelayMs: 1 }
+    const { db, schema, q } = setup({ retry })
+    const a = await q.send({ n: 1 })
+    const b = await q.send({ n: 2 })
+    expect(await q.claim({ limit: 2 })).toHaveLength(2)
+    const messages = sql.ident(schema, 'messages')
+    await db.sql`update ${messages} set lease_until = now() - interval '1 second'`.execute()
+    await db.sql`update ${messages} set attempts = 1100 where id = ${b.id}`.execute()
+    expect(await expire(db, tables(schema), 'jobs')).toStrictEqual({
+      requeued: [a.id, b.id],
+      exhausted: [],
+    })
+    const [ma, mb] = await Promise.all([q.get(a), q.get(b)])
+    expect([ma?.state, ma?.attempts, mb?.state, mb?.attempts]).toStrictEqual([
+      'delayed',
+      1,
+      'delayed',
+      1101,
+    ])
+  })
+})
+
+describe('drop', () => {
+  it("closes this instance's workers of the queue, which would otherwise re-create it", async () => {
+    const { db, schema, q } = setup()
+    await q.start()
+    const w = q.work(async () => 1, fast)
+    await sleep(60)
+    await q.drop()
+    await sleep(100)
+    const queues = sql.ident(schema, 'queues')
+    expect(await db.sql`select 1 from ${queues} where name = 'jobs'`.execute()).toHaveLength(0)
+    const ref = await q.send({ n: 1 })
+    await sleep(100)
+    expect((await q.get(ref))?.state).toBe('ready')
+    await w.close()
   })
 })

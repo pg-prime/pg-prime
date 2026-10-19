@@ -383,6 +383,8 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
           `@pg-prime/mq: queue ${name} has active messages; drop({ force: true }) to drop it anyway.`,
         )
       }
+      // A worker or binding left running would re-create the queue on its next iteration.
+      await Promise.all([...core.running].filter((r) => r.queue === name).map((r) => r.close()))
       while ((await purgeBatch(core.db, t, name, null, null)) === 1000);
       await dropRows(core.db, t, name)
       core.forget(def)

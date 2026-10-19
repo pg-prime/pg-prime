@@ -54,8 +54,8 @@ export interface Core {
   readonly db: Db
   readonly t: Tables
   readonly hooks: Hooks
-  /** Workers and bindings, closed by `mq.close()`. */
-  readonly running: Set<{ close(): Promise<void> }>
+  /** Workers and bindings, closed by `mq.close()`; `drop()` closes those of its queue. */
+  readonly running: Set<{ close(): Promise<void>; readonly queue?: string }>
   /** Ensures the schema, then upserts the queue's row (once per instance). */
   ready(def: QueueDef<any, any>): Promise<void>
   forget(def: QueueDef<any, any>): void

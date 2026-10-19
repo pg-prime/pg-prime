@@ -1,6 +1,7 @@
 import { sql } from 'pg-prime'
 import { ms, one, run, wakeCte, watchCte, withCtes } from './tables.js'
 import type { F, Q, Tables } from './tables.js'
+import { MAX_EXPONENT } from '../util.js'
 
 /** S6: extends every lease the worker holds; a row locked by an open transaction is skipped. */
 export async function heartbeat(
@@ -28,12 +29,14 @@ export async function heartbeat(
 
 /**
  * The family backoff in SQL, from a message's stored `retry` policy: the delay of attempt
- * `attempts + 1`, exactly as `backoffMs` computes it.
+ * `attempts + 1`, exactly as `backoffMs` computes it. The exponent is clamped like there: `2 ^ 1024`
+ * overflows float8 and would abort the whole expiry statement.
  */
 export const backoffSql = (retry: F, attempts: F, random: F = sql`random()`): F =>
   sql`(case ${retry}->>'jitter' when 'none' then 1.0 when 'equal' then 0.5 + ${random} / 2
       else ${random} end)
-    * least((${retry}->>'maxDelayMs')::float8, (${retry}->>'baseDelayMs')::float8 * 2 ^ (${attempts}))`
+    * least((${retry}->>'maxDelayMs')::float8,
+        (${retry}->>'baseDelayMs')::float8 * 2 ^ least(${attempts}, ${MAX_EXPONENT}))`
 
 /** S9g: one expiry scanner per queue per interval. */
 export async function expiryGate(
@@ -60,7 +63,7 @@ export function expireSql(t: Tables, queue: string): F {
     [
       [
         'x',
-        sql`select id, attempts, (retry->>'maxAttempts')::int as max_attempts from ${t.messages}
+        sql`select id, attempts, (retry->>'maxAttempts')::float8 as max_attempts from ${t.messages}
           where queue = ${queue} and state = 'active' and lease_until < now()
           for update skip locked`,
       ],

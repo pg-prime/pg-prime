@@ -362,3 +362,23 @@ describe('payloads', () => {
     expect((await t.read()).map((e) => e.payload)).toStrictEqual([null, null])
   })
 })
+
+describe('remove', () => {
+  it("closes this instance's readers, which would otherwise re-seed the subscription", async () => {
+    const { db, schema, events } = setup()
+    const def = defineSubscription(orders, 'gone', { from: 'beginning' })
+    const seen: number[] = []
+    const reader = events.subscription(def).run(async (e) => void seen.push(e.payload.n), {
+      pollMs: 20,
+    })
+    await events.topic(orders).publish({ n: 1 })
+    await until(() => seen.length === 1)
+    await events.subscription(def).remove()
+    await events.topic(orders).publish({ n: 2 })
+    await new Promise((r) => setTimeout(r, 100))
+    const subs = sql.ident(schema, 'subscriptions')
+    const rows = await db.sql`select 1 from ${subs} where name = 'gone'`.execute()
+    expect([seen, reader.active, rows]).toStrictEqual([[1], false, []])
+    await reader.close()
+  })
+})
