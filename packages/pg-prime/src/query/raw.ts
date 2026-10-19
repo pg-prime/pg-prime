@@ -26,6 +26,7 @@ import { paramTypesOf } from '../compile/contract.js'
 import type { PgConnection, PgResultChunk } from '../driver/index.js'
 import type { Fragment } from '../sql/index.js'
 import { sql as sqlTag, toNode } from '../sql/index.js'
+import { BuilderError } from '../sql/errors.js'
 import type { BuilderCtx } from './builder-state.js'
 import type {
   ExecEnv,
@@ -36,7 +37,7 @@ import type {
 } from './executor.js'
 import type { StatementDescriptor } from '../session/runner.js'
 import { dynamicRowDecoder } from './executor.js'
-import { explainWith, runnerOf, takeFirst, toSQLOf } from './terminals.js'
+import { explainWith, paramsOf, runnerOf, takeFirst, toSQLOf } from './terminals.js'
 import type { SqlSnapshot } from './terminals.js'
 
 export type RawRow = Record<string, unknown>
@@ -70,6 +71,12 @@ export interface RawQuery {
  */
 function compiledOf(f: Fragment<unknown>): Compiled<unknown> {
   const { sql, binds, placeholders, usedUnsafeRaw } = compileExpr(toNode(f))
+  if (placeholders.length > 0) {
+    throw new BuilderError(
+      `pg-prime: db.sql takes no placeholders (found "${placeholders.join('", "')}"); it has ` +
+        `no .execute(values). Use .prepare() on a builder, or interpolate the value directly.`,
+    )
+  }
   return Object.freeze({
     sql,
     binds: Object.freeze([...binds]),
@@ -113,7 +120,7 @@ class RawQueryImpl implements RawQuery {
     const runner = runnerOf(this.#ctx)
     const c = this.#compiled
     const raw = (runner as unknown as Partial<RawCapableRunner>).runRaw
-    const params = c.binds.map((b) => (b.k === 'value' ? b.encoded : null))
+    const params = paramsOf(c)
     const paramTypes = paramTypesOf(c.binds)
     if (raw === undefined) {
       return runner.use(async (conn) => {
@@ -169,7 +176,7 @@ async function* rawStream(
   const chunks: AsyncIterable<PgResultChunk> = conn.stream(
     {
       text: c.sql,
-      params: c.binds.map((b) => (b.k === 'value' ? b.encoded : null)),
+      params: paramsOf(c),
       paramTypes: paramTypesOf(c.binds),
       ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
     },

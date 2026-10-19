@@ -968,6 +968,37 @@ describe('a declared relation `where` is evaluated per use, like `orderBy`', () 
     tenant = 'globex'
     expect(values(count())).toStrictEqual(['globex'])
   })
+
+  it('…and exactly once per use: some()/none() do not run it twice', () => {
+    let runs = 0
+    const counted = defineSchema(
+      tables,
+      defineRelations(tables, (r) => ({
+        parents: {
+          children: r.many.children({
+            from: parents[REFS].id,
+            to: children[REFS].parentId,
+            where: (c: RefsAtAlias<typeof children, 'children'>) => {
+              runs += 1
+              return eq(c.tenant, 'acme')
+            },
+          }),
+        },
+      })),
+    )
+    const cDb = compileOnly(counted)
+    for (const use of [
+      (t: { parents: { children: { some(f?: unknown): unknown } } }) => t.parents.children.some(),
+      (t: { parents: { children: { none(f?: unknown): unknown } } }) => t.parents.children.none(),
+    ]) {
+      runs = 0
+      cDb
+        .from(counted.h.parents)
+        .select((t) => ({ v: use(t as never) as never }))
+        .compile()
+      expect(runs).toBe(1)
+    }
+  })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

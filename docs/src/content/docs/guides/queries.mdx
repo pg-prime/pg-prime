@@ -835,7 +835,9 @@ Three details that are not obvious:
 sidesteps the ceiling entirely and collapses the parse cost of a large batch.
 
 `auto` (the default) picks `unnest` above 30 000 cells and `values` below, and `{ chunkSize }`
-(default 5 000 rows) is where a batch is split. Chunks run inside one transaction unless you are
+(default 5 000 rows) is where a batch is split. A `values` chunk is also capped so that
+`rows × columns` (plus any binds in `ON CONFLICT` or `RETURNING`) stays under the ceiling, so a wide
+table chunks below 5 000 rows rather than failing. Chunks run inside one transaction unless you are
 already in one — a half-applied batch is the failure mode that makes bulk inserts untrustworthy.
 `unnest` cannot carry an array column: one array per column would need a two-dimensional array
 parameter, which PostgreSQL has no type for, so it is refused with a sentence rather than silently

@@ -139,6 +139,26 @@ describe('Appendix A — upsert with a partial-index predicate, EXCLUDED, and DO
       base.onConflict((c) => c.columns((t) => [t.email]).whereUpdate((t) => q.isNull(t.deletedAt))),
     ).toThrowError(/needs \.doUpdate\(\.\.\.\) first/)
   })
+
+  it('a doUpdate() whose every key is undefined is refused, not compiled to `do update set`', () => {
+    const base = db.insertInto(schema.h.users).values({ email: 'a', name: 'b', role: 'c' })
+    expect(() =>
+      base.onConflict((c) =>
+        c.columns((t) => [t.email]).doUpdate(() => ({ name: undefined }) as never),
+      ),
+    ).toThrowError(/nothing to update.*\.doNothing\(\)/)
+    expect(() =>
+      base.onConflict((c) => c.columns((t) => [t.email]).doUpdate(() => ({}))),
+    ).toThrowError(BuilderError)
+    // …while a patch that sets something keeps skipping its undefined keys.
+    expect(
+      sqlOf(
+        base.onConflict((c) =>
+          c.columns((t) => [t.email]).doUpdate(() => ({ name: 'x', role: undefined }) as never),
+        ),
+      ),
+    ).toContain('do update set "name" = $4')
+  })
 })
 
 describe('§2.6 — the two bulk strategies and the automatic switch', () => {
@@ -216,15 +236,81 @@ describe('§2.6 — the two bulk strategies and the automatic switch', () => {
     expect(built.compileAll()).toHaveLength(2)
   })
 
-  it('the 65 535 wire ceiling throws a typed error naming the statement', () => {
-    const built = db
+  it('a `values` chunk is capped by the 65 535 wire ceiling, whatever chunkSize says', () => {
+    // 21 845 × 3 = 65 535 exactly; one more row is a second statement, not TooManyParametersError.
+    const all = db
       .insertInto(schema.h.users)
       .valuesMany(rowsOf(21_846), { strategy: 'values', chunkSize: 1e6 })
+      .compileAll()
+    expect(all.map((c) => c.binds.length)).toStrictEqual([65_535, 3])
+  })
+
+  it('a wide table chunks below 5 000 rows — the ceiling is parameters, not rows', () => {
+    // 14 columns, one of them an array, so `auto` cannot escape to `unnest`: 4 682 rows × 14 is
+    // 65 548 parameters, which the row-count chunk alone would have sent as ONE statement.
+    const wide = pgTable('wide', (t) => ({
+      id: t.integer().primaryKey(),
+      tags: t.text().array(),
+      c3: t.text(),
+      c4: t.text(),
+      c5: t.text(),
+      c6: t.text(),
+      c7: t.text(),
+      c8: t.text(),
+      c9: t.text(),
+      c10: t.text(),
+      c11: t.text(),
+      c12: t.text(),
+      c13: t.text(),
+      c14: t.text(),
+    }))
+    const wDb = compileOnly(defineSchema({ wide }))
+    const text = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`c${i + 3}`, 'x']))
+    const rows = Array.from({ length: 4_682 }, (_, i) => ({ id: i, tags: ['a'], ...text }))
+    const all = wDb
+      .insertInto(wDb.h.wide)
+      .valuesMany(rows as never)
+      .compileAll()
+    expect(all.map((c) => c.binds.length)).toStrictEqual([4_681 * 14, 14])
+    expect(all[0]!.sql).toContain(' values ')
+  })
+
+  it('parameters outside the rows count against the ceiling too', () => {
+    // `do update set "name" = $n` is one more bind per statement, so 21 845 rows no longer fit.
+    const all = db
+      .insertInto(schema.h.users)
+      .valuesMany(rowsOf(21_845), { strategy: 'values', chunkSize: 1e6 })
+      .onConflict((c) => c.columns((t) => [t.email]).doUpdate(() => ({ name: 'taken' })))
+      .compileAll()
+    expect(all.map((c) => c.binds.length)).toStrictEqual([21_844 * 3 + 1, 3 + 1])
+  })
+
+  it('`unnest` is one parameter per column, so only chunkSize splits it', () => {
+    const all = db
+      .insertInto(schema.h.users)
+      .valuesMany(rowsOf(21_846), { strategy: 'unnest', chunkSize: 1e6 })
+      .compileAll()
+    expect(all.map((c) => c.binds.length)).toStrictEqual([3])
+  })
+
+  it('the compiler still refuses a statement over the ceiling — expression values are not counted', () => {
+    // Four binds per row where the chunker counts three: 16 400 × 4 = 65 600.
+    const rows = Array.from({ length: 16_400 }, (_, i) => ({
+      email: `u${i}`,
+      name: q.sql`${'a'} || ${'b'}`.as(textCodec),
+      role: 'member',
+    }))
+    const built = db
+      .insertInto(schema.h.users)
+      .valuesMany(rows, { strategy: 'values', chunkSize: 1e6 })
     expect(() => built.compileAll()).toThrowError(TooManyParametersError)
-    expect(() => built.compileAll()).toThrowError(
-      'compiled insert uses 65538 bind parameters; the PostgreSQL wire protocol caps ' +
-        "parameters at 65535. Use strategy: 'unnest' or chunk the batch.",
-    )
+  })
+
+  it('toSQL() and explain() never throw on a chunked batch: they describe its first chunk', () => {
+    const built = db.insertInto(schema.h.users).valuesMany(rowsOf(5_001), { strategy: 'values' })
+    const snap = built.toSQL()
+    expect(snap.sql).toBe(built.compileAll()[0]!.sql)
+    expect(snap.params).toHaveLength(15_000)
   })
 
   it('rows that differ only in a boolean or enum VALUE are one batch, not a heterogeneous one', () => {
@@ -309,6 +395,17 @@ describe('what reaches the wire (the recording mock)', () => {
     const { driver, db: live } = setup()
     await live.insertInto(schema.h.users).values({ email: 'a', name: 'b', role: 'c' }).execute()
     expect(driver.log[0]!.params).toStrictEqual(['a', 'b', 'c'])
+  })
+})
+
+describe('rows are snapshotted at .values() time (03 §1.4a)', () => {
+  it('mutating the row object afterwards changes nothing', () => {
+    const row = { email: 'a', name: 'b', role: 'c' }
+    const one = db.insertInto(schema.h.users).values(row)
+    const many = db.insertInto(schema.h.users).valuesMany([row, { ...row }], { strategy: 'unnest' })
+    row.name = 'changed'
+    expect(vals(one)).toStrictEqual(['a', 'b', 'c'])
+    expect(vals(many)).toStrictEqual(['{a,a}', '{b,b}', '{c,c}'])
   })
 })
 

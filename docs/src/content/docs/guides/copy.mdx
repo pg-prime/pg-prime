@@ -192,7 +192,8 @@ an `int16` — and by one soft one, which is that a very wide `VALUES` list is s
 - **Chunking at 5 000 rows.** Above that the batch is split into several statements, run on **one
   connection inside one transaction**, because a half-applied bulk insert is the failure mode that
   makes chunking untrustworthy and it is invisible: the caller sees a rejected promise and 40 000
-  of 50 000 rows committed.
+  of 50 000 rows committed. A `values` chunk is also capped so `rows × columns` stays under the
+  ceiling, so a wide table splits below 5 000 rows.
 - **`unnest` above 30 000 cells** (`rows × columns`). The `unnest` strategy passes **one array
   parameter per column** whatever the row count, so it sidesteps the parameter ceiling entirely.
   Below that, plain `VALUES` is cheaper to plan.
@@ -226,8 +227,9 @@ console.log(count?.['n'])
 // 12000
 ```
 
-`compileAll()` is the honest way to see what a batch will actually send; `toSQL()` refuses on a
-chunked batch, because one AST cannot represent three statements.
+`compileAll()` is the honest way to see what a batch will actually send; `toSQL()` and `explain()`
+describe the first chunk only, and `toAst()` refuses, because one AST cannot represent three
+statements.
 
 ## Where to go next
 
