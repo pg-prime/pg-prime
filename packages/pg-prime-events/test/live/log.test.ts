@@ -223,7 +223,8 @@ describe('retry, park, discard', () => {
     const { events } = setup({ onRetry: () => void retries++ })
     const def = defineSubscription(orders, 'grow', {
       from: 'beginning',
-      retry: { maxAttempts: 3, baseDelayMs: 30, maxDelayMs: 30 },
+      // Spaced out, so the first retry is observable before the second lands.
+      retry: { maxAttempts: 3, baseDelayMs: 200, maxDelayMs: 200, jitter: 'none' },
     })
     const sub = events.subscription(def)
     const topic = events.topic(orders)
