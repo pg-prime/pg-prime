@@ -350,26 +350,31 @@ export interface DiagnoseInputs {
 export async function diagnose(inputs: DiagnoseInputs): Promise<DbDiagnosis> {
   const conn = await inputs.driver.acquire()
   const settings: Record<string, string> = {}
-  let maxConnections: number | undefined
-  let superuserReserved: number | undefined
-  let inUse: number | undefined
-  let version: string | undefined
   try {
-    version = cell(await exec(conn, 'select version()'))
+    // One round trip, as documented. Only client backends occupy max_connections slots, but a
+    // role without pg_read_all_stats sees NULL for other sessions' backend_type: count those too,
+    // since overcounting beats overstating headroom.
     const rows = await exec(
       conn,
-      'select name, setting from pg_catalog.pg_settings where name = any($1)',
-      [`{${EFFECTIVE.join(',')}}`],
+      `select name, setting from pg_catalog.pg_settings where name = any($1)
+       union all select 'version()', version()
+       union all select 'client backends', count(*)::text from pg_catalog.pg_stat_activity
+         where backend_type = 'client backend' or backend_type is null`,
+      [`{${[...EFFECTIVE, 'max_connections', 'superuser_reserved_connections'].join(',')}}`],
     )
     for (const row of rows) settings[String(row[0])] = String(row[1])
-    maxConnections = numeric(
-      settings['max_connections'] ?? cell(await exec(conn, 'show max_connections')),
-    )
-    superuserReserved = numeric(cell(await exec(conn, 'show superuser_reserved_connections')))
-    inUse = numeric(cell(await exec(conn, 'select count(*) from pg_catalog.pg_stat_activity')))
   } finally {
     await inputs.driver.release(conn)
   }
+  const take = (name: string): string | undefined => {
+    const v = settings[name]
+    delete settings[name]
+    return v
+  }
+  const version = take('version()')
+  const maxConnections = numeric(take('max_connections'))
+  const superuserReserved = numeric(take('superuser_reserved_connections'))
+  const inUse = numeric(take('client backends'))
   const poolMax = inputs.poolStats?.max
   const headroom =
     maxConnections === undefined || inUse === undefined

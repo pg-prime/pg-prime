@@ -80,8 +80,30 @@ export function resolveLogOptions(
     level: opts?.level ?? 'warn',
     slowQueryMs: opts?.slowQueryMs ?? null,
     logAllQueries: all,
-    sink: opts?.sink ?? ((r) => defaultSink(r, format)),
+    sink: guarded(opts?.sink ?? ((r) => defaultSink(r, format))),
     format,
+  }
+}
+
+/** A sink that throws is disabled, not propagated: it runs inside a successful statement. */
+function guarded(sink: (record: LogRecord) => unknown): (record: LogRecord) => void {
+  let off = false
+  const fail = (cause: unknown): void => {
+    if (off) return
+    off = true
+    console.error(
+      'pg-prime: log.sink threw and has been disabled for this process. Observability must never break a query (07 §7.1).',
+      cause,
+    )
+  }
+  return (record) => {
+    if (off) return
+    try {
+      const r = sink(record)
+      if (r instanceof Promise) r.catch(fail)
+    } catch (cause) {
+      fail(cause)
+    }
   }
 }
 

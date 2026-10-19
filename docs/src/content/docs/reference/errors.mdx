@@ -74,7 +74,7 @@ PgPrimeError                                          the root; message, code, c
 │   ├── ConnectionRefusedError                        08000   ECONNREFUSED / ENOTFOUND / EHOSTUNREACH
 │   ├── ConnectionTimeoutError                        08000   TCP or TLS handshake timed out
 │   ├── AuthenticationError                           08000   SCRAM / MD5 failure during startup
-│   ├── ConnectionTerminatedError                     08000   ECONNRESET, 08006, 57P01 mid-query
+│   ├── ConnectionTerminatedError                     08000*  ECONNRESET, 08006, 57P01 mid-query
 │   └── PoolTimeoutError                              08000   carries PoolStats
 ├── IndeterminateCommitError                          INDETERMINATE_COMMIT — a sibling, deliberately
 ├── TimeoutError                                      TIMEOUT
@@ -92,6 +92,8 @@ PgPrimeError                                          the root; message, code, c
 │   └── UnsupportedInPoolerModeError                  USAGE
 └── ConfigError                                       CONFIG — thrown eagerly at pgPrime(...)
 ```
+
+\* `08000`, or the server's own `08xxx` / `57P01` when it sent one before the socket died.
 
 The builder and the compiler throw from the same root: `BuilderError`, `SchemaError`,
 `InvalidIdentifierError`, `NoCodecError`, `NullOperandError`, `TooManyParametersError` and the rest
@@ -203,7 +205,7 @@ matters, the answer is a transaction, and if the failure happened at `COMMIT` th
 | <a id="ConnectionTimeoutError"/>`ConnectionTimeoutError` | `08000` | The TCP or TLS handshake did not finish in time — a firewall that drops rather than rejects, or a server that is up but not accepting. |
 | <a id="TlsError"/>`TlsError` | `08000` | TLS itself refused: a bad or self-signed certificate, a hostname mismatch, an unsupported protocol version. Distinguished by the Node error code on `cause` — `ERR_TLS_*`, `CERT_*` or `UNABLE_TO_*`. |
 | <a id="AuthenticationError"/>`AuthenticationError` | `08000` | SCRAM or MD5 failed during startup, or the server rejected the role before the connection was usable. The same credentials rejected on a *statement* are `InvalidPasswordError` instead. |
-| <a id="ConnectionTerminatedError"/>`ConnectionTerminatedError` | `08000` | The backend went away mid-statement: `ECONNRESET`, `08006`, or a `57P01` admin shutdown that arrived while a query was in flight. Retry only if the statement is idempotent. |
+| <a id="ConnectionTerminatedError"/>`ConnectionTerminatedError` | `08000`, or the server's own `08xxx` / `57P01` | The backend went away mid-statement: `ECONNRESET`, `08006`, or a `57P01` admin shutdown that arrived while a query was in flight. Retry only if the statement is idempotent. |
 | <a id="ConfigError"/>`ConfigError` | `CONFIG` | An invalid configuration, thrown **eagerly** by `pgPrime(...)` rather than at the first query, and naming the key that is wrong. Nothing in your process has connected yet when you see one. |
 
 A TLS failure is a `TlsError`, which is a `ConnectionError`, so `catch (e) { if (e instanceof
@@ -687,6 +689,9 @@ type PgPrimeErrorCode =
   | 'CONFIG'
   | 'USAGE'
   | 'VERSION_CONFLICT'
+  | 'TIMEOUT'
+  | 'ABORT'
+  | 'INDETERMINATE_COMMIT'
 ```
 
 The vocabulary for the errors that have **no** SQLSTATE, because they never reached a server.

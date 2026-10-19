@@ -42,6 +42,7 @@ import {
   LockNotAvailableError,
   NotNullViolationError,
   NumericValueOutOfRangeError,
+  ConnectionTerminatedError,
   OperatorInterventionError,
   OutOfMemoryError,
   PgPrimeError,
@@ -78,10 +79,10 @@ import { HookBus, SEMCONV, spanAttributes, spanName } from '../../src/observe/in
 import { POOLER_MODES, POOLER_PROFILES } from '../../src/pooler/index.js'
 import { eq } from '../../src/query/ops.js'
 import { compileOnly, pgPrime } from '../../src/query/run.js'
-import { defineSchema, pgTable } from '../../src/schema/index.js'
+import { defineSchema, pgSchema, pgTable } from '../../src/schema/index.js'
 import { resolveSessionSettings } from '../../src/session/gucs.js'
 import { resetGuardForTests } from '../../src/session/guard.js'
-import { captureCallSite } from '../../src/errors/redact.js'
+import { captureCallSite, isInternalFrame } from '../../src/errors/redact.js'
 import {
   advisoryFn,
   advisoryKey,
@@ -737,6 +738,18 @@ describe('every SQLSTATE in 07 §4.2 maps to its class (07 §4.5)', () => {
     expect(classForSqlState(state)).toBe(Ctor)
   })
 
+  it('a backend going away is a ConnectionTerminatedError, whatever the message kind', () => {
+    const o = { context: { handle: 'db' as const }, errors: resolveErrorOptions(undefined, false) }
+    const gone = mapError(pgError('08006', { message: 'connection failure' }), o) as PgPrimeError
+    expect(gone).toBeInstanceOf(ConnectionTerminatedError)
+    expect(gone.code).toBe('08006')
+    expect(mapError(pgError('57P01', { severity: 'FATAL' }), o)).toBeInstanceOf(
+      ConnectionTerminatedError,
+    )
+    // `raise ... using errcode = 'admin_shutdown'` is an ERROR: the connection is intact.
+    expect(mapError(pgError('57P01'), o)).toBeInstanceOf(OperatorInterventionError)
+  })
+
   it('every entry of the exported table round-trips through the lookup', () => {
     for (const state of Object.keys(SQLSTATE_MAP)) {
       expect(classForSqlState(state)).toBe(SQLSTATE_MAP[state])
@@ -853,6 +866,14 @@ describe('redaction (07 §4.3)', () => {
     expect(e.sql).toBe('select 123… [7 more characters elided]')
   })
 
+  it('only pg-prime frames are internal; an application with its own src/query is not', () => {
+    expect(isInternalFrame('/repo/packages/pg-prime/src/session/runner.ts')).toBe(true)
+    expect(isInternalFrame('/app/node_modules/pg-prime/dist/query/select.js')).toBe(true)
+    expect(isInternalFrame('C:\\app\\node_modules\\pg-prime\\dist\\errors\\map.js')).toBe(true)
+    expect(isInternalFrame('/app/src/query/users.ts')).toBe(false)
+    expect(isInternalFrame('/app/node_modules/@pg-prime/kit/dist/cli.js')).toBe(false)
+  })
+
   it('captureCallSite defaults to on outside production and off inside', () => {
     expect(resolveErrorOptions(undefined, false).captureCallSite).toBe(true)
     expect(resolveErrorOptions(undefined, true).captureCallSite).toBe(false)
@@ -924,6 +945,65 @@ describe('constraint → schema object (07 §4.4)', () => {
     expect(e.table).toBeUndefined()
     expect(e.message).toMatch(/not declared in your schema/)
     expect(e.constraintName).toBe('made_by_hand')
+  })
+
+  it('two tables sharing a constraint name resolve by the table the server named', () => {
+    const a = pgTable('a', (t) => ({ email: t.text().unique('email_key') }))
+    const b = pgTable('b', (t) => ({ email: t.text().unique('email_key') }))
+    const e = mapError(
+      pgError('23505', { constraint: 'email_key', table: 'b', schema: 'public' }),
+      {
+        context: { handle: 'db' },
+        errors: resolveErrorOptions(undefined, false),
+        schema: defineSchema({ a, b }),
+      },
+    ) as UniqueViolationError
+    expect(e.table?.$.name).toBe('b')
+    expect(isUniqueViolation(e, b.cols.email)).toBe(true)
+    expect(isUniqueViolation(e, a.cols.email)).toBe(false)
+  })
+
+  it('an unqualified table answers for the schema the server reports; a qualified one only for its own', () => {
+    const users = pgTable('users', (t) => ({ id: t.bigint().primaryKey() }))
+    const audit = pgSchema('audit').table('users', (t) => ({ id: t.bigint().primaryKey() }))
+    // Both declaration orders: the answer must not depend on which table comes first.
+    for (const tables of [
+      { audit, users },
+      { users, audit },
+    ]) {
+      const o = {
+        context: { handle: 'db' as const },
+        errors: resolveErrorOptions(undefined, false),
+        schema: defineSchema(tables),
+      }
+      const pk = (schema: string) =>
+        mapError(
+          pgError('23505', { constraint: 'users_pkey', table: 'users', schema }),
+          o,
+        ) as UniqueViolationError
+      expect(pk('public').table).toBe(users)
+      expect(pk('audit').table).toBe(audit)
+      const nn = (schema: string) =>
+        mapError(
+          pgError('23502', { table: 'users', column: 'id', schema }),
+          o,
+        ) as NotNullViolationError
+      expect(nn('public').table).toBe(users)
+      expect(nn('audit').table).toBe(audit)
+    }
+  })
+
+  it('a foreign key names the table it references', () => {
+    const fk = mapError(
+      pgError('23503', { constraint: 'accounts_org_id_fkey', table: 'accounts' }),
+      {
+        context: { handle: 'db' },
+        errors: resolveErrorOptions(undefined, false),
+        schema: s,
+      },
+    ) as ForeignKeyViolationError
+    expect(fk.constraint?.referencedTable?.$.name).toBe('orgs')
+    expect(fk.constraint?.referencedColumns?.map((c) => c.$.dbName)).toStrictEqual(['id'])
   })
 
   it('a NOT NULL violation reports no constraint name, so it resolves by (table, column)', () => {
@@ -1282,6 +1362,86 @@ describe('QueryHooks (07 §7.1)', () => {
       .select(({ users: u }) => ({ id: u.id, email: u.email }))
       .execute()
     expect(events).toStrictEqual(['start select users', 'end rows=1 timed=true'])
+  })
+
+  it('an async hook that rejects is disabled and reported, never an unhandled rejection', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let calls = 0
+    const { db } = setup({
+      hooks: {
+        onQueryEnd: async () => {
+          calls++
+          throw new Error('async boom')
+        },
+      },
+    })
+    await db.sql`select 1`.execute()
+    await new Promise((r) => setImmediate(r))
+    await db.sql`select 1`.execute()
+    expect(calls).toBe(1)
+    expect(error).toHaveBeenCalledTimes(1)
+    error.mockRestore()
+  })
+
+  it('a log sink that throws is disabled and reported; the statement still resolves', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let calls = 0
+    const { db } = setup({
+      log: {
+        slowQueryMs: 0,
+        sink: () => {
+          calls++
+          throw new Error('sink boom')
+        },
+      },
+    })
+    await expect(db.sql`select 1`.execute()).resolves.toBeDefined()
+    await expect(db.transaction((tx) => tx.sql`select 1`.execute())).resolves.toBeDefined()
+    expect(calls).toBe(1)
+    expect(error).toHaveBeenCalledTimes(1)
+    error.mockRestore()
+  })
+
+  it('rejections from calls in flight when the first one lands are reported once', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { db } = setup({
+      hooks: {
+        onQueryEnd: () =>
+          new Promise((_, reject) => setTimeout(() => reject(new Error('late')), 5)),
+      },
+    })
+    await Promise.all([db.sql`select 1`.execute(), db.sql`select 1`.execute()])
+    await new Promise((r) => setTimeout(r, 20))
+    expect(error).toHaveBeenCalledTimes(1)
+    error.mockRestore()
+  })
+
+  it('an async log sink that rejects is disabled and reported like a throwing one', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let calls = 0
+    const { db } = setup({
+      log: {
+        slowQueryMs: 0,
+        sink: async () => {
+          calls++
+          throw new Error('sink boom')
+        },
+      },
+    })
+    await db.sql`select 1`.execute()
+    await new Promise((r) => setImmediate(r))
+    await db.sql`select 1`.execute()
+    expect(calls).toBe(1)
+    expect(error).toHaveBeenCalledTimes(1)
+    error.mockRestore()
+  })
+
+  it('hooks: {} registers nothing, so statements skip the event path', () => {
+    const bus = new HookBus()
+    bus.add({})
+    expect(bus.enabled).toBe(false)
+    bus.add({ onQueryStart: () => undefined })
+    expect(bus.enabled).toBe(true)
   })
 
   it('onQueryError sees the mapped class, and onTransactionEnd sees the outcome', async () => {
