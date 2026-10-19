@@ -382,11 +382,18 @@ export class InsertBuilder {
    * `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE INSERT` inserts (07 §7.5).
    * A chunked batch is explained through its first chunk; the others share its plan.
    */
-  explain(opts?: ExplainOptions): Promise<ExplainResult> {
-    return explainWith(this.s.ctx, this.compileAll()[0] as Compiled<unknown>, opts, this.s.run)
+  async explain(opts?: ExplainOptions): Promise<ExplainResult> {
+    const all = this.compileAll()
+    if (all.length > 1 && opts?.analyze === true && opts.rollback === false) {
+      throw new BuilderError(
+        'pg-prime: explain({ analyze: true, rollback: false }) on a chunked batch would insert ' +
+          'its first chunk only. Keep the rollback, or explain a batch that fits one statement.',
+      )
+    }
+    return explainWith(this.s.ctx, all[0] as Compiled<unknown>, opts, this.s.run)
   }
 
-  /** Never throws: a chunked batch snapshots its first chunk (`compileAll()` has the rest). */
+  /** A chunked batch snapshots its first chunk (`compileAll()` has the rest). */
   toSQL(): SqlSnapshot {
     return toSQLOf(this.compileAll()[0] as Compiled<unknown>)
   }
@@ -397,7 +404,9 @@ export class InsertBuilder {
   #chunkSize(): number {
     const size = this.s.bulk?.chunkSize ?? CHUNK_ROWS
     if (this.#strategy() === 'unnest') return size
-    return Math.min(size, Math.floor((WIRE_PARAMS - this.#fixedParams()) / this.s.columns.length))
+    // Never below one row: a chunk that cannot fit fails in the compiler, not in an endless loop.
+    const fit = Math.floor((WIRE_PARAMS - this.#fixedParams()) / this.s.columns.length)
+    return Math.max(1, Math.min(size, fit))
   }
 
   /** Parameters outside the rows (CTEs, ON CONFLICT, RETURNING), carried by every chunk. */

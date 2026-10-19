@@ -313,6 +313,27 @@ describe('§2.6 — the two bulk strategies and the automatic switch', () => {
     expect(snap.params).toHaveLength(15_000)
   })
 
+  it('a chunk never shrinks below one row: too many fixed binds fail in the compiler, not a loop', () => {
+    const n = 65_534
+    const parts = Object.freeze(Array.from({ length: n + 1 }, (_, i) => (i === 0 ? '' : ' || ')))
+    const strings = Object.freeze(
+      Object.assign([...parts], { raw: parts }),
+    ) as unknown as TemplateStringsArray
+    const wide = q.sql(strings, ...Array.from({ length: n }, () => 'x')).as(textCodec)
+    const built = db
+      .insertInto(schema.h.users)
+      .valuesMany(rowsOf(2), { strategy: 'values' })
+      .onConflict((c) => c.columns((t) => [t.email]).doUpdate(() => ({ name: wide })))
+    expect(() => built.compileAll()).toThrowError(TooManyParametersError)
+  })
+
+  it('explain({ analyze: true, rollback: false }) refuses a chunked batch', async () => {
+    const built = db.insertInto(schema.h.users).valuesMany(rowsOf(5_001), { strategy: 'values' })
+    await expect(built.explain({ analyze: true, rollback: false })).rejects.toThrowError(
+      /first chunk only/,
+    )
+  })
+
   it('rows that differ only in a boolean or enum VALUE are one batch, not a heterogeneous one', () => {
     // The type-level guard used to ask "did `R` come out a union?", and a column whose type IS a
     // union (`boolean` is `true | false`) keeps its literal type through inference — so this
