@@ -2100,3 +2100,310 @@ describe('per-statement options on the builder (07 §6.1, §6.2, §1.5, §2.3)',
     expect(driver.log[0]!.mode).toBe('named')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Session.transaction() is the same transaction db.transaction() is (07 §1.4, §3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const manyRows = (n: number) =>
+  Array.from({ length: n }, (_, i) => ({ email: `u${i}`, name: `n${i}`, role: 'member' }))
+
+describe('Session.transaction() honours TxOptions and emits the transaction hooks (07 §1.4)', () => {
+  it('localSettings and timeoutMs go out in ONE set_config after BEGIN, on the pinned connection', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['1']])
+    await db.session((s) =>
+      s.transaction((tx) => tx.sql`select 1`.execute(), {
+        timeoutMs: 250,
+        localSettings: { 'app.tenant_id': 't1' },
+      }),
+    )
+    expect(driver.texts()).toStrictEqual([
+      'begin',
+      'select set_config($1,$2,true), set_config($3,$4,true)',
+      'select 1',
+      'commit',
+    ])
+    expect(driver.log[1]!.params).toStrictEqual(['app.tenant_id', 't1', 'statement_timeout', '250'])
+    expect(driver.acquired).toBe(1)
+  })
+
+  it('emits transactionStart/End and retries a 40001 without a second checkout', async () => {
+    vi.useFakeTimers()
+    try {
+      const { driver, db } = setup()
+      const events: string[] = []
+      db.observe({
+        onTransactionStart: () => void events.push('start'),
+        onTransactionEnd: (e) => void events.push(`end:${e.outcome}`),
+        onRetry: () => void events.push('retry'),
+      })
+      let n = 0
+      driver.failOn = (q) => (q.text === 'select 1' && n++ === 0 ? serverError('40001') : undefined)
+      driver.rows.push([['1']])
+      const p = db.session((s) =>
+        s.transaction((tx) => tx.sql`select 1`.execute(), { isolation: 'serializable' }),
+      )
+      await vi.runAllTimersAsync()
+      await p
+      expect(events).toStrictEqual(['start', 'retry', 'end:error', 'start', 'end:commit'])
+      expect(driver.acquired).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a per-statement timeoutMs on the Session itself is the client timer — no SET LOCAL outside a transaction', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['1']], [['1']], [['1']])
+    await db.session(async (s) => {
+      await s.withOptions({ timeoutMs: 100 }).sql`select 1`.execute()
+      // The nested transaction starts from a clean cache: its own timeout is still emitted.
+      await s.transaction((tx) => tx.sql`select 1`.execute(), { timeoutMs: 100 })
+      await s.withOptions({ timeoutMs: 100, timeoutStrategy: 'transaction' })
+        .sql`select 1`.execute()
+    })
+    expect(driver.texts()).toStrictEqual([
+      'select 1',
+      'begin',
+      'select set_config($1,$2,true)',
+      'select 1',
+      'commit',
+      'begin',
+      'select set_config($1,$2,true)',
+      'select 1',
+      'commit',
+    ])
+  })
+})
+
+describe('savepoint options are savepoint-scoped (07 §3.3)', () => {
+  it('reads the current values first and puts them back after RELEASE', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([], [[null, '30s']], [['1']])
+    await db.transaction(async (tx) => {
+      await tx.savepoint((sp) => sp.sql`select 1`.execute(), {
+        timeoutMs: 50,
+        localSettings: { 'app.x': 'y' },
+      })
+    })
+    expect(driver.texts()).toStrictEqual([
+      'begin',
+      'select current_setting($1,true), current_setting($2,true)',
+      'savepoint "pgprime_sp_1"',
+      'select set_config($1,$2,true), set_config($3,$4,true)',
+      'select 1',
+      'release savepoint "pgprime_sp_1"',
+      'select set_config($1,$2,true), set_config($3,$4,true)',
+      'commit',
+    ])
+    expect(driver.log[6]!.params).toStrictEqual(['app.x', null, 'statement_timeout', '30s'])
+  })
+
+  it('a timeout a statement set INSIDE the savepoint is restored by the parent after RELEASE', async () => {
+    const { driver, db } = setup()
+    driver.rows.push([['1']], [['1']])
+    await db.transaction(async (tx) => {
+      await tx.savepoint((sp) => sp.withOptions({ timeoutMs: 50 }).sql`select 1`.execute())
+      await tx.sql`select 1`.execute()
+    })
+    expect(
+      driver.log.filter((r) => r.text.startsWith('select set_config')).map((r) => r.params),
+    ).toStrictEqual([
+      ['statement_timeout', '50'],
+      ['statement_timeout', null],
+    ])
+  })
+
+  it('rollbackWith() on the OUTER handle inside a savepoint resolves the transaction, not the savepoint', async () => {
+    const { driver, db } = setup()
+    const out = await db.transaction(async (tx) => {
+      await tx.savepoint(async () => tx.rollbackWith('outer'))
+      return 'continued'
+    })
+    expect(out).toBe('outer')
+    expect(driver.texts()).toStrictEqual([
+      'begin',
+      'savepoint "pgprime_sp_1"',
+      'rollback to savepoint "pgprime_sp_1"',
+      'release savepoint "pgprime_sp_1"',
+      'rollback',
+    ])
+  })
+})
+
+describe('control statements are mapped like queries (07 §4)', () => {
+  it("a chunked insert's COMMIT refused with 23503 is a ForeignKeyViolationError", async () => {
+    const { driver, db } = setup()
+    driver.failOn = (q) => (q.text === 'commit' ? pgError('23503') : undefined)
+    const err = await db
+      .insertInto(schema.h.users)
+      .valuesMany(manyRows(5_001), { strategy: 'values' })
+      .execute()
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ForeignKeyViolationError)
+    expect(driver.released).toBe(1)
+  })
+
+  it('a SAVEPOINT refused with 25P02 is InFailedTransactionError naming the poison', async () => {
+    const { driver, db } = setup()
+    driver.failOn = (q) =>
+      q.text === 'select 1'
+        ? pgError('23505')
+        : q.text.startsWith('savepoint')
+          ? pgError('25P02')
+          : undefined
+    const err = await db
+      .transaction(async (tx) => {
+        await tx.sql`select 1`.execute().catch(() => undefined)
+        await tx.savepoint(() => Promise.resolve())
+      })
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(InFailedTransactionError)
+    expect((err as InFailedTransactionError).poisonedBy).toBeInstanceOf(UniqueViolationError)
+  })
+
+  it("a chunked batch under timeoutStrategy: 'transaction' sets the timeout once, after BEGIN", async () => {
+    const { driver, db } = setup()
+    await db
+      .withOptions({ timeoutMs: 500, timeoutStrategy: 'transaction' })
+      .insertInto(schema.h.users)
+      .valuesMany(manyRows(5_001), { strategy: 'values' })
+      .execute()
+    const texts = driver.texts()
+    expect(texts[0]).toBe('begin')
+    expect(driver.log[1]).toMatchObject({
+      text: 'select set_config($1,$2,true)',
+      params: ['statement_timeout', '500'],
+    })
+    expect(texts.filter((t) => t.startsWith('insert into'))).toHaveLength(2)
+    expect(texts.at(-1)).toBe('commit')
+  })
+})
+
+describe('signals and timeouts at the edges (07 §6.1, §6.2)', () => {
+  it('an already-aborted signal reaches the driver aborted, even with a timeoutMs beside it', async () => {
+    // A Session has no per-statement checkout to refuse it at, so the timer path is the only guard.
+    const { driver, db } = setup()
+    const ac = new AbortController()
+    ac.abort()
+    let seen: AbortSignal | undefined
+    driver.failOn = (q) => {
+      seen = (q as { signal?: AbortSignal }).signal
+      return seen?.aborted === true ? abortError() : undefined
+    }
+    const err = await db
+      .session((s) => s.withOptions({ timeoutMs: 100, signal: ac.signal }).sql`select 1`.execute())
+      .catch((e: unknown) => e)
+    expect(seen?.aborted).toBe(true)
+    expect(err).toBeInstanceOf(AbortError)
+  })
+
+  it("a transaction's signal composes with the db-wide one at checkout", async () => {
+    const global = new AbortController()
+    const { driver, db } = setup({ signal: global.signal })
+    const own = new AbortController()
+    let acquired: AbortSignal | undefined
+    const acquire = driver.acquire.bind(driver)
+    driver.acquire = (o) => {
+      acquired = o?.signal
+      return acquire(o)
+    }
+    driver.rows.push([['1']])
+    await db.transaction((tx) => tx.sql`select 1`.execute(), { signal: own.signal })
+    global.abort()
+    expect(acquired?.aborted).toBe(true)
+  })
+
+  it('an abort between the last statement and COMMIT rolls back', async () => {
+    const { driver, db } = setup()
+    const ac = new AbortController()
+    driver.rows.push([['1']])
+    const err = await db
+      .transaction(
+        async (tx) => {
+          await tx.sql`select 1`.execute()
+          ac.abort()
+        },
+        { signal: ac.signal },
+      )
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AbortError)
+    expect(driver.texts()).toStrictEqual(['begin', 'select 1', 'rollback'])
+  })
+
+  it.each([0, -1, 1.5, Number.NaN])('timeoutMs %p is a UsageError on every handle', async (ms) => {
+    const { db } = setup()
+    expect(() => db.withOptions({ timeoutMs: ms })).toThrow(UsageError)
+    await expect(db.transaction(() => Promise.resolve(), { timeoutMs: ms })).rejects.toThrow(
+      UsageError,
+    )
+    await expect(
+      db.transaction((tx) => tx.savepoint(() => Promise.resolve(), { timeoutMs: ms })),
+    ).rejects.toThrow(UsageError)
+    await expect(
+      db.session((s) => Promise.resolve(s.withOptions({ timeoutMs: ms }))),
+    ).rejects.toThrow(UsageError)
+  })
+
+  it('lockTimeoutMs: 0 is "no lock timeout", which PostgreSQL means by it', async () => {
+    const { driver, db } = setup()
+    await db.transaction(() => Promise.resolve(), { lockTimeoutMs: 0 })
+    expect(driver.log[1]!.params).toStrictEqual(['lock_timeout', '0'])
+  })
+})
+
+describe('a Session gives back a clean connection, or none (07 §1.4)', () => {
+  const releases = (driver: MockDriver): (boolean | undefined)[] => {
+    const out: (boolean | undefined)[] = []
+    driver.release = (_c, o) => {
+      out.push(o?.dispose)
+      return Promise.resolve()
+    }
+    return out
+  }
+
+  it('set() disposes the connection at exit, so the GUC never reaches the next borrower', async () => {
+    const { driver, db } = setup()
+    const seen = releases(driver)
+    await db.session((s) => s.set('app.tenant_id', 't1'))
+    expect(seen).toStrictEqual([true])
+  })
+
+  it('a session advisory lock still held at exit disposes; one released does not', async () => {
+    const { driver, db } = setup()
+    const seen = releases(driver)
+    await db.session(async (s) => {
+      await s.advisoryLock(7n)
+    })
+    driver.rows.push([], [['t']])
+    await db.session(async (s) => {
+      const lock = (await s.advisoryLock(7n)) as { unlock(): Promise<boolean> }
+      await lock.unlock()
+    })
+    expect(seen).toStrictEqual([true, undefined])
+  })
+
+  it('a thrown error on a healthy connection returns it to the pool', async () => {
+    const { driver, db } = setup()
+    const seen = releases(driver)
+    await db.session(() => Promise.reject(new Error('mine'))).catch(() => {})
+    expect(seen).toStrictEqual([undefined])
+  })
+
+  it('COPY and a stream on a Session run in a transaction of their own, with the session timeout off', async () => {
+    const { driver, db } = setup({ session: { statementTimeout: '30s' } })
+    driver.chunks.push([{ rows: [] }])
+    await db.session(async (s) => {
+      for await (const _ of s.stream(
+        db.from(schema.h.users).select(({ users: u }) => ({ id: u.id })),
+      )) {
+        void _
+      }
+    })
+    const texts = driver.texts().map((t) => t.split(' ').slice(0, 2).join(' '))
+    expect(texts.slice(1, 3)).toStrictEqual(['begin', 'select set_config($1,$2,true)'])
+    expect(driver.log[2]!.params).toStrictEqual(['statement_timeout', '0'])
+    expect(texts.at(-1)).toBe('commit')
+  })
+})

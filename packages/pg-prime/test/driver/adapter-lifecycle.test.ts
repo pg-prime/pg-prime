@@ -453,3 +453,44 @@ describe('§5.2 — a Submittable must call pg’s callback, or leak its query_t
     expect(fired()).toBe(true)
   })
 })
+
+describe('connect() respects destroy() like acquire() does (§2.1, 07 §6.5)', () => {
+  function dedicated(): { client: FakeClient; ends: number } {
+    const state = { client: new FakeClient(), ends: 0 }
+    const end = (): Promise<void> => {
+      state.ends += 1
+      return Promise.resolve()
+    }
+    Object.assign(state.client, { connect: () => Promise.resolve(), end })
+    return state
+  }
+
+  it('after destroy(), connect() refuses rather than opening a socket nobody will close', async () => {
+    const d = dedicated()
+    const driver = pgDriver({
+      pool: new FakePool(),
+      createDedicatedClient: () => d.client as never,
+    })
+    await driver.destroy()
+    const data = await seamError(driver.connect!())
+    expect(data.kind).toBe('adapter')
+    expect(d.ends).toBe(0)
+  })
+
+  it('a destroy() that lands while connect() is in flight ends the late client', async () => {
+    const d = dedicated()
+    const gate = deferred<void>()
+    Object.assign(d.client, { connect: () => gate.promise })
+    const driver = pgDriver({
+      pool: new FakePool(),
+      createDedicatedClient: () => d.client as never,
+    })
+    const p = driver.connect!()
+    await flush()
+    await driver.destroy()
+    gate.resolve()
+    const data = await seamError(p)
+    expect(data.kind).toBe('adapter')
+    expect(d.ends).toBe(1)
+  })
+})

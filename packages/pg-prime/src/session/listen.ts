@@ -155,15 +155,20 @@ export class ListenHub {
 
   async #connection(): Promise<PgConnection> {
     if (this.#conn !== undefined) return this.#conn
-    this.#opening ??= this.#host.openDedicated()
-    try {
-      const conn = await this.#opening
-      this.#conn = conn
-      this.#attach(conn)
-      return conn
-    } finally {
-      this.#opening = undefined
+    // Attached inside the producer, so concurrent first subscribers share one attach.
+    this.#opening ??= this.#open().finally(() => (this.#opening = undefined))
+    return this.#opening
+  }
+
+  async #open(): Promise<PgConnection> {
+    const conn = await this.#host.openDedicated()
+    if (this.#closed) {
+      await this.#host.closeDedicated(conn).catch(() => {})
+      throw new UsageError('pg-prime: db.listen() was called after db.end().')
     }
+    this.#attach(conn)
+    this.#conn = conn
+    return conn
   }
 
   #attach(conn: PgConnection): void {
@@ -208,23 +213,21 @@ export class ListenHub {
     if (this.#closed || this.#reconnecting || this.#channels.size === 0) return
     this.#reconnecting = true
     const downFrom = Date.now()
-    this.#unsubscribe?.()
-    this.#unsubscribe = undefined
-    this.#conn = undefined
+    await this.#drop()
     let attempt = 0
     try {
       for (;;) {
-        if (this.#closed || this.#channels.size === 0) return
+        if (this.#idle()) return
         attempt += 1
         const ceiling = Math.min(
           this.#host.reconnect.maxDelayMs,
           this.#host.reconnect.baseDelayMs * 2 ** (attempt - 1),
         )
         await sleep(Math.random() * ceiling)
+        if (this.#idle()) return
         try {
-          const conn = await this.#host.openDedicated()
-          this.#conn = conn
-          this.#attach(conn)
+          const conn = await this.#open()
+          if (this.#idle()) return await this.#drop()
           for (const channel of this.#channels.keys()) {
             await conn.execute({
               text: `listen ${quoteChannel(channel)}`,
@@ -245,6 +248,8 @@ export class ListenHub {
           }
           return
         } catch (e) {
+          // A LISTEN that failed after the socket opened must not leave that socket behind.
+          await this.#drop()
           for (const channel of this.#channels.keys()) {
             this.#emit(
               channel,
@@ -259,6 +264,10 @@ export class ListenHub {
     }
   }
 
+  #idle(): boolean {
+    return this.#closed || this.#channels.size === 0
+  }
+
   #emit(channel: string, event: 'reconnect' | 'gap' | 'error', info: unknown): void {
     for (const s of this.#channels.get(channel) ?? []) emit(s, event, info)
   }
@@ -269,7 +278,7 @@ export class ListenHub {
     this.#unsubscribe = undefined
     this.#conn = undefined
     if (conn === undefined) return
-    await this.#host.closeDedicated(conn)
+    await this.#host.closeDedicated(conn).catch(() => {})
   }
 
   async close(): Promise<void> {

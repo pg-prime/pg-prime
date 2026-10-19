@@ -53,8 +53,16 @@ import { assertPayloadSize } from './listen.js'
 import { quoteIdentPart } from '../sql/ident.js'
 import type { AnyMaterializedView } from '../schema/index.js'
 import { ASYNC_DISPOSE, ensureGuardStore, txFrames, withFrame, withoutFrames } from './guard.js'
-import { ConnRunner, PoolRunner, acquire, release } from './runner.js'
-import type { SessionState, StatementOptions, TxRuntime } from './runner.js'
+import {
+  ConnRunner,
+  PoolRunner,
+  acquire,
+  anySignal,
+  assertTimeoutMs,
+  poisons,
+  release,
+} from './runner.js'
+import type { Lease, SessionState, StatementOptions, TxRuntime } from './runner.js'
 import {
   advisoryFn,
   advisoryKey,
@@ -235,6 +243,9 @@ function withStreamOptions(runner: AnyRunner, opts: StreamCallOptions | undefine
     ...(opts.signal === undefined ? {} : { signal: opts.signal }),
     ...(opts.label === undefined ? {} : { label: opts.label }),
   }
+  if (typeof opts.statementTimeoutMs === 'number') {
+    assertTimeoutMs(opts.statementTimeoutMs, 'statementTimeoutMs')
+  }
   const withTimeout =
     opts.statementTimeoutMs === undefined
       ? extra
@@ -345,6 +356,7 @@ export async function runTransaction<T>(
   parentDepth: number,
   a: Callback<T> | TxOptions | undefined,
   b: Callback<T> | TxOptions | undefined,
+  pinned?: Lease,
 ): Promise<T> {
   const { fn, opts } = splitArgs(a, b)
   const state = deps.state
@@ -362,6 +374,8 @@ export async function runTransaction<T>(
   })
   const timeoutMs = opts.timeoutMs ?? defaults?.timeoutMs
   const lockTimeoutMs = opts.lockTimeoutMs ?? defaults?.lockTimeoutMs
+  if (timeoutMs !== undefined) assertTimeoutMs(timeoutMs)
+  if (lockTimeoutMs !== undefined) assertTimeoutMs(lockTimeoutMs, 'lockTimeoutMs', 0)
   const txId = nextTxId()
   const openedAt = state.errors.captureCallSite ? captureCallSite(runTransaction) : undefined
 
@@ -399,6 +413,7 @@ export async function runTransaction<T>(
         ...(opts.localSettings === undefined ? {} : { localSettings: opts.localSettings }),
         ...(opts.signal === undefined ? {} : { signal: opts.signal }),
         ...(openedAt === undefined ? {} : { openedAt }),
+        ...(pinned === undefined ? {} : { pinned }),
         fn,
       })
       outcome = value.rolledBack ? 'rollback' : 'commit'
@@ -457,6 +472,8 @@ interface OnceArgs<T> {
   readonly localSettings?: Readonly<Record<string, string | number | boolean>>
   readonly signal?: AbortSignal
   readonly openedAt?: string
+  /** A `Session`'s connection: already checked out, and not ours to give back. */
+  readonly pinned?: Lease
   readonly fn: Callback<T>
 }
 
@@ -465,7 +482,8 @@ async function once<T>(
   a: OnceArgs<T>,
 ): Promise<{ result: unknown; rolledBack: boolean }> {
   const state = deps.state
-  const lease = await acquire(state, a.signal ?? state.signal)
+  const signal = composeSignal(a.signal, state.signal)
+  const lease = a.pinned ?? (await acquire(state, signal))
   const tx: TxRuntime = {
     txId: a.txId,
     attempt: a.attempt,
@@ -499,7 +517,7 @@ async function once<T>(
     const handle = makeTxHandle(deps, lease.conn, tx, {
       ...(a.isolation === undefined ? {} : { isolation: a.isolation }),
       ...(a.accessMode === undefined ? {} : { accessMode: a.accessMode }),
-      ...(a.signal === undefined ? {} : { signal: a.signal }),
+      ...(signal === undefined ? {} : { signal }),
       ...(a.label === undefined ? {} : { label: a.label }),
     })
 
@@ -519,6 +537,13 @@ async function once<T>(
     if (tx.doomed) {
       await lease.conn.execute({ text: 'rollback', params: [], mode: 'simple' }).catch(() => {})
       return { result, rolledBack: true }
+    }
+    // An abort that landed between the last statement and here must not COMMIT.
+    if (signal?.aborted === true) {
+      throw new AbortError('pg-prime: the transaction was aborted before COMMIT.', {
+        cause: signal.reason,
+        context: { handle: 'tx', attempt: a.attempt, depth: a.depth, txId: a.txId },
+      })
     }
     commitWritten = true
     await lease.conn.execute({ text: 'commit', params: [], mode: 'simple' })
@@ -565,19 +590,22 @@ async function once<T>(
     throw mapped
   } finally {
     tx.closed = true
-    // §3.1: a connection returning to the pool in 'T' or 'E' is a bug. `undefined` means the
-    // adapter cannot tell us, and disposing on "don't know" would recycle every connection.
-    const status = lease.conn.transactionStatus
-    if (status === 'T' || status === 'E') {
-      dispose = true
-      state.warn(
-        `pg-prime: a connection was about to return to the pool with transactionStatus '${status}' ` +
-          `(an open or failed transaction). It has been destroyed instead — the next borrower would ` +
-          `have silently joined it (07 §3.1).`,
-      )
+    // A pinned connection is the session's to return; its own exit checks the status.
+    if (a.pinned === undefined) {
+      // §3.1: a connection returning to the pool in 'T' or 'E' is a bug. `undefined` means the
+      // adapter cannot tell us, and disposing on "don't know" would recycle every connection.
+      const status = lease.conn.transactionStatus
+      if (status === 'T' || status === 'E') {
+        dispose = true
+        state.warn(
+          `pg-prime: a connection was about to return to the pool with transactionStatus '${status}' ` +
+            `(an open or failed transaction). It has been destroyed instead — the next borrower would ` +
+            `have silently joined it (07 §3.1).`,
+        )
+      }
+      if (!lease.conn.usable) dispose = true
+      await release(state, lease, dispose)
     }
-    if (!lease.conn.usable) dispose = true
-    await release(state, lease, dispose)
   }
 }
 
@@ -626,6 +654,15 @@ function lostConnection(e: unknown): boolean {
   }
   const state = sqlStateOfError(e)
   return state !== undefined && (state.startsWith('08') || state === '57P01')
+}
+
+/** `07` §6.1: a transaction's signal composes with the db-wide one rather than replacing it. */
+function composeSignal(
+  own: AbortSignal | undefined,
+  global: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (own === undefined || global === undefined) return own ?? global
+  return anySignal([own, global])
 }
 
 function sleep(ms: number): Promise<void> {
@@ -677,7 +714,7 @@ export function makeTxHandle(
   })
 
   const savepoint = <T>(fn: Callback<T>, o?: SavepointOptions): Promise<T> =>
-    runSavepoint(deps, conn, tx, shape, fn, o)
+    runSavepoint(deps, runner, tx, shape, fn, o)
   install(handle, 'transaction', savepoint)
   install(handle, 'savepoint', savepoint)
 
@@ -737,13 +774,28 @@ export function makeTxHandle(
  */
 async function runSavepoint<T>(
   deps: TxDeps,
-  conn: PgConnection,
+  runner: ConnRunner,
   parent: TxRuntime,
   shape: TxShape,
   fn: Callback<T>,
   o: SavepointOptions | undefined,
 ): Promise<T> {
   const depth = parent.depth + 1
+  const settings: Record<string, string | number | boolean> = { ...o?.localSettings }
+  if (o?.timeoutMs !== undefined) {
+    assertTimeoutMs(o.timeoutMs)
+    settings['statement_timeout'] = o.timeoutMs
+  }
+  if (o?.lockTimeoutMs !== undefined) {
+    assertTimeoutMs(o.lockTimeoutMs, 'lockTimeoutMs', 0)
+    settings['lock_timeout'] = o.lockTimeoutMs
+  }
+  const names = Object.keys(settings)
+  // RELEASE SAVEPOINT keeps a subtransaction's SET LOCAL, so the values to put back are read first.
+  const before =
+    names.length === 0
+      ? []
+      : ((await runner.control(currentSettingSql(names.length), names)).rows[0] ?? [])
   const child: TxRuntime = {
     ...parent,
     depth,
@@ -752,52 +804,56 @@ async function runSavepoint<T>(
     baselineTimeoutMs: o?.timeoutMs ?? parent.baselineTimeoutMs,
     label: o?.label ?? parent.label,
   }
-  await conn.execute({ text: savepointSql(depth), params: [], mode: 'simple' })
-  const settings: Record<string, string | number | boolean> = { ...o?.localSettings }
-  if (o?.timeoutMs !== undefined) settings['statement_timeout'] = o.timeoutMs
-  if (o?.lockTimeoutMs !== undefined) settings['lock_timeout'] = o.lockTimeoutMs
-  const names = Object.keys(settings)
+  await runner.control(savepointSql(depth))
   if (names.length > 0) {
-    await conn.execute({
-      text: setConfigSql(names.length, true),
-      params: setConfigParams(settings) as string[],
-    })
+    await runner.control(setConfigSql(names.length, true), setConfigParams(settings))
     if (o?.timeoutMs !== undefined) child.localTimeoutMs = o.timeoutMs
   }
-  const handle = makeTxHandle(deps, conn, child, {
+  const handle = makeTxHandle(deps, runner.conn, child, {
     ...shape,
     ...(o?.signal === undefined ? {} : { signal: o.signal }),
     ...(o?.label === undefined ? {} : { label: o.label }),
   })
+  const rollbackTo = async (): Promise<void> => {
+    await runner.control(rollbackToSavepointSql(depth))
+    // The rollback un-poisoned the enclosing transaction; a later 25P02 would now be a lie.
+    parent.poison.error = undefined
+  }
+  const releaseSp = (): Promise<unknown> => runner.control(releaseSavepointSql(depth))
   try {
     const result = await fn(handle)
     if (child.doomed) {
-      await conn.execute({ text: rollbackToSavepointSql(depth), params: [], mode: 'simple' })
-      parent.poison.error = undefined
-      await conn.execute({ text: releaseSavepointSql(depth), params: [], mode: 'simple' })
-      return result as T
+      await rollbackTo()
+      await releaseSp()
+      return result
     }
-    await conn.execute({ text: releaseSavepointSql(depth), params: [], mode: 'simple' })
+    await releaseSp()
+    if (names.length > 0) {
+      const params = names.map((n, i) => [n, (before[i] as string | null) ?? null]).flat()
+      await runner.control(setConfigSql(names.length, true), params)
+    }
+    if (!('statement_timeout' in settings)) parent.localTimeoutMs = child.localTimeoutMs
     return result
   } catch (e) {
-    if (isDoomed(e)) {
-      await conn.execute({ text: rollbackToSavepointSql(depth), params: [], mode: 'simple' })
-      parent.poison.error = undefined
-      await conn.execute({ text: releaseSavepointSql(depth), params: [], mode: 'simple' })
+    // The OUTER handle's rollbackWith() is the parent's to resolve, not this savepoint's.
+    if (isDoomed(e) && !parent.doomed) {
+      await rollbackTo()
+      await releaseSp()
       return e.value as T
     }
-    await conn
-      .execute({ text: rollbackToSavepointSql(depth), params: [], mode: 'simple' })
-      .catch(() => {})
-    // The rollback un-poisoned the enclosing transaction; a later 25P02 would now be a lie.
+    await rollbackTo().catch(() => {})
     parent.poison.error = undefined
-    await conn
-      .execute({ text: releaseSavepointSql(depth), params: [], mode: 'simple' })
-      .catch(() => {})
+    await releaseSp().catch(() => {})
     throw e
   } finally {
     child.closed = true
   }
+}
+
+function currentSettingSql(count: number): string {
+  const calls: string[] = []
+  for (let i = 1; i <= count; i++) calls.push(`current_setting($${i},true)`)
+  return `select ${calls.join(', ')}`
 }
 
 /** `setLocal(name, value)` and `setLocal({ … })`, both through `set_config` (§3.5). */
@@ -911,7 +967,7 @@ function makeCopyFrom(state: SessionState, runner: AnyRunner): CopyFromApi {
     const format = opts?.format ?? 'text'
     const text = copyFromSql(meta, columns, format)
     const hwm = opts?.highWaterMark ?? 65_536
-    return runner.use(async (conn) => {
+    return runner.useExempt(async (conn) => {
       assertCopyIn(conn, state.driver.capabilities.adapter)
       const res = await conn.copyIn(text, encodeCopyRows(rows, columns, format, hwm), {
         ...(opts?.signal === undefined ? {} : { signal: opts.signal }),
@@ -922,7 +978,7 @@ function makeCopyFrom(state: SessionState, runner: AnyRunner): CopyFromApi {
   }) as CopyFromApi
 
   api.raw = async (q, bytes, opts): Promise<CopyResult> =>
-    runner.use(async (conn) => {
+    runner.useExempt(async (conn) => {
       assertCopyIn(conn, state.driver.capabilities.adapter)
       const res = await conn.copyIn(sqlTextOf(q), toAsync(bytes), {
         ...(opts?.signal === undefined ? {} : { signal: opts.signal }),
@@ -988,6 +1044,8 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
     baselineTimeoutMs: undefined,
     label: undefined,
   }
+  // State the next borrower must not inherit: a GUC from `set()`, a lock still held at exit.
+  const pins = { set: false, locks: 0 }
   /** Built once, and again for every `withOptions` — a scoped `Session` is still a `Session`. */
   const makeSessionHandle = (extra: CallOptions): object => {
     const scopedRunner = new ConnRunner(state, extra as StatementOptions, lease.conn, tx, 'session')
@@ -996,15 +1054,18 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
     installQueryable(h, state, scopedRunner, 'session')
     installGetter(h, 'backendPid', () => lease.conn.backendPid)
     install(h, 'transaction', <T2>(a: Callback<T2> | TxOptions, b?: Callback<T2> | TxOptions) =>
-      runNestedOnConnection(deps, lease.conn, tx, a, b),
+      runTransaction<T2>(deps, 0, a, b, lease),
     )
     // `Session.set()` is `set_config($1,$2,false)` — the session-scoped sibling of `setLocal`.
-    install(h, 'set', (a: unknown, b?: unknown) => setLocalOn(scopedRunner, a, b, false))
+    install(h, 'set', async (a: unknown, b?: unknown) => {
+      await setLocalOn(scopedRunner, a, b, false)
+      pins.set = true
+    })
     install(
       h,
       'advisoryLock',
       async (key: bigint | string, o?: AdvisoryLockOptions): Promise<AdvisoryLock | boolean> =>
-        sessionAdvisoryLock(state, scopedRunner, key, o),
+        sessionAdvisoryLock(state, scopedRunner, key, o, pins),
     )
     install(h, 'withOptions', (opts: CallOptions) => makeSessionHandle({ ...extra, ...opts }))
     install(h, 'outsideTransaction', () =>
@@ -1019,7 +1080,7 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
     // inside a session callback is legitimate (it is a different connection, and that is fine).
     return await withoutFrames(() => fn(handle))
   } catch (e) {
-    dispose = true
+    dispose = poisons(e)
     throw mapError(e, {
       context: { handle: 'session' },
       errors: state.errors,
@@ -1028,64 +1089,9 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
   } finally {
     tx.closed = true
     const status = lease.conn.transactionStatus
-    if (status === 'T' || status === 'E') dispose = true
-    if (!lease.conn.usable) dispose = true
+    if (status === 'T' || status === 'E' || !lease.conn.usable) dispose = true
+    if (pins.set || pins.locks > 0) dispose = true
     await release(state, lease, dispose)
-  }
-}
-
-/** A transaction opened on a `Session`'s own connection: `BEGIN` on the pinned backend. */
-async function runNestedOnConnection<T>(
-  deps: TxDeps,
-  conn: PgConnection,
-  parent: TxRuntime,
-  a: Callback<T> | TxOptions | undefined,
-  b: Callback<T> | TxOptions | undefined,
-): Promise<T> {
-  const { fn, opts } = splitArgs(a, b)
-  const isolation = opts.isolation as IsolationLevel | undefined
-  const accessMode = opts.accessMode as AccessMode | undefined
-  const begin = beginSql({
-    ...(isolation === undefined ? {} : { isolation }),
-    ...(accessMode === undefined ? {} : { accessMode }),
-    ...((opts as { deferrable?: boolean }).deferrable === undefined
-      ? {}
-      : { deferrable: (opts as { deferrable?: boolean }).deferrable }),
-  })
-  const tx: TxRuntime = {
-    ...parent,
-    txId: nextTxId(),
-    depth: 0,
-    inFlight: 0,
-    warned: false,
-    doomed: false,
-  }
-  await conn.execute({ text: begin, params: [], mode: 'simple' })
-  const handle = makeTxHandle(deps, conn, tx, {
-    ...(isolation === undefined ? {} : { isolation }),
-    ...(accessMode === undefined ? {} : { accessMode }),
-    ...(opts.label === undefined ? {} : { label: opts.label }),
-  })
-  try {
-    const result = await withFrame(
-      { txId: tx.txId, label: opts.label, openedAt: undefined, depth: 0 },
-      () => fn(handle),
-    )
-    if (tx.doomed) {
-      await conn.execute({ text: 'rollback', params: [], mode: 'simple' })
-      return result
-    }
-    await conn.execute({ text: 'commit', params: [], mode: 'simple' })
-    return result
-  } catch (e) {
-    if (isDoomed(e)) {
-      await conn.execute({ text: 'rollback', params: [], mode: 'simple' }).catch(() => {})
-      return e.value as T
-    }
-    await conn.execute({ text: 'rollback', params: [], mode: 'simple' }).catch(() => {})
-    throw e
-  } finally {
-    tx.closed = true
   }
 }
 
@@ -1098,6 +1104,7 @@ async function sessionAdvisoryLock(
   runner: ConnRunner,
   key: bigint | string,
   o: AdvisoryLockOptions | undefined,
+  pins: { locks: number },
 ): Promise<AdvisoryLock | boolean> {
   if (state.profile.sessionAdvisoryLocks === 'unsupported') {
     throw new UnsupportedInPoolerModeError(
@@ -1120,6 +1127,7 @@ async function sessionAdvisoryLock(
     const got = cell === 't' || cell === 'true'
     if (!got) return false
   }
+  pins.locks += 1
   const unlock = async (): Promise<boolean> => {
     const r = await runner.use(async (c) =>
       c.execute({
@@ -1129,7 +1137,9 @@ async function sessionAdvisoryLock(
       }),
     )
     const cell = r.rows[0]?.[0]
-    return cell === 't' || cell === 'true'
+    const released = cell === 't' || cell === 'true'
+    if (released) pins.locks -= 1
+    return released
   }
   // The cast is the price of `AsyncDisposeKey` being inferred rather than a `unique symbol` we
   // declare: TypeScript only accepts a computed key from a `const x: unique symbol`, and declaring

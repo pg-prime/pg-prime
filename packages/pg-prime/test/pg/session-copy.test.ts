@@ -324,3 +324,40 @@ describe("copyFrom's default columns are the ones an insert may name (07 §6.6)"
 })
 
 void liveTarget
+
+describe('COPY is exempt from the session statement_timeout (07 §3.6, §6.6)', () => {
+  async function* slowRows(): AsyncIterable<Record<string, unknown>> {
+    for (let i = 0; i < 3; i++) {
+      await new Promise((r) => setTimeout(r, 250))
+      yield { id: 9_000 + i, kind: 'slow', amount: '1.00', at: AT }
+    }
+  }
+
+  requiresConcurrency()(
+    'a source slower than the session timeout still loads — on db, inside a transaction, and on a session',
+    async () => {
+      const app = pgPrime({
+        connection: liveTarget().url,
+        schema,
+        session: { statementTimeout: '200ms' },
+        devGuard: false,
+      })
+      try {
+        await truncate()
+        expect((await app.copyFrom(events, slowRows())).rowCount).toBe(3)
+        await truncate()
+        const inTx = await app.transaction((tx) => tx.copyFrom(events, slowRows()))
+        expect(inTx.rowCount).toBe(3)
+        await truncate()
+        const inSession = await app.session((s) => s.copyFrom(events, slowRows()))
+        expect(inSession.rowCount).toBe(3)
+        // …and the timeout is still the session's afterwards.
+        const [row] = await app.sql`show statement_timeout`.execute()
+        expect(row?.['statement_timeout']).toBe('200ms')
+      } finally {
+        await app.end()
+      }
+    },
+    60_000,
+  )
+})
