@@ -16,14 +16,21 @@ export interface RenameApplication {
 const asId = (v: StableId | string): StableId => (typeof v === "string" ? parseId(v) : v);
 
 /**
- * Rewrite an identifier under a rename. Table renames cascade to the ids of
- * their columns and constraints — hierarchy is a view, so the cascade is a pure
- * id rewrite with no structural surgery.
+ * Rewrite an identifier under a rename. Schema and table renames cascade to the ids
+ * below them — hierarchy is a view, so the cascade is a pure id rewrite with no
+ * structural surgery.
  */
-function remapId(id: StableId, from: StableId, to: StableId): StableId {
+export function remapId(id: StableId, from: StableId, to: StableId): StableId {
   if (encodeId(id) === encodeId(from)) return to;
+  if (id.kind === "comment") {
+    const target = remapId(parseId(id.target), from, to);
+    return encodeId(target) === id.target ? id : { kind: "comment", target: encodeId(target) };
+  }
+  if (from.kind === "schema" && to.kind === "schema") {
+    return "schema" in id && id.schema === from.schema ? { ...id, schema: to.schema } : id;
+  }
   if (from.kind === "table" && to.kind === "table") {
-    if ((id.kind === "column" || id.kind === "constraint") && id.schema === from.schema && id.table === from.name) {
+    if ("table" in id && id.schema === from.schema && id.table === from.name) {
       return { ...id, schema: to.schema, table: to.name };
     }
   }
@@ -204,6 +211,33 @@ function adoptRenamedLabels(f: Fact, desired: SchemaIR, labels: readonly LabelRe
   return payload === f.payload ? f : { ...f, payload };
 }
 
+/**
+ * Payload text PostgreSQL re-renders after a rename: definitions, expressions, type
+ * names, partition clauses and the encoded ids a child holds of its parent. Adopted from
+ * the desired side when the two differ only by an accepted rename.
+ */
+const RENAMED_TEXT_KEYS = [
+  "definition",
+  "expression",
+  "default",
+  "type",
+  "baseType",
+  "generationExpr",
+  "partitionKey",
+  "partitionBound",
+  "partitionOf",
+  "ownedBy",
+  "checks",
+] as const;
+
+const agreesUnderRename = (have: unknown, want: unknown, renames: RenameMap): boolean =>
+  typeof have === "string" && typeof want === "string"
+    ? definitionsAgreeUnderRename(have, want, renames)
+    : Array.isArray(have) &&
+      Array.isArray(want) &&
+      have.length === want.length &&
+      have.every((h, i) => agreesUnderRename(h, want[i], renames));
+
 /** Payload equality ignoring `definition`, which is compared through the rename map. */
 function payloadAgrees(a: Payload, b: Payload, renames: RenameMap): boolean {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
@@ -248,9 +282,12 @@ export function applyRenameHints(
    * origin is carried alongside instead of being reconstructed by inverting the hints.
    */
   let originOf = new Map<string, StableId>(facts.map((f) => [encodeId(f.id), f.id]));
+  const applied: { from: StableId; to: StableId }[] = [];
 
   for (const hint of hints) {
-    const from = asId(hint.from);
+    // A hint is written against the pre-rename schema: a column of a renamed table names the
+    // old table, so its `from` is read through the renames already applied.
+    const from = applied.reduce((id, r) => remapId(id, r.from, r.to), asId(hint.from));
     const to = asId(hint.to);
     if (from.kind !== to.kind) {
       rejected.push({ hint, reason: `kind mismatch: ${from.kind} -> ${to.kind}` });
@@ -290,6 +327,7 @@ export function applyRenameHints(
     });
     originOf = nextOrigin;
     edges = edges.map((e): DependencyEdge => ({ ...e, from: remapId(e.from, from, to), to: remapId(e.to, from, to) }));
+    applied.push({ from, to });
 
     accepted.push({
       kind: from.kind,
@@ -302,15 +340,18 @@ export function applyRenameHints(
 
   if (accepted.length === 0) return { ir: current, accepted, rejected };
 
-  /* ---- 1. adopt PostgreSQL's own spelling for every id-matched definition ---- */
+  /* ---- 1. adopt PostgreSQL's own spelling for every id-matched rendered text ---- */
   facts = facts.map((f): Fact => {
-    const def = definitionOf(f);
-    if (def === null) return f;
     const target = desired.get(f.id);
-    const targetDef = target ? definitionOf(target) : null;
-    if (targetDef === null || targetDef === def) return f;
-    if (!definitionsAgreeUnderRename(def, targetDef, renames)) return f;
-    return { ...f, payload: { ...f.payload, definition: targetDef } };
+    if (!target) return f;
+    let payload = f.payload;
+    for (const key of RENAMED_TEXT_KEYS) {
+      const have = payload[key];
+      const want = target.payload[key];
+      if (have === want || want === undefined || !agreesUnderRename(have, want, renames)) continue;
+      payload = { ...payload, [key]: want };
+    }
+    return payload === f.payload ? f : { ...f, payload };
   });
 
   /* ---- 1b. an enum LABEL lives inside a literal, not in an identifier ---- */

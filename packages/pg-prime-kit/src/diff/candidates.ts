@@ -22,7 +22,7 @@
  *    A near miss is usually a rename *plus* an alter, which is two migrations' worth of
  *    intent in one edit.
  *
- * Only the four kinds `renamedFrom` can be written on (design/05 §5.1) are considered.
+ * Only the five kinds `renamedFrom` can be written on (design/05 §5.1) are considered.
  * Indexes and constraints are already handled, and handled better, by
  * `rename.ts`'s cascade: they follow the table or column an annotation renamed, computed
  * from identity rather than matched.
@@ -48,7 +48,7 @@ export interface RenameCandidate {
 }
 
 /** Kinds `renamedFrom` has a spelling for (design/05 §5.1). */
-const RENAMEABLE: ReadonlySet<StableId["kind"]> = new Set(["column", "table", "type", "schema"]);
+const RENAMEABLE: ReadonlySet<StableId["kind"]> = new Set(["column", "table", "type", "schema", "sequence"]);
 
 /**
  * Two facts can only be the same object renamed if they live in the same place.
@@ -64,6 +64,7 @@ function containerOf(id: StableId): string {
       return `table:${id.schema}.${id.table}`;
     case "table":
     case "type":
+    case "sequence":
       return `schema:${id.schema}`;
     default:
       return "cluster";

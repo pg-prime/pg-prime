@@ -50,6 +50,7 @@ import type { RenameHint } from "./diff/delta.js";
 import { buildStatements, type BuildOptions } from "./diff/ddl.js";
 import { diffIR, type DiffResult } from "./diff/diff.js";
 import { orderStatements, splitStages, type StagedFile } from "./diff/order.js";
+import { remapId } from "./diff/rename.js";
 import { withClient, type ConnInfo } from "./db/pg.js";
 import { SchemaIR } from "./ir/fact.js";
 import { encodeId, parseId, type StableId } from "./ir/stable-id.js";
@@ -289,6 +290,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       emptyTables,
       multiFile: input.multiFile !== false,
       lane: { before, after },
+      pgVersionNum: current.pgVersionNum,
       ...(noConcurrentIndexes.size === 0 ? {} : { noConcurrentIndexes }),
       ...(input.noSafeRewrite === undefined ? {} : { noSafeRewrite: input.noSafeRewrite }),
     };
@@ -323,6 +325,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       if (errors.length > 0) throw new LaneRefusedError(errors, []);
     };
 
+    const encoded = (v: StableId | string): string => (typeof v === "string" ? v : encodeId(v));
     const diagnostics: Diagnostic[] = [
       ...extractorDiagnostics,
       ...(lane?.diagnostics ?? []),
@@ -330,6 +333,14 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       ...built.diagnostics,
       ...staged.diagnostics,
       ...declineNotes,
+      // A hint `acceptHints` let through and the differ still refused is a plan that silently
+      // drops and re-adds what the annotation said to rename.
+      ...diff.rejectedHints.map((r): Diagnostic => ({
+        code: "rejected_hint",
+        severity: "error",
+        subject: encoded(r.hint.to),
+        message: `rename hint ${encoded(r.hint.from)} -> ${encoded(r.hint.to)} was rejected: ${r.reason}`,
+      })),
     ];
 
     const empty = staged.files.every((f) => f.statements.length === 0);
@@ -916,31 +927,22 @@ export function annotationHints(schema: SchemaLike, defaultSchema = "public"): R
  * to leave in the source for ever and what makes a chain `a → b → c` work across two
  * migrations.
  *
- * A column rename is also checked against the table it names *after* any table rename in
- * the same batch, because `renamedFrom` on a column of a renamed table describes the state
- * before both.
+ * A hint is spelled in the DESIRED namespace (`renamedFrom` on a column of a renamed table
+ * names the new table), so it is read back into the current one through the container
+ * renames accepted before it: schemas first, then tables, then the rest.
  */
 export function acceptHints(hints: readonly RenameHint[], current: SchemaIR, desired: SchemaIR): RenameHint[] {
   const asId = (v: StableId | string): StableId => (typeof v === "string" ? parseId(v) : v);
-  const renamedTables = new Map<string, string>();
-  const accepted: RenameHint[] = [];
+  const rank = (k: StableId["kind"]): number => (k === "schema" ? 0 : k === "table" ? 1 : 2);
+  const accepted: { from: StableId; to: StableId }[] = [];
 
-  // Tables first: a column hint on a renamed table has to be read in the OLD table's name.
-  for (const pass of [0, 1]) {
+  for (const pass of [0, 1, 2]) {
     for (const hint of hints) {
-      const from = asId(hint.from);
       const to = asId(hint.to);
-      if (from.kind !== to.kind) continue;
-      if ((pass === 0) !== (from.kind === "table")) continue;
-      const resolvedFrom =
-        from.kind === "column" && renamedTables.has(`${from.schema}.${from.table}`)
-          ? { ...from, table: renamedTables.get(`${from.schema}.${from.table}`)! }
-          : from;
-      if (!current.has(resolvedFrom)) continue;
-      if (current.has(to)) continue;
-      if (!desired.has(to)) continue;
-      accepted.push({ from: resolvedFrom, to });
-      if (from.kind === "table" && to.kind === "table") renamedTables.set(`${to.schema}.${to.name}`, from.name);
+      if (rank(to.kind) !== pass || asId(hint.from).kind !== to.kind) continue;
+      const from = accepted.reduce((id, r) => remapId(id, r.to, r.from), asId(hint.from));
+      if (!current.has(from) || current.has(to) || !desired.has(to)) continue;
+      accepted.push({ from, to });
     }
   }
   return accepted;
@@ -1226,7 +1228,7 @@ export async function generateFromDatabases(input: DatabaseGenerateInput): Promi
   const desired = await withClient(input.desired, (c) => extractCatalog(c, { schemas }));
 
   const diff = diffIR(current.ir, desired.ir, { renameHints: input.renameHints ?? [] });
-  const built = buildStatements(diff, desired.ir);
+  const built = buildStatements(diff, desired.ir, { pgVersionNum: current.pgVersionNum });
   const ordered = orderStatements(built.statements);
   const diagnostics = [...built.diagnostics, ...ordered.diagnostics];
 

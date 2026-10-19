@@ -265,10 +265,13 @@ pg-prime migrate generate --name drop_legacy_id \
 There is no way to skip the acknowledgement. Without it `generate` exits **2** with
 `confirm_data_loss` and the entity named.
 
-Two related hazards are worth knowing before you reach them. `DS106` fires when you drop the *only*
+Three related hazards are worth knowing before you reach them. `DS106` fires when you drop the *only*
 uniqueness guarantee on a column — an application relying on the database to reject duplicates
 starts accepting them silently. `DS105` fires on dropping a materialized view: the data goes with
-it, and recreating it costs a full refresh.
+it, and recreating it costs a full refresh. `DS107` fires on `DROP SEQUENCE`: the counter is the
+data, and a sequence recreated later restarts at 1. A renamed sequence is answered with
+`renamedFrom`, and a `serial` column becoming an identity column needs no acknowledgement — the plan
+drops the old sequence and continues the numbering from the rows.
 
 ## Changing a column's type
 

@@ -81,6 +81,8 @@ export interface BuildOptions {
    * column drop or rename.
    */
   readonly lane?: { readonly before: LaneState; readonly after: LaneState };
+  /** `server_version_num` of the target; absent means "assume the oldest supported" */
+  readonly pgVersionNum?: number;
 }
 
 const id = encodeId;
@@ -105,8 +107,8 @@ export function columnClause(
 ): string {
   const bits = [quoteIdent(colId.name), p.type];
   if (p.collation) bits.push(`COLLATE ${collationSql(p.collation)}`);
-  if (p.generated === "s" && p.generationExpr) {
-    bits.push(`GENERATED ALWAYS AS (${p.generationExpr}) STORED`);
+  if (p.generated && p.generationExpr) {
+    bits.push(`GENERATED ALWAYS AS (${p.generationExpr}) ${p.generated === "v" ? "VIRTUAL" : "STORED"}`);
   } else if (p.identity) {
     bits.push(`GENERATED ${p.identity === "a" ? "ALWAYS" : "BY DEFAULT"} AS IDENTITY`);
   } else if (defaultExpr !== null) {
@@ -197,6 +199,44 @@ function constraintNamesOn(ir: SchemaIR, table: StableId): (candidate: string) =
   return (candidate) => taken.has(candidate);
 }
 
+/**
+ * Everything a fact (and its descendants) REFERENCES — released the moment it
+ * is dropped, so `relate(releasers, destroyers)` orders the referencing side
+ * first. Without this the drop half of a plan has no hard edges at all and
+ * falls back to the phase tie-break, which is a name sort: `app.tenants`
+ * sorts before `billing.invoices` and dropping it first fails.
+ */
+function referencesHeldBy(ir: SchemaIR, subject: StableId): string[] {
+  const facts = [ir.get(subject), ...ir.descendantsOf(subject)].filter((f) => f !== undefined);
+  const out = facts
+    .flatMap((f) => ir.outgoingEdges(f.id))
+    .filter((e) => e.kind === "depends" || e.kind === "evaluates")
+    .map((e) => id(e.to));
+  // An extension is database-scoped and a comment belongs to its target: neither has
+  // a schema to hold, and `idSchema` answers `""` rather than making this a null check.
+  const schema = idSchema(subject);
+  if (schema !== "") out.push(id({ kind: "schema", schema }));
+  return [...new Set(out)].filter((x) => x !== id(subject));
+}
+
+/** Column alters that must shed their DEFAULT first: a retype cannot cast it through, an ADD IDENTITY refuses it. */
+function shedsDefault(d: Delta): boolean {
+  if (d.op !== "alter" || d.id.kind !== "column") return false;
+  const b = d.before.payload as unknown as ColumnPayload;
+  const a = d.after.payload as unknown as ColumnPayload;
+  return b.type !== a.type || (b.identity === null && a.identity !== null);
+}
+
+/** The sequence a `serial` column's DEFAULT draws from, when the plan converts the column to an identity. */
+function serialSequenceOf(d: Delta, current: SchemaIR, desired: SchemaIR): string[] {
+  if (d.op !== "alter" || d.id.kind !== "column") return [];
+  if (d.before.payload["identity"] !== null || d.after.payload["identity"] === null) return [];
+  return current
+    .outgoingEdges(d.id)
+    .filter((e) => e.kind === "depends" && e.to.kind === "sequence" && !desired.has(e.to))
+    .map((e) => id(e.to));
+}
+
 /* ---------------------------- the builder --------------------------- */
 
 export function buildStatements(diff: DiffResult, desired: SchemaIR, options: BuildOptions = {}): BuildResult {
@@ -251,6 +291,13 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
   const createdColumns = new Set(
     diff.deltas.filter((d) => d.op === "create" && d.id.kind === "column").map((d) => id(deltaId(d))),
   );
+  // Folded into `alterColumn`, which orders them around the ALTER TYPE / ADD IDENTITY.
+  const foldedDefaults = new Set(
+    diff.deltas
+      .filter(shedsDefault)
+      .map((d) => id({ ...(deltaId(d) as StableId & { kind: "column" }), kind: "default" })),
+  );
+  const foldedSequences = new Set(diff.deltas.flatMap((d) => serialSequenceOf(d, current, desired)));
   const parentTableId = (x: StableId): string | null =>
     x.kind === "column" || x.kind === "constraint" || x.kind === "default"
       ? id({ kind: "table", schema: x.schema, name: x.table })
@@ -282,26 +329,6 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
   /** The same three refusals, plus the per-index opt-out (`BuildOptions.noConcurrentIndexes`). */
   const indexConcurrentOk = (ir: SchemaIR, x: StableId): boolean =>
     !(options.noConcurrentIndexes?.has(id(x)) ?? false) && concurrentOk(indexTableId(ir, x));
-
-  /**
-   * Everything a fact (and its descendants) REFERENCES — released the moment it
-   * is dropped, so `relate(releasers, destroyers)` orders the referencing side
-   * first. Without this the drop half of a plan has no hard edges at all and
-   * falls back to the phase tie-break, which is a name sort: `app.tenants`
-   * sorts before `billing.invoices` and dropping it first fails.
-   */
-  const referencesHeldBy = (ir: SchemaIR, subject: StableId): string[] => {
-    const facts = [ir.get(subject), ...ir.descendantsOf(subject)].filter((f) => f !== undefined);
-    const out = facts
-      .flatMap((f) => ir.outgoingEdges(f.id))
-      .filter((e) => e.kind === "depends" || e.kind === "evaluates")
-      .map((e) => id(e.to));
-    // An extension is database-scoped and a comment belongs to its target: neither has
-    // a schema to hold, and `idSchema` answers `""` rather than making this a null check.
-    const schema = idSchema(subject);
-    if (schema !== "") out.push(id({ kind: "schema", schema }));
-    return [...new Set(out)].filter((x) => x !== id(subject));
-  };
 
   /* plpgsql bodies have no `pg_depend` edge: a marked updatedAt trigger on a column being dropped
    * or renamed fails every UPDATE until the lane recreates it (design/20 §6). */
@@ -621,6 +648,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
             if (createdTables.has(parentTableId(f.id)!)) break;
             if (createdColumns.has(id({ kind: "column", schema: f.id.schema, table: f.id.table, name: f.id.name })))
               break;
+            if (foldedDefaults.has(id(f.id))) break;
             statements.push(setDefault(f.id, String(f.payload["expression"]), desired));
             break;
           }
@@ -634,7 +662,13 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
                   verb: "alter",
                   kind: "typeAttribute",
                   produces: [id(f.id)],
-                  consumes: [id({ kind: "type", schema: f.id.schema, name: f.id.type })],
+                  consumes: [
+                    id({ kind: "type", schema: f.id.schema, name: f.id.type }),
+                    ...desired
+                      .outgoingEdges(f.id)
+                      .filter((e) => e.kind === "depends")
+                      .map((e) => id(e.to)),
+                  ],
                   phase: PHASE.alterType,
                 },
               ),
@@ -803,6 +837,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
                 noSafeRewrite: options.noSafeRewrite ?? false,
                 concurrent: concurrentOk(parentTableId(f.id)),
                 forcedTables,
+                pgVersionNum: options.pgVersionNum,
               }),
             );
             break;
@@ -822,7 +857,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
         const { before, after } = d;
         switch (after.id.kind) {
           case "column":
-            statements.push(...alterColumn(before, after, desired, diagnostics, emptyTables));
+            statements.push(...alterColumn(before, after, current, desired, diagnostics, emptyTables));
             break;
           case "index": {
             // PostgreSQL cannot ALTER an index's structure: drop and rebuild.
@@ -856,12 +891,14 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
                   provenEmpty: emptyTables.has(parentTableId(after.id) ?? ""),
                   noSafeRewrite: options.noSafeRewrite ?? false,
                   concurrent: concurrentOk(parentTableId(after.id)),
+                  pgVersionNum: options.pgVersionNum,
                 }),
               );
             }
             break;
           }
           case "default":
+            if (foldedDefaults.has(id(after.id))) break;
             statements.push(setDefault(after.id, String(after.payload["expression"]), desired));
             break;
           case "comment":
@@ -1035,6 +1072,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
             // that no longer exists, and `releases` would order it after its own column.
             if (!current.has({ kind: "column", schema: c.schema, table: c.table, name: c.name })) break;
             if (droppedColumns.has(id({ kind: "column", schema: c.schema, table: c.table, name: c.name }))) break;
+            if (foldedDefaults.has(id(f.id))) break;
             statements.push(
               simple(
                 `ALTER TABLE ${quoteQualified(c.schema, c.table)} ALTER COLUMN ${quoteIdent(c.name)} DROP DEFAULT`,
@@ -1134,6 +1172,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
             break;
           }
           case "sequence":
+            if (foldedSequences.has(id(f.id))) break;
             statements.push(
               simple(`DROP SEQUENCE IF EXISTS ${quoteQualified(f.id.schema, (f.id as { name: string }).name)}`, {
                 verb: "drop",
@@ -1143,6 +1182,7 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
                 phase: PHASE.dropSequence,
                 dataLoss: "destructive",
                 idempotent: true,
+                hazards: ["DS107"],
               }),
             );
             break;
@@ -1296,7 +1336,14 @@ function reportCompositeInUse(
 
 function createType(t: StableId & { kind: "type" }, p: TypePayload, desired: SchemaIR): Statement[] {
   const name = quoteQualified(t.schema, t.name);
-  const consumes = [id({ kind: "schema", schema: t.schema })];
+  // A domain over a user type, or a composite with a user-typed attribute, needs that type first.
+  const consumes = [
+    id({ kind: "schema", schema: t.schema }),
+    ...[t, ...desired.childrenOf(t).map((a) => a.id)]
+      .flatMap((x) => desired.outgoingEdges(x))
+      .filter((e) => e.kind === "depends")
+      .map((e) => id(e.to)),
+  ];
   if (p.typtype === "e") {
     const labels = labelsOf(desired, t);
     return [
@@ -1564,6 +1611,7 @@ interface AddConstraintContext {
   /** the caller can carry a `txmode none` companion file (design/06 §3.5 row 6) */
   readonly concurrent: boolean;
   readonly forcedTables?: ReadonlySet<string>;
+  readonly pgVersionNum?: number | undefined;
 }
 
 /**
@@ -1661,7 +1709,12 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
   // acknowledge. LK105/LK106 are what the rewrite ITSELF prevents, so they are recorded
   // only when `--no-safe-rewrite` puts the literal form back (see the fall-through).
   // A table this plan creates is empty and unseen, so the literal ADD below is already safe.
-  if ((p.contype === "f" || p.contype === "c") && p.validated && !onFreshTable && !noSafeRewrite) {
+  // Before 18 a partitioned table refuses `ADD … FOREIGN KEY … NOT VALID` outright.
+  const notValidRefused =
+    p.contype === "f" &&
+    (ctx.pgVersionNum ?? 0) < 180000 &&
+    isPartitioned(desired.get({ kind: "table", schema: c.schema, name: c.table })?.payload["partitionStrategy"]);
+  if ((p.contype === "f" || p.contype === "c") && p.validated && !onFreshTable && !noSafeRewrite && !notValidRefused) {
     return [
       {
         ...base,
@@ -1974,6 +2027,7 @@ function dropIndex(f: Fact): Statement {
 function alterColumn(
   before: Fact,
   after: Fact,
+  current: SchemaIR,
   desired: SchemaIR,
   diagnostics: Diagnostic[],
   emptyTables: ReadonlySet<string>,
@@ -1994,10 +2048,47 @@ function alterColumn(
       ...extra,
     });
 
-  const collate = a.collation ? ` COLLATE ${collationSql(a.collation)}` : "";
-  if (b.type !== a.type) {
+  const defaultFact: StableId = { kind: "default", schema: c.schema, table: c.table, name: c.name };
+  const defaultId = id(defaultFact);
+  const had = defaultExprOf(current, c);
+  const want = defaultExprOf(desired, c);
+  const retype = b.type !== a.type;
+  const addIdentity = b.identity === null && a.identity !== null;
+  if ((retype || addIdentity) && had !== null) {
     out.push(
-      mk(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${a.type}${collate} USING ${col}::${a.type}`, {
+      mk(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT`, {
+        verb: "drop",
+        kind: "default",
+        destroys: want === null ? [defaultId] : [],
+        releases: referencesHeldBy(current, defaultFact),
+        idempotent: true,
+        phase: PHASE.dropDefault,
+      }),
+    );
+  }
+  // A serial's sequence goes before the identity is added, so the identity's own sequence can
+  // take its name; the `setval` below carries the numbering over from the rows themselves.
+  for (const seq of serialSequenceOf({ op: "alter", id: after.id, before, after }, current, desired)) {
+    const sid = parseId(seq) as StableId & { kind: "sequence" };
+    out.push(
+      mk(`DROP SEQUENCE IF EXISTS ${quoteQualified(sid.schema, sid.name)}`, {
+        verb: "drop",
+        kind: "sequence",
+        consumes: [],
+        destroys: [seq],
+        releases: referencesHeldBy(current, sid),
+        idempotent: true,
+        phase: PHASE.dropDefault,
+      }),
+    );
+  }
+
+  const collate = a.collation ? ` COLLATE ${collationSql(a.collation)}` : "";
+  if (retype) {
+    // PostgreSQL rejects USING on a generated column: the expression is re-evaluated instead.
+    const using = a.generated ? "" : ` USING ${col}::${a.type}`;
+    out.push(
+      mk(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${a.type}${collate}${using}`, {
         rewrite: true,
         hazards: ["LK108", "MF105", "BC103"],
       }),
@@ -2020,10 +2111,9 @@ function alterColumn(
   }
   out.push(...notNullTransition(before, after, desired, mk, emptyTables));
   // A generated column cannot be converted in place: PostgreSQL offers only
-  // DROP EXPRESSION (stored -> plain), never plain -> stored, and PG18's VIRTUAL
-  // (`attgenerated = 'v'`) is not expressible by `columnClause` at all. Emitting
-  // nothing here made the transition silently vanish from the plan.
-  if (b.generated !== a.generated || a.generated === "v") {
+  // DROP EXPRESSION (stored -> plain), never plain -> stored. Emitting nothing here made
+  // the transition silently vanish from the plan.
+  if (b.generated !== a.generated) {
     diagnostics.push({
       code: "unsupported_alter",
       severity: "error",
@@ -2048,6 +2138,17 @@ function alterColumn(
             ),
     );
   }
+  if (addIdentity && had !== null) {
+    // The new sequence starts at 1; continue from the rows instead (no-op on an empty table).
+    out.push(
+      mk(
+        `SELECT setval(pg_get_serial_sequence(${quoteLiteral(table)}, ${quoteLiteral(c.name)}), max(${col})) ` +
+          `FROM ${table} HAVING max(${col}) IS NOT NULL`,
+        { kind: "sequence", lockClass: "none", idempotent: true, phase: PHASE.alterSequence },
+      ),
+    );
+  }
+  if (retype && want !== null) out.push(setDefault(defaultFact, want, desired));
   return out;
 }
 
@@ -2168,7 +2269,12 @@ function notNullTransition(
    */
   const wantNotNullName = notNullConstraintName(c, a);
   const haveNotNullName = notNullConstraintName(c, b);
-  if (wantNotNullName !== null && haveNotNullName !== null && haveNotNullName !== wantNotNullName) {
+  // A partition's NOT NULL is inherited: PostgreSQL refuses to rename it directly and renames it
+  // along with the parent's.
+  const partition = isPartitioned(
+    desired.get({ kind: "table", schema: c.schema, name: c.table })?.payload["partitionOf"],
+  );
+  if (wantNotNullName !== null && haveNotNullName !== null && haveNotNullName !== wantNotNullName && !partition) {
     out.push(
       mk(`ALTER TABLE ${table} RENAME CONSTRAINT ${quoteIdent(haveNotNullName)} TO ${quoteIdent(wantNotNullName)}`, {
         kind: "constraint",
