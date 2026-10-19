@@ -9,7 +9,7 @@ Callees: dynamic `import("pg-prime")` (`pgPrime`, `pgDriver`, `defineSchema`), `
 - `openSeedDb(conn, schemaPaths)` → `SeedDb` — imports the peer and the schema modules, builds a registry, a `max: 1` pool, a driver and a `Db`. Throws `ConfigError` when the peer is missing or lacks `pgPrime`/`pgDriver`, or when no schema is found.
 - `SeedDb` — `{ db, close() }`; `close` ends the pool and swallows errors.
 - `registryFrom(modules, mod)` — the first export (default first) shaped like a `defineSchema` result (`tables` and `h` objects); else wraps every table-like named export with `mod.defineSchema`, keyed by export name. Throws `ConfigError` when none.
-- `describeConnection(conn)` — the connection string with the password removed, for reports.
+- `describeConnection(conn)` — `redactUrl(connectionString(conn))`, for reports.
 
 ## Flow
 1. `import("pg-prime")` with a literal specifier; failure becomes a `ConfigError` telling the user to install the peer or write `.sql` seeds (`packages/pg-prime-kit/src/seed/db.ts:104-111`).

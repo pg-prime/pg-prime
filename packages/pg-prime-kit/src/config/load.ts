@@ -12,7 +12,7 @@
 import { access } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { ConnInfo } from "../db/pg.js";
+import { redactUrl, type ConnInfo } from "../db/pg.js";
 import { parseShadowStrategy } from "../shadow/ladder.js";
 import type { PgPrimeConfig } from "./define.js";
 import { enableTsSpecifiers, typeScriptSiblingUrl } from "./ts-specifiers.js";
@@ -405,10 +405,10 @@ export function parseDatabaseUrl(url: string): ParsedUrl {
   try {
     u = new URL(url);
   } catch {
-    throw new ConfigError(`${JSON.stringify(url)} is not a URL`);
+    throw new ConfigError(`${JSON.stringify(redactUrl(url))} is not a URL`);
   }
   if (u.protocol !== "postgres:" && u.protocol !== "postgresql:") {
-    throw new ConfigError(`${JSON.stringify(url)} must use the postgres: or postgresql: scheme`);
+    throw new ConfigError(`${JSON.stringify(redactUrl(url))} must use the postgres: or postgresql: scheme`);
   }
   const user = decodeURIComponent(u.username) || process.env["PGUSER"] || "postgres";
   const database = decodeURIComponent(u.pathname.replace(/^\//, "")) || user;

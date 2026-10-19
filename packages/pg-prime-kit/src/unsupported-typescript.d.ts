@@ -68,6 +68,7 @@ export declare const STALL_LIMIT: Unsupported
 export declare const STRIP_TYPES_MARKER: Unsupported
 export declare const STYLE_CODES: Unsupported
 export declare const SchemaIR: Unsupported
+export declare const ShadowIsTargetError: Unsupported
 export declare const ShadowNameTooLongError: Unsupported
 export declare const ShadowStrategyError: Unsupported
 export declare const SpawnFailure: Unsupported
@@ -366,6 +367,7 @@ export type SchemaPayload = Unsupported
 export type Segment = Unsupported
 export type SequencePayload = Unsupported
 export type Shadow = Unsupported
+export type ShadowIsTargetError = Unsupported
 export type ShadowNameTooLongError = Unsupported
 export type ShadowProvisioning = Unsupported
 export type ShadowStrategy = Unsupported

@@ -180,6 +180,8 @@ describe("parseDatabaseUrl", () => {
   it("refuses a non-postgres scheme and a non-URL", () => {
     expect(() => parseDatabaseUrl("mysql://u@h/d")).toThrow(/postgres: or postgresql: scheme/);
     expect(() => parseDatabaseUrl("not a url")).toThrow(/is not a URL/);
+    // the refusal echoes the URL without its password
+    expect(() => parseDatabaseUrl("mysql://u:hunter2@h/d")).toThrow(/^"mysql:\/\/u@h\/d" must use the postgres/);
   });
 });
 

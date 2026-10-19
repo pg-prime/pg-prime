@@ -21,7 +21,15 @@
 import { randomBytes } from "node:crypto";
 import pg from "pg";
 import type { Diagnostic } from "../catalog/extract.js";
-import { dropDatabase, withClient, withDatabase, SHADOW_PREFIX, type ConnInfo } from "../db/pg.js";
+import {
+  connectionString,
+  dropDatabase,
+  redactUrl,
+  withClient,
+  withDatabase,
+  SHADOW_PREFIX,
+  type ConnInfo,
+} from "../db/pg.js";
 import { quoteIdent } from "../sql/ident.js";
 
 /** `NAMEDATALEN - 1`: a shadow schema name that PostgreSQL would truncate is not reversible. */
@@ -108,7 +116,7 @@ export class ShadowStrategyError extends Error {
   ) {
     super(
       detail ??
-        `${JSON.stringify(value)} is not a shadow strategy (--shadow, or \`shadow\` in ` +
+        `${JSON.stringify(redactUrl(value))} is not a shadow strategy (--shadow, or \`shadow\` in ` +
           `pg-prime.config.ts): pass a postgres:// or postgresql:// URL (tier 1), \`createdb\` ` +
           `(tier 2), \`temp-schema\` (tier 3), \`auto\` (the ladder, the default), or ` +
           `\`none\`/\`offline\` (tier 4, refused with a sentence).`,
@@ -132,6 +140,26 @@ export class ShadowNameTooLongError extends Error {
     this.name = "ShadowNameTooLongError";
   }
 }
+
+/** A tier-1 shadow that is the target or admin database would have its live schemas dropped. */
+export class ShadowIsTargetError extends Error {
+  readonly code = "PG_PRIME_SHADOW_IS_TARGET";
+  constructor(
+    readonly role: "target" | "admin",
+    conn: ConnInfo,
+  ) {
+    super(
+      `refusing to use ${redactUrl(connectionString(conn))} as the tier-1 shadow: it is the ${role} database, ` +
+        `and a shadow's managed schemas are dropped and recreated. Point --shadow (or \`shadow\` in ` +
+        `pg-prime.config.ts) at a throwaway database.`,
+    );
+    this.name = "ShadowIsTargetError";
+  }
+}
+
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1"]);
+const databaseKey = (c: ConnInfo): string =>
+  `${LOOPBACK.has(c.host.toLowerCase()) ? "localhost" : c.host.toLowerCase()}:${String(c.port)}/${c.database}`;
 
 /* ------------------------------------------------------------------ */
 
@@ -158,7 +186,7 @@ export function parseShadowUrl(url: string): ConnInfo {
   if (database === "")
     throw new ShadowStrategyError(
       url,
-      `shadow url ${JSON.stringify(url)} names no database: the tier-1 shadow is a database that ` +
+      `shadow url ${JSON.stringify(redactUrl(url))} names no database: the tier-1 shadow is a database that ` +
         `already exists and whose managed schemas this command DROPs and recreates, so the URL has ` +
         `to end in one (postgres://user@host:5432/a_throwaway_database).`,
     );
@@ -279,7 +307,7 @@ export async function provisionShadow(
   if (strategy === "offline") throw new OfflineShadowError();
 
   if (typeof strategy === "object") {
-    return tier1(parseShadowUrl(strategy.url), target, schemas, "shadow url supplied");
+    return tier1(parseShadowUrl(strategy.url), admin, target, schemas, "shadow url supplied");
   }
   if (strategy === "temp-schema") return tier3(target, schemas, options.token, "requested");
   if (strategy === "createdb") {
@@ -290,7 +318,7 @@ export async function provisionShadow(
     // Either way it must not reach the ladder below: falling through to `auto` is how
     // `shadow: 'postgres://…'` in a config file used to create a tier-2 database on the cluster
     // the key was set to avoid, with no diagnostic (design/12 F2 item f).
-    return tier1(parseShadowUrl(strategy), target, schemas, "shadow url supplied");
+    return tier1(parseShadowUrl(strategy), admin, target, schemas, "shadow url supplied");
   }
 
   // 'auto': the ladder proper. The privilege is read on the target, which this role can always reach.
@@ -308,7 +336,19 @@ export async function provisionShadow(
 
 /* ---- tier 1 ---- */
 
-async function tier1(conn: ConnInfo, target: ConnInfo, schemas: readonly string[], reason: string): Promise<Shadow> {
+async function tier1(
+  conn: ConnInfo,
+  admin: ConnInfo,
+  target: ConnInfo,
+  schemas: readonly string[],
+  reason: string,
+): Promise<Shadow> {
+  for (const [role, other] of [
+    ["target", target],
+    ["admin", admin],
+  ] as const) {
+    if (databaseKey(conn) === databaseKey(other)) throw new ShadowIsTargetError(role, conn);
+  }
   const diagnostics: Diagnostic[] = [
     {
       code: "shadow_url_reset",

@@ -24,6 +24,9 @@ export function connectionString(c: ConnInfo): string {
   return `postgresql://${encodeURIComponent(c.user)}:${encodeURIComponent(c.password)}@${host}:${c.port}/${encodeURIComponent(c.database)}`;
 }
 
+/** A URL for a message: never the password. */
+export const redactUrl = (url: string): string => url.replace(/:\/\/([^@/]*):[^@/]*@/, "://$1@");
+
 export async function withClient<T>(c: ConnInfo, fn: (client: pg.Client & CatalogClient) => Promise<T>): Promise<T> {
   const client = new pg.Client({ ...c });
   await client.connect();

@@ -15,6 +15,7 @@ import {
   parseShadowStrategy,
   parseShadowUrl,
   provisionShadow,
+  ShadowIsTargetError,
   ShadowNameTooLongError,
   ShadowStrategyError,
 } from "../../src/shadow/ladder.js";
@@ -192,7 +193,34 @@ describe("tier selection", () => {
     expect(() => parseShadowStrategy("docker")).toThrow(/testcontainers/);
     expect(() => parseShadowStrategy("mysql://u@h/d")).toThrow(/is not a shadow strategy/);
     expect(() => parseShadowStrategy("postgres://u@h:5432/")).toThrow(/names no database/);
+    // a refusal echoes the URL without its password
+    expect(() => parseShadowStrategy("mysql://u:hunter2@h/d")).toThrow(/^"mysql:\/\/u@h\/d" is not a shadow strategy/);
+    expect(() => parseShadowStrategy("postgres://u:hunter2@h:5432/")).toThrow(
+      /^shadow url "postgres:\/\/u@h:5432\/" names/,
+    );
   });
+
+  it(
+    "refuses a tier-1 url that names the target or the admin database, before touching either",
+    async () => {
+      const shadow = (url: string, t: ConnInfo = target) =>
+        provisionShadow(ADMIN, t, { schemas: ["public"], shadow: { url } });
+      await expect(shadow(connectionString(target))).rejects.toBeInstanceOf(ShadowIsTargetError);
+      await expect(shadow(connectionString(target))).rejects.toMatchObject({ role: "target" });
+      await expect(shadow(connectionString(ADMIN))).rejects.toMatchObject({ role: "admin" });
+      // loopback spellings name one server
+      await expect(
+        shadow(connectionString({ ...target, host: "localhost" }), { ...target, host: "127.0.0.1" }),
+      ).rejects.toMatchObject({
+        role: "target",
+      });
+      // a different database on the same server is a shadow
+      await expect(shadow(connectionString(dbConn(URL_SHADOW)))).resolves.toMatchObject({ tier: 1 });
+      const left = await withClient(target, (c) => c.query("SELECT 1 FROM pg_namespace WHERE nspname = 'public'"));
+      expect(left.rows).toHaveLength(1);
+    },
+    T,
+  );
 
   it("refuses tier 4 with a typed error naming the alternatives", async () => {
     await expect(provisionShadow(ADMIN, ADMIN, { schemas: ["public"], shadow: "offline" })).rejects.toBeInstanceOf(

@@ -10,6 +10,7 @@ Callees: the `pg` package.
 - `CatalogClient` — re-exported type from `catalog/extract.ts`.
 - `withDatabase(c, database)` — copy of `c` with another database.
 - `connectionString(c)` — `postgresql://` URL with URI-encoded user, password and database; brackets an IPv6 host.
+- `redactUrl(url)` — the same string with the `:password` removed, for every message that echoes a URL.
 - `withClient(c, fn)` — connects one `pg.Client`, runs `fn`, always `end()`s it; returns `fn`'s result.
 - `SHADOW_PREFIX` — `"pgprime_shadow_"`.
 - `isShadowDatabase(name)` — true when `name` starts with the prefix and is longer than it.

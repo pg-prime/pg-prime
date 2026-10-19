@@ -22,7 +22,7 @@ import { historyPresent } from "../../history/schema.js";
 import { readMigrationRows } from "../../history/store.js";
 import { applySegments } from "../../runner/apply.js";
 import type { SchemaLike } from "../../schema/types.js";
-import { OfflineShadowError } from "../../shadow/ladder.js";
+import { OfflineShadowError, ShadowIsTargetError } from "../../shadow/ladder.js";
 import { bool, str, type OptionSpec, type ParseResult } from "../args.js";
 import { EXIT, type ExitCode } from "../exit.js";
 import { agrees, bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
@@ -258,7 +258,12 @@ export async function runPush(config: ResolvedConfig, argv: ParseResult): Promis
         .join("\n"),
     };
   } catch (err) {
-    if (err instanceof OfflineShadowError || err instanceof GenerateRefusedError || err instanceof ConfigError) {
+    if (
+      err instanceof OfflineShadowError ||
+      err instanceof ShadowIsTargetError ||
+      err instanceof GenerateRefusedError ||
+      err instanceof ConfigError
+    ) {
       return refuse(err.message);
     }
     throw err;

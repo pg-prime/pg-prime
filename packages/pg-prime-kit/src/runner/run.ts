@@ -36,6 +36,7 @@ import {
   heartbeatLease,
   markApplied,
   markFailed,
+  markSegmentApplied,
   markStatementApplied,
   markUncertain,
   readLease,
@@ -56,6 +57,7 @@ import { ENGINE, type PlanStatement } from "../plan/plan.js";
 import {
   acquireSessionLock,
   applySegments,
+  type ApplyReport,
   detectTransactionPooler,
   detectTransactionPoolerStrict,
   releaseSessionLock,
@@ -857,8 +859,8 @@ export async function applyPendingOn(
       }
     }
 
-    /* 8. Repeatables. */
-    const repeatables = await runRepeatables(
+    /* 8. Repeatables. The migrations above have committed, so a failure here still reports them. */
+    const { repeatables, failure } = await runRepeatables(
       client,
       dryRun ? capture : client,
       options.repeatables ?? NO_REPEATABLES,
@@ -867,7 +869,13 @@ export async function applyPendingOn(
       schemas,
     );
 
-    const status: RunnerStatus = dryRun ? "dry_run" : applied.length > 0 ? "applied" : "up_to_date";
+    const status: RunnerStatus = failure
+      ? "failed"
+      : dryRun
+        ? "dry_run"
+        : applied.length > 0
+          ? "applied"
+          : "up_to_date";
     return await finish(
       done(status, {
         lock,
@@ -877,6 +885,7 @@ export async function applyPendingOn(
         repeatables,
         pending: [],
         dryRun: dryRun ? capture.issued : null,
+        error: failure,
       }),
     );
   } catch (err) {
@@ -964,25 +973,34 @@ async function runFile(
   let retries = 0;
   // A failed transaction rolls back alone: the segments before it, in any attempt of any run, may have committed.
   let committed = row?.status === "failed" || row?.status === "running" ? row.statementsApplied : 0;
+  const from = committed;
+  const segmentApplied = (): number => segmentOf(segments, committed - 1);
   // Several commits: until the row is recorded applied, what committed is uncertain, so it is never withdrawable.
   if (segments.length > 1)
-    await beginRow(client, { ...record, statementsApplied: committed, status: "running" }, committed);
+    await beginRow(
+      client,
+      { ...record, statementsApplied: committed, segmentApplied: segmentApplied(), status: "running" },
+      committed,
+    );
+  const apply = {
+    lockTimeout: ctx.lockTimeout,
+    ...(ctx.statementTimeout === undefined ? {} : { statementTimeout: ctx.statementTimeout }),
+  };
   for (;;) {
-    const report = await applySegments(client, statements, segments, {
-      lockTimeout: ctx.lockTimeout,
-      ...(ctx.statementTimeout === undefined ? {} : { statementTimeout: ctx.statementTimeout }),
-    });
+    let report: ApplyReport = { status: "applied", appliedStatements: 0 };
+    // Only what has not committed runs: a committed segment replayed fails on its own DDL.
+    for (const seg of segments) {
+      const todo = seg.statements.filter((i) => i >= committed);
+      if (todo.length === 0) continue;
+      report = await applySegments(client, statements, [{ ...seg, statements: todo }], apply);
+      if (report.status === "failed") break;
+      committed = Math.min(committed + todo.length, total);
+      if (!todo.includes(total)) await markSegmentApplied(client, file.id, committed, seg.index);
+    }
     if (report.status === "applied") {
       // The synthetic history statement is not part of the migration.
-      return outcome(Date.now() - startedAt, null, retries, null);
+      return outcome(Date.now() - startedAt, from > 0 ? from : null, retries, null);
     }
-    const at = segments.findIndex((s) => s.statements.includes(report.error?.statementIndex ?? -1));
-    committed = Math.max(
-      committed,
-      segments[at]?.transactional === false
-        ? Math.min(report.appliedStatements, total)
-        : segments.slice(0, Math.max(at, 0)).reduce((n, s) => n + s.statements.length, 0),
-    );
     const state = report.error?.sqlState;
     const budget = RETRY[state ?? ""] ?? 1;
     if (retries + 1 < budget) {
@@ -998,7 +1016,7 @@ async function runFile(
     }
     await markFailed(
       client,
-      { ...record, status: "failed" },
+      { ...record, status: "failed", segmentApplied: segmentApplied() },
       {
         code: "sql_error",
         message: report.error?.message ?? "unknown failure",
@@ -1251,28 +1269,41 @@ async function runRepeatables(
   dir: string | null,
   historyReadable: boolean,
   schemas: readonly string[],
-): Promise<RepeatablesReport> {
-  if (dir === null) return { applied: [], unchanged: [] };
+): Promise<{ repeatables: RepeatablesReport; failure: RunnerFailure | null }> {
+  if (dir === null) return { repeatables: { applied: [], unchanged: [] }, failure: null };
   const rows = historyReadable ? await readRepeatableRows(reader) : [];
   const hashes = new Map(rows.map((r) => [r.path, r.checksum]));
   const plan = await healDeclared(reader, await pass.plan(dir, hashes), schemas);
   const changed = plan.toApply;
   const unchanged = plan.unchanged.map((f) => f.path);
-  if (changed.length === 0) return { applied: [], unchanged };
+  if (changed.length === 0) return { repeatables: { applied: [], unchanged }, failure: null };
 
   const startedAt = Date.now();
+  let at = { path: "", sql: "" };
   await client.query("BEGIN");
   try {
     for (const f of changed) {
-      for (const sql of f.statements) await client.query(sql);
+      for (const sql of f.statements) {
+        at = { path: f.path, sql };
+        await client.query(sql);
+      }
       await upsertRepeatable(client, f.path, f.sha256, Date.now() - startedAt);
     }
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => undefined);
-    throw err;
+    const state = sqlState(err);
+    return {
+      repeatables: { applied: [], unchanged },
+      failure: {
+        code: "sql_error",
+        message: `repeatable ${at.path} failed: ${message(err)}`,
+        sql: at.sql,
+        ...(state === undefined ? {} : { sqlState: state }),
+      },
+    };
   }
-  return { applied: changed.map((f) => f.path), unchanged };
+  return { repeatables: { applied: changed.map((f) => f.path), unchanged }, failure: null };
 }
 
 /* ------------------------------ unlock, status ----------------------------- */
