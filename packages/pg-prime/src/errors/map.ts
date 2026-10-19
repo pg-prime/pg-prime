@@ -158,9 +158,10 @@ export function mapDriverError(
     data.message,
     cause instanceof Error ? cause.message : '',
   )
-  // A backend that says it is going away (class 08, or 57P01 that took the socket with it) is a
-  // connection failure, whatever the message's kind.
-  if (state.startsWith('08') || (state === '57P01' && data.connectionUnusable)) {
+  // A backend that says it is going away is a connection failure, whatever the message's kind:
+  // class 08, or PostgreSQL's own 57P01, which is FATAL (a RAISE with that code is an ERROR).
+  const fatal = server?.severity === 'FATAL' || server?.severity === 'PANIC'
+  if (state.startsWith('08') || (state === '57P01' && fatal)) {
     return new ConnectionTerminatedError(text, { ...base, code: state })
   }
   const Ctor = classForSqlState(state)

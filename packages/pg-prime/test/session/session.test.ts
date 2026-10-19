@@ -743,10 +743,10 @@ describe('every SQLSTATE in 07 §4.2 maps to its class (07 §4.5)', () => {
     const gone = mapError(pgError('08006', { message: 'connection failure' }), o) as PgPrimeError
     expect(gone).toBeInstanceOf(ConnectionTerminatedError)
     expect(gone.code).toBe('08006')
-    const fatal = pgError('57P01')
-    ;(fatal.pgPrime as { connectionUnusable: boolean }).connectionUnusable = true
-    expect(mapError(fatal, o)).toBeInstanceOf(ConnectionTerminatedError)
-    // The socket survived, so the statement is retryable on this connection.
+    expect(mapError(pgError('57P01', { severity: 'FATAL' }), o)).toBeInstanceOf(
+      ConnectionTerminatedError,
+    )
+    // `raise ... using errcode = 'admin_shutdown'` is an ERROR: the connection is intact.
     expect(mapError(pgError('57P01'), o)).toBeInstanceOf(OperatorInterventionError)
   })
 
