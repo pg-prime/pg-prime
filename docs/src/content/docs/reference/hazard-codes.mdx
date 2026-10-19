@@ -3,7 +3,7 @@ title: Hazard codes
 description: Every code migrate lint can report, with its default severity.
 ---
 
-pg-prime ships **44 hazard codes** in seven families, plus **6 style codes** that are off unless you
+pg-prime ships **45 hazard codes** in seven families, plus **6 style codes** that are off unless you
 ask for them. Every code on this page is checked against the kit's own tables on every build, so a
 rule that exists and a rule that is documented are the same set.
 
@@ -76,6 +76,7 @@ rename hints only. Nothing here is recoverable by re-running a migration.
 | <a id="DS104"/>`DS104` | error | Removing or reordering an enum label. PostgreSQL has no DDL for either, so the type is replaced and every table using it is rewritten under `ACCESS EXCLUSIVE`. `EN102` is raised for the same change first. |
 | <a id="DS105"/>`DS105` | error | Dropping a materialized view destroys the data it holds, and recreating it costs a full refresh. Reported from the SQL text, because a materialized view is never diffed. |
 | <a id="DS106"/>`DS106` | error | Dropping the last primary key or unique constraint on a column lets duplicates in from the next write. Adding it back later needs `MF101`'s scan, which by then may fail. |
+| <a id="DS107"/>`DS107` | error | `DROP SEQUENCE` loses the counter: a sequence recreated afterwards restarts at 1 and hands out keys that already exist. A renamed sequence is a rename question (`renamedFrom`), not a drop. Not raised for a `serial` column becoming an identity column, where the plan carries the numbering over itself. |
 
 ## MF — may fail on existing data
 

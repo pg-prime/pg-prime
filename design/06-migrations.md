@@ -621,6 +621,7 @@ Squawk so users can map their existing knowledge. **35 rules in v1.**
 | DS104 | Enum value removal/reorder ⇒ type replacement + table rewrite |
 | DS105 | Drop materialized view holding data |
 | DS106 | Drop the only uniqueness guarantee on a column |
+| DS107 | Drop sequence (the counter is lost; a recreated sequence restarts and repeats keys) |
 
 **MF — may fail on existing data (default `error` unless the table is proven empty).**
 *This entire family is absent from pg-delta and is the first thing our layer adds.*
@@ -712,6 +713,7 @@ Escape hatch: `-- pg-orm:nolint LK101 "index is on a 200-row lookup table"` — 
 > | DS104 enum value removal/reorder | ✅ | `ddl.ts` drop `type`; `diff.ts` raises EN102 first |
 > | DS105 drop materialized view | ✅ | `lint/rules.ts` (Tier R: never a delta, always possible in a `.sql`) |
 > | DS106 drop the only uniqueness guarantee | ✅ | `ddl.ts` `dropConstraint` on `p`/`u` |
+> | DS107 drop sequence | ✅ | `ddl.ts` drop `sequence`; not raised when `alterColumn` folds a serial's sequence into a serial → identity conversion |
 > | MF101 add UNIQUE to a populated column | ✅ | `ddl.ts` `addConstraint`, suppressed `onFreshTable` |
 > | MF102 non-unique → unique index | ✅ | `ddl.ts` alter `index`, only when uniqueness actually changes |
 > | MF103 add NOT NULL column with no default | ✅ | `ddl.ts` create `column` |

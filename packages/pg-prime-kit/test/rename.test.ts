@@ -12,8 +12,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { extractCatalog } from "../src/catalog/extract.js";
 import { runSqlScript, withClient } from "../src/db/pg.js";
-import { definitionsAgreeUnderRename, tokenizeDefinition } from "../src/diff/rename.js";
-import { generateFromDatabases as generate } from "../src/generate.js";
+import { applyRenameHints, definitionsAgreeUnderRename, tokenizeDefinition } from "../src/diff/rename.js";
+import { acceptHints, generateFromDatabases as generate } from "../src/generate.js";
+import type { SchemaIR } from "../src/ir/fact.js";
+import type { ConnInfo } from "../src/db/pg.js";
 import { applySegments } from "../src/runner/apply.js";
 import { ADMIN, catalogsNotNullConstraints, destroyDatabase, makeDatabase, serverAvailable } from "./support/db.js";
 
@@ -396,3 +398,142 @@ async function notNullNames(database: string): Promise<string[]> {
     return r.rows.map((x) => String(x["row"]));
   });
 }
+
+/**
+ * A rename carries whatever PostgreSQL re-renders after it: the ids of a table's children,
+ * the type names on columns, a partition's parent, a sequence's owner. Left behind, each
+ * one is a phantom delta — a dropped column, a retype under MF105, a DETACH + ATTACH.
+ */
+describe("a rename carries everything the server re-renders", () => {
+  const dbs: string[] = [];
+  interface Pair {
+    readonly target: ConnInfo;
+    readonly wanted: ConnInfo;
+    readonly current: SchemaIR;
+    readonly desired: SchemaIR;
+    readonly schemas: string[];
+  }
+
+  beforeAll(async () => {
+    expect(await serverAvailable(), `no PostgreSQL at ${ADMIN.host}:${ADMIN.port}`).toBe(true);
+  }, T);
+  afterAll(async () => {
+    for (const db of dbs) await destroyDatabase(db).catch(() => undefined);
+  }, T);
+
+  async function pair(name: string, current: string, desired: string, schemas = ["public"]): Promise<Pair> {
+    const cur = `pgprime_ren_carry_${name}_cur`;
+    const des = `pgprime_ren_carry_${name}_des`;
+    dbs.push(cur, des);
+    const target = await makeDatabase(cur);
+    await runSqlScript(target, current);
+    const wanted = await makeDatabase(des);
+    await runSqlScript(wanted, desired);
+    const extract = (c: ConnInfo) => withClient(c, (x) => extractCatalog(x, { schemas }));
+    return { target, wanted, current: (await extract(target)).ir, desired: (await extract(wanted)).ir, schemas };
+  }
+  const plan = (p: Pair, hints: { from: string; to: string }[]) =>
+    generate({
+      admin: ADMIN,
+      target: p.target,
+      desired: p.wanted,
+      schemas: p.schemas,
+      seq: 1,
+      name: "carry",
+      dumpOracle: "strict",
+      renameHints: acceptHints(hints, p.current, p.desired),
+    });
+
+  it(
+    "table + column renamed together: two RENAMEs, no DROP COLUMN",
+    async () => {
+      const p = await pair(
+        "tblcol",
+        "CREATE TABLE public.organisations (id int PRIMARY KEY, legacy_reference text);",
+        "CREATE TABLE public.orgs (id int PRIMARY KEY, legacy_ref text);",
+      );
+      // spelled as the DSL spells them: the column hint names the NEW table
+      const hints = [
+        { from: "table:public.organisations", to: "table:public.orgs" },
+        { from: "column:public.orgs.legacy_reference", to: "column:public.orgs.legacy_ref" },
+      ];
+      const result = await plan(p, hints);
+      expect(result.diff.rejectedHints).toEqual([]);
+      const sql = result.plan.statements.map((s) => s.sql);
+      expect(sql).toContain('ALTER TABLE "public"."organisations" RENAME TO "orgs"');
+      expect(sql).toContain('ALTER TABLE "public"."orgs" RENAME COLUMN "legacy_reference" TO "legacy_ref"');
+      expect(sql.filter((s) => /DROP COLUMN|ADD COLUMN/.test(s))).toEqual([]);
+      expect(result.plan.proof.status).toBe("passed");
+
+      // the hints in the other order resolve just the same
+      const reversed = applyRenameHints(p.current, p.desired, acceptHints(hints, p.current, p.desired).reverse());
+      expect(reversed.rejected).toEqual([]);
+      expect(reversed.accepted.filter((r) => r.source === "annotation").map((r) => r.to)).toEqual([
+        "column:public.orgs.legacy_ref",
+        "table:public.orgs",
+      ]);
+    },
+    T,
+  );
+
+  it(
+    "enum, domain and schema renames leave the columns of those types alone",
+    async () => {
+      const body = (schema: string, status: string, email: string): string => `
+        CREATE SCHEMA ${schema};
+        CREATE TYPE ${schema}.${status} AS ENUM ('a', 'b');
+        CREATE DOMAIN ${schema}.${email} AS text;
+        CREATE TABLE ${schema}.t (id int PRIMARY KEY, s ${schema}.${status} NOT NULL DEFAULT 'a',
+                                  ss ${schema}.${status}[], e ${schema}.${email});`;
+      const p = await pair("types", body("app", "status_old", "email_old"), body("core", "status_new", "email_new"), [
+        "app",
+        "core",
+      ]);
+      const result = await plan(p, [
+        { from: "schema:app", to: "schema:core" },
+        { from: "type:core.status_old", to: "type:core.status_new" },
+        { from: "type:core.email_old", to: "type:core.email_new" },
+      ]);
+      expect(result.diff.rejectedHints).toEqual([]);
+      expect(result.plan.statements.map((s) => s.sql).sort()).toEqual([
+        'ALTER SCHEMA "app" RENAME TO "core"',
+        'ALTER TYPE "core"."email_old" RENAME TO "email_new"',
+        'ALTER TYPE "core"."status_old" RENAME TO "status_new"',
+      ]);
+      expect(result.plan.proof.status).toBe("passed");
+    },
+    T,
+  );
+
+  it(
+    "a partitioned parent is one RENAME TO, and a serial's sequence follows its table",
+    async () => {
+      const partitions = (parent: string): string => `
+        CREATE TABLE public.${parent} (id bigint NOT NULL, at timestamptz NOT NULL) PARTITION BY RANGE (at);
+        CREATE TABLE public.events_2025 PARTITION OF public.${parent} FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+        CREATE TABLE public.events_2026 PARTITION OF public.${parent} FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');`;
+      const p = await pair(
+        "parent",
+        `${partitions("events")}
+         CREATE TABLE public.tickets (id serial PRIMARY KEY);`,
+        `${partitions("log_events")}
+         CREATE SEQUENCE public.tickets_id_seq AS integer;
+         CREATE TABLE public.issues (id integer PRIMARY KEY DEFAULT nextval('public.tickets_id_seq'));
+         ALTER SEQUENCE public.tickets_id_seq OWNED BY public.issues.id;`,
+      );
+      const result = await plan(p, [
+        { from: "table:public.events", to: "table:public.log_events" },
+        { from: "table:public.tickets", to: "table:public.issues" },
+      ]);
+      // PG 18's auto-named NOT NULL constraints follow the rename too (the describe above)
+      const sql = result.plan.statements.map((s) => s.sql).filter((s) => !/_not_null"/.test(s));
+      expect(sql.sort()).toEqual([
+        'ALTER TABLE "public"."events" RENAME TO "log_events"',
+        'ALTER TABLE "public"."issues" RENAME CONSTRAINT "tickets_pkey" TO "issues_pkey"',
+        'ALTER TABLE "public"."tickets" RENAME TO "issues"',
+      ]);
+      expect(result.plan.proof.status, JSON.stringify(result.plan.proof)).toBe("passed");
+    },
+    T,
+  );
+});

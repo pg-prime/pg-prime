@@ -145,14 +145,13 @@ SELECT n.nspname AS schema, c.relname AS "table", a.attname AS name, a.attnum,
             WHEN coll.collnamespace = 'pg_catalog'::regnamespace THEN coll.collname
             ELSE format('"%s"."%s"', replace(cn.nspname, '"', '""'), replace(coll.collname, '"', '""'))
        END AS collation,
-       ut.typtype AS type_typtype,
        un.nspname AS type_schema,
        ut.typname AS type_name
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_type t ON t.oid = a.atttypid
-LEFT JOIN pg_type ut ON ut.oid = a.atttypid
+LEFT JOIN pg_type ut ON ut.oid = CASE WHEN t.typcategory = 'A' THEN t.typelem ELSE t.oid END
 LEFT JOIN pg_namespace un ON un.oid = ut.typnamespace
 LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
 LEFT JOIN pg_namespace cn ON cn.oid = coll.collnamespace
@@ -226,9 +225,13 @@ SELECT n.nspname AS schema, t.typname AS name, t.typtype,
             THEN coalesce(pg_get_expr(t.typdefaultbin, 0), quote_literal(t.typdefault)) END AS default_expr,
        CASE WHEN t.typtype = 'd' AND t.typcollation <> 0
               AND t.typcollation <> (SELECT bt.typcollation FROM pg_type bt WHERE bt.oid = t.typbasetype)
-            THEN (SELECT coll.collname FROM pg_collation coll WHERE coll.oid = t.typcollation) END AS collation
+            THEN (SELECT coll.collname FROM pg_collation coll WHERE coll.oid = t.typcollation) END AS collation,
+       bn.nspname AS base_schema, be.typname AS base_name
 FROM pg_type t
 JOIN pg_namespace n ON n.oid = t.typnamespace
+LEFT JOIN pg_type bt ON bt.oid = t.typbasetype AND t.typtype = 'd'
+LEFT JOIN pg_type be ON be.oid = CASE WHEN bt.typcategory = 'A' THEN bt.typelem ELSE bt.oid END
+LEFT JOIN pg_namespace bn ON bn.oid = be.typnamespace
 WHERE n.nspname = ANY($1)
   AND (t.typtype IN ('e','d')
        OR (t.typtype = 'c'
@@ -266,12 +269,15 @@ const Q_TYPE_ATTRIBUTES = `
 SELECT n.nspname AS schema, t.typname AS type, a.attname AS name, a.attnum,
        format_type(a.atttypid, a.atttypmod) AS type_name,
        CASE WHEN a.attcollation <> at.typcollation AND a.attcollation <> 0
-            THEN coll.collname END AS collation
+            THEN coll.collname END AS collation,
+       en.nspname AS attr_type_schema, ae.typname AS attr_type_name
 FROM pg_type t
 JOIN pg_namespace n ON n.oid = t.typnamespace
 JOIN pg_class rc ON rc.oid = t.typrelid AND rc.relkind = 'c'
 JOIN pg_attribute a ON a.attrelid = rc.oid AND a.attnum > 0 AND NOT a.attisdropped
 JOIN pg_type at ON at.oid = a.atttypid
+LEFT JOIN pg_type ae ON ae.oid = CASE WHEN at.typcategory = 'A' THEN at.typelem ELSE at.oid END
+LEFT JOIN pg_namespace en ON en.oid = ae.typnamespace
 LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
 WHERE t.typtype = 'c' AND n.nspname = ANY($1)
   AND NOT EXISTS (SELECT 1 FROM pg_depend d
@@ -705,6 +711,12 @@ export async function extractCatalog(client: CatalogClient, options: ExtractOpti
     }
 
     /* ---- types: enum + domain + composite ---- */
+    const typeIds = new Set(rTypes.rows.map((r) => `${str(r["schema"])}.${str(r["name"])}`));
+    /** A type this extraction models (so a table's row type or a built-in is never an edge target). */
+    const userType = (schema: unknown, name: unknown): StableId | null =>
+      typeof schema === "string" && typeof name === "string" && typeIds.has(`${schema}.${name}`)
+        ? { kind: "type", schema, name }
+        : null;
     /** `schema.type` -> the domain's `<name> <definition>` CHECK list, sorted by name */
     const domainChecks = new Map<string, string[]>();
     for (const r of rDomainChecks.rows) {
@@ -733,6 +745,8 @@ export async function extractCatalog(client: CatalogClient, options: ExtractOpti
         provenance: prov,
       });
       edges.push({ from: id, to: { kind: "schema", schema: id.schema }, kind: "owner" });
+      const base = userType(r["base_schema"], r["base_name"]);
+      if (base) edges.push({ from: id, to: base, kind: "depends" });
     }
 
     /* ---- composite attributes ---- */
@@ -752,6 +766,8 @@ export async function extractCatalog(client: CatalogClient, options: ExtractOpti
         provenance: prov,
       });
       edges.push({ from: id, to: { kind: "type", schema, name: type }, kind: "owner" });
+      const attrType = userType(r["attr_type_schema"], r["attr_type_name"]);
+      if (attrType) edges.push({ from: id, to: attrType, kind: "depends" });
     }
     /** qualified enum type name -> ordered labels */
     const enumLabels = new Map<string, string[]>();
@@ -864,13 +880,8 @@ export async function extractCatalog(client: CatalogClient, options: ExtractOpti
       }
 
       // column -> user type
-      if (r["type_typtype"] === "e" && schemas.includes(str(r["type_schema"]))) {
-        edges.push({
-          from: id,
-          to: { kind: "type", schema: str(r["type_schema"]), name: str(r["type_name"]) },
-          kind: "depends",
-        });
-      }
+      const colType = userType(r["type_schema"], r["type_name"]);
+      if (colType) edges.push({ from: id, to: colType, kind: "depends" });
       // SYNTHESIZED `evaluates` edges: a DEFAULT that names an enum label must
       // not be emitted before that label's ADD VALUE has committed. pg_depend
       // records a dependency on the TYPE, never on the label — this is the
