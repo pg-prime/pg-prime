@@ -102,6 +102,17 @@ describe('what goes on the wire', () => {
       driver.log[0]?.text.startsWith('explain (verbose true, costs false, format json) '),
     ).toBe(true)
   })
+
+  it('a chunked insert explains its first chunk rather than throwing', async () => {
+    const driver = mockDriver()
+    const db = pgPrime({ driver, schema })
+    driver.rows.push(jsonPlan())
+    const rows = Array.from({ length: 5_001 }, (_, i) => ({ email: `u${i}`, name: 'n', role: 'r' }))
+    const r = await db.insertInto(schema.h.users).valuesMany(rows, { strategy: 'values' }).explain()
+    expect(driver.log).toHaveLength(1)
+    expect(driver.log[0]?.params).toHaveLength(15_000)
+    expect(r.plan?.['Node Type']).toBe('Seq Scan')
+  })
 })
 
 describe('the ANALYZE rail (07 §7.5) — EXPLAIN ANALYZE UPDATE performs the update', () => {

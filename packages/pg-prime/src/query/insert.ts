@@ -17,8 +17,9 @@
  *              entirely and collapses the parse cost of a huge batch.
  *
  * `auto` (the default) picks `unnest` above 30 000 cells and `values` below. Above `chunkSize`
- * rows (5 000) the batch is split, and the chunks run inside one transaction unless the caller is
- * already in one — a half-applied batch is the failure mode that makes bulk inserts untrustworthy.
+ * rows (5 000) the batch is split — and a `values` chunk is also capped so `rows × columns` stays
+ * under the ceiling — and the chunks run inside one transaction unless the caller is already in
+ * one; a half-applied batch is the failure mode that makes bulk inserts untrustworthy.
  *
  * ## `castFirstRow`
  *
@@ -84,6 +85,8 @@ import {
 export const UNNEST_CELLS = 30_000
 /** Rows per chunk once a batch is split. */
 export const CHUNK_ROWS = 5_000
+/** The wire protocol's parameter cap (int16); a `values` chunk is sized to stay under it. */
+const WIRE_PARAMS = 65_535
 
 type Lambda<R> = (t: never) => R
 type Scope = Readonly<Record<string, RefScope>>
@@ -99,10 +102,18 @@ function compact<T extends Record<string, unknown>>(o: T): T {
   return out as T
 }
 
-/** A key whose value is `undefined` counts as absent. Copies only a row that has one. */
-function present(row: Record<string, unknown>): Record<string, unknown> {
-  for (const k of Object.keys(row)) if (row[k] === undefined) return compact(row)
-  return row
+/**
+ * A row as the builder keeps it: a copy, so a later mutation of the caller's object cannot change
+ * what is inserted (03 §1.4a), minus `undefined` keys, which count as absent. Keys are checked
+ * before they are copied: assigning `__proto__` would set the copy's prototype and lose the key.
+ */
+function snapshot(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const k of Object.keys(row)) {
+    const v = row[assertSafeKey(k, 'insert value')]
+    if (v !== undefined) out[k] = v
+  }
+  return out
 }
 
 function call<R>(f: Lambda<R>, ...args: readonly unknown[]): R {
@@ -180,7 +191,7 @@ export class InsertBuilder {
     bulk: BulkOpts | undefined,
     castFirstRow: boolean,
   ): InsertBuilder {
-    rows = rows.map(present)
+    rows = rows.map(snapshot)
     const filled = this.#withClientDefaults(rows, this.#keysFor(rows))
     return this.#next({
       columns: this.#columnsByKey(filled.keys, 'values()'),
@@ -210,17 +221,13 @@ export class InsertBuilder {
     const defaults = this.#meta.clientDefaults
     if (defaults === undefined) return { rows, keys }
     const names = Object.keys(defaults)
-    const out = rows.map((row) => {
-      let copy: Record<string, unknown> | undefined
+    for (const row of rows as Record<string, unknown>[]) {
       for (const k of names) {
-        if (Object.hasOwn(row, k) && row[k] !== undefined) continue
-        copy ??= { ...row }
-        copy[k] = (defaults[k] as () => unknown)()
+        if (!Object.hasOwn(row, k)) row[k] = (defaults[k] as () => unknown)()
       }
-      return copy ?? row
-    })
+    }
     const extra = names.filter((k) => !keys.includes(k))
-    return { rows: out, keys: extra.length === 0 ? keys : [...keys, ...extra] }
+    return { rows, keys: extra.length === 0 ? keys : [...keys, ...extra] }
   }
 
   /** `insert into … default values`. */
@@ -371,19 +378,42 @@ export class InsertBuilder {
     return prepareFrom(this.s.ctx, all[0] as Compiled<unknown>, name, opts, this.s.run)
   }
 
-  /** `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE INSERT` inserts (07 §7.5). */
-  explain(opts?: ExplainOptions): Promise<ExplainResult> {
-    return explainWith(this.s.ctx, this.compile(), opts, this.s.run)
+  /**
+   * `analyze: true` wraps and rolls back by default — `EXPLAIN ANALYZE INSERT` inserts (07 §7.5).
+   * A chunked batch is explained through its first chunk; the others share its plan.
+   */
+  async explain(opts?: ExplainOptions): Promise<ExplainResult> {
+    const all = this.compileAll()
+    if (all.length > 1 && opts?.analyze === true && opts.rollback === false) {
+      throw new BuilderError(
+        'pg-prime: explain({ analyze: true, rollback: false }) on a chunked batch would insert ' +
+          'its first chunk only. Keep the rollback, or explain a batch that fits one statement.',
+      )
+    }
+    return explainWith(this.s.ctx, all[0] as Compiled<unknown>, opts, this.s.run)
   }
 
+  /** A chunked batch snapshots its first chunk (`compileAll()` has the rest). */
   toSQL(): SqlSnapshot {
-    return toSQLOf(this.compile())
+    return toSQLOf(this.compileAll()[0] as Compiled<unknown>)
   }
 
   // ── statement assembly ────────────────────────────────────────────────────
 
+  /** Rows per statement; `values` binds `rows × columns`, so it is also capped by the wire ceiling. */
   #chunkSize(): number {
-    return this.s.bulk?.chunkSize ?? CHUNK_ROWS
+    const size = this.s.bulk?.chunkSize ?? CHUNK_ROWS
+    if (this.#strategy() === 'unnest') return size
+    // Never below one row: a chunk that cannot fit fails in the compiler, not in an endless loop.
+    const fit = Math.floor((WIRE_PARAMS - this.#fixedParams()) / this.s.columns.length)
+    return Math.max(1, Math.min(size, fit))
+  }
+
+  /** Parameters outside the rows (CTEs, ON CONFLICT, RETURNING), carried by every chunk. */
+  #fixedParams(): number {
+    const { ctes, onConflict, returning } = this.s
+    if (ctes.length === 0 && onConflict === undefined && returning === undefined) return 0
+    return compileAst(this.#base({ k: 'defaults' })).binds.length
   }
 
   /**
@@ -398,7 +428,7 @@ export class InsertBuilder {
    * boundaries would be lost. `auto` therefore falls back to `values`, and an explicit
    * `strategy: 'unnest'` is a named error rather than a `PgEncodeError` from three layers down.
    */
-  #strategy(rows: readonly Record<string, unknown>[]): 'values' | 'unnest' {
+  #strategy(): 'values' | 'unnest' {
     const declared = this.s.bulk?.strategy ?? 'auto'
     const arrayColumn = this.s.columns.find((c) => isArrayCodec(c.codec))
     if (arrayColumn !== undefined) {
@@ -413,24 +443,26 @@ export class InsertBuilder {
       return 'values'
     }
     if (declared !== 'auto') return declared
-    return rows.length * this.s.columns.length > UNNEST_CELLS ? 'unnest' : 'values'
+    const rows = this.s.rows?.length ?? 0
+    return rows * this.s.columns.length > UNNEST_CELLS ? 'unnest' : 'values'
+  }
+
+  #base(source: InsertSource): InsertNode {
+    return insertNode(
+      compact({
+        with: this.s.ctes.length > 0 ? this.s.ctes : undefined,
+        into: this.s.into,
+        columns: this.s.columns,
+        source,
+        castFirstRow: this.s.castFirstRow ? true : undefined,
+        onConflict: this.s.onConflict,
+        returning: this.s.returning,
+      }) as Omit<InsertNode, 'k'>,
+    )
   }
 
   #statements(): readonly InsertNode[] {
-    const base = (source: InsertSource): InsertNode =>
-      insertNode(
-        compact({
-          with: this.s.ctes.length > 0 ? this.s.ctes : undefined,
-          into: this.s.into,
-          columns: this.s.columns,
-          source,
-          castFirstRow: this.s.castFirstRow ? true : undefined,
-          onConflict: this.s.onConflict,
-          returning: this.s.returning,
-        }) as Omit<InsertNode, 'k'>,
-      )
-
-    if (this.s.source !== undefined) return [base(this.s.source)]
+    if (this.s.source !== undefined) return [this.#base(this.s.source)]
     const rows = this.s.rows
     if (rows === undefined) {
       throw new BuilderError(
@@ -440,11 +472,14 @@ export class InsertBuilder {
     }
 
     const size = this.#chunkSize()
-    const strategy = this.#strategy(rows)
+    const unnest = this.#strategy() === 'unnest'
+    const keys = this.#keys()
     const out: InsertNode[] = []
     for (let i = 0; i < rows.length; i += size) {
       const chunk = rows.slice(i, i + size)
-      out.push(base(strategy === 'unnest' ? this.#unnestSource(chunk) : this.#valuesSource(chunk)))
+      out.push(
+        this.#base(unnest ? this.#unnestSource(chunk, keys) : this.#valuesSource(chunk, keys)),
+      )
     }
     return out
   }
@@ -469,8 +504,7 @@ export class InsertBuilder {
    *  3. **`keys` and `codecs` hoisted into parallel arrays**, so the inner loop is two indexed
    *     reads rather than a property chase through `ColumnMeta`.
    */
-  #valuesSource(rows: readonly Record<string, unknown>[]): InsertSource {
-    const keys = this.#keys()
+  #valuesSource(rows: readonly Record<string, unknown>[], keys: readonly string[]): InsertSource {
     const columns = this.s.columns
     const width = columns.length
     const codecs: AnyCodec[] = new Array<AnyCodec>(width)
@@ -495,8 +529,7 @@ export class InsertBuilder {
     return { k: 'values', rows: out }
   }
 
-  #unnestSource(rows: readonly Record<string, unknown>[]): InsertSource {
-    const keys = this.#keys()
+  #unnestSource(rows: readonly Record<string, unknown>[], keys: readonly string[]): InsertSource {
     const registry: CodecRegistry = this.s.ctx.registry
     const arrays = this.s.columns.map((c, i) => {
       const key = keys[i] as string
@@ -532,7 +565,6 @@ export class InsertBuilder {
   #keysFor(rows: readonly Record<string, unknown>[]): readonly string[] {
     const first = rows[0] as Record<string, unknown>
     const keys = Object.keys(first)
-    for (const k of keys) assertSafeKey(k, 'insert value')
     // An indexed walk rather than `rowKeys.some(k => …)`: one closure per row is 1 000 of them
     // on a bulk insert, for a check that passes on every row of every correct call.
     // `hasOwn`, not `in`: `'toString' in first` is true for every object, so the `in` form
@@ -783,6 +815,12 @@ export class ConflictSpec {
   doUpdate(f: (set: RefScope, excluded: RefScope) => Record<string, unknown>): ConflictSpec {
     const patch = f(this.#target, this.#excluded)
     const set = setItemsOf(this.#meta, patch, 'doUpdate()')
+    if (set.length === 0) {
+      throw new BuilderError(
+        'pg-prime: onConflict().doUpdate() has nothing to update (every key is undefined); use ' +
+          '.doNothing() if no write is intended.',
+      )
+    }
     return this.#next({ ...this.node, action: { k: 'update', set, where: updateWhere(this.node) } })
   }
 

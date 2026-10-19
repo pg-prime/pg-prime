@@ -274,9 +274,10 @@ one statement with one column list. Its real return type is a sentinel carrying 
 the rows disagree, so the mismatch is a compile error at the literal.
 
 `compileAll()` returns every statement the builder will run, which is more than one only when the
-batch was chunked; `prepare()` throws for a chunked batch, because one prepared artifact cannot
-mean N statements. Under `analyze`, `explain` wraps and rolls back by default — `EXPLAIN ANALYZE
-INSERT` inserts.
+batch was chunked; `prepare()` and `toAst()` throw for a chunked batch, because one artifact cannot
+mean N statements, while `toSQL()` and `explain()` describe its first chunk. Under `analyze`,
+`explain` wraps and rolls back by default — `EXPLAIN ANALYZE INSERT` inserts. `doUpdate` with a
+patch whose every key is `undefined` throws; use `doNothing()` for "no write".
 
 ### `UpdateQuery`
 
@@ -398,7 +399,8 @@ interface PreparedQuery<P, O> {
 A compiled statement with typed holes, from `.prepare<P>(name?)`. `P` is written by hand —
 `.prepare<{ email: string }>('users_by_email')` — and checked against the declared
 [`placeholder(…)`](#placeholder) names at `execute()`; linking the two statically would need a
-fourth type parameter on `Query`, which the hot-path budget rules out.
+fourth type parameter on `Query`, which the hot-path budget rules out. A missing key and an
+`undefined` value both throw naming the placeholder; `null` binds SQL NULL.
 
 `execute()` walks the binds once, calls `codec.encode` per slot per execution, and re-does nothing
 else: no AST walk, no `compile()`, no decoder build. All three are pinned with spies, because "we
@@ -469,7 +471,7 @@ The remaining builder types are small:
 | <a id="RecursiveOpts"/> `RecursiveOpts` | `WithOpts` + `{ unionAll?: boolean }` | `UNION ALL` by default, which is what a traversal wants; `false` is `UNION`, which deduplicates every intermediate row and is the cycle-avoiding spelling for a graph, at one equality comparison per row. |
 | <a id="FromRawOpts"/> `FromRawOpts` | `{ alias?: A; columnTypes?: boolean }` | The alias defaults to `'raw'`. `columnTypes` is required for a function returning `record` and rejected by PostgreSQL for one that is not, which is why it is a choice and not a default. |
 | <a id="FromValuesOpts"/> `FromValuesOpts` | `{ alias?: string; strategy?: 'values' \| 'unnest' }` | `UPDATE … FROM (VALUES …)`. |
-| <a id="BulkOpts"/> `BulkOpts` | `{ strategy?: 'values' \| 'unnest' \| 'auto'; chunkSize?: number }` | `'auto'` picks `unnest` above 30 000 cells and `values` below. `chunkSize` is rows per statement once the batch is split, default 5000. |
+| <a id="BulkOpts"/> `BulkOpts` | `{ strategy?: 'values' \| 'unnest' \| 'auto'; chunkSize?: number }` | `'auto'` picks `unnest` above 30 000 cells and `values` below. `chunkSize` is rows per statement once the batch is split, default 5000; a `values` chunk is further capped to stay under the 65 535-parameter ceiling. |
 | <a id="LockOpts"/> `LockOpts` | `{ strength?, of?, wait? }` | `forUpdate()`. `strength` is `'update' \| 'no key update' \| 'share' \| 'key share'`; `wait` is `'block' \| 'nowait' \| 'skip locked'`, and `'skip locked'` is what makes a queue workload possible. `of` is checked against **this query's aliases**, because PostgreSQL raises `42P01` for a name that is not one of them and a typo in a lock list only shows up under contention. |
 | <a id="InsertPatch"/> `InsertPatch` | `InsertPatch<T>` | The insert row, with an expression allowed per column, so `createdAt: fn.now()` typechecks without a cast. A column is optional iff it is nullable, has a default or is identity-by-default, and absent iff it is `GENERATED ALWAYS`. |
 | <a id="SetPatch"/> `SetPatch` | `SetPatch<T>` | The update patch: everything writable, all optional, values or expressions. |
