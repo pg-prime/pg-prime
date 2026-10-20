@@ -17,10 +17,31 @@ import {
   HISTORY_SCHEMA,
   HISTORY_VERSION,
 } from "../../src/history/schema.js";
-import { readLease, takeLease, releaseLease, breakLease } from "../../src/history/store.js";
+import {
+  breakLease,
+  readCheckpointRows,
+  readLease,
+  readMigrationRows,
+  releaseLease,
+  takeLease,
+} from "../../src/history/store.js";
 import { dbConn, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
 
 const T = 120_000;
+
+describe("history order", () => {
+  it("reads rows in the files' code-unit order, whatever the server collation", async () => {
+    const seen: string[] = [];
+    // oxlint-disable-next-line typescript/require-await -- implements the async CatalogClient seam
+    const client = {
+      query: async (text: string): Promise<{ rows: Record<string, unknown>[] }> => (seen.push(text), { rows: [] }),
+    };
+    await readMigrationRows(client);
+    await readCheckpointRows(client);
+    expect(seen[0]).toContain('ORDER BY seq, name COLLATE "C"');
+    expect(seen[1]).toContain('ORDER BY id COLLATE "C"');
+  });
+});
 
 /** design/06 §4.4, transcribed. `column: nullable?` — `true` means the DDL has no NOT NULL. */
 const EXPECTED: Readonly<Record<string, Readonly<Record<string, string>>>> = {

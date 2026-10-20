@@ -8,11 +8,12 @@ Callees: `history/schema.ts` (`HISTORY_SCHEMA`, `MigrationStatus`), `sql/ident.t
 ## Public API
 - `MigrationRow` — one `pgprime.migrations` row in camelCase; timestamps are server-formatted ISO strings.
 - `NewMigrationRow` — the fields a writer supplies (no timestamps, no error).
-- `readMigrationRows(client)` — all rows ordered by `seq, name`.
+- `readMigrationRows(client)` — all rows ordered by `seq, name COLLATE "C"`, the runner's own file order (every ordered read here uses `COLLATE "C"`).
 - `currentFingerprint(rows)` — `fingerprintTo` of the last `applied`/`baselined` row in `(seq, name)` order, else null.
 - `recordAppliedSql(row)` — the row as one literal `INSERT … ON CONFLICT (id) DO UPDATE` string, for execution inside the migration transaction.
 - `beginRow(client, row)` — upserts a `running` row, clearing finish time and error.
 - `markUncertain(client, id, index)` / `markStatementApplied(client, id, index, segment)` — each in its own `BEGIN`/`COMMIT`; the latter sets `statements_applied = GREATEST(…, index + 1)` and clears `statement_uncertain`.
+- `segmentAppliedSql(id, applied, segment)` — a segmented file's progress as one literal `UPDATE` for the segment's own transaction: sets `statements_applied` and `segment_applied`, and keeps `statement_uncertain = applied` until the applied record clears it.
 - `markApplied(client, id, applied)` — status `applied`, finish time, duration from `started_at`.
 - `markFailed(client, row, error, applied)` / `RecordedError` — upserts a `failed` row with `error` jsonb.
 - `LockRow`, `readLease`, `takeLease(client, runId, holder)`, `heartbeatLease(client, runId)`, `releaseLease(client, runId)`, `breakLease(client)` — the singleton lease; `breakLease` returns whether a row was deleted.

@@ -7,17 +7,18 @@
  * message text (design/09 R13).
  */
 
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { EXIT } from "../../src/cli/exit.js";
 import { withClient, type ConnInfo } from "../../src/db/pg.js";
-import { readMigrationRows } from "../../src/history/store.js";
+import { readMigrationRows, readRepeatableRows } from "../../src/history/store.js";
+import { createRepeatablesPass } from "../../src/repeatables/index.js";
 import { applyPending, applyPendingOn, backoff, resumeFrom } from "../../src/runner/run.js";
 import { migrationStatus } from "../../src/runner/status.js";
 import { dbConn, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
-import { tempDir, writeHandMigration } from "../support/migrations.js";
+import { scalar, tempDir, writeHandMigration } from "../support/migrations.js";
 
 const T = 180_000;
 
@@ -80,6 +81,50 @@ CREATE TABLE public.crash_t (id int PRIMARY KEY);
 ALTER TABLE public.locked_t ADD COLUMN crash_note text;
 `;
 
+const NOTE_COLUMNS =
+  "SELECT count(*)::int FROM pg_attribute WHERE attrelid = 'public.locked_t'::regclass AND attname = 'note' AND NOT attisdropped";
+
+/** RETRIED with a statement prepended to the committed segment. */
+const PREPENDED = `-- pg-prime:migration 0002_retried
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=100ms statement=30s
+
+-- pg-prime:segment 0
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+CREATE TABLE public.edited_t (id int PRIMARY KEY);
+
+-- pg-prime:stmt 1 lock=accessExclusive non-idempotent
+CREATE TABLE public.retry_committed_t (id int PRIMARY KEY);
+
+-- pg-prime:segment 1
+-- pg-prime:stmt 2 lock=accessExclusive non-idempotent
+ALTER TABLE public.locked_t ADD COLUMN note text;
+`;
+
+/** RETRIED shrunk below what committed. */
+const SHRUNK = `-- pg-prime:migration 0002_retried
+-- pg-prime:txmode    transactional
+
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+CREATE TABLE public.retry_committed_t (id int PRIMARY KEY);
+`;
+
+const INTERLEAVED = `-- pg-prime:migration 0002_interleaved
+-- pg-prime:txmode    transactional
+
+-- pg-prime:segment 0
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+CREATE TABLE public.inter_a (id int PRIMARY KEY);
+
+-- pg-prime:segment 1
+-- pg-prime:stmt 1 lock=accessExclusive non-idempotent
+CREATE TABLE public.inter_b (id int PRIMARY KEY);
+
+-- pg-prime:segment 0
+-- pg-prime:stmt 2 lock=accessExclusive non-idempotent
+CREATE TABLE public.inter_c (id int PRIMARY KEY);
+`;
+
 /** Hold ACCESS EXCLUSIVE on `public.locked_t` from a second connection. */
 async function holdTableLock(conn: ConnInfo): Promise<() => Promise<void>> {
   const client = new pg.Client({ ...conn });
@@ -124,7 +169,7 @@ describe("failures, retries and what the row says afterwards", () => {
 
   afterAll(async () => {
     for (const d of databases) await destroyDatabase(d).catch(() => undefined);
-  });
+  }, T);
 
   const project = async (slug: string, second: string, body: string): Promise<{ conn: ConnInfo; dir: string }> => {
     const database = `pgprime_k1_fail_${slug}`;
@@ -260,36 +305,112 @@ describe("failures, retries and what the row says afterwards", () => {
   );
 
   it(
-    "a segment committed by an attempt that was retried still counts, so the file cannot be withdrawn",
+    "a retry after a committed segment resumes at the failing segment",
     async () => {
-      // Attempt 1 commits segment 0 and times out on the lock in segment 1; attempt 2 fails on segment 0 itself.
+      // Attempt 1 commits segment 0 and times out on the lock in segment 1; attempt 2 runs segment 1 alone.
       const { conn, dir } = await project("retried", "0002_retried.sql", RETRIED);
       expect((await applyPending(conn, dir, { to: "0001" })).status).toBe("applied");
       const release = await holdTableLock(conn);
-      try {
-        const r = await applyPending(conn, dir, { retryBaseMs: 1 });
-        expect(r.error?.sqlState).toBe("42P07");
-      } finally {
-        await release();
-      }
+      let released = false;
+      const r = await applyPending(conn, dir, {
+        retryBaseMs: 1,
+        onEvent: (e) => {
+          if (e.kind === "migration" && e.state === "retry" && !released) {
+            released = true;
+            void release();
+          }
+        },
+      });
+      expect(r.status).toBe("applied");
+      expect(r.applied[0]!.retries).toBeGreaterThanOrEqual(1);
       const row = (await withClient(conn, readMigrationRows)).find((x) => x.id === "0002_retried")!;
-      expect(row.statementsApplied).toBe(1);
-      await rm(join(dir, "0002_retried.sql"));
-      expect((await migrationStatus(conn, dir)).missingFiles).toEqual(["0002_retried"]);
+      expect(row).toMatchObject({ status: "applied", statementsApplied: 2, statementUncertain: null, error: null });
+      expect(await scalar(conn, NOTE_COLUMNS)).toBe(1);
     },
     T,
   );
 
   it(
-    "a rerun killed between segments, then failing again, leaves a row that cannot be withdrawn",
+    "a failed rerun after a committed segment skips it, and the file cannot be withdrawn meanwhile",
+    async () => {
+      const { conn, dir } = await project("rerun", "0002_retried.sql", RETRIED);
+      expect((await applyPending(conn, dir, { to: "0001" })).status).toBe("applied");
+      const release = await holdTableLock(conn);
+      try {
+        for (const run of [1, 2]) {
+          const r = await applyPending(conn, dir, { retryBaseMs: 1 });
+          expect(r.status, `run ${String(run)}`).toBe("failed");
+          // Segment 0 committed in run 1 and is never replayed: the SQLSTATE stays the lock's, not 42P07.
+          expect(r.error).toMatchObject({ sqlState: "55P03", statementIndex: 1, attempts: 5 });
+        }
+      } finally {
+        await release();
+      }
+      const rows = () => withClient(conn, readMigrationRows).then((all) => all.find((x) => x.id === "0002_retried")!);
+      expect(await rows()).toMatchObject({
+        status: "failed",
+        statementsApplied: 1,
+        segmentApplied: 0,
+        statementUncertain: 1,
+      });
+      await rm(join(dir, "0002_retried.sql"));
+      expect((await migrationStatus(conn, dir)).missingFiles).toEqual(["0002_retried"]);
+      await writeHandMigration(dir, "0002_retried.sql", RETRIED);
+
+      const r = await applyPending(conn, dir);
+      expect(r.status).toBe("applied");
+      expect(r.applied[0]).toMatchObject({ id: "0002_retried", resumedFrom: 1, retries: 0 });
+      expect(await rows()).toMatchObject({
+        status: "applied",
+        statementsApplied: 2,
+        statementUncertain: null,
+        error: null,
+      });
+      expect(await scalar(conn, NOTE_COLUMNS)).toBe(1);
+    },
+    T,
+  );
+
+  it(
+    "a file edited after a segment committed is refused, never resumed by position",
+    async () => {
+      const { conn, dir } = await project("edited", "0002_retried.sql", RETRIED);
+      expect((await applyPending(conn, dir, { to: "0001" })).status).toBe("applied");
+      const rowNow = async (): Promise<unknown> =>
+        (await withClient(conn, readMigrationRows)).find((x) => x.id === "0002_retried");
+      const release = await holdTableLock(conn);
+      try {
+        expect((await applyPending(conn, dir, { retryBaseMs: 1 })).error?.sqlState).toBe("55P03");
+        const before = await rowNow();
+        for (const [label, body] of [
+          ["prepended", PREPENDED],
+          ["shrunk", SHRUNK],
+        ] as const) {
+          await writeHandMigration(dir, "0002_retried.sql", body);
+          const r = await applyPending(conn, dir);
+          expect(r.status, label).toBe("drift");
+          expect(r.exitCode, label).toBe(EXIT.drift);
+          expect(r.error, label).toMatchObject({ code: "checksum_drift", migration: "0002_retried" });
+          expect(r.error?.message, label).toContain("committed 1 of 2 statement(s) (through segment 0)");
+          expect(await rowNow(), label).toEqual(before);
+        }
+        expect(await scalar(conn, "SELECT to_regclass('public.edited_t') IS NOT NULL")).toBe(false);
+        await writeHandMigration(dir, "0002_retried.sql", RETRIED);
+      } finally {
+        await release();
+      }
+      // The file that ran, restored, resumes where it stopped.
+      expect((await applyPending(conn, dir)).applied[0]).toMatchObject({ id: "0002_retried", resumedFrom: 1 });
+    },
+    T,
+  );
+
+  it(
+    "a run killed between segments resumes at the next segment",
     async () => {
       const { conn, dir } = await project("crashed", "0002_crashed.sql", CRASHED);
       expect((await applyPending(conn, dir, { to: "0001" })).status).toBe("applied");
-      // The first run fails on segment 0 and commits nothing.
-      await withClient(conn, (c) => c.query("CREATE TABLE public.crash_t (id int)"));
-      expect((await applyPending(conn, dir)).error?.sqlState).toBe("42P07");
-      await withClient(conn, (c) => c.query("DROP TABLE public.crash_t"));
-      // The rerun commits segment 0, then its backend is killed while segment 1 waits on a lock.
+      // Segment 0 commits, then the backend is killed while segment 1 waits on a lock.
       const release = await holdTableLock(conn);
       try {
         const victim = new pg.Client({ ...conn });
@@ -311,10 +432,71 @@ describe("failures, retries and what the row says afterwards", () => {
       } finally {
         await release();
       }
-      // The next run fails on segment 0 itself: the table it creates is already there.
-      expect((await applyPending(conn, dir)).error?.sqlState).toBe("42P07");
-      await rm(join(dir, "0002_crashed.sql"));
-      expect((await migrationStatus(conn, dir)).missingFiles).toEqual(["0002_crashed"]);
+      const row = (await withClient(conn, readMigrationRows)).find((x) => x.id === "0002_crashed")!;
+      expect(row).toMatchObject({ status: "running", statementsApplied: 1, segmentApplied: 0, statementUncertain: 1 });
+      // The rerun skips segment 0: its table is already there.
+      const r = await applyPending(conn, dir);
+      expect(r.status).toBe("applied");
+      expect(r.applied[0]).toMatchObject({ id: "0002_crashed", resumedFrom: 1 });
+      expect(await scalar(conn, NOTE_COLUMNS.replace("'note'", "'crash_note'"))).toBe(1);
+    },
+    T,
+  );
+
+  it(
+    "a segment's progress is written inside its own transaction, never after its COMMIT",
+    async () => {
+      const { conn, dir } = await project("progress", "0002_retried.sql", RETRIED);
+      expect((await applyPending(conn, dir, { to: "0001" })).status).toBe("applied");
+      const texts = (await applyPending(conn, dir, { dryRun: true })).dryRun!.map((q) => q.text);
+      const create = texts.findIndex((t) => t.includes("retry_committed_t"));
+      const commit = texts.indexOf("COMMIT", create);
+      const progress = texts.findIndex((t) =>
+        t.startsWith("UPDATE pgprime.migrations SET statements_applied = 1, segment_applied = 0"),
+      );
+      expect(progress).toBeGreaterThan(create);
+      expect(progress).toBeLessThan(commit);
+      expect(texts[commit + 1]).toBe("BEGIN");
+    },
+    T,
+  );
+
+  it(
+    "segment markers out of file order are refused before anything runs",
+    async () => {
+      const { conn, dir } = await project("interleaved", "0002_interleaved.sql", INTERLEAVED);
+      const r = await applyPending(conn, dir);
+      expect(r.status).toBe("failed");
+      expect(r.error).toMatchObject({ code: "plan_invalid", migration: "0002_interleaved" });
+      expect(r.applied.map((a) => a.id)).toEqual(["0001_seed"]);
+      expect(await scalar(conn, "SELECT to_regclass('public.inter_a') IS NOT NULL")).toBe(false);
+    },
+    T,
+  );
+
+  it(
+    "a repeatable failing after the migrations committed is a failed run that still names them",
+    async () => {
+      const { conn, dir } = await project("repeatable", "0002_blocked.sql", BLOCKED);
+      const sql = join(dir, "..", "sql");
+      await mkdir(join(sql, "010_views"), { recursive: true });
+      await writeFile(
+        join(sql, "010_views", "broken.sql"),
+        "CREATE VIEW public.broken AS SELECT * FROM public.nope;\n",
+      );
+      const r = await applyPending(conn, dir, { repeatables: createRepeatablesPass(), repeatablesDir: sql });
+      expect(r.status).toBe("failed");
+      expect(r.exitCode).toBe(EXIT.error);
+      expect(r.applied.map((a) => a.id)).toEqual(["0001_seed", "0002_blocked"]);
+      expect(r.lock.acquired).toBe(true);
+      expect(r.error).toMatchObject({ code: "sql_error", sqlState: "42P01" });
+      expect(r.error?.message).toContain("sql/010_views/broken.sql");
+      expect(r.error?.sql).toContain("public.nope");
+      const rows = await withClient(conn, readMigrationRows);
+      expect(rows.map((x) => x.status)).toEqual(["applied", "applied"]);
+      expect(await withClient(conn, readRepeatableRows)).toEqual([]);
+      // Nothing is left holding the lock.
+      expect((await applyPending(conn, dir)).status).toBe("up_to_date");
     },
     T,
   );

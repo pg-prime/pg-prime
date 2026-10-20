@@ -37,7 +37,7 @@ import { applyPending } from "../../runner/run.js";
 import { declaredCensus, isDeclared } from "../../schema/declared.js";
 import { loadDesired } from "../../schema/load.js";
 import type { SchemaLike } from "../../schema/types.js";
-import { provisionShadow, type Shadow, type ShadowStrategy } from "../../shadow/ladder.js";
+import { provisionShadow, ShadowIsTargetError, type Shadow, type ShadowStrategy } from "../../shadow/ladder.js";
 import { bool, str, type OptionSpec, type ParseResult } from "../args.js";
 import { EXIT, type ExitCode } from "../exit.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
@@ -159,6 +159,7 @@ export async function runVerify(config: ResolvedConfig, argv: ParseResult): Prom
       schemas: [...config.schemas, HISTORY_SCHEMA],
     });
   } catch (err) {
+    if (err instanceof ShadowIsTargetError) return fail(EXIT.error, "refused", err.message);
     return fail(
       EXIT.error,
       "unavailable",

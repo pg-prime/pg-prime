@@ -98,9 +98,11 @@ function toRow(r: Record<string, unknown>): MigrationRow {
   };
 }
 
-/** Ordered the way the runner orders files: `(seq, name)` (design/06 §4.1). */
+/** Ordered the way the runner orders files: `(seq, name)` in code-unit order, whatever the server's collation. */
 export async function readMigrationRows(client: CatalogClient): Promise<MigrationRow[]> {
-  const r = await client.query(`SELECT ${MIGRATION_COLUMNS} FROM ${HISTORY_SCHEMA}.migrations ORDER BY seq, name`);
+  const r = await client.query(
+    `SELECT ${MIGRATION_COLUMNS} FROM ${HISTORY_SCHEMA}.migrations ORDER BY seq, name COLLATE "C"`,
+  );
   return r.rows.map(toRow);
 }
 
@@ -236,6 +238,14 @@ export async function markStatementApplied(
     [id, index + 1, segment],
   );
   await client.query("COMMIT");
+}
+
+/**
+ * A segmented file's progress, as a literal for the segment's own transaction (like `recordAppliedSql`).
+ * The next statement stays uncertain until the row is recorded applied.
+ */
+export function segmentAppliedSql(id: string, applied: number, segment: number): string {
+  return `UPDATE ${HISTORY_SCHEMA}.migrations SET statements_applied = ${String(applied)}, segment_applied = ${String(segment)}, statement_uncertain = ${String(applied)} WHERE id = ${quoteLiteral(id)}`;
 }
 
 export async function markApplied(client: CatalogClient, id: string, applied: number): Promise<void> {
@@ -411,7 +421,7 @@ export interface CheckpointRow {
 
 export async function readCheckpointRows(client: CatalogClient): Promise<CheckpointRow[]> {
   const r = await client.query(
-    `SELECT id, fingerprint, ${TS("created_at")} AS created_at FROM ${HISTORY_SCHEMA}.checkpoints ORDER BY id`,
+    `SELECT id, fingerprint, ${TS("created_at")} AS created_at FROM ${HISTORY_SCHEMA}.checkpoints ORDER BY id COLLATE "C"`,
   );
   return r.rows.map((row) => ({
     id: str(row["id"]),
@@ -493,7 +503,9 @@ export async function readDataProgress(client: CatalogClient, migrationId: strin
 }
 
 export async function readAllDataProgress(client: CatalogClient): Promise<DataProgress[]> {
-  const r = await client.query(`SELECT ${DATA_COLUMNS} FROM ${HISTORY_SCHEMA}.data_progress ORDER BY migration_id`);
+  const r = await client.query(
+    `SELECT ${DATA_COLUMNS} FROM ${HISTORY_SCHEMA}.data_progress ORDER BY migration_id COLLATE "C"`,
+  );
   return r.rows.map(toProgress);
 }
 
@@ -526,7 +538,7 @@ export function dataProgressSql(p: Omit<DataProgress, "updatedAt">): string {
 export async function readRepeatableRows(client: CatalogClient): Promise<RepeatableRow[]> {
   const r = await client.query(
     `SELECT path, checksum, ${TS("applied_at")} AS applied_at, duration_ms
-       FROM ${HISTORY_SCHEMA}.repeatables ORDER BY path`,
+       FROM ${HISTORY_SCHEMA}.repeatables ORDER BY path COLLATE "C"`,
   );
   return r.rows.map((row) => ({
     path: str(row["path"]),

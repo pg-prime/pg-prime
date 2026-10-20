@@ -305,6 +305,7 @@ export {
   parseShadowUrl,
   provisionShadow,
   OfflineShadowError,
+  ShadowIsTargetError,
   ShadowNameTooLongError,
   ShadowStrategyError,
   type ProvisionShadowOptions,

@@ -1232,6 +1232,20 @@ The temp-schema tier cannot host a schema whose shadow name would exceed 63 UTF-
 PostgreSQL would truncate it and the schema map would stop being reversible. Use `--shadow <url>` or
 a role with `CREATEDB`.
 
+### `ShadowIsTargetError`
+
+{/* docs: signature */}
+```ts
+class ShadowIsTargetError extends Error {
+  readonly role: 'target' | 'admin'
+  readonly code: 'PG_PRIME_SHADOW_IS_TARGET'
+}
+```
+
+A tier-1 shadow URL that names the target or the admin database (same host, port and database;
+loopback spellings count as one host). Refused before any statement runs, because a tier-1 shadow's
+managed schemas are dropped and recreated. The CLI reports it as `refused`, exit 1.
+
 ### `UnsafeCloneNameError`
 
 {/* docs: signature */}

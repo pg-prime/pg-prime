@@ -53,7 +53,9 @@ keyword nor a usable URL is refused with a sentence naming the tiers, never demo
 The managed schemas in that database are dropped and recreated before the desired state is loaded,
 and again when the run finishes. That is the same contract as Prisma's `SHADOW_DATABASE_URL`, said
 out loud: pg-prime emits a `shadow_url_reset` warning naming the database and the schemas it is
-about to reset, so nobody points it at something they care about by accident.
+about to reset, so nobody points it at something they care about by accident. A URL that names
+the database being migrated itself, or the admin database, on the same host and port is refused
+before any statement runs (`ShadowIsTargetError`): the reset would drop the live schemas.
 
 Use this when you want the normalization traffic in a database of your own choosing — a scratch
 database in CI, or one on a different host from production.

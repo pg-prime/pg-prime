@@ -44,6 +44,7 @@ import {
   recordAppliedSql,
   recordCheckpoint,
   recordSuperseded,
+  segmentAppliedSql,
   releaseLease,
   takeLease,
   upsertRepeatable,
@@ -52,10 +53,11 @@ import {
   type NewMigrationRow,
   leftNothing,
 } from "../history/store.js";
-import { ENGINE, type PlanStatement } from "../plan/plan.js";
+import { ENGINE } from "../plan/plan.js";
 import {
   acquireSessionLock,
   applySegments,
+  type ApplyReport,
   detectTransactionPooler,
   detectTransactionPoolerStrict,
   releaseSessionLock,
@@ -735,6 +737,34 @@ export async function applyPendingOn(
         }
       }
 
+      /* 7a-ter. A partial row resumes by statement count, which is a position only in the file that ran. */
+      const partial = byId.get(file.id);
+      if (
+        partial !== undefined &&
+        (partial.status === "failed" || partial.status === "running") &&
+        partial.statementsApplied > 0 &&
+        (partial.checksum !== file.checksum || partial.statementsTotal !== exec.statements.length)
+      ) {
+        return await finish(
+          done("drift", {
+            lock,
+            applied,
+            preflight,
+            pending: pending.map((f) => f.id),
+            error: {
+              code: "checksum_drift",
+              migration: file.id,
+              message:
+                `${file.id}.sql changed after a run of it committed ${String(partial.statementsApplied)} of ` +
+                `${String(partial.statementsTotal)} statement(s) (through segment ${String(partial.segmentApplied)}): ` +
+                `recorded ${partial.checksum}, on disk ${file.checksum}. The rest cannot be resumed by position. ` +
+                `Restore the file that ran and rerun; or undo what it committed by hand, delete its row from ` +
+                `${HISTORY_SCHEMA}.migrations, and run the edited file from the start.`,
+            },
+          }),
+        );
+      }
+
       /* 7a-bis. The managed schema set (design/11 K1 open item 1).
        *
        * The set scopes the diff, the fingerprint AND the lock key, so a runner pointed at
@@ -857,8 +887,8 @@ export async function applyPendingOn(
       }
     }
 
-    /* 8. Repeatables. */
-    const repeatables = await runRepeatables(
+    /* 8. Repeatables. The migrations above have committed, so a failure here still reports them. */
+    const { repeatables, failure } = await runRepeatables(
       client,
       dryRun ? capture : client,
       options.repeatables ?? NO_REPEATABLES,
@@ -867,7 +897,13 @@ export async function applyPendingOn(
       schemas,
     );
 
-    const status: RunnerStatus = dryRun ? "dry_run" : applied.length > 0 ? "applied" : "up_to_date";
+    const status: RunnerStatus = failure
+      ? "failed"
+      : dryRun
+        ? "dry_run"
+        : applied.length > 0
+          ? "applied"
+          : "up_to_date";
     return await finish(
       done(status, {
         lock,
@@ -877,6 +913,7 @@ export async function applyPendingOn(
         repeatables,
         pending: [],
         dryRun: dryRun ? capture.issued : null,
+        error: failure,
       }),
     );
   } catch (err) {
@@ -936,53 +973,67 @@ async function runFile(
     return outcome(Date.now() - startedAt, row ? from : null, result.retries, result.failure, result.batch);
   }
 
-  // Transactional / segmented. The history INSERT is appended to the LAST transactional
-  // segment as statement `total`, so "applied" and "recorded" commit together (§5.3).
-  const history: PlanStatement = {
-    index: total,
-    sql: recordAppliedSql(record),
-    verb: "alter",
-    kind: "history",
-    produces: [],
-    consumes: [],
-    destroys: [],
-    releases: [],
-    transactionality: "transactional",
-    lockClass: "rowExclusive",
-    idempotent: true,
-    timeouts: { lock: ctx.lockTimeout, statement: "30s" },
-    dataLoss: "none",
-    rewrite: false,
-    hazards: [],
-  };
-  const statements = [...exec.statements, history];
-  const segments = exec.segments.map((s) => ({ ...s, statements: [...s.statements] }));
-  const last = [...segments].reverse().find((s) => s.transactional);
-  if (last) last.statements.push(total);
-  else segments.push({ index: segments.length, transactional: true, statements: [total] });
+  // Transactional / segmented. Every segment ends with its own history write — the progress
+  // UPDATE, or the applied INSERT in the last one — inside its transaction, so what the row says
+  // is exactly what committed (§5.3): a crash after a COMMIT cannot leave the progress behind.
+  const statements = [...exec.statements];
+  const segments = exec.segments.map((s) => ({
+    ...s,
+    statements: [...s.statements],
+    done: Math.max(...s.statements) + 1,
+  }));
+  const last = segments[segments.length - 1]!;
+  for (const seg of segments) {
+    seg.statements.push(statements.length);
+    statements.push({
+      index: statements.length,
+      sql: seg === last ? recordAppliedSql(record) : segmentAppliedSql(file.id, seg.done, seg.index),
+      verb: "alter",
+      kind: "history",
+      produces: [],
+      consumes: [],
+      destroys: [],
+      releases: [],
+      transactionality: "transactional",
+      lockClass: "rowExclusive",
+      idempotent: true,
+      timeouts: { lock: ctx.lockTimeout, statement: "30s" },
+      dataLoss: "none",
+      rewrite: false,
+      hazards: [],
+    });
+  }
 
   let retries = 0;
   // A failed transaction rolls back alone: the segments before it, in any attempt of any run, may have committed.
   let committed = row?.status === "failed" || row?.status === "running" ? row.statementsApplied : 0;
+  const from = committed;
+  const segmentApplied = (): number => segmentOf(segments, committed - 1);
   // Several commits: until the row is recorded applied, what committed is uncertain, so it is never withdrawable.
   if (segments.length > 1)
-    await beginRow(client, { ...record, statementsApplied: committed, status: "running" }, committed);
+    await beginRow(
+      client,
+      { ...record, statementsApplied: committed, segmentApplied: segmentApplied(), status: "running" },
+      committed,
+    );
+  const apply = {
+    lockTimeout: ctx.lockTimeout,
+    ...(ctx.statementTimeout === undefined ? {} : { statementTimeout: ctx.statementTimeout }),
+  };
   for (;;) {
-    const report = await applySegments(client, statements, segments, {
-      lockTimeout: ctx.lockTimeout,
-      ...(ctx.statementTimeout === undefined ? {} : { statementTimeout: ctx.statementTimeout }),
-    });
+    let report: ApplyReport = { status: "applied", appliedStatements: 0 };
+    // Only what has not committed runs: a committed segment replayed fails on its own DDL.
+    for (const seg of segments) {
+      if (seg !== last && seg.done <= committed) continue;
+      const todo = seg.statements.filter((i) => i >= committed);
+      report = await applySegments(client, statements, [{ ...seg, statements: todo }], apply);
+      if (report.status === "failed") break;
+      committed = seg.done;
+    }
     if (report.status === "applied") {
       // The synthetic history statement is not part of the migration.
-      return outcome(Date.now() - startedAt, null, retries, null);
+      return outcome(Date.now() - startedAt, from > 0 ? from : null, retries, null);
     }
-    const at = segments.findIndex((s) => s.statements.includes(report.error?.statementIndex ?? -1));
-    committed = Math.max(
-      committed,
-      segments[at]?.transactional === false
-        ? Math.min(report.appliedStatements, total)
-        : segments.slice(0, Math.max(at, 0)).reduce((n, s) => n + s.statements.length, 0),
-    );
     const state = report.error?.sqlState;
     const budget = RETRY[state ?? ""] ?? 1;
     if (retries + 1 < budget) {
@@ -998,7 +1049,7 @@ async function runFile(
     }
     await markFailed(
       client,
-      { ...record, status: "failed" },
+      { ...record, status: "failed", segmentApplied: segmentApplied() },
       {
         code: "sql_error",
         message: report.error?.message ?? "unknown failure",
@@ -1251,28 +1302,41 @@ async function runRepeatables(
   dir: string | null,
   historyReadable: boolean,
   schemas: readonly string[],
-): Promise<RepeatablesReport> {
-  if (dir === null) return { applied: [], unchanged: [] };
+): Promise<{ repeatables: RepeatablesReport; failure: RunnerFailure | null }> {
+  if (dir === null) return { repeatables: { applied: [], unchanged: [] }, failure: null };
   const rows = historyReadable ? await readRepeatableRows(reader) : [];
   const hashes = new Map(rows.map((r) => [r.path, r.checksum]));
   const plan = await healDeclared(reader, await pass.plan(dir, hashes), schemas);
   const changed = plan.toApply;
   const unchanged = plan.unchanged.map((f) => f.path);
-  if (changed.length === 0) return { applied: [], unchanged };
+  if (changed.length === 0) return { repeatables: { applied: [], unchanged }, failure: null };
 
   const startedAt = Date.now();
+  let at = { path: "", sql: "" };
   await client.query("BEGIN");
   try {
     for (const f of changed) {
-      for (const sql of f.statements) await client.query(sql);
+      for (const sql of f.statements) {
+        at = { path: f.path, sql };
+        await client.query(sql);
+      }
       await upsertRepeatable(client, f.path, f.sha256, Date.now() - startedAt);
     }
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => undefined);
-    throw err;
+    const state = sqlState(err);
+    return {
+      repeatables: { applied: [], unchanged },
+      failure: {
+        code: "sql_error",
+        message: `repeatable ${at.path} failed: ${message(err)}`,
+        sql: at.sql,
+        ...(state === undefined ? {} : { sqlState: state }),
+      },
+    };
   }
-  return { applied: changed.map((f) => f.path), unchanged };
+  return { repeatables: { applied: changed.map((f) => f.path), unchanged }, failure: null };
 }
 
 /* ------------------------------ unlock, status ----------------------------- */

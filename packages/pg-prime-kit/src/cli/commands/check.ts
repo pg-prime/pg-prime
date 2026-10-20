@@ -25,7 +25,7 @@ import { createRepeatablesPass } from "../../repeatables/index.js";
 import { readMigrationsDir } from "../../runner/files.js";
 import { migrationStatus } from "../../runner/status.js";
 import type { SchemaLike } from "../../schema/types.js";
-import { OfflineShadowError } from "../../shadow/ladder.js";
+import { OfflineShadowError, ShadowIsTargetError } from "../../shadow/ladder.js";
 import { bool, str, type OptionSpec, type ParseResult } from "../args.js";
 import { EXIT, type ExitCode } from "../exit.js";
 import { bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
@@ -130,6 +130,7 @@ export async function runCheck(config: ResolvedConfig, argv: ParseResult): Promi
         ];
       } else if (
         err instanceof OfflineShadowError ||
+        err instanceof ShadowIsTargetError ||
         err instanceof GenerateRefusedError ||
         err instanceof ConfigError
       ) {

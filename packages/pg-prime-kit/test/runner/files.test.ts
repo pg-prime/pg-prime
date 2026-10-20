@@ -10,7 +10,13 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { executionPlan, findDirectives, parseMigrationSql, readMigrationsDir } from "../../src/runner/files.js";
+import {
+  executionPlan,
+  findDirectives,
+  parseMigrationSql,
+  readMigrationsDir,
+  type ExecutionPlan,
+} from "../../src/runner/files.js";
 import { renderSql, type PlanStatement } from "../../src/plan/plan.js";
 import { canonicalize, lexSql } from "../../src/sql/statements.js";
 import { tempDir } from "../support/migrations.js";
@@ -189,5 +195,37 @@ describe("executionPlan", () => {
     expect(exec.segments).toEqual([{ index: 0, transactional: false, statements: [0] }]);
     expect(exec.statements[0]!.timeouts).toEqual({ lock: "5s", statement: "0" });
     expect(exec.statements[0]!.transactionality).toBe("nonTransactional");
+  });
+
+  it("refuses hand-written segment markers that are not 0, 1, 2… in file order", () => {
+    const exec = (markers: readonly number[]): ExecutionPlan => {
+      const lines = markers.flatMap((m, i) => [
+        `-- pg-prime:segment ${String(m)}`,
+        `-- pg-prime:stmt ${String(i)} lock=none idempotent`,
+        `SELECT ${String(i)};`,
+      ]);
+      const parsed = parseMigrationSql(["-- pg-prime:txmode transactional", ...lines, ""].join("\n"), "x.sql");
+      return executionPlan({
+        id: "0001_x",
+        seq: 1,
+        name: "x",
+        path: "x",
+        planPath: null,
+        checksum: "sha256:0",
+        text: "",
+        directives: parsed.directives,
+        statements: parsed.statements,
+        statementSource: parsed.statementSource,
+        plan: null,
+        txmode: "transactional",
+        diagnostics: [],
+      });
+    };
+    expect(exec([0, 0, 1]).segments.map((s) => s.statements)).toEqual([[0, 1], [2]]);
+    expect(exec([0, 0, 1]).diagnostics).toEqual([]);
+    for (const markers of [[0, 1, 0], [1, 0], [0, 2], [1, 2]]) {
+      const codes = exec(markers).diagnostics.map((d) => [d.code, d.severity]);
+      expect(codes, markers.join(",")).toContainEqual(["segment_marker_out_of_order", "error"]);
+    }
   });
 });
