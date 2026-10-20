@@ -1,7 +1,7 @@
 import type { Entry, SubscriptionDef } from '@pg-prime/events'
 import type { AsyncDisposable_ } from 'pg-prime'
 import type { QueueDef } from '../define.js'
-import type { Core } from '../mq.js'
+import type { Core, Loop } from '../mq.js'
 import { ASYNC_DISPOSE } from '../util.js'
 import type { QueueHandle } from './handle.js'
 
@@ -35,12 +35,16 @@ export function bind<E, T>(
   opts: BindOptions<E, T> = {},
 ): Binding {
   const { map = (e: Entry<E>) => ({ payload: e.payload as unknown as T }), ...run } = opts
+  const stop = new AbortController()
   const reader = core
     .events()
     .subscription(sub)
     .run(
       {
         batch: async (es, ctx) => {
+          // Only drop() aborts this; close() lets a batch finish. Checked right before start(),
+          // which drop() forgets only after the abort.
+          stop.signal.throwIfAborted()
           await handle.start()
           const items = es.map((e) => {
             const { payload, ...o } = map(e)
@@ -53,19 +57,25 @@ export function bind<E, T>(
           core.hooks.emit('onBind', { subscription: sub.name, queue: def.name, count: es.length })
         },
       },
-      { batchSize: 100, ...run },
+      {
+        batchSize: 100,
+        ...run,
+        signal: run.signal === undefined ? stop.signal : AbortSignal.any([stop.signal, run.signal]),
+      },
     )
   const close = async (): Promise<void> => {
     core.running.delete(binding)
     await reader.close()
   }
   const binding = {
+    queue: def.name,
+    stop: () => stop.abort(),
     get active() {
       return reader.active
     },
     close,
     [ASYNC_DISPOSE]: close,
-  } as unknown as Binding
+  } as unknown as Binding & Loop
   core.running.add(binding)
   return binding
 }

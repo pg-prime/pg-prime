@@ -383,6 +383,9 @@ export function queueHandle<T, R>(core: Core, def: QueueDef<T, R>): QueueHandle<
           `@pg-prime/mq: queue ${name} has active messages; drop({ force: true }) to drop it anyway.`,
         )
       }
+      // Stopped, not awaited: the caller may be one of their handlers. A loop checks its signal
+      // right before ready(), so none of them re-creates the row forgotten below.
+      for (const r of core.running) if (r.queue === name) r.stop(opts.force === true)
       while ((await purgeBatch(core.db, t, name, null, null)) === 1000);
       await dropRows(core.db, t, name)
       core.forget(def)

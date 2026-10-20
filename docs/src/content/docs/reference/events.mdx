@@ -143,7 +143,7 @@ right after this entry, the only valid resume handle.
 | `lag()` | `{ entries, oldestAt }` still to be delivered |
 | `parked({ limit? })` | parked entries with their attempts and last error |
 | `discard(ids)` | removes parked rows, returns how many |
-| `remove()` | deletes the subscription and its parked rows |
+| `remove()` | stops this instance's readers of it (without waiting for a running handler, which may be the caller), then deletes the subscription and its parked rows |
 
 ### `RunOptions`
 

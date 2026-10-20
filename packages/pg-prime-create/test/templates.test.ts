@@ -86,6 +86,7 @@ describe('the templates are the page', () => {
       'kit',
       'testing',
       'pg',
+      'typesPg',
       'typescript',
       'typesNode',
       'vitest',

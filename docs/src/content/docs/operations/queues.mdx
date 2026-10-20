@@ -41,7 +41,9 @@ heartbeats, progress and counter updates touch no indexed column, so they stay H
 
 ## Admin
 
-`pause()` stops every new claim; `drop()` refuses while a message is active unless `force`.
+`pause()` stops every new claim; `drop()` refuses while a message is active unless `force`, and
+stops this instance's workers and bindings of the queue before deleting it, without waiting for
+in-flight handlers (`force` aborts their signals), so a handler may drop its own queue.
 `list({ state: 'failed' })`, `retry({ state: 'failed' })` and `purge({ states: ['failed'] })`
 manage the dead-letter state. Every statement is labelled `mq.<op>` in `db.observe`, the slow log
 and OpenTelemetry spans; `spanAttributes(e)` maps a settle to the messaging attributes.

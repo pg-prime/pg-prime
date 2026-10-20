@@ -119,6 +119,7 @@ describe('scaffold', () => {
       '@pg-prime/kit',
       '@pg-prime/testing',
       '@types/node',
+      '@types/pg',
       'typescript',
       'vitest',
     ])

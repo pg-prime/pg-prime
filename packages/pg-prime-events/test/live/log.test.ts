@@ -362,3 +362,60 @@ describe('payloads', () => {
     expect((await t.read()).map((e) => e.payload)).toStrictEqual([null, null])
   })
 })
+
+describe('remove', () => {
+  it("stops this instance's readers, which would otherwise re-seed the subscription", async () => {
+    const { db, schema, events } = setup()
+    const def = defineSubscription(orders, 'gone', { from: 'beginning' })
+    const seen: number[] = []
+    const reader = events.subscription(def).run(async (e) => void seen.push(e.payload.n), {
+      pollMs: 20,
+    })
+    await events.topic(orders).publish({ n: 1 })
+    await until(() => seen.length === 1)
+    await events.subscription(def).remove()
+    await until(() => !reader.active)
+    await events.topic(orders).publish({ n: 2 })
+    await new Promise((r) => setTimeout(r, 100))
+    const subs = sql.ident(schema, 'subscriptions')
+    const rows = await db.sql`select 1 from ${subs} where name = 'gone'`.execute()
+    expect([seen, rows]).toStrictEqual([[1], []])
+    await reader.close()
+  })
+
+  it('from the handler: resolves, deletes the row and ends the reader', async () => {
+    const { db, schema, events } = setup()
+    const sub = events.subscription(defineSubscription(orders, 'self', { from: 'beginning' }))
+    let done = false
+    let err: unknown
+    const reader = sub.run(
+      async () => {
+        await sub.remove().catch((e: unknown) => (err = e))
+        done = true
+      },
+      { pollMs: 20 },
+    )
+    await events.topic(orders).publish({ n: 1 })
+    await until(() => done)
+    expect(err).toBeUndefined()
+    await until(() => !reader.active)
+    const subs = sql.ident(schema, 'subscriptions')
+    expect(await db.sql`select 1 from ${subs} where name = 'self'`.execute()).toHaveLength(0)
+    await reader.close()
+  })
+
+  it('tells topic a/b + sub c from topic a + sub b/c apart', async () => {
+    const { events } = setup()
+    const ab = defineTopic<{ n: number }>('a/b')
+    const a = defineTopic<{ n: number }>('a')
+    const keep = events.subscription(defineSubscription(ab, 'c', { from: 'beginning' }))
+    const gone = events.subscription(defineSubscription(a, 'b/c', { from: 'beginning' }))
+    const r1 = keep.run(async () => {}, { pollMs: 20 })
+    const r2 = gone.run(async () => {}, { pollMs: 20 })
+    await until(() => r1.active && r2.active)
+    await gone.remove()
+    await until(() => !r2.active)
+    expect(r1.active).toBe(true)
+    await Promise.all([r1.close(), r2.close()])
+  })
+})

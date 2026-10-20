@@ -86,15 +86,16 @@ export async function scratchDatabase(adminUrl: string): Promise<ScratchDatabase
     await db.sql`create database ${sql.ident(name)}`.execute()
   })
 
-  let dropped = false
+  let dropping: Promise<void> | undefined
   return {
     url: databaseUrl(adminUrl, name),
     name,
-    drop: async (): Promise<void> => {
-      if (dropped) return
-      dropped = true
-      await dropScratchDatabase(adminUrl, name)
-    },
+    // Memoised only once it succeeds, so a failed drop is retried by the next call.
+    drop: () =>
+      (dropping ??= dropScratchDatabase(adminUrl, name).catch((e: unknown) => {
+        dropping = undefined
+        throw e
+      })),
   }
 }
 
