@@ -76,10 +76,10 @@ joins it, and an eventual `ROLLBACK` throws away work they never saw.
 | `accessMode` | `'read write' \| 'read only'` | |
 | `deferrable` | `boolean` | Only reachable with `serializable` + `read only`. See below. |
 | `retry` | `RetryPolicy \| boolean` | [Serialization retry](#serialization-retry). |
-| `timeoutMs` | `number` | `statement_timeout` for the whole block. |
-| `lockTimeoutMs` | `number` | `lock_timeout` for the whole block. |
+| `timeoutMs` | `number` | `statement_timeout` for the whole block. A positive integer; `0` is a `UsageError`, not "no timeout". |
+| `lockTimeoutMs` | `number` | `lock_timeout` for the whole block. `0` means no lock timeout, as it does to PostgreSQL. |
 | `localSettings` | `Record<string, string \| number \| boolean>` | GUCs applied right after `BEGIN`, in one round trip. |
-| `signal` | `AbortSignal` | Aborts the transaction. Never retried afterwards. |
+| `signal` | `AbortSignal` | Aborts the transaction, composed with `pgPrime({ signal })`. An abort that lands between the last statement and `COMMIT` rolls back. Never retried afterwards. |
 | `label` | `string` | Appears in hooks, spans, slow-query logs and retry warnings. |
 
 `pgPrime({ transaction: { … } })` sets the defaults every `db.transaction()` starts from.
@@ -157,7 +157,9 @@ savepoint was open, a statement on the outer handle would have failed with `25P0
 rollback it does not.
 
 `SavepointOptions` carries `timeoutMs`, `lockTimeoutMs`, `localSettings`, `label` and `signal`, and
-nothing else. `isolation`, `accessMode` and `deferrable` are **absent by construction**, because
+nothing else. The three GUC options end with the savepoint: PostgreSQL keeps a subtransaction's
+`SET LOCAL` for the rest of the transaction after `RELEASE SAVEPOINT`, so pg-prime reads the
+values first and puts them back once the savepoint is released. `isolation`, `accessMode` and `deferrable` are **absent by construction**, because
 PostgreSQL cannot change any of them mid-transaction and both Drizzle and MikroORM accept them on
 nested calls where they are silently ignored. `retry` is absent for a different reason: a `40001`
 aborts the *whole* transaction, so retrying at savepoint level is meaningless and dangerous.
@@ -467,7 +469,13 @@ console.log(staged) // [ 'one', 'two' ]
 A `Session` has the full `Queryable` surface plus three things of its own: `set(name, value)` (the
 session-scoped sibling of `setLocal`, i.e. `set_config($1, $2, false)`), `advisoryLock(key, opts?)`,
 which resolves to an `AdvisoryLock` you release yourself — `unlock()`, or `await using` — and
-`backendPid`. `s.transaction(fn)` opens a real transaction on the pinned connection.
+`backendPid`. `s.transaction(fn, opts?)` opens a real transaction on the pinned connection, with
+the same `TxOptions`, hooks and retry loop as `db.transaction()`.
+
+Session state must not reach the next borrower, so a connection that `set()` was used on, or that
+still holds a session advisory lock when the callback returns, is closed rather than returned to
+the pool. A temp table is yours to drop. A callback that throws on a healthy connection hands it
+back as usual.
 
 `db.session()` is **refused** under a transaction-pooler profile, with a message naming the fix. A
 transaction pooler reassigns the server connection between transactions, so "the same backend for

@@ -8,7 +8,7 @@
 
 import type { Compiled, CompiledMeta } from '../compile/contract.js'
 import { paramTypesOf } from '../compile/contract.js'
-import type { PgConnection, PgDriver, PgNoticeData } from '../driver/types.js'
+import type { PgConnection, PgDriver, PgNoticeData, PgResult } from '../driver/types.js'
 import { PgPrimeError as PgPrimeErrorClass } from '../errors/index.js'
 import type { PgPrimeError } from '../errors/index.js'
 import {
@@ -16,6 +16,7 @@ import {
   QueryTimeoutError,
   TransactionAbandonedError,
   TransactionClosedError,
+  UsageError,
   VersionConflictError,
   captureCallSite,
   mapError,
@@ -205,6 +206,7 @@ abstract class BaseRunner implements Runner {
   abstract readonly inTransaction: boolean
 
   constructor(state: SessionState, defaults: StatementOptions) {
+    if (defaults.timeoutMs !== undefined) assertTimeoutMs(defaults.timeoutMs)
     this.state = state
     this.defaults = defaults
   }
@@ -239,26 +241,24 @@ abstract class BaseRunner implements Runner {
 
   protected merged(opts: RunOptions | undefined): StatementOptions {
     const o = opts as (RunOptions & CallOptions) | undefined
-    if (o === undefined) return this.defaults
+    const d = this.defaults
+    if (o === undefined) return d
+    if (o.timeoutMs !== undefined) assertTimeoutMs(o.timeoutMs)
     return {
-      ...this.defaults,
-      ...(o.params === undefined ? {} : { params: o.params }),
-      ...(o.statement === undefined ? {} : { statement: o.statement }),
-      ...(o.signal === undefined ? {} : { signal: o.signal }),
-      ...(o.timeoutMs === undefined ? {} : { timeoutMs: o.timeoutMs }),
-      ...(o.timeoutStrategy === undefined ? {} : { timeoutStrategy: o.timeoutStrategy }),
-      ...(o.label === undefined ? {} : { label: o.label }),
-      ...(o.outsideTransaction === undefined ? {} : { outsideTransaction: o.outsideTransaction }),
+      ...d,
+      params: o.params ?? d.params,
+      statement: o.statement ?? d.statement,
+      signal: o.signal ?? d.signal,
+      timeoutMs: o.timeoutMs ?? d.timeoutMs,
+      timeoutStrategy: o.timeoutStrategy ?? d.timeoutStrategy,
+      label: o.label ?? d.label,
+      outsideTransaction: o.outsideTransaction ?? d.outsideTransaction,
     }
   }
 
   /** `07` §6.1 — the caller's signal composed with the db-wide lifecycle one. */
   protected signalFor(opts: StatementOptions): AbortSignal | undefined {
-    const own = opts.signal
-    const global = this.state.signal
-    if (global === undefined) return own
-    if (own === undefined) return global
-    return anySignal([own, global])
+    return composeSignal(opts.signal, this.state.signal)
   }
 
   protected assertOpen(): void {
@@ -294,13 +294,27 @@ export class PoolRunner extends BaseRunner {
     return new PoolRunner(this.state, { ...this.defaults, ...extra }, this.#handle)
   }
 
-  async use<T>(f: (conn: PgConnection) => Promise<T>): Promise<T> {
+  use<T>(f: (conn: PgConnection) => Promise<T>): Promise<T> {
     this.assertOpen()
     this.guard()
-    const lease = await acquire(this.state, this.signalFor(this.defaults))
+    return this.#onLease(this.defaults, (lease) => f(lease.conn))
+  }
+
+  /** `f` exempt from the session `statement_timeout` like a stream — in a transaction, if needed. */
+  useExempt<T>(f: (conn: PgConnection) => Promise<T>): Promise<T> {
+    this.assertOpen()
+    this.guard()
+    return this.#onLease(this.defaults, ({ conn }) => {
+      const timeout = streamTimeout(this.state, conn, this.defaults)
+      return timeout === undefined ? f(conn) : inTransaction(conn, timeout, () => f(conn))
+    })
+  }
+
+  async #onLease<T>(o: StatementOptions, f: (lease: Lease) => Promise<T>): Promise<T> {
+    const lease = await acquire(this.state, this.signalFor(o))
     let dispose = false
     try {
-      return await f(lease.conn)
+      return await f(lease)
     } catch (e) {
       dispose = poisons(e)
       throw this.mapped(e, undefined)
@@ -321,22 +335,14 @@ export class PoolRunner extends BaseRunner {
     this.assertOpen()
     this.guard()
     const lease = await acquire(this.state, this.signalFor(this.defaults))
-    let done = false
     let dispose = false
     try {
-      await lease.conn.execute({ text: 'begin', params: [], mode: 'simple' })
-      await applyStreamTimeout(lease.conn, this.defaults)
-      yield* f(lease.conn)
-      done = true
+      const timeout = streamTimeout(this.state, lease.conn, this.defaults)
+      yield* transactional(lease.conn, timeout, () => f(lease.conn))
     } catch (e) {
       dispose = poisons(e)
       throw this.mapped(e, undefined)
     } finally {
-      if (!dispose) {
-        await lease.conn
-          .execute({ text: done ? 'commit' : 'rollback', params: [], mode: 'simple' })
-          .catch(() => {})
-      }
       await release(this.state, lease, dispose)
     }
   }
@@ -346,84 +352,27 @@ export class PoolRunner extends BaseRunner {
     return label === undefined ? { handle: this.handle } : { handle: this.handle, label }
   }
 
-  async #timedInTransaction<Row>(
-    desc: StatementDescriptor<Row>,
-    o: StatementOptions,
-  ): Promise<Row[]> {
-    const lease = await acquire(this.state, this.signalFor(o))
-    let dispose = false
-    let opened = false
-    try {
-      await lease.conn.execute({ text: 'begin', params: [], mode: 'simple' })
-      opened = true
-      await lease.conn.execute({
-        text: 'select set_config($1,$2,true)',
-        params: ['statement_timeout', String(o.timeoutMs)],
-      })
-      const rows = await execute(
-        this.state,
-        lease,
-        desc,
-        { ...o, timeoutMs: undefined },
-        this.handle,
-        0,
-        undefined,
-      )
-      await lease.conn.execute({ text: 'commit', params: [], mode: 'simple' })
-      opened = false
-      return rows
-    } catch (e) {
-      dispose = poisons(e)
-      if (opened && !dispose) {
-        await lease.conn.execute({ text: 'rollback', params: [], mode: 'simple' }).catch(() => {})
-      }
-      throw e
-    } finally {
-      await release(this.state, lease, dispose)
-    }
-  }
-
   /**
    * Chunks of one logical batch, on ONE connection, inside ONE transaction.
    *
    * A half-applied bulk insert is the failure mode that makes chunking untrustworthy, and it is
    * invisible: the caller sees a rejected promise and 40 000 of 50 000 rows committed.
    */
-  async runChunked<Row>(all: readonly Compiled<Row>[], opts?: RunOptions): Promise<Row[]> {
+  runChunked<Row>(all: readonly Compiled<Row>[], opts?: RunOptions): Promise<Row[]> {
     this.assertOpen()
     const o = this.merged(opts)
     this.guard(o)
-    const lease = await acquire(this.state, this.signalFor(o))
-    let dispose = false
-    try {
-      await lease.conn.execute({ text: 'begin', params: [], mode: 'simple' })
-      const out: Row[] = []
-      try {
-        for (const c of all) {
-          out.push(
-            ...(await execute(
-              this.state,
-              lease,
-              compiledStatement(c),
-              o,
-              this.handle,
-              0,
-              undefined,
-            )),
-          )
-        }
-      } catch (e) {
-        dispose = poisons(e)
-        if (!dispose) {
-          await lease.conn.execute({ text: 'rollback', params: [], mode: 'simple' }).catch(() => {})
-        }
-        throw e
-      }
-      await lease.conn.execute({ text: 'commit', params: [], mode: 'simple' })
-      return out
-    } finally {
-      await release(this.state, lease, dispose)
-    }
+    return this.#onLease(o, (lease) =>
+      inTransaction(
+        lease.conn,
+        serverTimeout(o),
+        (inner) =>
+          chunked(all, (desc) =>
+            execute(this.state, lease, desc, inner, this.handle, 0, undefined),
+          ),
+        o,
+      ),
+    )
   }
 
   /**
@@ -432,24 +381,22 @@ export class PoolRunner extends BaseRunner {
    * It is a separate entry point only because a raw statement has no `Compiled` and therefore no
    * decode plan; everything else about it is a query.
    */
-  async runRaw<Row>(desc: StatementDescriptor<Row>, opts?: RunOptions): Promise<Row[]> {
+  runRaw<Row>(desc: StatementDescriptor<Row>, opts?: RunOptions): Promise<Row[]> {
     this.assertOpen()
     const o = this.merged(opts)
     this.guard(o)
-    // `07` §6.2's opt-in: a hard server-side guarantee for an autocommit statement, at +2 RTT.
-    if (o.timeoutMs !== undefined && o.timeoutStrategy === 'transaction') {
-      return this.#timedInTransaction(desc, o)
-    }
-    const lease = await acquire(this.state, this.signalFor(o))
-    let dispose = false
-    try {
-      return await execute(this.state, lease, desc, o, this.handle, 0, undefined)
-    } catch (e) {
-      dispose = poisons(e)
-      throw e
-    } finally {
-      await release(this.state, lease, dispose)
-    }
+    const timeout = serverTimeout(o)
+    return this.#onLease(o, (lease) =>
+      // `07` §6.2's opt-in: a hard server-side guarantee for an autocommit statement, at +2 RTT.
+      timeout === undefined
+        ? execute(this.state, lease, desc, o, this.handle, 0, undefined)
+        : inTransaction(
+            lease.conn,
+            timeout,
+            (inner) => execute(this.state, lease, desc, inner, this.handle, 0, undefined),
+            o,
+          ),
+    )
   }
 
   /** The root handle is the only one the guard applies to (§1.5 layer 3). */
@@ -567,24 +514,68 @@ export class ConnRunner extends BaseRunner {
     try {
       return await f(this.conn)
     } catch (e) {
-      const mapped = this.#mapped(e, undefined)
-      if (mapped instanceof PgPrimeErrorClass && isPoisoning(mapped))
-        this.tx.poison.error ??= mapped
-      throw mapped
+      throw this.#mapped(e, undefined)
     }
   }
 
-  /** Joins the caller's transaction; the adapter sees `transactionStatus === 'T'` and does too. */
-  scope<T>(f: (conn: PgConnection) => AsyncIterable<T>): AsyncIterable<T> {
+  /** See `PoolRunner.useExempt`. A session has no transaction to SET LOCAL in, so it opens one. */
+  async useExempt<T>(f: (conn: PgConnection) => Promise<T>): Promise<T> {
     this.#assertUsable()
-    return f(this.conn)
+    if (this.#handle === 'tx') {
+      await this.#setLocalTimeout(this.#streamTimeout())
+      return this.use(f)
+    }
+    const timeout = streamTimeout(this.state, this.conn, this.defaults)
+    return this.use((conn) =>
+      timeout === undefined ? f(conn) : inTransaction(conn, timeout, () => f(conn)),
+    )
+  }
+
+  /** `SAVEPOINT`, `set_config`, … — mapped like a query, and recorded as poison. */
+  async control(text: string, params: readonly (string | null)[] = []): Promise<PgResult> {
+    try {
+      return await this.conn.execute(
+        params.length === 0 ? { text, params, mode: 'simple' } : { text, params },
+      )
+    } catch (e) {
+      throw this.#mapped(e, text)
+    }
+  }
+
+  /** A `Tx` joins its own transaction; a `Session` opens one for the stream unless one is open. */
+  async *scope<T>(f: (conn: PgConnection) => AsyncIterable<T>): AsyncIterable<T> {
+    this.#assertUsable()
+    if (this.#handle === 'tx') {
+      await this.#setLocalTimeout(this.#streamTimeout())
+      yield* f(this.conn)
+      return
+    }
+    try {
+      const timeout = streamTimeout(this.state, this.conn, this.defaults)
+      yield* transactional(this.conn, timeout, () => f(this.conn))
+    } catch (e) {
+      throw this.#mapped(e, undefined)
+    }
   }
 
   /** See `PoolRunner.runRaw`. Same statement path, the transaction's own connection. */
   async runRaw<Row>(desc: StatementDescriptor<Row>, opts?: RunOptions): Promise<Row[]> {
     this.#assertUsable()
     const o = this.merged(opts)
-    await this.#applyLocalTimeout(o)
+    if (this.#handle === 'session') {
+      // Outside a transaction a SET LOCAL dies with its statement, so the client timer bounds
+      // the statement — or the +2 RTT opt-in does.
+      const timeout = serverTimeout(o)
+      if (timeout === undefined) return this.#execute(desc, o)
+      return this.use((conn) =>
+        inTransaction(conn, timeout, (inner) => this.#execute(desc, inner), o),
+      )
+    }
+    await this.#setLocalTimeout(o.timeoutMs ?? this.tx.baselineTimeoutMs)
+    return this.#execute(desc, o)
+  }
+
+  async #execute<Row>(desc: StatementDescriptor<Row>, o: StatementOptions): Promise<Row[]> {
     this.#enter()
     try {
       return await execute(
@@ -601,12 +592,19 @@ export class ConnRunner extends BaseRunner {
     }
   }
 
-  /** Already atomic — opening a nested `BEGIN` would emit a 25001 warning and commit nothing. */
-  async runChunked<Row>(all: readonly Compiled<Row>[], opts?: RunOptions): Promise<Row[]> {
+  /** A `Tx` is already atomic; a `Session` gets one transaction for the batch, like the pool. */
+  runChunked<Row>(all: readonly Compiled<Row>[], opts?: RunOptions): Promise<Row[]> {
     this.#assertUsable()
-    const out: Row[] = []
-    for (const c of all) out.push(...(await this.run(c, opts)))
-    return out
+    if (this.#handle === 'tx') return chunked(all, (desc) => this.runRaw(desc, opts))
+    const o = this.merged(opts)
+    return this.use((conn) =>
+      inTransaction(
+        conn,
+        serverTimeout(o),
+        (inner) => chunked(all, (desc) => this.#execute(desc, inner)),
+        o,
+      ),
+    )
   }
 
   /**
@@ -625,20 +623,27 @@ export class ConnRunner extends BaseRunner {
 
   /**
    * `.timeout(ms)` inside a transaction is `SET LOCAL statement_timeout` — correct in every pooler
-   * profile, +1 RTT (§6.2).
+   * profile, +1 RTT (§6.2). `0` is what a stream or COPY wants: no timeout for its duration.
    *
    * The transaction remembers the value it currently has, so a loop of statements sharing one
    * timeout pays for one `set_config` and not N. Restoring is likewise lazy: the next statement
    * that wants a different value (including "none") emits the change.
    */
-  async #applyLocalTimeout(o: StatementOptions): Promise<void> {
-    const want = o.timeoutMs ?? this.tx.baselineTimeoutMs
+  async #setLocalTimeout(want: number | undefined): Promise<void> {
     if (want === this.tx.localTimeoutMs) return
-    await this.conn.execute({
-      text: 'select set_config($1,$2,true)',
-      params: ['statement_timeout', want === undefined ? this.#restoreValue() : String(want)],
-    })
+    await this.control(SET_LOCAL_TIMEOUT, [
+      'statement_timeout',
+      want === undefined ? this.#restoreValue() : String(want),
+    ])
     this.tx.localTimeoutMs = want
+  }
+
+  /** An explicit `statementTimeoutMs`, else the transaction's own, else §3.6's exemption. */
+  #streamTimeout(): number | undefined {
+    const want = (this.defaults as { statementTimeoutMs?: number | null }).statementTimeoutMs
+    if (want !== undefined) return want ?? 0
+    if (this.tx.baselineTimeoutMs !== undefined) return this.tx.baselineTimeoutMs
+    return exemption(this.state, this.conn) === undefined ? undefined : 0
   }
 
   /**
@@ -655,9 +660,7 @@ export class ConnRunner extends BaseRunner {
    * transaction-pooler case, and `pool:`/`driver:` with no `session:`.
    */
   #restoreValue(): string | null {
-    const value = this.state.sessionStatementTimeout
-    if (value === undefined) return null
-    return this.state.configured.has(this.conn.serverParameters as object) ? value : null
+    return installedTimeout(this.state, this.conn) ?? null
   }
 
   protected context(): ErrorContext {
@@ -667,14 +670,135 @@ export class ConnRunner extends BaseRunner {
   }
 
   #mapped(e: unknown, sql: string | undefined): unknown {
-    return mapError(e, {
+    const mapped = mapError(e, {
       context: this.context(),
       errors: this.state.errors,
       sql,
       schema: this.state.schema,
       poisonedBy: this.tx.poison.error,
     })
+    if (mapped instanceof PgPrimeErrorClass && isPoisoning(mapped)) this.tx.poison.error ??= mapped
+    return mapped
   }
+}
+
+/** The `statement_timeout` we installed on this physical connection, or nothing. */
+function installedTimeout(state: SessionState, conn: PgConnection): string | undefined {
+  const value = state.sessionStatementTimeout
+  if (value === undefined) return undefined
+  return state.configured.has(conn.serverParameters as object) ? value : undefined
+}
+
+/** `07` §3.6: a stream or COPY is exempt from the session `statement_timeout`, if we installed one. */
+function exemption(state: SessionState, conn: PgConnection): '0' | undefined {
+  return installedTimeout(state, conn) === undefined ? undefined : '0'
+}
+
+/** The caller's `statementTimeoutMs` (`null` = none), else the exemption. */
+function streamTimeout(
+  state: SessionState,
+  conn: PgConnection,
+  o: StatementOptions,
+): string | undefined {
+  const want = (o as { statementTimeoutMs?: number | null }).statementTimeoutMs
+  if (want === undefined) return exemption(state, conn)
+  return want === null ? '0' : String(want)
+}
+
+/** `07` §6.2's opt-in: the value to `SET LOCAL` around an autocommit statement, if asked for. */
+function serverTimeout(o: StatementOptions): string | undefined {
+  return o.timeoutMs !== undefined && o.timeoutStrategy === 'transaction'
+    ? String(o.timeoutMs)
+    : undefined
+}
+
+const BEGIN = Object.freeze({ text: 'begin', params: [], mode: 'simple' as const })
+const COMMIT = Object.freeze({ text: 'commit', params: [], mode: 'simple' as const })
+const ROLLBACK = Object.freeze({ text: 'rollback', params: [], mode: 'simple' as const })
+
+const SET_LOCAL_TIMEOUT = 'select set_config($1,$2,true)'
+
+function setTimeoutQuery(value: string): { text: string; params: string[] } {
+  return { text: SET_LOCAL_TIMEOUT, params: ['statement_timeout', value] }
+}
+
+async function currentTimeout(conn: PgConnection): Promise<string> {
+  const r = await conn.execute({ text: "select current_setting('statement_timeout')", params: [] })
+  return String(r.rows[0]?.[0] ?? '0')
+}
+
+/**
+ * `begin; set_config(statement_timeout); …; commit` around `f`, `rollback` on any other exit. A
+ * transaction the caller opened by hand is joined, and the timeout it had is put back afterwards.
+ * An adapter that cannot report the status gets no transaction management at all.
+ */
+async function* transactional<T>(
+  conn: PgConnection,
+  timeout: string | undefined,
+  f: () => AsyncIterable<T>,
+): AsyncIterable<T> {
+  const status = conn.transactionStatus
+  if (status === undefined) {
+    yield* f()
+    return
+  }
+  const own = status === 'I'
+  const restore = own || timeout === undefined ? undefined : await currentTimeout(conn)
+  if (own) await conn.execute(BEGIN)
+  let done = false
+  let dead = false
+  try {
+    if (timeout !== undefined) await conn.execute(setTimeoutQuery(timeout))
+    yield* f()
+    done = true
+  } catch (e) {
+    dead = poisons(e)
+    throw e
+  } finally {
+    if (!dead) {
+      if (own && done) await conn.execute(COMMIT)
+      else if (own) await conn.execute(ROLLBACK).catch(() => {})
+      if (restore !== undefined) await conn.execute(setTimeoutQuery(restore)).catch(() => {})
+    }
+  }
+}
+
+/** {@link transactional} around one statement or COPY; `body` gets `timeoutMs` cleared when the server enforces it. */
+async function inTransaction<T>(
+  conn: PgConnection,
+  timeout: string | undefined,
+  body: (o: StatementOptions) => Promise<T>,
+  o: StatementOptions = {},
+): Promise<T> {
+  if (conn.transactionStatus === undefined) {
+    // Nothing to manage, so the client timer bounds the body instead of the server.
+    return body(o.timeoutStrategy === 'transaction' ? { ...o, timeoutStrategy: 'client' } : o)
+  }
+  const inner = timeout === undefined ? o : { ...o, timeoutMs: undefined }
+  const run = transactional(conn, timeout, async function* () {
+    yield await body(inner)
+  })[Symbol.asyncIterator]()
+  const { value } = await run.next()
+  await run.next()
+  return value as T
+}
+
+async function chunked<Row>(
+  all: readonly Compiled<Row>[],
+  run: (desc: StatementDescriptor<Row>) => Promise<Row[]>,
+): Promise<Row[]> {
+  const out: Row[] = []
+  for (const c of all) out.push(...(await run(compiledStatement(c))))
+  return out
+}
+
+/** `0` would mean "fire now" to a timer and "no timeout" to the server; neither is a timeout. */
+export function assertTimeoutMs(ms: number, name = 'timeoutMs', min = 1): void {
+  if (Number.isSafeInteger(ms) && ms >= min) return
+  throw new UsageError(
+    `pg-prime: ${name} must be an integer number of milliseconds` +
+      `${min > 0 ? ' greater than 0' : ''}; got ${String(ms)}.`,
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -803,22 +927,6 @@ function setConfigText(count: number, local: boolean): string {
   const calls: string[] = []
   for (let i = 0; i < count; i++) calls.push(`set_config($${i * 2 + 1},$${i * 2 + 2},${local})`)
   return `select ${calls.join(', ')}`
-}
-
-/**
- * `07` §3.6 — "streaming and COPY default to `null` for their duration".
- *
- * Emitted only when the caller asked for a specific value **or** when we applied a session
- * `statement_timeout` that a long stream would otherwise trip. Emitting it unconditionally would
- * put an extra round trip on every stream to change nothing, which the AS BUILT note records.
- */
-async function applyStreamTimeout(conn: PgConnection, o: StatementOptions): Promise<void> {
-  const want = (o as { statementTimeoutMs?: number | null }).statementTimeoutMs
-  if (want === undefined) return
-  await conn.execute({
-    text: 'select set_config($1,$2,true)',
-    params: ['statement_timeout', want === null ? '0' : String(want)],
-  })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1041,7 +1149,8 @@ function startClientTimeout(
   }, o.timeoutMs)
   ;(t as unknown as { unref?: () => void }).unref?.()
   const onOuter = (): void => ac.abort(base?.reason)
-  base?.addEventListener('abort', onOuter, { once: true })
+  if (base?.aborted) onOuter()
+  else base?.addEventListener('abort', onOuter, { once: true })
   void conn
   return {
     signal: ac.signal,
@@ -1130,11 +1239,20 @@ function isPoisoning(e: PgPrimeError): boolean {
 }
 
 /** After a cancel, a protocol error or a dead socket, the connection must not go back to the pool. */
-function poisons(e: unknown): boolean {
+export function poisons(e: unknown): boolean {
   const data = (e as { pgPrime?: { connectionUnusable?: boolean } } | null | undefined)?.pgPrime
   if (data?.connectionUnusable === true) return true
   const state = sqlStateOfError(e)
   return state !== undefined && (state.startsWith('08') || state === '57P01' || state === 'XX000')
+}
+
+/** `07` §6.1 — a handle's or transaction's signal composed with the db-wide lifecycle one. */
+export function composeSignal(
+  own: AbortSignal | undefined,
+  global: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (own === undefined || global === undefined) return own ?? global
+  return anySignal([own, global])
 }
 
 /**
