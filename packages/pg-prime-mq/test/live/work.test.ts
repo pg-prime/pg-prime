@@ -637,7 +637,7 @@ describe('lease expiry (S9)', () => {
 })
 
 describe('drop', () => {
-  it("closes this instance's workers of the queue, which would otherwise re-create it", async () => {
+  it("stops this instance's workers of the queue, which would otherwise re-create it", async () => {
     const { db, schema, q } = setup()
     await q.start()
     const w = q.work(async () => 1, fast)
@@ -649,6 +649,41 @@ describe('drop', () => {
     const ref = await q.send({ n: 1 })
     await sleep(100)
     expect((await q.get(ref))?.state).toBe('ready')
+    await w.close()
+  })
+
+  it('from a handler, with force: resolves, deletes the queue and ends the loop', async () => {
+    const { db, schema, q } = setup()
+    await q.send({ n: 1 })
+    let done = false
+    let err: unknown
+    const w = q.work(async () => {
+      await q.drop({ force: true }).catch((e: unknown) => (err = e))
+      done = true
+      return 1
+    }, fast)
+    await until(() => done)
+    expect(err).toBeUndefined()
+    const queues = sql.ident(schema, 'queues')
+    expect(await db.sql`select 1 from ${queues} where name = 'jobs'`.execute()).toHaveLength(0)
+    await until(() => w.running === 0)
+    await w.close()
+  })
+
+  it('with force returns while a handler hangs on its signal', async () => {
+    const { db, schema, q } = setup()
+    await q.send({ n: 1 })
+    let started = false
+    const w = q.work((_m, ctx) => {
+      started = true
+      return new Promise<number>((_, reject) =>
+        ctx.signal.addEventListener('abort', () => reject(ctx.signal.reason)),
+      )
+    }, fast)
+    await until(() => started)
+    await q.drop({ force: true })
+    const queues = sql.ident(schema, 'queues')
+    expect(await db.sql`select 1 from ${queues} where name = 'jobs'`.execute()).toHaveLength(0)
     await w.close()
   })
 })

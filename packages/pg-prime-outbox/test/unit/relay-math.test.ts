@@ -58,4 +58,10 @@ describe('backoffMs', () => {
   it.each(vectors.vectors)('matches the family vector %#', (v) => {
     expect(backoffMs(v.policy, v.attempt, () => v.random)).toBe(v.delayMs)
   })
+
+  it('saturates at maxDelayMs past the float8 exponent', () => {
+    const policy = { baseDelayMs: 1, maxDelayMs: 1000, jitter: 'none' } as const
+    expect([1024, 1101, 2 ** 31].map((a) => backoffMs(policy, a))).toStrictEqual([1000, 1000, 1000])
+    expect(backoffMs({ ...policy, baseDelayMs: 0 }, 1101)).toBe(0)
+  })
 })

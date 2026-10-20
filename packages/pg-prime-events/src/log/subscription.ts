@@ -91,9 +91,11 @@ export function subscriptionHandle<T>(core: Core, def: SubscriptionDef<T>): Subs
     },
     async remove() {
       await core.ready(def)
-      // A reader left running would re-create the subscription, seeded at 'now'.
-      const mine = [...core.running].filter((r) => r.subscription === `${t}/${s}`)
-      await Promise.all(mine.map((r) => r.close()))
+      // Stopped, not awaited: the caller may be the handler. A reader checks its signal right
+      // before ready(), so none of them re-seeds the row forgotten below.
+      for (const r of core.running) {
+        if (r.subscription?.topic.name === t && r.subscription.name === s) r.stop?.()
+      }
       await core.sql.remove(core.db, t, s)
       core.forget(def)
     },
@@ -316,7 +318,8 @@ function startReader<T>(
     core.running.delete(reader)
   }
   const reader = {
-    subscription: `${t}/${s}`,
+    subscription: def,
+    stop: () => stop.abort(),
     get active() {
       return active
     },

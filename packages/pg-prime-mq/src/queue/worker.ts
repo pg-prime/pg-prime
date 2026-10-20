@@ -4,7 +4,7 @@ import type { AsyncDisposable_, Db } from 'pg-prime'
 import type { QueueDef } from '../define.js'
 import { CancelledError, LeaseLostError, NonRetryableError } from '../errors.js'
 import type { SettleOutcome } from '../hooks.js'
-import type { Core } from '../mq.js'
+import type { Core, Loop } from '../mq.js'
 import { decodePayload } from '../payload.js'
 import { claim, claimGroups, promote } from '../sql/claim.js'
 import type { ClaimOptions } from '../sql/claim.js'
@@ -393,6 +393,17 @@ export function startWorker<T, R>(
     await wake.close()
   })()
 
+  const abortHeld = (): void => {
+    for (const e of held.values()) {
+      e.shutdown = true
+      e.abort.abort(new CancelledError(`@pg-prime/mq: the ${queue} worker is closing.`))
+    }
+  }
+  const halt = (force: boolean): void => {
+    stop.abort()
+    if (force) abortHeld()
+  }
+
   let closing: Promise<void> | undefined
   const close = (o: { graceMs?: number } = {}): Promise<void> =>
     (closing ??= (async () => {
@@ -408,10 +419,7 @@ export function startWorker<T, R>(
           ac.abort()
         }
         await within()
-        for (const e of held.values()) {
-          e.shutdown = true
-          e.abort.abort(new CancelledError(`@pg-prime/mq: the ${queue} worker is closing.`))
-        }
+        abortHeld()
         await within()
       }
       clearInterval(beat)
@@ -421,12 +429,13 @@ export function startWorker<T, R>(
 
   const worker = {
     queue,
+    stop: halt,
     get running() {
       return held.size
     },
     close,
     [ASYNC_DISPOSE]: () => close(),
-  } as unknown as Worker
+  } as unknown as Worker & Loop
   core.running.add(worker)
   if (opts.signal?.aborted === true) void close()
   return worker
