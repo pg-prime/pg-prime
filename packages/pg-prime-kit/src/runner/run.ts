@@ -737,6 +737,34 @@ export async function applyPendingOn(
         }
       }
 
+      /* 7a-ter. A partial row resumes by statement count, which is a position only in the file that ran. */
+      const partial = byId.get(file.id);
+      if (
+        partial !== undefined &&
+        (partial.status === "failed" || partial.status === "running") &&
+        partial.statementsApplied > 0 &&
+        (partial.checksum !== file.checksum || partial.statementsTotal !== exec.statements.length)
+      ) {
+        return await finish(
+          done("drift", {
+            lock,
+            applied,
+            preflight,
+            pending: pending.map((f) => f.id),
+            error: {
+              code: "checksum_drift",
+              migration: file.id,
+              message:
+                `${file.id}.sql changed after a run of it committed ${String(partial.statementsApplied)} of ` +
+                `${String(partial.statementsTotal)} statement(s) (through segment ${String(partial.segmentApplied)}): ` +
+                `recorded ${partial.checksum}, on disk ${file.checksum}. The rest cannot be resumed by position. ` +
+                `Restore the file that ran and rerun; or undo what it committed by hand, delete its row from ` +
+                `${HISTORY_SCHEMA}.migrations, and run the edited file from the start.`,
+            },
+          }),
+        );
+      }
+
       /* 7a-bis. The managed schema set (design/11 K1 open item 1).
        *
        * The set scopes the diff, the fingerprint AND the lock key, so a runner pointed at
@@ -949,7 +977,11 @@ async function runFile(
   // UPDATE, or the applied INSERT in the last one — inside its transaction, so what the row says
   // is exactly what committed (§5.3): a crash after a COMMIT cannot leave the progress behind.
   const statements = [...exec.statements];
-  const segments = exec.segments.map((s) => ({ ...s, statements: [...s.statements], done: Math.max(...s.statements) + 1 }));
+  const segments = exec.segments.map((s) => ({
+    ...s,
+    statements: [...s.statements],
+    done: Math.max(...s.statements) + 1,
+  }));
   const last = segments[segments.length - 1]!;
   for (const seg of segments) {
     seg.statements.push(statements.length);

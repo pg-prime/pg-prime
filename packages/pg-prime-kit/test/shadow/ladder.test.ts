@@ -23,7 +23,7 @@ import { connectionString, withClient, type ConnInfo } from "../../src/db/pg.js"
 import { encodeId } from "../../src/ir/stable-id.js";
 import { ADMIN, dbConn, destroyDatabase, makeDatabase, serverAvailable, withAdmin } from "../support/db.js";
 import { schema as corpus, SCHEMAS } from "../schema-emit/fixture.js";
-import { PASSWORDS, thrown } from "../cli/config.test.js";
+import { PASSWORDS, SECRET_URLS, thrown } from "../cli/config.test.js";
 
 const T = 120_000;
 
@@ -201,14 +201,16 @@ describe("tier selection", () => {
     expect(() => parseShadowStrategy("postgres://u:hunter2@h:5432/")).toThrow(
       /^shadow url "postgres:\/\/u@h:5432\/" names/,
     );
+    const refused = (url: string, secret: string): void => {
+      const message = thrown(() => parseShadowStrategy(url));
+      expect(message, url).toMatch(/is not a shadow strategy|names no database/);
+      expect(message, url).not.toContain(secret);
+      expect(message, url).not.toContain(decodeURIComponent(secret));
+    };
     for (const pw of PASSWORDS) {
-      for (const url of [`mysql://u:${pw}@h/d`, `postgres://u:${pw}@`, `postgres://u:${pw}@h:5432/`]) {
-        const message = thrown(() => parseShadowStrategy(url));
-        expect(message, url).toMatch(/is not a shadow strategy|names no database/);
-        expect(message, url).not.toContain(pw);
-        expect(message, url).not.toContain(decodeURIComponent(pw));
-      }
+      for (const url of [`mysql://u:${pw}@h/d`, `postgres://u:${pw}@`, `postgres://u:${pw}@h:5432/`]) refused(url, pw);
     }
+    for (const [url, secret] of SECRET_URLS) refused(url, secret);
   });
 
   it(

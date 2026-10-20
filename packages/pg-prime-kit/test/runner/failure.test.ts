@@ -84,6 +84,31 @@ ALTER TABLE public.locked_t ADD COLUMN crash_note text;
 const NOTE_COLUMNS =
   "SELECT count(*)::int FROM pg_attribute WHERE attrelid = 'public.locked_t'::regclass AND attname = 'note' AND NOT attisdropped";
 
+/** RETRIED with a statement prepended to the committed segment. */
+const PREPENDED = `-- pg-prime:migration 0002_retried
+-- pg-prime:txmode    transactional
+-- pg-prime:timeout   lock=100ms statement=30s
+
+-- pg-prime:segment 0
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+CREATE TABLE public.edited_t (id int PRIMARY KEY);
+
+-- pg-prime:stmt 1 lock=accessExclusive non-idempotent
+CREATE TABLE public.retry_committed_t (id int PRIMARY KEY);
+
+-- pg-prime:segment 1
+-- pg-prime:stmt 2 lock=accessExclusive non-idempotent
+ALTER TABLE public.locked_t ADD COLUMN note text;
+`;
+
+/** RETRIED shrunk below what committed. */
+const SHRUNK = `-- pg-prime:migration 0002_retried
+-- pg-prime:txmode    transactional
+
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+CREATE TABLE public.retry_committed_t (id int PRIMARY KEY);
+`;
+
 const INTERLEAVED = `-- pg-prime:migration 0002_interleaved
 -- pg-prime:txmode    transactional
 
@@ -347,6 +372,40 @@ describe("failures, retries and what the row says afterwards", () => {
   );
 
   it(
+    "a file edited after a segment committed is refused, never resumed by position",
+    async () => {
+      const { conn, dir } = await project("edited", "0002_retried.sql", RETRIED);
+      expect((await applyPending(conn, dir, { to: "0001" })).status).toBe("applied");
+      const rowNow = async (): Promise<unknown> =>
+        (await withClient(conn, readMigrationRows)).find((x) => x.id === "0002_retried");
+      const release = await holdTableLock(conn);
+      try {
+        expect((await applyPending(conn, dir, { retryBaseMs: 1 })).error?.sqlState).toBe("55P03");
+        const before = await rowNow();
+        for (const [label, body] of [
+          ["prepended", PREPENDED],
+          ["shrunk", SHRUNK],
+        ] as const) {
+          await writeHandMigration(dir, "0002_retried.sql", body);
+          const r = await applyPending(conn, dir);
+          expect(r.status, label).toBe("drift");
+          expect(r.exitCode, label).toBe(EXIT.drift);
+          expect(r.error, label).toMatchObject({ code: "checksum_drift", migration: "0002_retried" });
+          expect(r.error?.message, label).toContain("committed 1 of 2 statement(s) (through segment 0)");
+          expect(await rowNow(), label).toEqual(before);
+        }
+        expect(await scalar(conn, "SELECT to_regclass('public.edited_t') IS NOT NULL")).toBe(false);
+        await writeHandMigration(dir, "0002_retried.sql", RETRIED);
+      } finally {
+        await release();
+      }
+      // The file that ran, restored, resumes where it stopped.
+      expect((await applyPending(conn, dir)).applied[0]).toMatchObject({ id: "0002_retried", resumedFrom: 1 });
+    },
+    T,
+  );
+
+  it(
     "a run killed between segments resumes at the next segment",
     async () => {
       const { conn, dir } = await project("crashed", "0002_crashed.sql", CRASHED);
@@ -392,7 +451,9 @@ describe("failures, retries and what the row says afterwards", () => {
       const texts = (await applyPending(conn, dir, { dryRun: true })).dryRun!.map((q) => q.text);
       const create = texts.findIndex((t) => t.includes("retry_committed_t"));
       const commit = texts.indexOf("COMMIT", create);
-      const progress = texts.findIndex((t) => t.startsWith("UPDATE pgprime.migrations SET statements_applied = 1, segment_applied = 0"));
+      const progress = texts.findIndex((t) =>
+        t.startsWith("UPDATE pgprime.migrations SET statements_applied = 1, segment_applied = 0"),
+      );
       expect(progress).toBeGreaterThan(create);
       expect(progress).toBeLessThan(commit);
       expect(texts[commit + 1]).toBe("BEGIN");
