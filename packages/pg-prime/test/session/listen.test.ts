@@ -207,3 +207,34 @@ describe('ListenHub owns exactly one dedicated connection (07 §6.5)', () => {
     expect(f.hub.open).toBe(false)
   })
 })
+
+describe('ListenHub shares the reopen with a subscribe() that lands during a reconnect', () => {
+  it('one live connection, one set of listeners, one NOTIFY per handler', async () => {
+    const f = gatedHost()
+    const got: string[] = []
+    await f.hub.subscribe('c', (p) => got.push(`c:${p}`), undefined)
+    let open!: () => void
+    f.gate(new Promise<void>((r) => (open = r)))
+    f.kill()
+    await tick()
+    const late = f.hub.subscribe('d', (p) => got.push(`d:${p}`), undefined)
+    open()
+    await late
+    await until(() => f.hub.open && f.sent.filter((t) => t === 'listen "d"').length > 0)
+    await tick()
+    expect(f.conns).toHaveLength(2)
+    expect(f.closed).toStrictEqual([f.conns[0]])
+    expect(f.attached).toHaveLength(4)
+    f.notify('c', 'x')
+    f.notify('d', 'y')
+    expect(got).toStrictEqual(['c:x', 'd:y'])
+  })
+
+  it('a LISTEN that fails leaves no channel behind, so the next subscriber LISTENs again', async () => {
+    const f = gatedHost()
+    f.failListen(1)
+    await expect(f.hub.subscribe('c', () => {}, undefined)).rejects.toThrow(/listen refused/)
+    await f.hub.subscribe('c', () => {}, undefined)
+    expect(f.sent.filter((t) => t === 'listen "c"')).toHaveLength(2)
+  })
+})

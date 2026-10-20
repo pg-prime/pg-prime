@@ -57,8 +57,8 @@ import {
   ConnRunner,
   PoolRunner,
   acquire,
-  anySignal,
   assertTimeoutMs,
+  composeSignal,
   poisons,
   release,
 } from './runner.js'
@@ -328,6 +328,8 @@ const DOOMED = Symbol('pg-prime.rollbackWith')
 interface Doomed {
   readonly [DOOMED]: true
   readonly value: unknown
+  /** The runtime whose handle threw it: only that scope may resolve it. */
+  readonly tx: TxRuntime
 }
 function isDoomed(v: unknown): v is Doomed {
   return typeof v === 'object' && v !== null && DOOMED in v
@@ -656,15 +658,6 @@ function lostConnection(e: unknown): boolean {
   return state !== undefined && (state.startsWith('08') || state === '57P01')
 }
 
-/** `07` §6.1: a transaction's signal composes with the db-wide one rather than replacing it. */
-function composeSignal(
-  own: AbortSignal | undefined,
-  global: AbortSignal | undefined,
-): AbortSignal | undefined {
-  if (own === undefined || global === undefined) return own ?? global
-  return anySignal([own, global])
-}
-
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve()
   return new Promise((r) => {
@@ -751,7 +744,7 @@ export function makeTxHandle(
 
   install(handle, 'rollbackWith', (value: unknown): never => {
     tx.doomed = true
-    throw { [DOOMED]: true, value } as Doomed
+    throw { [DOOMED]: true, value, tx } as Doomed
   })
 
   install(handle, 'withOptions', (opts: CallOptions) =>
@@ -835,8 +828,8 @@ async function runSavepoint<T>(
     if (!('statement_timeout' in settings)) parent.localTimeoutMs = child.localTimeoutMs
     return result
   } catch (e) {
-    // The OUTER handle's rollbackWith() is the parent's to resolve, not this savepoint's.
-    if (isDoomed(e) && !parent.doomed) {
+    // An outer handle's rollbackWith() belongs to the scope that owns it, however deep we are.
+    if (isDoomed(e) && e.tx === child) {
       await rollbackTo()
       await releaseSp()
       return e.value as T
@@ -1080,7 +1073,8 @@ export async function runSession<T>(deps: TxDeps, fn: Callback<T>): Promise<T> {
     // inside a session callback is legitimate (it is a different connection, and that is fine).
     return await withoutFrames(() => fn(handle))
   } catch (e) {
-    dispose = poisons(e)
+    // A statement still running, or a status we cannot read, must not meet the next borrower.
+    dispose = poisons(e) || tx.inFlight > 0 || lease.conn.transactionStatus !== 'I'
     throw mapError(e, {
       context: { handle: 'session' },
       errors: state.errors,

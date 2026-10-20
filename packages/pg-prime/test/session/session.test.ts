@@ -96,6 +96,8 @@ import {
 } from '../../src/session/transaction.js'
 import { mockDriver, serverError } from '../query/_mock-driver.js'
 import type { MockDriver } from '../query/_mock-driver.js'
+import type { PgConnection, PgQuery } from '../../src/driver/index.js'
+import type { Tx } from '../../src/query/types.js'
 import { schema } from '../query/_schema.js'
 
 function setup(opts: Record<string, unknown> = {}): {
@@ -2405,5 +2407,190 @@ describe('a Session gives back a clean connection, or none (07 §1.4)', () => {
     expect(texts.slice(1, 3)).toStrictEqual(['begin', 'select set_config($1,$2,true)'])
     expect(driver.log[2]!.params).toStrictEqual(['statement_timeout', '0'])
     expect(texts.at(-1)).toBe('commit')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hand-opened transactions, unknown status, deep nesting — the review round
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('a Session joins a transaction its caller opened by hand (07 §1.4, §6.3)', () => {
+  const q = () => db0.from(schema.h.users).select(({ users: u }) => ({ id: u.id }))
+  const db0 = compileOnly(schema)
+  const locals = (driver: MockDriver): unknown[] =>
+    driver.log.filter((r) => r.text === 'select set_config($1,$2,true)').map((r) => r.params[1])
+
+  it('a stream puts the timeout back afterwards and neither COMMITs nor ROLLBACKs', async () => {
+    const { driver, db } = setup({ session: { statementTimeout: '30s' } })
+    driver.rows.push([], [], [['30s']])
+    driver.chunks.push([{ rows: [] }])
+    await db.session(async (s) => {
+      await s.sql`begin`.execute()
+      for await (const _ of s.stream(q())) void _
+      await s.sql`commit`.execute()
+    })
+    expect(locals(driver)).toStrictEqual(['0', '30s'])
+    const control = driver.texts().filter((t) => ['begin', 'commit', 'rollback'].includes(t))
+    expect(control).toStrictEqual(['begin', 'commit'])
+  })
+
+  it("timeoutStrategy: 'transaction' inside it restores the timeout instead of ending the block", async () => {
+    const { driver, db } = setup()
+    driver.rows.push([], [['0']], [['1']])
+    await db.session(async (s) => {
+      await s.sql`begin`.execute()
+      await s.withOptions({ timeoutMs: 50, timeoutStrategy: 'transaction' }).sql`select 1`.execute()
+    })
+    expect(driver.texts()).toStrictEqual([
+      'begin',
+      "select current_setting('statement_timeout')",
+      'select set_config($1,$2,true)',
+      'select 1',
+      'select set_config($1,$2,true)',
+    ])
+    expect(locals(driver)).toStrictEqual(['50', '0'])
+  })
+
+  it('a Session stream honours statementTimeoutMs, null included', async () => {
+    const { driver, db } = setup()
+    driver.chunks.push([{ rows: [] }], [{ rows: [] }])
+    await db.session(async (s) => {
+      for await (const _ of s.stream(q(), { statementTimeoutMs: 5_000 })) void _
+      for await (const _ of s.stream(q(), { statementTimeoutMs: null })) void _
+    })
+    expect(locals(driver)).toStrictEqual(['5000', '0'])
+  })
+
+  it('an adapter that cannot report transactionStatus gets no BEGIN/COMMIT, and the client timer instead', async () => {
+    const { driver, db } = setup()
+    const acquire = driver.acquire.bind(driver)
+    driver.acquire = async (o) =>
+      Object.create(await acquire(o), { transactionStatus: { value: undefined } }) as PgConnection
+    let seen: AbortSignal | undefined
+    driver.failOn = (q) => {
+      if (q.text === 'select 1') seen = (q as { signal?: AbortSignal }).signal
+      return undefined
+    }
+    driver.rows.push([['1']])
+    await db.session((s) =>
+      s.withOptions({ timeoutMs: 50, timeoutStrategy: 'transaction' }).sql`select 1`.execute(),
+    )
+    expect(driver.texts()).toStrictEqual(['select 1'])
+    expect(seen).toBeDefined()
+  })
+
+  it('a chunked insert on a Session is ONE transaction', async () => {
+    const { driver, db } = setup()
+    await db.session((s) =>
+      s.insertInto(schema.h.users).valuesMany(manyRows(5_001), { strategy: 'values' }).execute(),
+    )
+    expect(driver.texts().map((t) => t.split(' ')[0])).toStrictEqual([
+      'begin',
+      'insert',
+      'insert',
+      'commit',
+    ])
+  })
+
+  it('COPY opens a transaction only when there is a session timeout to lift', async () => {
+    const plain = setup()
+    await plain.db.copyFrom(schema.h.users, []).catch(() => {})
+    expect(plain.driver.texts()).toStrictEqual([])
+    const timed = setup({ session: { statementTimeout: '30s' } })
+    await timed.db.copyFrom(schema.h.users, []).catch(() => {})
+    expect(timed.driver.texts().slice(1)).toStrictEqual([
+      'begin',
+      'select set_config($1,$2,true)',
+      'rollback',
+    ])
+  })
+
+  it('copyFrom on an escaped Tx throws TransactionClosedError before touching the connection', async () => {
+    const { driver, db } = setup({ session: { statementTimeout: '30s' } })
+    let escaped!: Tx<typeof schema>
+    await db.transaction(async (tx) => {
+      escaped = tx
+    })
+    const n = driver.log.length
+    await expect(escaped.copyFrom(schema.h.users, [])).rejects.toBeInstanceOf(
+      TransactionClosedError,
+    )
+    expect(driver.log).toHaveLength(n)
+  })
+})
+
+describe('a Session that throws keeps a busy or unreadable connection out of the pool', () => {
+  const releases = (driver: MockDriver): (boolean | undefined)[] => {
+    const out: (boolean | undefined)[] = []
+    driver.release = (_c, o) => {
+      out.push(o?.dispose)
+      return Promise.resolve()
+    }
+    return out
+  }
+
+  it('a statement still in flight when the callback throws disposes', async () => {
+    const { driver, db } = setup()
+    const seen = releases(driver)
+    const acquire = driver.acquire.bind(driver)
+    driver.acquire = async (o) => {
+      const c = await acquire(o)
+      const slow = (q: PgQuery) => new Promise((r) => setTimeout(r, 5)).then(() => c.execute(q))
+      return Object.create(c, { execute: { value: slow } }) as PgConnection
+    }
+    await db
+      .session(async (s) => {
+        void s.sql`select 1`.execute().catch(() => {})
+        throw new Error('mine')
+      })
+      .catch(() => {})
+    expect(seen).toStrictEqual([true])
+  })
+
+  it('an unreadable transactionStatus disposes on a throw, and only then', async () => {
+    const { driver, db } = setup()
+    const seen = releases(driver)
+    const acquire = driver.acquire.bind(driver)
+    driver.acquire = async (o) =>
+      Object.create(await acquire(o), { transactionStatus: { value: undefined } }) as PgConnection
+    await db.session(() => Promise.resolve())
+    await db.session(() => Promise.reject(new Error('mine'))).catch(() => {})
+    expect(seen).toStrictEqual([undefined, true])
+  })
+})
+
+describe('rollbackWith() resolves the scope that owns the handle, however deep (07 §3.7)', () => {
+  it('the outer handle, two savepoints down, resolves the transaction', async () => {
+    const { driver, db } = setup()
+    const out = await db.transaction(async (tx) => {
+      await tx.savepoint(async (sp) => {
+        await sp.savepoint(async () => tx.rollbackWith('outer'))
+        return 'sp1'
+      })
+      return 'continued'
+    })
+    expect(out).toBe('outer')
+    expect(driver.texts()).toStrictEqual([
+      'begin',
+      'savepoint "pgprime_sp_1"',
+      'savepoint "pgprime_sp_2"',
+      'rollback to savepoint "pgprime_sp_2"',
+      'release savepoint "pgprime_sp_2"',
+      'rollback to savepoint "pgprime_sp_1"',
+      'release savepoint "pgprime_sp_1"',
+      'rollback',
+    ])
+  })
+
+  it('the middle handle, one savepoint down, resolves that savepoint and the transaction commits', async () => {
+    const { driver, db } = setup()
+    const out = await db.transaction((tx) =>
+      tx.savepoint(async (sp) => {
+        await sp.savepoint(async () => sp.rollbackWith('mid'))
+        return 'unreached'
+      }),
+    )
+    expect(out).toBe('mid')
+    expect(driver.texts().at(-1)).toBe('commit')
   })
 })

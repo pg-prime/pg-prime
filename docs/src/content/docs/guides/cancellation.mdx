@@ -312,9 +312,11 @@ console.log(rows)
 // 3  — a server-side cursor, `FETCH FORWARD 500`, and no 30-second ceiling over it
 ```
 
-Nothing is emitted unless you ask: sending `SET LOCAL statement_timeout = 0` on every stream would
-be an extra round trip that usually changes nothing. Pass `statementTimeoutMs` — including `null` —
-and it goes out.
+The `0` goes out on its own when pg-prime installed the session `statement_timeout` on that
+connection (the `connection:` default), for streams and for COPY, so a long one never trips the 30 s
+ceiling. It is not emitted when there is nothing of ours to lift — a transaction pooler, or `pool:`
+/ `driver:` without `session:` — because that round trip would change nothing. `statementTimeoutMs`
+— including `null` — overrides it either way.
 
 ## Where to go next
 

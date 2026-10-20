@@ -107,9 +107,13 @@ export class ListenHub {
     const conn = await this.#connection()
     let subs = this.#channels.get(channel)
     if (subs === undefined) {
+      try {
+        await conn.execute({ text: `listen ${quoteChannel(channel)}`, params: [], mode: 'simple' })
+      } catch (e) {
+        throw mapError(e, { context: { handle: 'db' }, errors: this.#host.errors })
+      }
       subs = new Set()
       this.#channels.set(channel, subs)
-      await conn.execute({ text: `listen ${quoteChannel(channel)}`, params: [], mode: 'simple' })
     }
     const s: Sub = { handler, emitter: new Map() }
     subs.add(s)
@@ -226,7 +230,8 @@ export class ListenHub {
         await sleep(Math.random() * ceiling)
         if (this.#idle()) return
         try {
-          const conn = await this.#open()
+          // Through `#connection()`, so a subscribe() during the backoff shares this open.
+          const conn = await this.#connection()
           if (this.#idle()) return await this.#drop()
           for (const channel of this.#channels.keys()) {
             await conn.execute({

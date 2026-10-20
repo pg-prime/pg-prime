@@ -1473,10 +1473,10 @@ for await (const chunk of db.copyTo(sql`copy (select …) to stdout with (format
 > one but the last has exactly `batchSize` rows, because that is what `FETCH FORWARD n` returns, so a
 > re-batching layer would add a copy per batch to guarantee only that the last batch is full — which
 > it cannot be anyway. The empty terminal chunk a cursor yields when the row count is an exact
-> multiple is swallowed. `statementTimeoutMs` is honoured on `stream`/`streamBatches` and defaults to
-> **not emitting anything**: emitting `SET LOCAL statement_timeout = 0` unconditionally would put an
-> extra round trip on every stream to change nothing in the common case where no session default is
-> in force. Pass it explicitly (including `null`) and it is emitted.
+> multiple is swallowed. `statementTimeoutMs` is honoured on `stream`/`streamBatches`. Absent, the
+> `SET LOCAL statement_timeout = 0` goes out exactly when pg-prime installed the session default on
+> that connection (streams and COPY alike, on every handle) and not otherwise, where the round trip
+> would change nothing. Pass it explicitly (including `null`) and that value is emitted instead.
 >
 > §6.5 is built on a **new optional driver seam, `PgDriver.connect?(options)`** (decision 8), which
 > returns a connection the pool does not own; the pg adapter implements it from
