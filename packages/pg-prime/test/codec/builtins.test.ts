@@ -164,6 +164,48 @@ describe('timestamptz → Date, timestamp → verbatim string', () => {
     expect(() => registry.planFor(r2.fields)[0]!(r2.rows[0]![0]!)).toThrow(PgDecodeError)
   })
 
+  it('parses every offset and fraction spelling, BC and years under 100 (no database)', () => {
+    const ctx = { typmod: -1, registry, serverParameters: {} }
+    const at = (raw: string) => timestamptzCodec.decodeText(raw, ctx)
+    expect(at('2026-08-14 06:30:00+05:30').toISOString()).toBe('2026-08-14T01:00:00.000Z')
+    expect(at('2026-08-14 06:30:00+0530').toISOString()).toBe('2026-08-14T01:00:00.000Z')
+    expect(at('2026-08-14 06:30:00-03').toISOString()).toBe('2026-08-14T09:30:00.000Z')
+    expect(at('2026-08-14 06:30:00+05:30:15').toISOString()).toBe('2026-08-14T00:59:45.000Z')
+    expect(at('2026-08-14 06:30:00Z').toISOString()).toBe('2026-08-14T06:30:00.000Z')
+    expect(at('2026-08-14T06:30:00.123456+00:00').toISOString()).toBe('2026-08-14T06:30:00.123Z')
+    const fractions: [string, number][] = [
+      ['1', 100],
+      ['12', 120],
+      ['123', 123],
+      ['1234', 123],
+      ['12345', 123],
+      ['123456', 123],
+    ]
+    for (const [frac, ms] of fractions) {
+      expect(at(`2026-08-14 06:30:00.${frac}+00`).getUTCMilliseconds(), frac).toBe(ms)
+    }
+    expect(at('0044-03-15 12:00:00+00 BC').getUTCFullYear()).toBe(-43)
+    expect(at('0099-12-31 23:59:59+00').getUTCFullYear()).toBe(99)
+    expect(at('0001-01-01 00:00:00+00').getUTCFullYear()).toBe(1)
+    expect(at('10000-01-01 00:00:00+00').getUTCFullYear()).toBe(10000)
+    for (const bad of [
+      '2026-08-14',
+      '2026-8-14 06:30:00',
+      '2026-08-14 06:30:00.+00',
+      '2026-08-14 06:30:00.1234567+00',
+      '2026-08-14 06:30:00+5',
+      '2026-08-14 06:30:00+00 AD',
+      '',
+    ]) {
+      expect(() => at(bad), bad).toThrow(PgDecodeError)
+    }
+    // Inside Date's ±8.64e15 ms range before the offset, outside it after: never an Invalid Date.
+    expect(at('275760-09-12 23:00:00+00').getTime()).toBe(8.64e15 - 3600_000)
+    for (const over of ['275760-09-12 23:00:00-02', '271822-04-20 03:00:00+05 BC']) {
+      expect(() => at(over), over).toThrow(/Invalid Date/)
+    }
+  })
+
   it('BC years survive', async () => {
     const [d] = await row(`select '0001-01-01 12:00:00+00 BC'::timestamptz`)
     expect(d).toBeInstanceOf(Date)

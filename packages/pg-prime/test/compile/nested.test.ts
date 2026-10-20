@@ -67,6 +67,50 @@ const feed = select({
   limit: param(20, int4Codec),
 })
 
+describe('a relation wider than 50 members', () => {
+  // json_build_object takes 2 arguments per member and PostgreSQL allows 100 per call (54023).
+  const wide = (n: number) =>
+    select({
+      projection: Array.from({ length: n }, (_, i) => projection(`k${i}`, p('id'))),
+      from: postsFrom,
+      where: eq(p('authorId'), u('id')),
+    })
+  const feedOf = (n: number, variant?: 'json' | 'jsonb') =>
+    compile(
+      select({
+        projection: [
+          projection('id', u('id')),
+          nested('posts', { kind: 'many', query: wide(n), alias: 'lp', variant }),
+        ],
+        from: usersFrom,
+      }),
+    )
+
+  it('is built in json chunks of 50 spliced as text — never through jsonb', () => {
+    const { sql } = feedOf(51)
+    expect(sql).toContain(`select ('{' || substr(left(json_build_object('k0', "posts"."id"::text,`)
+    expect(sql).toContain(
+      `'k49', "posts"."id"::text)::text, -1), 2) || ',' || ` +
+        `substr(left(json_build_object('k50', "posts"."id"::text)::text, -1), 2) || '}')::json as "o"`,
+    )
+    expect(sql).not.toContain('jsonb')
+    expect(sql).toContain(`coalesce(json_agg("x"."o"), '[]'::json)`)
+  })
+
+  it('stays jsonb when the relation asked for it', () => {
+    const { sql } = feedOf(101, 'jsonb')
+    expect(sql.match(/jsonb_build_object\(/g)).toHaveLength(3)
+    expect(sql).not.toContain('::json ')
+    expect(sql).toContain(`'k100', "posts"."id"::text)) as "o"`)
+  })
+
+  it('NEGATIVE CONTROL — 50 members is one call', () => {
+    const { sql } = feedOf(50)
+    expect(sql.match(/json_build_object\(/g)).toHaveLength(1)
+    expect(sql).not.toContain('||')
+  })
+})
+
 describe('the LATERAL nesting golden', () => {
   const compiled = compile(feed)
 
