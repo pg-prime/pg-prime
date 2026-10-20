@@ -42,8 +42,9 @@ export function bind<E, T>(
     .run(
       {
         batch: async (es, ctx) => {
-          // Checked right before start(): a queue drop() aborts first and forgets the queue later.
-          ctx.signal.throwIfAborted()
+          // Only drop() aborts this; close() lets a batch finish. Checked right before start(),
+          // which drop() forgets only after the abort.
+          stop.signal.throwIfAborted()
           await handle.start()
           const items = es.map((e) => {
             const { payload, ...o } = map(e)
