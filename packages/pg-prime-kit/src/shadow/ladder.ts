@@ -24,6 +24,7 @@ import type { Diagnostic } from "../catalog/extract.js";
 import {
   connectionString,
   dropDatabase,
+  hostOf,
   redactUrl,
   withClient,
   withDatabase,
@@ -158,8 +159,10 @@ export class ShadowIsTargetError extends Error {
 }
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1"]);
-const databaseKey = (c: ConnInfo): string =>
-  `${LOOPBACK.has(c.host.toLowerCase()) ? "localhost" : c.host.toLowerCase()}:${String(c.port)}/${c.database}`;
+const databaseKey = (c: ConnInfo): string => {
+  const host = c.host.replace(/^\[|\]$/g, "").toLowerCase() || "127.0.0.1";
+  return `${LOOPBACK.has(host) ? "localhost" : host}:${String(c.port)}/${c.database}`;
+};
 
 /* ------------------------------------------------------------------ */
 
@@ -191,7 +194,7 @@ export function parseShadowUrl(url: string): ConnInfo {
         `to end in one (postgres://user@host:5432/a_throwaway_database).`,
     );
   return {
-    host: u.hostname,
+    host: hostOf(u),
     port: Number(u.port || 5432),
     user: decodeURIComponent(u.username) || "postgres",
     password: decodeURIComponent(u.password),

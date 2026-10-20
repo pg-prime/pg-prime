@@ -36,7 +36,6 @@ import {
   heartbeatLease,
   markApplied,
   markFailed,
-  markSegmentApplied,
   markStatementApplied,
   markUncertain,
   readLease,
@@ -45,6 +44,7 @@ import {
   recordAppliedSql,
   recordCheckpoint,
   recordSuperseded,
+  segmentAppliedSql,
   releaseLease,
   takeLease,
   upsertRepeatable,
@@ -53,7 +53,7 @@ import {
   type NewMigrationRow,
   leftNothing,
 } from "../history/store.js";
-import { ENGINE, type PlanStatement } from "../plan/plan.js";
+import { ENGINE } from "../plan/plan.js";
 import {
   acquireSessionLock,
   applySegments,
@@ -945,30 +945,32 @@ async function runFile(
     return outcome(Date.now() - startedAt, row ? from : null, result.retries, result.failure, result.batch);
   }
 
-  // Transactional / segmented. The history INSERT is appended to the LAST transactional
-  // segment as statement `total`, so "applied" and "recorded" commit together (§5.3).
-  const history: PlanStatement = {
-    index: total,
-    sql: recordAppliedSql(record),
-    verb: "alter",
-    kind: "history",
-    produces: [],
-    consumes: [],
-    destroys: [],
-    releases: [],
-    transactionality: "transactional",
-    lockClass: "rowExclusive",
-    idempotent: true,
-    timeouts: { lock: ctx.lockTimeout, statement: "30s" },
-    dataLoss: "none",
-    rewrite: false,
-    hazards: [],
-  };
-  const statements = [...exec.statements, history];
-  const segments = exec.segments.map((s) => ({ ...s, statements: [...s.statements] }));
-  const last = [...segments].reverse().find((s) => s.transactional);
-  if (last) last.statements.push(total);
-  else segments.push({ index: segments.length, transactional: true, statements: [total] });
+  // Transactional / segmented. Every segment ends with its own history write — the progress
+  // UPDATE, or the applied INSERT in the last one — inside its transaction, so what the row says
+  // is exactly what committed (§5.3): a crash after a COMMIT cannot leave the progress behind.
+  const statements = [...exec.statements];
+  const segments = exec.segments.map((s) => ({ ...s, statements: [...s.statements], done: Math.max(...s.statements) + 1 }));
+  const last = segments[segments.length - 1]!;
+  for (const seg of segments) {
+    seg.statements.push(statements.length);
+    statements.push({
+      index: statements.length,
+      sql: seg === last ? recordAppliedSql(record) : segmentAppliedSql(file.id, seg.done, seg.index),
+      verb: "alter",
+      kind: "history",
+      produces: [],
+      consumes: [],
+      destroys: [],
+      releases: [],
+      transactionality: "transactional",
+      lockClass: "rowExclusive",
+      idempotent: true,
+      timeouts: { lock: ctx.lockTimeout, statement: "30s" },
+      dataLoss: "none",
+      rewrite: false,
+      hazards: [],
+    });
+  }
 
   let retries = 0;
   // A failed transaction rolls back alone: the segments before it, in any attempt of any run, may have committed.
@@ -990,12 +992,11 @@ async function runFile(
     let report: ApplyReport = { status: "applied", appliedStatements: 0 };
     // Only what has not committed runs: a committed segment replayed fails on its own DDL.
     for (const seg of segments) {
+      if (seg !== last && seg.done <= committed) continue;
       const todo = seg.statements.filter((i) => i >= committed);
-      if (todo.length === 0) continue;
       report = await applySegments(client, statements, [{ ...seg, statements: todo }], apply);
       if (report.status === "failed") break;
-      committed = Math.min(committed + todo.length, total);
-      if (!todo.includes(total)) await markSegmentApplied(client, file.id, committed, seg.index);
+      committed = seg.done;
     }
     if (report.status === "applied") {
       // The synthetic history statement is not part of the migration.

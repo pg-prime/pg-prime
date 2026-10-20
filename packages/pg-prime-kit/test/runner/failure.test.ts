@@ -84,6 +84,22 @@ ALTER TABLE public.locked_t ADD COLUMN crash_note text;
 const NOTE_COLUMNS =
   "SELECT count(*)::int FROM pg_attribute WHERE attrelid = 'public.locked_t'::regclass AND attname = 'note' AND NOT attisdropped";
 
+const INTERLEAVED = `-- pg-prime:migration 0002_interleaved
+-- pg-prime:txmode    transactional
+
+-- pg-prime:segment 0
+-- pg-prime:stmt 0 lock=accessExclusive non-idempotent
+CREATE TABLE public.inter_a (id int PRIMARY KEY);
+
+-- pg-prime:segment 1
+-- pg-prime:stmt 1 lock=accessExclusive non-idempotent
+CREATE TABLE public.inter_b (id int PRIMARY KEY);
+
+-- pg-prime:segment 0
+-- pg-prime:stmt 2 lock=accessExclusive non-idempotent
+CREATE TABLE public.inter_c (id int PRIMARY KEY);
+`;
+
 /** Hold ACCESS EXCLUSIVE on `public.locked_t` from a second connection. */
 async function holdTableLock(conn: ConnInfo): Promise<() => Promise<void>> {
   const client = new pg.Client({ ...conn });
@@ -364,6 +380,35 @@ describe("failures, retries and what the row says afterwards", () => {
       expect(r.status).toBe("applied");
       expect(r.applied[0]).toMatchObject({ id: "0002_crashed", resumedFrom: 1 });
       expect(await scalar(conn, NOTE_COLUMNS.replace("'note'", "'crash_note'"))).toBe(1);
+    },
+    T,
+  );
+
+  it(
+    "a segment's progress is written inside its own transaction, never after its COMMIT",
+    async () => {
+      const { conn, dir } = await project("progress", "0002_retried.sql", RETRIED);
+      expect((await applyPending(conn, dir, { to: "0001" })).status).toBe("applied");
+      const texts = (await applyPending(conn, dir, { dryRun: true })).dryRun!.map((q) => q.text);
+      const create = texts.findIndex((t) => t.includes("retry_committed_t"));
+      const commit = texts.indexOf("COMMIT", create);
+      const progress = texts.findIndex((t) => t.startsWith("UPDATE pgprime.migrations SET statements_applied = 1, segment_applied = 0"));
+      expect(progress).toBeGreaterThan(create);
+      expect(progress).toBeLessThan(commit);
+      expect(texts[commit + 1]).toBe("BEGIN");
+    },
+    T,
+  );
+
+  it(
+    "segment markers out of file order are refused before anything runs",
+    async () => {
+      const { conn, dir } = await project("interleaved", "0002_interleaved.sql", INTERLEAVED);
+      const r = await applyPending(conn, dir);
+      expect(r.status).toBe("failed");
+      expect(r.error).toMatchObject({ code: "plan_invalid", migration: "0002_interleaved" });
+      expect(r.applied.map((a) => a.id)).toEqual(["0001_seed"]);
+      expect(await scalar(conn, "SELECT to_regclass('public.inter_a') IS NOT NULL")).toBe(false);
     },
     T,
   );

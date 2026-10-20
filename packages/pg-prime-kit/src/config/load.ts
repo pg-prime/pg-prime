@@ -12,7 +12,7 @@
 import { access } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { redactUrl, type ConnInfo } from "../db/pg.js";
+import { hostOf, redactUrl, type ConnInfo } from "../db/pg.js";
 import { parseShadowStrategy } from "../shadow/ladder.js";
 import type { PgPrimeConfig } from "./define.js";
 import { enableTsSpecifiers, typeScriptSiblingUrl } from "./ts-specifiers.js";
@@ -423,8 +423,7 @@ export function parseDatabaseUrl(url: string): ParsedUrl {
   return {
     warnings,
     conn: {
-      // `new URL` brackets an IPv6 literal; `pg` wants it bare.
-      host: u.hostname.replace(/^\[|\]$/g, "") || "127.0.0.1",
+      host: hostOf(u),
       port: Number(u.port || 5432),
       user,
       password: decodeURIComponent(u.password),

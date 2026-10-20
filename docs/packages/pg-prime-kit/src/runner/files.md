@@ -30,6 +30,7 @@ Callees: `sql/statements.ts` (`lexSql`, `splitStatements`, `canonicalize`), `cli
 9. Count mismatch with the plan is `statement_count_drift` (error) (`:557-564`). Segments come from the plan, else from `segment` markers, else one segment (`:567-580`).
 
 ## Gotchas
+- Hand-written `-- pg-prime:segment N` markers must run 0, 1, 2… in file order; anything else is a `segment_marker_out_of_order` error diagnostic from `executionPlan`, which the runner reports as `plan_invalid` (the resume watermark is a statement count).
 - Directives are found only in lexer comment segments, so a `-- pg-prime:stmt` inside `$$…$$` or a string is ignored (`packages/pg-prime-kit/src/runner/files.ts:128-133`).
 - `checksum` hashes raw bytes; any whitespace edit changes it and trips the runner's checksum gates.
 - The splitter fallback canonicalises statements (comments dropped), so executed text differs from the file's bytes, and resume indices depend on the splitter.

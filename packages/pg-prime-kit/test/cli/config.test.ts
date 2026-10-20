@@ -154,6 +154,18 @@ describe("loadConfig", () => {
   // report it as Node's. It is covered below, through the binary.
 });
 
+/** Passwords with the characters that cut a URL at the wrong place. */
+export const PASSWORDS = ["s3:cret", "p@ss", "pa/ss", "p%40ss"];
+
+export const thrown = (fn: () => unknown): string => {
+  try {
+    fn();
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  return "";
+};
+
 describe("parseDatabaseUrl", () => {
   it("maps a URL onto ConnInfo and decodes percent-escapes", () => {
     const { conn } = parseDatabaseUrl("postgres://us%40er:p%3Ass@db.example:6000/my%20db");
@@ -180,8 +192,18 @@ describe("parseDatabaseUrl", () => {
   it("refuses a non-postgres scheme and a non-URL", () => {
     expect(() => parseDatabaseUrl("mysql://u@h/d")).toThrow(/postgres: or postgresql: scheme/);
     expect(() => parseDatabaseUrl("not a url")).toThrow(/is not a URL/);
-    // the refusal echoes the URL without its password
+  });
+
+  it("echoes a refused url without its password, whatever the password contains", () => {
     expect(() => parseDatabaseUrl("mysql://u:hunter2@h/d")).toThrow(/^"mysql:\/\/u@h\/d" must use the postgres/);
+    for (const pw of PASSWORDS) {
+      for (const url of [`mysql://u:${pw}@h/d`, `postgres://u:${pw}@`]) {
+        const message = thrown(() => parseDatabaseUrl(url));
+        expect(message, url).toMatch(/is not a URL|must use the postgres/);
+        expect(message, url).not.toContain(pw);
+        expect(message, url).not.toContain(decodeURIComponent(pw));
+      }
+    }
   });
 });
 

@@ -23,6 +23,7 @@ import { connectionString, withClient, type ConnInfo } from "../../src/db/pg.js"
 import { encodeId } from "../../src/ir/stable-id.js";
 import { ADMIN, dbConn, destroyDatabase, makeDatabase, serverAvailable, withAdmin } from "../support/db.js";
 import { schema as corpus, SCHEMAS } from "../schema-emit/fixture.js";
+import { PASSWORDS, thrown } from "../cli/config.test.js";
 
 const T = 120_000;
 
@@ -193,11 +194,21 @@ describe("tier selection", () => {
     expect(() => parseShadowStrategy("docker")).toThrow(/testcontainers/);
     expect(() => parseShadowStrategy("mysql://u@h/d")).toThrow(/is not a shadow strategy/);
     expect(() => parseShadowStrategy("postgres://u@h:5432/")).toThrow(/names no database/);
-    // a refusal echoes the URL without its password
+  });
+
+  it("a refusal echoes the url without its password, whatever the password contains", () => {
     expect(() => parseShadowStrategy("mysql://u:hunter2@h/d")).toThrow(/^"mysql:\/\/u@h\/d" is not a shadow strategy/);
     expect(() => parseShadowStrategy("postgres://u:hunter2@h:5432/")).toThrow(
       /^shadow url "postgres:\/\/u@h:5432\/" names/,
     );
+    for (const pw of PASSWORDS) {
+      for (const url of [`mysql://u:${pw}@h/d`, `postgres://u:${pw}@`, `postgres://u:${pw}@h:5432/`]) {
+        const message = thrown(() => parseShadowStrategy(url));
+        expect(message, url).toMatch(/is not a shadow strategy|names no database/);
+        expect(message, url).not.toContain(pw);
+        expect(message, url).not.toContain(decodeURIComponent(pw));
+      }
+    }
   });
 
   it(
@@ -214,6 +225,11 @@ describe("tier selection", () => {
       ).rejects.toMatchObject({
         role: "target",
       });
+      // one server, however the host and port are spelled
+      const at = (host: string): ConnInfo => ({ ...target, host, port: 5432, database: "app" });
+      await expect(shadow("postgres:///app", at("localhost"))).rejects.toMatchObject({ role: "target" });
+      await expect(shadow("postgres://[::1]:5432/app", at("::1"))).rejects.toMatchObject({ role: "target" });
+      await expect(shadow("postgres://LOCALHOST/app", at("127.0.0.1"))).rejects.toMatchObject({ role: "target" });
       // a different database on the same server is a shadow
       await expect(shadow(connectionString(dbConn(URL_SHADOW)))).resolves.toMatchObject({ tier: 1 });
       const left = await withClient(target, (c) => c.query("SELECT 1 FROM pg_namespace WHERE nspname = 'public'"));
@@ -237,6 +253,8 @@ describe("tier selection", () => {
       database: "db",
     });
     expect(() => parseShadowUrl("postgres://u@h:5432/")).toThrow(/names no database/);
+    expect(parseShadowUrl("postgres://[::1]/db").host).toBe("::1");
+    expect(parseShadowUrl("postgres:///db").host).toBe("127.0.0.1");
   });
 
   it(

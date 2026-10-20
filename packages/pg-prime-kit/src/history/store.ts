@@ -240,19 +240,12 @@ export async function markStatementApplied(
   await client.query("COMMIT");
 }
 
-/** A segmented file's progress; the next statement stays uncertain until the row is recorded applied. */
-export async function markSegmentApplied(
-  client: CatalogClient,
-  id: string,
-  applied: number,
-  segment: number,
-): Promise<void> {
-  await client.query(
-    `UPDATE ${HISTORY_SCHEMA}.migrations
-        SET statements_applied = $2, segment_applied = $3, statement_uncertain = $2
-      WHERE id = $1`,
-    [id, applied, segment],
-  );
+/**
+ * A segmented file's progress, as a literal for the segment's own transaction (like `recordAppliedSql`).
+ * The next statement stays uncertain until the row is recorded applied.
+ */
+export function segmentAppliedSql(id: string, applied: number, segment: number): string {
+  return `UPDATE ${HISTORY_SCHEMA}.migrations SET statements_applied = ${String(applied)}, segment_applied = ${String(segment)}, statement_uncertain = ${String(applied)} WHERE id = ${quoteLiteral(id)}`;
 }
 
 export async function markApplied(client: CatalogClient, id: string, applied: number): Promise<void> {

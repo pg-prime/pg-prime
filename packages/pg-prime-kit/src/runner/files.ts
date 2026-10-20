@@ -567,16 +567,25 @@ export function executionPlan(file: MigrationFile): ExecutionPlan {
   let segments: readonly Segment[];
   if (plan && plan.segments.length > 0) segments = plan.segments;
   else if (file.statements.some((s) => s.segment !== null)) {
-    const byIndex = new Map<number, number[]>();
+    // The runner resumes at a statement count, which is only a position when segments are contiguous in file order.
+    const hand: Segment[] = [];
     for (const s of file.statements) {
       const key = s.segment ?? 0;
-      const list = byIndex.get(key);
-      if (list) list.push(s.index);
-      else byIndex.set(key, [s.index]);
+      const open = hand[hand.length - 1];
+      if (open?.index === key) open.statements.push(s.index);
+      else if (key === hand.length) hand.push({ index: key, transactional: file.txmode !== "none", statements: [s.index] });
+      else {
+        diagnostics.push({
+          code: "segment_marker_out_of_order",
+          severity: "error",
+          subject: file.id,
+          message:
+            `statement ${String(s.index)} in ${file.id}.sql is in segment ${String(key)} after segment ` +
+            `${String(open?.index ?? 0)}; segments must be numbered 0, 1, 2… in file order`,
+        });
+      }
     }
-    segments = [...byIndex.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([index, indices]) => ({ index, transactional: file.txmode !== "none", statements: indices }));
+    segments = hand;
   } else segments = [{ index: 0, transactional: file.txmode !== "none", statements: all }];
 
   return { statements, segments, diagnostics };

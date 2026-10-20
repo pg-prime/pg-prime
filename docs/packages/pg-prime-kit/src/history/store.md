@@ -13,7 +13,7 @@ Callees: `history/schema.ts` (`HISTORY_SCHEMA`, `MigrationStatus`), `sql/ident.t
 - `recordAppliedSql(row)` — the row as one literal `INSERT … ON CONFLICT (id) DO UPDATE` string, for execution inside the migration transaction.
 - `beginRow(client, row)` — upserts a `running` row, clearing finish time and error.
 - `markUncertain(client, id, index)` / `markStatementApplied(client, id, index, segment)` — each in its own `BEGIN`/`COMMIT`; the latter sets `statements_applied = GREATEST(…, index + 1)` and clears `statement_uncertain`.
-- `markSegmentApplied(client, id, applied, segment)` — a segmented file's progress after a commit: sets `statements_applied` and `segment_applied`, and keeps `statement_uncertain = applied` until the applied record clears it.
+- `segmentAppliedSql(id, applied, segment)` — a segmented file's progress as one literal `UPDATE` for the segment's own transaction: sets `statements_applied` and `segment_applied`, and keeps `statement_uncertain = applied` until the applied record clears it.
 - `markApplied(client, id, applied)` — status `applied`, finish time, duration from `started_at`.
 - `markFailed(client, row, error, applied)` / `RecordedError` — upserts a `failed` row with `error` jsonb.
 - `LockRow`, `readLease`, `takeLease(client, runId, holder)`, `heartbeatLease(client, runId)`, `releaseLease(client, runId)`, `breakLease(client)` — the singleton lease; `breakLease` returns whether a row was deleted.

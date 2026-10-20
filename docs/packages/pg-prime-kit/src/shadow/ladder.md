@@ -11,7 +11,7 @@ Callees: `db/pg.ts` (`withClient`, `withDatabase`, `dropDatabase`, `isObjectInUs
 - `Shadow` — `conn` (where to load and extract), `target`, `schemaMap` (user schema → shadow schema; identity for tiers 1–2), `tier`, `reason`, `diagnostics`, `dispose()`.
 - `ShadowStrategy` — `"auto" | "temp-schema" | "createdb" | "offline"`, a `postgres://`/`postgresql://` string, or `{ url }`.
 - `parseShadowStrategy(raw)` — keyword passthrough, `none` → `offline`, `docker` refused, otherwise must parse as a postgres URL → `{ url }`.
-- `parseShadowUrl(url)` → `ConnInfo` — port defaults to 5432, user to `postgres`; refuses non-postgres protocols and URLs without a database.
+- `parseShadowUrl(url)` → `ConnInfo` — host through `hostOf` (bare IPv6, empty → `127.0.0.1`), port defaults to 5432, user to `postgres`; refuses non-postgres protocols and URLs without a database.
 - `OfflineShadowError` (`PG_PRIME_SHADOW_OFFLINE`), `ShadowStrategyError` (`PG_PRIME_SHADOW_STRATEGY`, carries `value`; its message has the URL's password removed), `ShadowIsTargetError` (`PG_PRIME_SHADOW_IS_TARGET`, carries `role`), `ShadowNameTooLongError` (`PG_PRIME_SHADOW_NAME_TOO_LONG`, carries `schema`, `candidate`).
 
 ## Flow
@@ -24,7 +24,7 @@ Callees: `db/pg.ts` (`withClient`, `withDatabase`, `dropDatabase`, `isObjectInUs
 7. Tier 3 `dispose` drops them `CASCADE` and throws if any survives (`:424-441`).
 
 ## Gotchas
-- Tier 1 is destructive: the managed schemas in the shadow URL's database are dropped `CASCADE` on provision and on dispose. The guard against the target/admin database compares host names textually (plus loopback aliases), so a DNS alias of the target is not caught.
+- Tier 1 is destructive: the managed schemas in the shadow URL's database are dropped `CASCADE` on provision and on dispose. The guard against the target/admin database compares `host:port/database` after `hostOf` (brackets stripped, empty host = `127.0.0.1`), lower-casing and loopback folding; a DNS alias of the target is not caught.
 - A non-keyword string never falls through to `auto`; it is a tier-1 URL or a `ShadowStrategyError` (`:280-286`).
 - Only `auto` demotes on 55006; an explicit `createdb` rethrows (`:277-279`, `:295`).
 - Tier 2 creates its database directly on the admin client, outside `db/pg.ts`'s provision lock (`:348-349`); only `dispose` goes through `dropDatabase`.
