@@ -613,13 +613,18 @@ function emitExpr(em: Emitter, e: Expr): void {
         emitJsonBuild(em, e.variant, e.entries, 0, n)
         return
       }
-      // Past the 100-argument limit (54023) the object is built in jsonb pieces: `json` has no `||`.
-      em.push('(')
+      // Past the 100-argument limit (54023) the object is built in pieces. jsonb has `||`; json
+      // does not, and jsonb would reorder, dedupe and refuse \u0000, so its pieces are spliced as
+      // text: `{…}` and `{…}` become `{…,…}`, keys in order, duplicates and all.
+      const jsonb = e.variant === 'jsonb'
+      em.push(jsonb ? '(' : "('{' || ")
       for (let i = 0; i < n; i += JSON_BUILD_MAX_ENTRIES) {
-        if (i > 0) em.push(' || ')
-        emitJsonBuild(em, 'jsonb', e.entries, i, Math.min(i + JSON_BUILD_MAX_ENTRIES, n))
+        if (i > 0) em.push(jsonb ? ' || ' : " || ',' || ")
+        if (!jsonb) em.push('substr(left(')
+        emitJsonBuild(em, e.variant, e.entries, i, Math.min(i + JSON_BUILD_MAX_ENTRIES, n))
+        if (!jsonb) em.push('::text, -1), 2)')
       }
-      em.push(e.variant === 'jsonb' ? ')' : ')::json')
+      em.push(jsonb ? ')' : " || '}')::json")
       return
     }
 

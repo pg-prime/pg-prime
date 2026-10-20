@@ -192,11 +192,17 @@ describe('timestamptz → Date, timestamp → verbatim string', () => {
       '2026-08-14',
       '2026-8-14 06:30:00',
       '2026-08-14 06:30:00.+00',
+      '2026-08-14 06:30:00.1234567+00',
       '2026-08-14 06:30:00+5',
       '2026-08-14 06:30:00+00 AD',
       '',
     ]) {
       expect(() => at(bad), bad).toThrow(PgDecodeError)
+    }
+    // Inside Date's ±8.64e15 ms range before the offset, outside it after: never an Invalid Date.
+    expect(at('275760-09-12 23:00:00+00').getTime()).toBe(8.64e15 - 3600_000)
+    for (const over of ['275760-09-12 23:00:00-02', '271822-04-20 03:00:00+05 BC']) {
+      expect(() => at(over), over).toThrow(/Invalid Date/)
     }
   })
 

@@ -1012,10 +1012,14 @@ it with `.$type<T>()`.
 
 <Aside type="caution">
 Declaring a `t.raw` column and *querying* it are two different things. The query layer resolves a
-codec by the exact type name, so `t.raw('xml')` and `t.raw('inet')` work — the registry knows those
-names — while `t.raw('character varying(40)')` has none, and the first query built against that table
-throws `NoCodecError` naming the column. Register a codec under that name, or use `t.varchar()` where
-a builder exists. A table you migrate but never query needs neither.
+codec by the type name with the typmod stripped (`varchar(40)` → `varchar`, `numeric(10,2)` →
+`numeric`, `timestamp(3) with time zone` → `timestamptz`) and the SQL-standard spellings mapped to
+their PostgreSQL names: `char`, `char(n)` and `character(n)` → `bpchar`, `character varying` →
+`varchar`, `bit varying` → `varbit`, `double precision` → `float8`, `timestamp with/without time
+zone` and `time with/without time zone`. Only `t.raw('"char"')` is the one-byte internal type. A
+name the registry does not know (`t.raw('hstore')`) makes the first query built against that table
+throw `NoCodecError` naming the column: register a codec under that name, or use a builder where
+one exists. A table you migrate but never query needs neither.
 </Aside>
 
 ## `defineSchema`

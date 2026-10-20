@@ -1,6 +1,7 @@
 import { defaultRegistry, unknownCodec } from '../codec/index.js'
 import { compileDdlExpr } from '../compile/compiler.js'
 import { col, mkNode } from '../compile/nodes.js'
+import { codecByTypeName } from '../query/meta.js'
 import { SchemaError } from '../sql/errors.js'
 import { asExpr } from '../sql/fragment.js'
 import type { AnyFragment } from '../sql/fragment.js'
@@ -101,7 +102,7 @@ export function definePolicy<T extends AnyTable>(name: string, spec: PolicySpec<
     const registry = defaultRegistry()
     const refs: Record<string, unknown> = {}
     for (const c of table.columns) {
-      const codec = registry.byName(c.column.ddl.pgType) ?? unknownCodec
+      const codec = codecByTypeName(c.column.ddl.pgType, registry) ?? unknownCodec
       refs[c.key] = mkNode({ ...col(table.name, c.dbName, codec), $: c })
     }
     return compileDdlExpr(

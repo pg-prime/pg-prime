@@ -86,12 +86,14 @@ describe('a relation wider than 50 members', () => {
       }),
     )
 
-  it('is built in jsonb chunks of 50 joined with ||, cast back to json', () => {
+  it('is built in json chunks of 50 spliced as text — never through jsonb', () => {
     const { sql } = feedOf(51)
-    expect(sql).toContain(`select (jsonb_build_object('k0', "posts"."id"::text, 'k1',`)
+    expect(sql).toContain(`select ('{' || substr(left(json_build_object('k0', "posts"."id"::text,`)
     expect(sql).toContain(
-      `'k49', "posts"."id"::text) || jsonb_build_object('k50', "posts"."id"::text))::json as "o"`,
+      `'k49', "posts"."id"::text)::text, -1), 2) || ',' || ` +
+        `substr(left(json_build_object('k50', "posts"."id"::text)::text, -1), 2) || '}')::json as "o"`,
     )
+    expect(sql).not.toContain('jsonb')
     expect(sql).toContain(`coalesce(json_agg("x"."o"), '[]'::json)`)
   })
 

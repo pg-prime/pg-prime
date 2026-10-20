@@ -697,7 +697,7 @@ function parseTimestamptz(raw: string, ctx: CodecContext | undefined, codecName:
     const start = ++i
     while (i < len && raw.charCodeAt(i) >= 48 && raw.charCodeAt(i) <= 57) i++
     const width = Math.min(i - start, 3)
-    if (width === 0) throw unrecognised(codecName, raw)
+    if (width === 0 || i - start > 6) throw unrecognised(codecName, raw)
     ms = digits(raw, start, start + width) * (width === 1 ? 100 : width === 2 ? 10 : 1)
   }
   let offsetMs = 0
@@ -739,7 +739,8 @@ function parseTimestamptz(raw: string, ctx: CodecContext | undefined, codecName:
     t = Date.UTC(year, month - 1, day, hour, minute, second, ms)
   }
   t -= offsetMs
-  if (Number.isNaN(t)) throw new PgDecodeError(codecName, raw, 'produced an Invalid Date')
+  // Past ±8.64e15 ms `new Date(t)` is an Invalid Date, silently.
+  if (!(Math.abs(t) <= 8.64e15)) throw new PgDecodeError(codecName, raw, 'produced an Invalid Date')
   return new Date(t)
 }
 

@@ -195,10 +195,8 @@ export function codecFor(
     return ddl.arrayDim > 0 ? arrayCodecOf(element, registry) : element
   }
 
-  const base = ddl.pgType.replace(/(\[\])+$/, '')
-  const element =
-    registry.byName(registryName(base)) ?? registry.byName(registryName(withoutTypeModifier(base)))
-  if (element === undefined) {
+  const codec = codecByTypeName(ddl.pgType, registry)
+  if (codec === undefined) {
     throw new NoCodecError(
       table,
       column,
@@ -210,11 +208,24 @@ export function codecFor(
         `('citext', 'vector').`,
     )
   }
-  return ddl.arrayDim > 0 ? arrayCodecOf(element, registry) : element
+  return codec
 }
 
 function arrayName(name: string, dim: number): string {
   return dim > 0 ? `${name}[]` : name
+}
+
+/**
+ * The registry codec for a declared type name (`'char(10)'`, `'text[]'`, `'timestamp(3) with time
+ * zone'`), or undefined. Every `[]` is stripped and the element wrapped once: `text[]` and
+ * `text[][]` are one OID, dimensionality is a property of the value.
+ */
+export function codecByTypeName(pgType: string, registry: CodecRegistry): AnyCodec | undefined {
+  const base = pgType.replace(/(\[\])+$/, '')
+  const element =
+    registry.byName(registryName(base)) ?? registry.byName(registryName(withoutTypeModifier(base)))
+  if (element === undefined || base === pgType) return element
+  return arrayCodecOf(element, registry)
 }
 
 /** SQL-standard spellings → registry names. `char`/`char(n)` are `bpchar`; only `"char"` is OID 18. */
@@ -236,12 +247,13 @@ function registryName(pgType: string): string {
 }
 
 /**
- * `'vector(1536)'` → `'vector'`. A typmod is not a type: `varchar` and `varchar(50)` are one OID,
- * so the parenthesised part stays on `ddl.pgType` for the DDL and is stripped only here. Tried
- * second, never first, so a real name containing parentheses cannot lose to a same-prefixed one.
+ * `'vector(1536)'` → `'vector'`, `'timestamp(3) with time zone'` → `'timestamp with time zone'`.
+ * A typmod is not a type: `varchar` and `varchar(50)` are one OID, so the parenthesised part stays
+ * on `ddl.pgType` for the DDL and is stripped only here. Tried second, never first, so a real name
+ * containing parentheses cannot lose to a same-prefixed one.
  */
 function withoutTypeModifier(pgType: string): string {
-  return pgType.replace(/\s*\([^()]*\)$/, '')
+  return pgType.replace(/\s*\([^()]*\)/, '')
 }
 
 /**
