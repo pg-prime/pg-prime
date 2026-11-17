@@ -124,8 +124,8 @@ export const SQLSTATE_MAP: Readonly<Record<string, QueryErrorCtor>> = Object.fre
  * `07` §4.5's class-prefix fallback.
  *
  * `'08'` is deliberately **absent**: a connection exception is a `ConnectionError`, not a
- * `QueryError`, and it is routed by `PgDriverErrorData.kind` before this table is consulted
- * (`./map.ts`). Putting it here as well would make the answer depend on which lookup ran first.
+ * `QueryError`, and `./map.ts` routes it to `ConnectionTerminatedError` before this table is
+ * consulted. Putting it here as well would make the answer depend on which lookup ran first.
  */
 export const SQLSTATE_CLASS_FALLBACK: Readonly<Record<string, QueryErrorCtor>> = Object.freeze({
   '22': DataError,

@@ -445,13 +445,13 @@ default**, for a reason worth knowing before you reach for it; see
 
 ## `migrate lint`
 
-Forty-two hazard codes in seven families — 36 with a default severity and six opt-in style rules
+Forty-three hazard codes in seven families — 37 with a default severity and six opt-in style rules
 — run over generated or hand-written SQL. `lint` defaults to the unapplied migrations, and needs no
 database connection when you name files on the command line.
 
 | Family | Default severity | What it is about |
 |---|---|---|
-| `DS101`–`DS106` | error | destructive: dropping a schema, table, column, the only uniqueness guarantee |
+| `DS101`–`DS107` | error | destructive: dropping a schema, table, column, sequence, the only uniqueness guarantee |
 | `MF101`–`MF107` | error | may fail on existing data: adding `UNIQUE` or `NOT NULL` to a populated table, narrowing a type, changing the collation of a unique or checked column |
 | `BC101`–`BC105` | warn | backward-incompatible with running app code: renames (table, column, index, constraint, enum label), visible type changes |
 | `LK101`–`LK113` | warn | lock hazards: an index without `CONCURRENTLY`, a validated FK, a table rewrite, an index rebuild |

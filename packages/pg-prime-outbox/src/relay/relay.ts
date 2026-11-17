@@ -26,7 +26,8 @@ export function backoffMs(
   attempt: number,
   random: () => number = Math.random,
 ): number {
-  const ceiling = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, attempt - 1))
+  // Clamped: `0 * 2 ** 1024` is NaN, and anything past 2 ** 62 is only ever capped by maxDelayMs.
+  const ceiling = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.min(62, Math.max(0, attempt - 1)))
   if (jitter === 'none') return ceiling
   if (jitter === 'equal') return ceiling / 2 + random() * (ceiling / 2)
   return random() * ceiling

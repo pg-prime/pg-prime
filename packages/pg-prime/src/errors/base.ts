@@ -36,6 +36,9 @@ export type PgPrimeErrorCode =
   | 'CONFIG'
   | 'USAGE'
   | 'VERSION_CONFLICT'
+  | 'TIMEOUT'
+  | 'ABORT'
+  | 'INDETERMINATE_COMMIT'
 
 /** Which handle a statement was issued on. `07` §4.3, and the `handle` attribute of every event. */
 export type HandleKind = 'db' | 'tx' | 'session'
