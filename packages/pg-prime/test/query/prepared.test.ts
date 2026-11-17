@@ -146,6 +146,24 @@ describe('placeholders and `$n`', () => {
     expect(driver.log).toStrictEqual([])
   })
 
+  it('an UNDEFINED value is a missing key, not SQL NULL — `= NULL` matches nothing', async () => {
+    const driver = mockDriver()
+    const p = build(pgPrime({ driver, schema }))
+    await expect(p.execute({ min: '1', author: 1n, title: undefined } as never)).rejects.toThrow(
+      /placeholder "title".*null means SQL NULL/,
+    )
+    expect(driver.log).toStrictEqual([])
+    // `null` is the explicit spelling, and it still binds NULL.
+    await p.execute({ min: '1', author: 1n, title: null } as never)
+    expect(driver.log[0]?.params).toStrictEqual(['1', '1', null])
+    // toSQL() never throws: the hole stays a hole.
+    expect(p.toSQL({ min: '1', author: 1n, title: undefined } as never).params).toStrictEqual([
+      '1',
+      '1',
+      { placeholder: 'title' },
+    ])
+  })
+
   it('an EXTRA key throws naming it, because a typo that is ignored filters on nothing', async () => {
     const driver = mockDriver()
     const p = build(pgPrime({ driver, schema }))

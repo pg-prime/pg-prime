@@ -9,6 +9,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { textCodec } from '../../src/codec/index.js'
 import { clearDescribeCache, describeCacheStats } from '../../src/query/executor.js'
 import { pgPrime } from '../../src/query/run.js'
 import * as q from '../../src/query/types.js'
@@ -207,6 +208,16 @@ describe('LRU eviction uses the protocol Close, never SQL DEALLOCATE (07 §2.4)'
       preparedStatements: { prefix: 'x'.repeat(60) },
     })
     await expect(select(db).execute()).rejects.toThrow(/PostgreSQL allows 63/)
+  })
+})
+
+describe('db.sql takes no placeholders', () => {
+  it('a placeholder() in a raw statement is refused at the tag, never bound as NULL', () => {
+    const db = pgPrime({ driver: mockDriver(), schema })
+    expect(
+      () => db.sql`select * from users where email = ${q.placeholder('email', textCodec)}`,
+    ).toThrow(/db\.sql takes no placeholders \(found "email"\).*\.prepare\(\)/)
+    expect(() => db.sql`select ${q.val('a', textCodec)}`).not.toThrow()
   })
 })
 

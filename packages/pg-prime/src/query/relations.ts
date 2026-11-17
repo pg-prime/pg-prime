@@ -490,8 +490,14 @@ function accessor(
     },
 
     exists: () => existsOf(corr(), undefined, false),
-    some: (f?: (t: never) => unknown) => existsOf(corr(), predicateOf(corr(), f, 'some()'), false),
-    none: (f?: (t: never) => unknown) => existsOf(corr(), predicateOf(corr(), f, 'none()'), true),
+    some: (f?: (t: never) => unknown) => {
+      const c = corr()
+      return existsOf(c, predicateOf(c, f, 'some()'), false)
+    },
+    none: (f?: (t: never) => unknown) => {
+      const c = corr()
+      return existsOf(c, predicateOf(c, f, 'none()'), true)
+    },
     // Null-safe, which is the whole reason `every` is not `not exists (… and not p)`: a NULL
     // predicate is neither true nor false, and `p is not true` is the only spelling that treats
     // "unknown" as "does not satisfy". Vacuously true on an empty relation, which is what

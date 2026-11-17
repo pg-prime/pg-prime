@@ -176,14 +176,15 @@ export function bindsToParams(
       out[i] = b.encoded
       continue
     }
-    if (values === undefined || !Object.hasOwn(values, b.name)) {
+    const v = values !== undefined && Object.hasOwn(values, b.name) ? values[b.name] : undefined
+    // `undefined` is refused like a missing key, not bound as NULL: `= NULL` matches nothing.
+    if (v === undefined) {
       throw new BuilderError(
         `pg-prime: prepared query is missing a value for placeholder "${b.name}". ` +
-          `Pass it to .execute({ ${b.name}: … }).`,
+          `Pass it to .execute({ ${b.name}: … }); null means SQL NULL.`,
       )
     }
-    const v = values[b.name]
-    out[i] = v === null || v === undefined ? null : b.codec.encode(v as never)
+    out[i] = v === null ? null : b.codec.encode(v as never)
   }
   return out
 }

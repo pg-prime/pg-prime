@@ -49,11 +49,9 @@ export function toSQLOf(
 ): SqlSnapshot {
   const params: (PgParam | PlaceholderRef)[] = compiled.binds.map((b) => {
     if (b.k === 'value') return b.encoded
-    if (values !== undefined && Object.hasOwn(values, b.name)) {
-      const v = values[b.name]
-      return v === null || v === undefined ? null : b.codec.encode(v as never)
-    }
-    return { placeholder: b.name }
+    const v = values !== undefined && Object.hasOwn(values, b.name) ? values[b.name] : undefined
+    if (v === undefined) return { placeholder: b.name }
+    return v === null ? null : b.codec.encode(v as never)
   })
   return Object.freeze({
     sql: compiled.sql,

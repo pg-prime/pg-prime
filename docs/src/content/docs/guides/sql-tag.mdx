@@ -334,7 +334,8 @@ Three things it deliberately lacks, and it is worth knowing which:
 - **Rows are keyed by field name.** This is the one place in the library that is not positional, so
   `select u.id, p.id` loses one of them, exactly as `pg`'s object mode does. Alias your columns.
 - **No placeholders, no `nest`, no relations, no chunking.** Those are the builder's, and a second
-  half-builder here would be a second thing to keep honest.
+  half-builder here would be a second thing to keep honest. A `placeholder()` inside `db.sql` is
+  refused at the tag — there is no `execute(values)` to fill it — rather than bound as NULL.
 
 If you want a hand-written `FROM` item that *is* fully typed and fully decoded, that is `fromRaw`,
 which takes a fragment plus an explicit column-to-codec map:
