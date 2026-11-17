@@ -49,13 +49,21 @@ export interface Mq<D extends Record<string, QueueDef<any, any>>> extends AsyncD
   close(): Promise<void>
 }
 
+/** A worker or binding of one queue. */
+export interface Loop {
+  readonly queue: string
+  close(): Promise<void>
+  /** Aborts the loop without waiting for it; `force` also aborts the handlers' signals. */
+  stop(force: boolean): void
+}
+
 /** What the handles share. */
 export interface Core {
   readonly db: Db
   readonly t: Tables
   readonly hooks: Hooks
-  /** Workers and bindings, closed by `mq.close()`. */
-  readonly running: Set<{ close(): Promise<void> }>
+  /** Workers and bindings, closed by `mq.close()`; `drop()` stops those of its queue. */
+  readonly running: Set<Loop>
   /** Ensures the schema, then upserts the queue's row (once per instance). */
   ready(def: QueueDef<any, any>): Promise<void>
   forget(def: QueueDef<any, any>): void

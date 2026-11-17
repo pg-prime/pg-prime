@@ -5,6 +5,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "{{pglite}}",
     "@pg-prime/testing": "{{testing}}",
+    "@types/pg": "{{typesPg}}",
     "vitest": "{{vitest}}"
   }
 }

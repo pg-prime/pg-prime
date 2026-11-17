@@ -57,8 +57,12 @@ export interface Core {
   readonly db: Db
   readonly sql: Statements
   readonly hooks: Hooks
-  /** Readers and tails, closed by `events.close()`. */
-  readonly running: Set<{ close(): Promise<void> }>
+  /** Readers and tails, closed by `events.close()`; `remove()` stops the readers of its subscription. */
+  readonly running: Set<{
+    close(): Promise<void>
+    stop?(): void
+    readonly subscription?: SubscriptionDef<any>
+  }>
   topicChannel(topic: string): string
   /** Ensures the schema, then upserts the topic, or the subscription with its cursor seeded once. */
   ready(def: TopicDef<any> | SubscriptionDef<any>): Promise<void>
@@ -77,8 +81,9 @@ export function pgEvents<const D extends EventsDefinitions = {}>(
   let ensuring: Promise<{ from: number; to: number }> | undefined
   let ensured = false
   const memo = new Map<string, Promise<void>>()
+  // A tuple, not a joined string: names may contain '/'.
   const key = (def: TopicDef<any> | SubscriptionDef<any>): string =>
-    def.kind === 'topic' ? `t/${def.name}` : `s/${def.topic.name}/${def.name}`
+    JSON.stringify(def.kind === 'topic' ? [def.name] : [def.topic.name, def.name])
 
   const migrate = async (apply: boolean): Promise<{ from: number; to: number }> => {
     try {
