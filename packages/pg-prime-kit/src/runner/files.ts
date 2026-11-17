@@ -573,7 +573,8 @@ export function executionPlan(file: MigrationFile): ExecutionPlan {
       const key = s.segment ?? 0;
       const open = hand[hand.length - 1];
       if (open?.index === key) open.statements.push(s.index);
-      else if (key === hand.length) hand.push({ index: key, transactional: file.txmode !== "none", statements: [s.index] });
+      else if (key === hand.length)
+        hand.push({ index: key, transactional: file.txmode !== "none", statements: [s.index] });
       else {
         diagnostics.push({
           code: "segment_marker_out_of_order",

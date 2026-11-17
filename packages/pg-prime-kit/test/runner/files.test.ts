@@ -223,7 +223,12 @@ describe("executionPlan", () => {
     };
     expect(exec([0, 0, 1]).segments.map((s) => s.statements)).toEqual([[0, 1], [2]]);
     expect(exec([0, 0, 1]).diagnostics).toEqual([]);
-    for (const markers of [[0, 1, 0], [1, 0], [0, 2], [1, 2]]) {
+    for (const markers of [
+      [0, 1, 0],
+      [1, 0],
+      [0, 2],
+      [1, 2],
+    ]) {
       const codes = exec(markers).diagnostics.map((d) => [d.code, d.severity]);
       expect(codes, markers.join(",")).toContainEqual(["segment_marker_out_of_order", "error"]);
     }
