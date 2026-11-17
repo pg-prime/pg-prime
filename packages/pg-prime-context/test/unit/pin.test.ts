@@ -38,15 +38,17 @@ it('a root transaction becomes a savepoint that captures and restores settings',
     'begin',
     'select set_config($1,$2,',
     'select jsonb_object_agg(',
+    'select current_setting($',
     'savepoint "pgprime_sp_1"',
     'select set_config($1,$2,',
     'select count(set_config(',
     'release savepoint "pgpri',
+    'select set_config($1,$2,',
     'rollback',
   ])
   expect(q[2]!.values).toContain(JSON.stringify(['app.tenant_id']))
-  expect(q[4]!.values).toEqual(['app.tenant_id', 't1', 'statement_timeout', '50'])
-  expect(JSON.parse(q[5]!.values[0] as string)).toEqual(JSON.parse(SNAPSHOT))
+  expect(q[5]!.values).toEqual(['app.tenant_id', 't1', 'statement_timeout', '50'])
+  expect(JSON.parse(q[6]!.values[0] as string)).toEqual(JSON.parse(SNAPSHOT))
 })
 
 it('read only ends with ROLLBACK TO instead of a restore', async () => {
