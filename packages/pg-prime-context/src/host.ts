@@ -193,18 +193,10 @@ export class TransactionHost<Sc extends AnySchema = AnySchema> {
           'a savepoint cannot set isolation, accessMode, deferrable or retry.',
         )
       }
-      const keys = Object.keys(o.localSettings ?? {})
-      if (o.timeoutMs !== undefined) keys.push('statement_timeout')
-      if (o.lockTimeoutMs !== undefined) keys.push('lock_timeout')
-      return this.#nest(outer, async () => {
-        // RELEASE keeps SET LOCAL values, so put back what this savepoint set.
-        const before = keys.length > 0 ? await capture(outer, keys, false) : undefined
-        return outer.savepoint(async (sp) => {
-          const v = await this.#enter(s, sp, run)
-          if (before) await restore(sp, before, keys)
-          return v
-        }, o)
-      }) as Promise<NoHandleEscape<T>>
+      // pg-prime's savepoint() puts back the settings and timeouts it was given after RELEASE.
+      return this.#nest(outer, () =>
+        outer.savepoint((sp) => this.#enter(s, sp, run), o),
+      ) as Promise<NoHandleEscape<T>>
     }
     if (this.#pin) return this.#pinned(outer ?? s?.base ?? this.#pin, s, run, o)
     const settings = s?.settings ?? {}

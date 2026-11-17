@@ -25,10 +25,12 @@ const expectGolden = async (name: string, envelope: unknown): Promise<void> => {
   await expect(golden(envelope)).toMatchFileSnapshot(`./golden/${name}.json`);
 };
 
-/** Roles are cluster-wide, so any other suite moves doctor's role count; the kind stays evidence. */
+/** Roles and memberships are cluster-wide, so any concurrent suite moves them; the role kind stays evidence. */
 const withoutClusterRoles = (envelope: Record<string, unknown>): Record<string, unknown> => ({
   ...envelope,
-  observed: (envelope["observed"] as { kind: string }[]).map((o) => (o.kind === "role" ? { ...o, count: MASK } : o)),
+  observed: (envelope["observed"] as { kind: string }[])
+    .filter((o) => o.kind !== "membership")
+    .map((o) => (o.kind === "role" ? { ...o, count: MASK } : o)),
 });
 
 const databases: string[] = [];
