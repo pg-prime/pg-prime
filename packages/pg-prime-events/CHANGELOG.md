@@ -1,5 +1,12 @@
 # @pg-prime/events
 
+## 0.2.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - pg-prime@0.2.6
+
 ## 0.2.5
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @pg-prime/nestjs
 
+## 0.2.6
+
+### Patch Changes
+
+- Updated dependencies [[`30bd5eb`](https://github.com/pg-prime/pg-prime/commit/30bd5eb6f0d896990438c5f236a3ac0cf3d59f2c)]:
+  - @pg-prime/context@0.2.6
+  - pg-prime@0.2.6
+
 ## 0.2.5
 
 ### Patch Changes
