@@ -146,7 +146,8 @@ error.
 
 `COPY` is one statement. It is transaction-scoped like any other, so it works under transaction
 pooling with no special handling — unlike `LISTEN`, session GUCs or session advisory locks. It is
-also exempt from the session `statement_timeout` for its duration, like a stream.
+also exempt from the session `statement_timeout` for its duration, like a stream — on `db`, inside
+a `Tx`, and on a `Session`, where it runs in a transaction of its own.
 
 ## The measurement: there is no crossover
 

@@ -896,3 +896,83 @@ describe('the protocol CancelRequest (07 §6.1)', () => {
     60_000,
   )
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §1.4 / §3.3 — Session.transaction() options and savepoint-scoped GUCs, on the server
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Session.transaction() applies TxOptions on the pinned backend (07 §1.4, §3.5)', () => {
+  requiresConcurrency()(
+    'timeoutMs kills pg_sleep with 57014, and localSettings is visible inside the block',
+    async () => {
+      const app = pgPrime({ connection: liveTarget().url, schema, devGuard: false })
+      try {
+        const started = Date.now()
+        const err = await app
+          .session((s) =>
+            s.transaction(
+              async (tx) => {
+                const [row] =
+                  await tx.sql`select current_setting('app.tenant_id', true) as t`.execute()
+                expect(row?.['t']).toBe('acme')
+                await tx.sql`select pg_sleep(3)`.execute()
+              },
+              { timeoutMs: 200, localSettings: { 'app.tenant_id': 'acme' } },
+            ),
+          )
+          .catch((e: unknown) => e)
+        expect(sqlState(err)).toBe('57014')
+        expect(Date.now() - started).toBeLessThan(2_000)
+      } finally {
+        await app.end()
+      }
+    },
+    60_000,
+  )
+})
+
+describe('savepoint options end with the savepoint (07 §3.3)', () => {
+  requiresConcurrency()(
+    'a savepoint timeoutMs does not outlive its RELEASE',
+    async () => {
+      const app = pgPrime({
+        connection: liveTarget().url,
+        schema,
+        session: { statementTimeout: '30s' },
+        devGuard: false,
+      })
+      try {
+        const seen = await app.transaction(async (tx) => {
+          await tx.savepoint(() => Promise.resolve(), { timeoutMs: 50 })
+          // Would be 57014 at 50 ms if the subtransaction's SET LOCAL had leaked to the parent.
+          await tx.sql`select pg_sleep(0.2)`.execute()
+          return show(tx)
+        })
+        expect(seen).toBe('30s')
+      } finally {
+        await app.end()
+      }
+    },
+    60_000,
+  )
+
+  requiresConcurrency()(
+    'a savepoint localSettings value is gone after RELEASE, and the parent keeps its own',
+    async () => {
+      const seen = await db.transaction(async (tx) => {
+        await tx.setLocal('app.tenant_id', 'parent')
+        const inner = await tx.savepoint(
+          async (sp) => {
+            const [row] = await sp.sql`select current_setting('app.tenant_id', true) as t`.execute()
+            return row?.['t']
+          },
+          { localSettings: { 'app.tenant_id': 'child' } },
+        )
+        const [row] = await tx.sql`select current_setting('app.tenant_id', true) as t`.execute()
+        return [inner, row?.['t']]
+      })
+      expect(seen).toStrictEqual(['child', 'parent'])
+    },
+    60_000,
+  )
+})

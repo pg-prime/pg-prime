@@ -861,15 +861,18 @@ class PgDriverImpl implements PgDriver {
     }
   }
 
+  #assertAlive(): void {
+    if (!this.#destroyed) return
+    throw new PgDriverError({
+      kind: 'adapter',
+      message: 'driver has been destroyed',
+      connectionUnusable: true,
+      adapter: ADAPTER,
+    })
+  }
+
   async acquire(options?: PgAcquireOptions): Promise<PgConnection> {
-    if (this.#destroyed) {
-      throw new PgDriverError({
-        kind: 'adapter',
-        message: 'driver has been destroyed',
-        connectionUnusable: true,
-        adapter: ADAPTER,
-      })
-    }
+    this.#assertAlive()
     if (options?.signal?.aborted) {
       throw new PgDriverError(
         normaliseError(options.signal.reason ?? new Error('aborted'), {
@@ -925,6 +928,7 @@ class PgDriverImpl implements PgDriver {
    *     difference.
    */
   async connect(options?: PgAcquireOptions): Promise<PgConnection> {
+    this.#assertAlive()
     const make = this.#config.createDedicatedClient
     if (make === undefined) return this.acquire(options)
     const client = make()
@@ -934,6 +938,8 @@ class PgDriverImpl implements PgDriver {
     conn.attachClientListeners()
     try {
       await conn.loadServerParameters()
+      // `destroy()` while we were connecting: nothing may outlive it.
+      this.#assertAlive()
     } catch (e) {
       conn.detachClientListeners()
       await client.end().catch(() => {})

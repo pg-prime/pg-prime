@@ -203,14 +203,16 @@ describe('savepoint', () => {
     expect(pool.texts.map((t) => t.slice(0, 24))).toEqual([
       'begin',
       'select jsonb_object_agg(',
+      'select current_setting($',
       'savepoint "pgprime_sp_1"',
       'select set_config($1,$2,',
       'select count(set_config(',
       'release savepoint "pgpri',
+      'select set_config($1,$2,',
       'commit',
     ])
     expect(pool.queries[1]!.values).toContain(JSON.stringify(['app.role', 'statement_timeout']))
-    expect(JSON.parse(pool.queries[4]!.values[0] as string)).toEqual(before)
+    expect(JSON.parse(pool.queries[5]!.values[0] as string)).toEqual(before)
   })
 })
 

@@ -324,3 +324,71 @@ describe("copyFrom's default columns are the ones an insert may name (07 §6.6)"
 })
 
 void liveTarget
+
+async function* slowRows(): AsyncIterable<Record<string, unknown>> {
+  for (let i = 0; i < 3; i++) {
+    await new Promise((r) => setTimeout(r, 250))
+    yield { id: 9_000 + i, kind: 'slow', amount: '1.00', at: AT }
+  }
+}
+
+describe('COPY is exempt from the session statement_timeout (07 §3.6, §6.6)', () => {
+  requiresConcurrency()(
+    'a source slower than the session timeout still loads — on db, inside a transaction, and on a session',
+    async () => {
+      const app = pgPrime({
+        connection: liveTarget().url,
+        schema,
+        session: { statementTimeout: '200ms' },
+        devGuard: false,
+      })
+      try {
+        await truncate()
+        expect((await app.copyFrom(events, slowRows())).rowCount).toBe(3)
+        await truncate()
+        const inTx = await app.transaction((tx) => tx.copyFrom(events, slowRows()))
+        expect(inTx.rowCount).toBe(3)
+        await truncate()
+        const inSession = await app.session((s) => s.copyFrom(events, slowRows()))
+        expect(inSession.rowCount).toBe(3)
+        // …and the timeout is still the session's afterwards.
+        const [row] = await app.sql`show statement_timeout`.execute()
+        expect(row?.['statement_timeout']).toBe('200ms')
+      } finally {
+        await app.end()
+      }
+    },
+    60_000,
+  )
+})
+
+describe('COPY inside a transaction the Session opened by hand (07 §1.4, §6.6)', () => {
+  requiresConcurrency()(
+    'joins it, is still exempt, and puts the timeout back without ending the block',
+    async () => {
+      const app = pgPrime({
+        connection: liveTarget().url,
+        schema,
+        session: { statementTimeout: '200ms' },
+        devGuard: false,
+      })
+      try {
+        await truncate()
+        const seen = await app.session(async (s) => {
+          await s.sql`begin`.execute()
+          await s.copyFrom(events, slowRows())
+          const [row] = await s.sql`show statement_timeout`.execute()
+          // Still inside the hand-opened block: nothing of ours committed it.
+          const [tx] = await s.sql`select now() <> statement_timestamp() as later`.execute()
+          await s.sql`commit`.execute()
+          return [row?.['statement_timeout'], tx?.['later']]
+        })
+        expect(seen).toStrictEqual(['200ms', true])
+        expect(await count()).toBe(3)
+      } finally {
+        await app.end()
+      }
+    },
+    60_000,
+  )
+})
