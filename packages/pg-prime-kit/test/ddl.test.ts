@@ -264,3 +264,64 @@ describe("ordering, end to end", () => {
     T,
   );
 });
+
+describe("an FK on a partitioned table is NOT VALID only where the server allows it", () => {
+  const schema: Fact = {
+    id: { kind: "schema", schema: "public" },
+    payload: { kind: "schema" },
+    provenance: CATALOG_PROVENANCE,
+  };
+  const table = (partitioned: boolean): Fact => ({
+    id: { kind: "table", schema: "public", name: "events" },
+    parent: { kind: "schema", schema: "public" },
+    payload: {
+      kind: "table",
+      relkind: partitioned ? "p" : "r",
+      persistence: "p",
+      rowSecurity: false,
+      partitionStrategy: partitioned ? "r" : null,
+      partitionKey: partitioned ? "RANGE (at)" : null,
+      partitionOf: null,
+      partitionBound: null,
+    },
+    provenance: CATALOG_PROVENANCE,
+  });
+  const fk: Fact = {
+    id: { kind: "constraint", schema: "public", table: "events", name: "events_owner_fkey" },
+    parent: { kind: "table", schema: "public", name: "events" },
+    payload: {
+      kind: "constraint",
+      contype: "f",
+      definition: "FOREIGN KEY (owner) REFERENCES public.owners(id)",
+      validated: true,
+      deferrable: false,
+    },
+    provenance: CATALOG_PROVENANCE,
+  };
+  const plan = (partitioned: boolean, pgVersionNum?: number) => {
+    const current = SchemaIR.build([schema, table(partitioned)], []);
+    const desired = SchemaIR.build([schema, table(partitioned), fk], []);
+    const options = pgVersionNum === undefined ? {} : { pgVersionNum };
+    return buildStatements(diffIR(current, desired), desired, options).statements.filter(
+      (s) => s.kind === "constraint",
+    );
+  };
+  const literal =
+    'ALTER TABLE "public"."events" ADD CONSTRAINT "events_owner_fkey" FOREIGN KEY (owner) REFERENCES public.owners(id)';
+
+  it("PG 17 and an unknown version: the literal ADD, with its lock and failure hazards", () => {
+    for (const s of [plan(true, 170000), plan(true)]) {
+      expect(s.map((x) => x.sql)).toEqual([literal]);
+      expect(s[0]?.hazards).toEqual(["LK105", "MF106"]);
+    }
+  });
+
+  it("PG 18: NOT VALID + VALIDATE, like any other table", () => {
+    for (const s of [plan(true, 180000), plan(false, 170000)]) {
+      expect(s.map((x) => x.sql)).toEqual([
+        `${literal} NOT VALID`,
+        'ALTER TABLE "public"."events" VALIDATE CONSTRAINT "events_owner_fkey"',
+      ]);
+    }
+  });
+});
