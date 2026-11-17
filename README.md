@@ -2,15 +2,14 @@
 
 A PostgreSQL-only, type-safe TypeScript ORM with first-class migrations and zero runtime dependencies.
 
-> **Status: pre-alpha.** The **migration loop is closed**: `pg-prime migrate generate → apply →
-> status → check → verify` runs from a `pg-prime.config.ts` against PostgreSQL 15–18, needs no
-> `CREATEDB`, refuses a transaction-mode pooler, writes nothing until the plan has been proved on a
-> shadow clone, and is green on Pagila, Northwind, AdventureWorks and Chinook. The query builder and
-> the session layer are built (design/12 round A): joins including laterals, relational projection,
-> CTEs, `Db`/`Tx`/`Session`, savepoints, serialization retry, `SET LOCAL`, LISTEN/NOTIFY, COPY and
-> the pooler profiles. All four packages are published to npm at `0.1.0` (unbundled ESM + `.d.ts`,
-> `publint --strict` and `attw --profile esm-only` clean), and the API will change. Current state, decisions
-> and next steps: [`design/00-overview.md`](./design/00-overview.md).
+> **Status: 0.2.6, pre-1.0.** The API will still change; breaking changes land in a minor.
+> `pg-prime migrate generate → apply → status → check → verify` runs from a `pg-prime.config.ts`
+> against PostgreSQL 15–18, needs no `CREATEDB`, refuses a transaction-mode pooler, proves every plan
+> on a shadow clone witnessed by `pg_dump`, and is green on Pagila, Northwind, AdventureWorks and
+> Chinook. The query builder, the `Db`/`Tx`/`Session` runtime and six add-ons (events, outbox, mq,
+> cron, context, nestjs) are built and published. Known open defects and the route to 1.0:
+> [`design/21-review-2026-11-17.md`](./design/21-review-2026-11-17.md). Current state and decisions:
+> [`design/00-overview.md`](./design/00-overview.md).
 
 ## Why
 
@@ -31,8 +30,14 @@ Published to GitHub Pages from `main`.
 |---|---|
 | `pg-prime` | Runtime: schema DSL, codecs, query builder, the `Db`/`Tx`/`Session` handles, executor. Zero runtime dependencies; `pg` is an **optional** peer, resolved lazily and only by the `connection:` form (`pool:` and `driver:` need nothing). |
 | `@pg-prime/kit` | Migration engine and the `pg-prime` CLI: `migrate generate / apply / status / check / verify / lint / baseline / push --dev / doctor / unlock / checkpoint`, `db seed`, `pull`. Catalog diffing, plan generation, prove-on-shadow-clone, `pg_dump` witness, apply. |
-| `@pg-prime/testing` | Test helpers (PGlite tier, container matrix). |
+| `@pg-prime/testing` | Test helpers: PGlite, containers, scratch databases, a mock pool, `rollbackScope`. |
 | `@pg-prime/create` | Project scaffolder (`npm create @pg-prime`). |
+| `@pg-prime/events` | Typed channels, a durable event log with cursors, pub/sub. |
+| `@pg-prime/outbox` | Transactional outbox with an ordered relay to external sinks. |
+| `@pg-prime/mq` | Work queues: leases, retry with backoff, FIFO per group, LISTEN wake-up. |
+| `@pg-prime/cron` | Scheduled jobs on mq, with the database as the only coordinator. |
+| `@pg-prime/context` | Ambient transactions (`TransactionHost`) over `AsyncLocalStorage`. |
+| `@pg-prime/nestjs` | Nest module for `pg-prime` and `@pg-prime/context`. |
 
 ## License
 

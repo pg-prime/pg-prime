@@ -1,6 +1,6 @@
 # 16 — `@pg-prime/outbox`: transactional outbox with ordered relay. Design & Implementation Plan
 
-2026-10-08. Branch `feat/mq`. **Status: PLAN — for revmux review before any code.**
+2026-10-08. Branch `feat/mq`. **Status: BUILT** — shipped in 0.2.x; open defects in [21 §4](./21-review-2026-11-17.md).
 Family rules — the dependency graph, shared helpers, ledgers, packaging, budgets and cross-plan
 order — are in [15-events §0](./15-events.md). This plan does not repeat them.
 

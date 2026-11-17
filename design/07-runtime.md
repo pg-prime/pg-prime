@@ -317,6 +317,11 @@ Rationale:
 - The overhead argument cuts both ways and I will not overstate it: `AsyncLocalStorage` in modern Node is much cheaper than it was, but it is not free, and it is *unbounded* in pathological cases (deep promise chains). Keeping it off the production hot path by default means we never have to defend a number.
 - We leave a documented, unsupported-for-building-on hook — `experimental_asyncContext()` — so framework integrators (Next.js middleware, NestJS request scoping) can build ambient wrappers *in userland* if they want them. We will not build APIs on top of it and will not treat its behaviour as semver-stable.
 
+> **AMENDED (design/19).** The rule holds for **core**: `pg-prime` has no ambient context and no ALS
+> cost on its hot path. Ambient transactions ship as an opt-in add-on, `@pg-prime/context`
+> (`TransactionHost`, propagation `join` / `savepoint` / `new`), with `@pg-prime/nestjs` on top. §8
+> rows 10 and 11 read the same way: rejected in core, available in an add-on the app chooses.
+
 > **AS BUILT (design/12 §3 S).** `createDb` ships as **`pgPrime(config)`** — the rename record
 > fixes the per-layer spelling and design/12 §1 decision 1 keeps the constructor's name — with §1.1's
 > `DbConfig` grown onto it: `connection | pool | driver` (exactly one, `ConfigError` naming all three

@@ -166,7 +166,7 @@ import silently bypasses it. `[verified working, F4]`
   "name": "pg-prime",
   "type": "module",
   "sideEffects": false,
-  "license": "Apache-2.0",
+  "license": "MPL-2.0",
   "engines": { "node": ">=22.12" },
   "files": ["dist"],
   "publishConfig": { "access": "public", "provenance": true },
@@ -210,7 +210,7 @@ have nothing behind them yet while one planned *omission* was reversed.
 | `./codecs` | **yes** → `dist/codec/index.js` | The directory is `src/codec/`, the subpath is `./codecs` — the subpath name is what §2.1 promised and the directory name is not API. |
 | `./adapter-pg`, `./adapter-pglite` | **no** — replaced by **`./driver`** | There is one *structural* adapter, `pgDriver(pool)` over any `PgLikePool` (`02` §1, `08` §8 resolution 5). It duck-types `pg`, PGlite-over-a-socket and Neon identically, so there is nothing for a second subpath to contain. `./driver` → `dist/entry/driver.js`, a thin re-export file rather than `src/driver/index.ts` itself: that barrel deliberately exports `typeSource` and `assertSessionGucs`, which are `@internal` and which `test/query/index.test.ts` asserts are *absent* from the public surface. |
 | `./migrate` | **no** | The migration applier is `@pg-prime/kit`'s `runner/apply.ts` today, not `pg-prime`'s. §1.1's boundary argument (production apps run migrations at boot and must not install a CLI) still stands and is still unimplemented; the subpath is reserved by not being used for anything else. |
-| `./pgvector`, `./postgis` | **no** | The extension codecs do not exist. |
+| `./pgvector`, `./postgis` | **no** | Extension support (`vector`, `citext`, `trgm*`, `definePgType`) ships from the **root** barrel, not a subpath (21 §5 D10). PostGIS does not exist. |
 | `./package.json` | **yes** | |
 
 Every entry has `"types@<5.9"` **first**, then `"types"`, then `"default"`, on every subpath — F4's
@@ -384,8 +384,9 @@ where the ecosystem is heading, but it is pre-1.0 and we would be taking it for 
   `mappings` alone (the two compilers choose slightly different source positions), with `version`,
   `file`, `sources`, `sourceRoot` and `names` identical everywhere. A difference in any other map
   key, or any other kind of `.d.ts` difference, fails.
-- **The kit is NOT bundled, and there is no `bin`.** §3.1 bundles the kit because CLI cold-start
-  matters; there is no CLI — no `src/cli.ts`, no `bin` field, no commands. Bundling a programmatic
+- **The kit is NOT bundled.** *(2026-08-28 text; the CLI has since shipped — `src/cli.ts` and a
+  `bin` field — still unbundled `tsc` output.)* §3.1 bundles the kit because CLI cold-start
+  matters; at the time there was no CLI — no `src/cli.ts`, no `bin` field, no commands. Bundling a programmatic
   API into one file would cost the deep-import paths in its own `.d.ts` and buy nothing. So the kit
   ships `tsc` output with `pg` as a real runtime dependency and `@types/pg` beside it — the latter
   is in `dependencies`, not `devDependencies`, because the emitted `dist/db/pg.d.ts` really does say
@@ -785,6 +786,11 @@ Both are policy failures, so the fix is policy.
 
 ### 6.2 The 1.0 criteria — closed list, 12 items
 
+> **Under review (2026-11-17).** Seven of the twelve conflict with other docs or cannot be met as
+> written (corpus size, perf case set, type-perf fixture, "zero peer deps", fuzz volume, TS 6.0,
+> adoption). A proposed revision is in [21 §5.1](./21-review-2026-11-17.md); it is an owner
+> decision and nothing below has changed yet.
+
 1. **API frozen.** No breaking public-surface change for two consecutive minors (~12 weeks), proven
    by the committed `api-snapshot` golden files.
 2. **DDL coverage complete.** Tables, columns, PK/FK/unique/check/exclusion constraints, indexes
@@ -898,8 +904,8 @@ library, because linking semantics scare adopters away from bundling an ORM into
 MPL-2.0 is file-level copyleft: a modified copy of *our* files must be published under MPL, while
 an application that merely imports the library is untouched.
 
-The cost, accepted knowingly: MPL lacks Apache-2.0's express patent grant, which some enterprise
-OSS review boards look for. Revisit only to move *toward* stronger copyleft, never weaker — a
+MPL-2.0 carries its own express patent grant (§2.1(b) of `LICENSE`), so nothing is given up
+against Apache-2.0 there. Revisit only to move *toward* stronger copyleft, never weaker — a
 licence can be relaxed after the fact only with every contributor's consent.
 
 ## 7. Repo layout

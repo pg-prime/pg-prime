@@ -1,6 +1,6 @@
 # 15 — `@pg-prime/events`: typed channels, a durable event log, pub/sub. Design & Implementation Plan
 
-2026-10-08. Branch `feat/mq`. **Status: PLAN — for revmux review before any code.**
+2026-10-08. Branch `feat/mq`. **Status: BUILT** — shipped in 0.2.x; open defects in [21 §4](./21-review-2026-11-17.md).
 
 This is the first of four sibling plans:
 - **15 events** — the base layer;

@@ -377,7 +377,7 @@ Why this one and not the diff engine: diff-engine bugs are *bounded and detectab
 2. **1.0 means the type API is stable**, not that the feature list is complete. Say so in the README.
 3. **Version-gate type errors** via the export map so a TS upgrade never produces an inference cascade the user has to decode.
 4. **No preview flags, ever** (§2). The tier list *is* the public roadmap.
-5. **`migrate verify` must be green on three real third-party schemas** before 1.0 is tagged. That is the correctness gate for the XL subsystem we can actually measure.
+5. **`migrate verify` must be green on three real third-party schemas** before 1.0 is tagged. That is the correctness gate for the XL subsystem we can actually measure. *(08 §6.2 #3 says ≥ 15 and 08 §4.4 ~20; 21 §5.1 proposes ≥ 10.)*
 
 ---
 
@@ -419,3 +419,36 @@ All four items are decided; recorded so they are not re-opened.
    `@pg-prime/kit` (CLI, may take dependencies the runtime may not), `@pg-prime/testing`,
    `@pg-prime/create`. "Zero runtime dependencies" stays literally true of the artefact that ships to
    production; verified — `packages/pg-prime/src` has no non-relative imports at all.
+
+---
+
+## 14. Reconciliation with the code (2026-11-17)
+
+design/14 audited §3 only. The rows below were checked against 0.2.6 by the
+[21](./21-review-2026-11-17.md) review. Nothing is decided here: each row needs an owner call to
+**build**, **move to v1.x/v2**, or **strike**.
+
+**v1 rows not built:**
+
+| § | row | state |
+|---|---|---|
+| 5 | Object-literal `where` with an `unsafeFromJson()` escape | not built |
+| 5 | Cursor pagination `includeCount` | not built |
+| 5 | Compiled-SQL cache | rejected in 03 (decode-plan reuse only) |
+| 8 | `--explain` statement explainer | not built (only a comment in `kit/src/shadow/ladder.ts`) |
+| 8 | `confirmed_data_loss` consent in the plan | not built; the hazard gate and approval codes cover the intent |
+| 8 | `migrate diff --from-* --to-*` | not built; the kit has 13 commands, no `diff` |
+| 9 | `RemoteCallback` escape hatch | a type only (`driver/types.ts`), no consumer |
+| 10 | `PGO####` error codes with suggested fixes | not built; codes are SQLSTATEs or per-class strings |
+
+**"Never" rows against the code:**
+
+| § | row | state |
+|---|---|---|
+| 7 | Spring-style propagation modes | consistent: `@pg-prime/context` ships `join` / `new` / `savepoint`, i.e. the REQUIRED / REQUIRES_NEW / NESTED subset this row keeps |
+| 7 | ALS for anything other than transaction propagation | mostly consistent: context also carries per-scope `SET LOCAL` settings, which ride the transaction |
+| 8 | Shelling out to any external binary | the letter is broken: the proof runs `pg_dump` as its witness (06 D10). The intent (no third-party diff tool) holds |
+| 10 | Database drivers as hard CLI dependencies | the letter is broken: the kit depends on `pg`. The intent (no multi-dialect payload) holds |
+
+07 §1.6 and §8 rows 10–11 reject ambient context and `@Transactional` **in core**; the add-ons
+are recorded there as an AMENDED note.

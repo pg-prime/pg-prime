@@ -1,6 +1,6 @@
 # 20 — Typed RLS policies and trigger helpers on the declared repeatable lane
 
-Status: plan, rev 2 (2026-10-09, after the revmux round), branch `feat/mq`. Implements design/01
+Status: **built** (plan rev 2, 2026-10-09, branch `feat/mq`). Implements design/01
 §3 row 64 (`definePolicy`, v1.x) without row 63 (structured diffing): policies and triggers stay
 **managed, not diffed**, as the lane decision (01 §3) states. Generic by design: no tenant model,
 setting name or role is assumed; `app.org_id` / `app_user` below are one example.

@@ -24,7 +24,7 @@
     },
     "packages/pg-prime-kit": {
       "_design": {
-        "_why": "design/08 §1.2 budgets the kit at ≤ 8 MB unpacked (hard fail 12 MB) and its single bundle file at ≤ 2 MB. There is no bundle line here because there is no bundle: §3.1 bundles the kit with esbuild because CLI cold-start matters, and the CLI does not exist yet (no `bin`, no `src/cli.ts`). The kit ships unbundled `tsc` output with `pg` as a real runtime dependency, so the 2 MB bundle line is not applicable rather than passing — see the AS BUILT note under design/08 §3.1.",
+        "_why": "design/08 §1.2 budgets the kit at ≤ 8 MB unpacked (hard fail 12 MB) and its single bundle file at ≤ 2 MB. There is no bundle line here because there is no bundle: §3.1 bundles the kit with esbuild because CLI cold-start matters, and the CLI ships unbundled (`bin` → `dist/cli.js`). The kit ships unbundled `tsc` output with `pg` as a real runtime dependency, so the 2 MB bundle line is not applicable rather than passing — see the AS BUILT note under design/08 §3.1.",
         "unpackedBytes": 8388608
       },
       "unpackedBytes": 8388608,

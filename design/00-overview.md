@@ -1,8 +1,9 @@
 # pg-prime — Design Overview & Decision Record
 
-**Living document.** Last reconciled **2026-08-29**. Design round completed 2026-08-14; this file
-is the entry point, the decision record, and the honest status of what is actually built.
-Research basis: [`../research/SUMMARY.md`](../research/SUMMARY.md).
+**Living document.** Last reconciled **2026-11-17** (release 0.2.6). Design round completed
+2026-08-14; this file is the entry point, the decision record, and the honest status of what is
+actually built. Research basis: [`../research/SUMMARY.md`](../research/SUMMARY.md).
+**Open defects and the proposed route to 1.0: [21-review-2026-11-17.md](./21-review-2026-11-17.md).**
 
 ## Document map
 
@@ -17,6 +18,18 @@ Research basis: [`../research/SUMMARY.md`](../research/SUMMARY.md).
 | [07-runtime.md](./07-runtime.md) | Execution | `unnamedExtended` default; 40001 retry at RR/serializable only; declared (not detected) `poolerMode`; three non-assignable handles |
 | [08-architecture.md](./08-architecture.md) | Packaging | 4 packages; tsgo + oxlint; unbundled ESM; PGlite default test tier with a multi-session ban |
 | [09-query-builder-implementation-plan.md](./09-query-builder-implementation-plan.md) | Build plan | Sequenced workstreams to get from the four spikes to a working builder; per-workstream test contracts and exit gates |
+| [10-audit-2026-08-26.md](./10-audit-2026-08-26.md) | Audit record | Six-area audit of the spikes; the contract changes it caused (§8) |
+| [11-kit-v1-loop-plan.md](./11-kit-v1-loop-plan.md) | Build plan (done) | Close the `generate → apply → status → check → verify` loop |
+| [12-v1-completion-plan.md](./12-v1-completion-plan.md) | Build plan (done) | Round A (C · K4 · S · B), the docs site (D), the perf residue (P) |
+| [13-close-out-plan.md](./13-close-out-plan.md) | Build plan (done) | Close-out of 12's leftovers |
+| [14-promise-audit-plan.md](./14-promise-audit-plan.md) | Audit (done) | Every 01 §3 promise checked against the code |
+| [15-events.md](./15-events.md) | `@pg-prime/events` (built) | Typed channels, a durable xid-ordered event log, pub/sub; family rules for 15–18 (§0) |
+| [16-outbox.md](./16-outbox.md) | `@pg-prime/outbox` (built) | Transactional outbox, per-key ordered relay |
+| [17-mq.md](./17-mq.md) | `@pg-prime/mq` (built) | Work queues: lease, retry/backoff, group FIFO, LISTEN wake-up |
+| [18-cron.md](./18-cron.md) | `@pg-prime/cron` (built) | Schedules on mq, database as the only coordinator |
+| [19-context-nestjs.md](./19-context-nestjs.md) | `@pg-prime/context`, `@pg-prime/nestjs` (built) | Ambient `TransactionHost` in an add-on, never in core; Nest module |
+| [20-policies-triggers.md](./20-policies-triggers.md) | Typed RLS policies (built) | `definePolicy` and trigger helpers on the declared repeatable lane, managed not diffed |
+| [21-review-2026-11-17.md](./21-review-2026-11-17.md) | Review record + next plan | Open defects by priority (P0/P1/P2), plan contradictions, a proposed 1.0 criteria revision and order of work |
 
 ## Where the implementation actually is
 
@@ -38,9 +51,12 @@ reading a test.
 | Migration engine — the 1.0 gate | [01 §11.6 #5](./01-features.md) is **met twice over**: `baseline` → `verify` is green on Pagila, Northwind, AdventureWorks and Chinook, committed under `fixtures/corpus/` from pinned upstreams (empty IR diff on all four; `pg_dump` byte-equal on two and differing only by Tier-R objects on the other two). And `pull` now round-trips **all four** the other way — introspect → TypeScript → `generate` reports `up_to_date`, a second `pull` is byte-identical, and the `-- pull: unsupported` block is **empty** on every one. The corpus found four Tier-M bugs, all fixed ([06 §2.2](./06-migrations.md), [06 §4.5](./06-migrations.md)) |
 | Runtime — the session layer | **Done (2026-08-29).** [07](./07-runtime.md) end to end: `pgPrime(config)` with `connection` / `pool` / `driver`, the `Db`/`Tx`/`Session` handles, `TxOptions` + savepoints + `40001` retry + `setLocal` + advisory locks + `rollbackWith`, the §4.2 error tree with constraint→schema-object resolution, `POOLER_PROFILES` + `diagnosePooler()`/`diagnose()`, `AbortSignal` and per-statement timeouts, `streamBatches`, `listen`/`notify` on a dedicated connection, `copyFrom`/`copyTo`, hooks + `spanAttributes()` + the slow-query log + call-site capture, and the `AsyncLocalStorage` dev guard. `07` §0's snippet runs unchanged on a direct connection **and** through PgBouncer transaction mode. `07` §9's last two open questions are closed by measurement. **914 offline / 1 658 live / 1 718 on PG 17 + PgBouncer**, green on PG 15/16/17/18 |
 | Documentation | **Done (2026-08-29, [12 §4 D](./12-v1-completion-plan.md)).** The site of [08 §6.4](./08-architecture.md) is built and is a **gate**, not a folder: 45 Astro Starlight pages (getting started · 7 concepts · 15 guides · 6 operations · 11 reference · 5 comparison), **531 fenced `ts` blocks compiled on TypeScript 5.9.3 — the consumer floor — against the BUILT packages' export maps**, **83 examples executed against PostgreSQL** (tier-1 PGlite, one clean database each) and **1 181 / 1 181 exported names** with a reference entry, checked in both directions against the api-snapshot goldens. The CLI reference is the binary's own `--help`, the hazard table is the kit's own code list, the pooler matrix is generated from `POOLER_PROFILES`, and every internal link is resolved — four things that can rot, four mechanical checks. [08 §6.2 #10](./08-architecture.md) is met |
-| Packaging | **Done (2026-08-28).** Both packages build (`tsc` → unbundled ESM + `.d.ts` + maps), ship an `exports` map with the `types@<5.9` gate first on every subpath, and install from a `pnpm pack` tarball into a throwaway project — proved on every PR by the `package` CI job. `@pg-prime/testing` and `@pg-prime/create` build and ship too, and all four packages are published to npm at `0.1.0` |
+| Packaging | **Done (2026-08-28).** Both packages build (`tsc` → unbundled ESM + `.d.ts` + maps), ship an `exports` map with the `types@<5.9` gate first on every subpath, and install from a `pnpm pack` tarball into a throwaway project — proved on every PR by the `package` CI job. `@pg-prime/testing` and `@pg-prime/create` build and ship too. **Ten packages are published at 0.2.6** (2026-11-17) via npm trusted publishing with provenance; nine are one changesets `fixed` group, `@pg-prime/testing` versions on its own |
+| Add-ons | **Done (2026-10, 15–19).** `@pg-prime/events` (event log + pub/sub), `@pg-prime/outbox` (transactional outbox + relay), `@pg-prime/mq` (work queues), `@pg-prime/cron` (schedules on mq), `@pg-prime/context` (ambient `TransactionHost`) and `@pg-prime/nestjs`. Each owns its schema through core's `migrateOwnedSchema` ledger. Typed RLS policies and trigger helpers (20) ship in core and the kit |
+| Perf residue (12 §4 P) | **Done.** Runtime budgets re-cut from the nightly runner, `bench/compare` against drizzle-orm and kysely. Point-select p50 is ≈ 1.29× raw `pg`, against the 1.15× of 08 §6.2 #5 (see 21 §5 D2) |
+| Open defects | **[21](./21-review-2026-11-17.md)**: 11 P0 (silent loss or false success), 30 P1, plus P2 and cleanup, found by the 2026-11-17 review |
 
-**4 881 tests green** (958 runtime offline, 1 729 runtime live, 1 789 runtime on PostgreSQL 17 +
+**At 2026-08-29: 4 881 tests green** (958 runtime offline, 1 729 runtime live, 1 789 runtime on PostgreSQL 17 +
 PgBouncer — green on 15/16/17/18 — and 405 kit on 17 and 18, +6 pooler-gated); workspace typecheck clean.
 **Type budget, measured on the real implementation:** 137,778 instantiations, 1.11 s on TS 5.9 /
 0.231 s on TS 7, schema-size-independence ratio **1.00** against a 1.15 gate.
@@ -130,10 +146,14 @@ tree-shake golden contains no `pg` and no `node:async_hooks`. `@pg-prime/kit` de
    third-party corpus schemas to an empty `generate` with an empty unsupported block. Seven DSL
    additions came with it (`05` §2.3/§2.4/§5.1 AS BUILT), all runtime metadata: not one
    per-declaration or per-query `bench:types` number moved.
-8. **The rest of [12](./12-v1-completion-plan.md)**: ~~the session layer (`07`, which has never had
-   a workstream), the builder gaps `09` deferred, release engineering, the docs site,~~ and the perf
-   residue. Round A (C · K4 · S · B) merged 2026-08-29; **D, the docs site, is done** ([12 §4 D](./12-v1-completion-plan.md)),
+8. ~~**The rest of [12](./12-v1-completion-plan.md)**: the session layer (`07`, which has never had
+   a workstream), the builder gaps `09` deferred, release engineering, the docs site, and the perf
+   residue.~~ **Done**; the text below is the 2026-08-29 record. Round A (C · K4 · S · B) merged 2026-08-29; **D, the docs site, is done** ([12 §4 D](./12-v1-completion-plan.md)),
    which leaves **P** — the runtime budgets re-sized from runner data, the batch-insert encode path,
    and `bench/compare` against drizzle-orm and kysely. The nightly is red on one gate until it
    lands: point-select p50 1.603× against a 1.45 budget, a real per-statement regression from the
    session layer, deliberately not re-budgeted.
+9. **Next: [21 §6](./21-review-2026-11-17.md)** — the P0 batch as 0.2.7, the P1 batch, then a
+   revised and published set of 1.0 criteria (21 §5.1, an owner decision), kit hardening (the
+   schema-pair fuzzer), surface triage as 0.3.0, the corpus to ≥ 10 schemas, per-statement
+   overhead, CI and governance scaffolding, and the freeze clock.

@@ -1,6 +1,6 @@
 # 19 — `@pg-prime/context` + `@pg-prime/nestjs`: ambient transactions and a Nest module. Design & Implementation Plan
 
-2026-10-09. Branch `feat/mq`. **Status: PLAN rev 3 (final)** — revmux `cnp-01`/`cnp-02` fixes (§11), owner decisions (§10).
+2026-10-09. Branch `feat/mq`. **Status: BUILT** (plan rev 3 final) — revmux `cnp-01`/`cnp-02` fixes (§11), owner decisions (§10).
 
 Two general-purpose add-ons for apps that want the active transaction ambient instead of threaded
 through every call:
