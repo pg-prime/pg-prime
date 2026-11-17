@@ -1,5 +1,52 @@
 # pg-prime
 
+## 0.2.5
+
+### Patch Changes
+
+- [#19](https://github.com/pg-prime/pg-prime/pull/19) [`2993a2b`](https://github.com/pg-prime/pg-prime/commit/2993a2b2552aba0837d23f731a231a364f1254bc) Thanks [@YohoCX](https://github.com/YohoCX)! - - **`char(n)` columns no longer truncate to one character.** `t.raw('char(10)')`, `t.raw('char')` and `t.raw('character(n)')` resolved to the one-byte internal `"char"` codec (OID 18), so every bound value was cut to its first character with no error; `bpcharCodec` also cast as `::char` (= `char(1)`) on the first row of `valuesMany`, in `unnest` bulk inserts and in policy DDL binds. They now resolve to `bpchar` and cast as `::bpchar`. `t.raw()` also understands the other `format_type` spellings (`character varying(n)`, `bit varying(n)`, `double precision`, `timestamp with time zone`, …). Only `t.raw('"char"')` is the one-byte type.
+  - A relation or `nest()` with more than 50 members executes instead of failing with `54023 cannot pass more than 100 arguments to a function`: the object is built in chunks of 50 — `json_build_object` pieces spliced as text for the default `json` variant (key order, duplicate keys and `\u0000` survive), `jsonb_build_object || …` for `jsonb`.
+  - An invalid escape in a `sql` template (`'\xZZ'`) is refused with `InvalidFragmentError` naming the hole, instead of silently deleting the rest of the statement.
+  - A top-level projection key over 63 UTF-8 bytes compiles with a generated alias, like a nested one already did, instead of being rejected as an over-long identifier; the decoded key is unchanged.
+  - `timestamptz` decoding no longer runs a regex and allocates two `Date`s per cell; same accepted spellings, same values.
+
+- [#14](https://github.com/pg-prime/pg-prime/pull/14) [`680ae09`](https://github.com/pg-prime/pg-prime/commit/680ae0944dc001e12d5779bfb8f03edd71e9db62) Thanks [@YohoCX](https://github.com/YohoCX)! - - A backend that goes away mid-statement is a `ConnectionTerminatedError` as documented: a class `08` SQLSTATE from the server (PgBouncer's `08P01`, `08006`) or a fatal `57P01` that took the socket with it. Before, those mapped to `UnknownQueryError` and `OperatorInterventionError`, so `instanceof ConnectionError` was false for a dead backend. A `57P01` on a connection that survived is still `OperatorInterventionError`.
+  - A `log.sink` that throws no longer rejects the statement it was logging; it is disabled and reported once on `console.error`, the same policy hooks have.
+  - An `async` hook that rejects is disabled and reported instead of becoming an unhandled rejection.
+  - `hooks: {}` registers nothing, so statements skip the event path.
+  - A constraint violation resolves against the table the server named, so two tables sharing a constraint name (`email_key` on both, or a `CHECK` with the same name) no longer resolve to whichever table was declared first. `constraint.referencedTable` is now set for foreign keys.
+  - `errors.captureCallSite` no longer elides frames from an application whose own files live under `src/query/`, `src/session/` and the like: only pg-prime's own frames are skipped.
+  - `db.diagnose()` is one round trip, as documented, and `connections.inUse` counts client backends only (background workers never occupy a `max_connections` slot).
+  - `PgPrimeErrorCode` includes `'TIMEOUT'`, `'ABORT'` and `'INDETERMINATE_COMMIT'`, the codes `QueryTimeoutError`, `AbortError` and `IndeterminateCommitError` carry.
+
+- [#15](https://github.com/pg-prime/pg-prime/pull/15) [`577fca6`](https://github.com/pg-prime/pg-prime/commit/577fca6c5706c01b43e4ea7dfa0912fe0a2ded08) Thanks [@YohoCX](https://github.com/YohoCX)! - Bulk insert, prepared queries and `db.sql` hardening:
+  
+  - `valuesMany` with the `values` strategy now caps each chunk so `rows × columns` (plus any binds in `ON CONFLICT`/`RETURNING`) stays under the 65 535-parameter wire ceiling. A wide table — or one with an array column, where `unnest` is unavailable — chunks below 5 000 rows instead of failing with `TooManyParametersError`.
+  - `PreparedQuery.execute()` refuses an `undefined` placeholder value the same way it refuses a missing key, instead of binding SQL NULL and silently matching nothing. `null` still binds NULL.
+  - `onConflict().doUpdate()` throws when the patch leaves nothing to set (every key `undefined`) instead of compiling to invalid `do update set` SQL; use `doNothing()`.
+  - `` db.sql`…` `` refuses a `placeholder()` at the tag instead of binding it as NULL.
+  - Insert rows are snapshotted at `.values()`/`.valuesMany()` time; mutating the row object afterwards no longer changes what is inserted.
+  - `InsertQuery.toSQL()` and `.explain()` no longer throw on a chunked batch; they describe its first chunk (`compileAll()` has the rest).
+  - Relation `some()`/`none()` evaluate a declared `where` once per use rather than twice.
+
+- [#18](https://github.com/pg-prime/pg-prime/pull/18) [`c5aa0c4`](https://github.com/pg-prime/pg-prime/commit/c5aa0c43043cb995cf528ae6028f26b00c4b000a) Thanks [@YohoCX](https://github.com/YohoCX)! - Session, savepoint, LISTEN and timeout fixes.
+  
+  - `Session.transaction()` now honours every `TxOptions` field (`retry`, `timeoutMs`, `lockTimeoutMs`, `localSettings`, `signal`) and emits the transaction hooks, exactly like `db.transaction()`. Before, `localSettings` was silently dropped, so an RLS tenant set this way never reached the server.
+  - Savepoint `timeoutMs` / `lockTimeoutMs` / `localSettings` end with the savepoint: the previous values are put back after `RELEASE SAVEPOINT` instead of leaking to the rest of the transaction, and a timeout changed inside a savepoint is restored by the parent.
+  - `copyFrom` / `copyTo` are exempt from the session `statement_timeout` as documented, on `db`, `Tx` and `Session` handles; a stream on a `Session` gets a transaction of its own as well.
+  - `BEGIN` / `COMMIT` / `SAVEPOINT` / `set_config` failures are mapped like any other statement: a deferred FK violation raised at a chunked insert's `COMMIT` is a `ForeignKeyViolationError`, a `SAVEPOINT` refused with `25P02` is an `InFailedTransactionError` naming the poison.
+  - A chunked batch under `timeoutStrategy: 'transaction'` sets `statement_timeout` once after `BEGIN` instead of losing the timeout.
+  - A transaction's `signal` composes with `pgPrime({ signal })` at checkout, and an abort landing between the last statement and `COMMIT` rolls back with `AbortError`.
+  - `tx.rollbackWith(v)` on the outer handle inside a savepoint resolves the transaction with `v` instead of being swallowed by the savepoint.
+  - `timeoutMs` must be a positive integer; `0` and non-integers are a `UsageError` on every handle (`lockTimeoutMs: 0` stays valid).
+  - An already-aborted `signal` combined with `timeoutMs` no longer runs the statement.
+  - `Session.set()` and a session advisory lock still held at exit dispose the connection so the state cannot reach the next borrower; a callback that throws on a healthy connection returns it to the pool.
+  - `db.listen()`: two concurrent first subscriptions attach one set of listeners (handlers fired twice per NOTIFY before); a `subscribe()` landing during a reconnect shares the reopen instead of producing a second live connection; a `LISTEN` failing during reconnect closes that connection; a `LISTEN` that fails in `subscribe()` is mapped and leaves no half-registered channel; `db.end()` during a reconnect closes the late socket; the pg adapter's `connect()` refuses after `destroy()`.
+  - A stream, COPY or `timeoutStrategy: 'transaction'` statement on a `Session` inside a transaction the caller opened by hand joins it, honours `statementTimeoutMs`, and puts the previous `statement_timeout` back afterwards instead of leaving a `SET LOCAL` on the caller's block. An adapter that cannot report `transactionStatus` gets no `BEGIN`/`COMMIT` from pg-prime at all.
+  - A chunked insert on a `Session` runs in one transaction, like on `db`.
+  - COPY opens a transaction only when there is a session `statement_timeout` to lift; otherwise it is the one statement it was.
+  - A `Session` callback that throws while a statement is still in flight, or whose connection status cannot be read, disposes the connection; `tx.copyFrom` on an escaped or abandoned `Tx` throws before touching the connection.
+
 ## 0.2.4
 
 ## 0.2.3
