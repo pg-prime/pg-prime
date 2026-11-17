@@ -33,7 +33,8 @@
   "statement": {
     "_why": "The statement path over the null driver (`statement-path.mjs`), added by design/12 §4 P item 0 because nothing in the PR half of design/08 §5 could see the session layer: `bench:compile` measured the builder and the decoder, and the only thing that measured acquire -> execute -> release needed a server and therefore ran once a night. The regression that motivated it -- point select 1.286 -> 1.603 after design/12 §3 S -- was found by the nightly, a day after the merge, in the one e2e case cheap enough for a constant per-statement cost to be visible in a ratio whose denominator is a network round trip. These lines see it directly. There is NO design figure for them: design/08 §5 gates ratios against `pg`, not against our own previous code, so the design column prints 1.0 -- 'the session layer should be free' -- and they are deliberately absent from `_designLinked`, because a budget cannot be over design against a number no document states.",
     "_whyLocallySized": "Unlike every other line in this file these were sized on the design machine rather than from the runner's distribution (R21), and that is legitimate for exactly two of the three. `overPreSessionP50` and `overPreSessionBytes` are a RATIO and a DIFFERENCE BETWEEN TWO ARMS MEASURED IN THE SAME PROCESS -- same compiled statement, same null driver, interleaved sample runs -- so the machine cancels. R21 exists because a wall-clock number from a laptop is not a statement about a runner; a quotient of two numbers taken on one machine is. `productionRefRatio` IS machine-dependent, so it is a catastrophe guard at ~2x the measurement rather than a regression detector. The first nightly to run this says whether the quotients hold, and they come down if it has a tighter distribution.",
-    "overPreSessionP50": 2.3,
+    "_reCut2026_10_14": "From fifteen PR and nightly `types`-job runs (38299873741–38536689223), including the failed nightly 38383931878: `overPreSessionP50` read 1.26–2.555 and codegen `fractionOfClosureTree` 0.759–0.821. Both re-cut by the max × 1.05 rule: 2.3 -> 2.7 and 0.82 -> 0.9. `overPreSessionBytes` stays the regression detector for the statement path.",
+    "overPreSessionP50": 2.7,
     "overPreSessionBytes": 3400,
     "productionRefRatio": 0.6,
     "_runnerSized": "design/13 §4 Q, 2026-08-30, from the first five nightly samples (33242675982, 33246087296, 33246453272, 33246810860, 33271626165, same code): `overPreSessionP50` 2.008 / 2.184 / 2.051 / 1.320 / 2.127 -> budget 2.4 -> 2.3, i.e. max × 1.05 rounded up to 0.05 over the four ordinary readings, the same rule the reference ratios use. The 1.320 is the one to read: it is not a better build, it is the same commit on a faster night, and the tool that compares consecutive nightlies (tools/bench-regression.mjs) reported the return to 2.127 as a 61 % regression — so the TIME line left that tool's allow-list and only the bytes line (3 112–3 120 B, 0.3 % spread) stays reportable. A ratio of two in-process arms cancels the machine less than `_whyLocallySized` hoped; the budget is a catastrophe guard sized from the runner, and the regression detector for this path is `overPreSessionBytes`.",
@@ -50,7 +51,7 @@
       "ratioVsUncheckedMapperP50": 2.15,
       "ratioVsCheckedMapperP50": 1.3,
       "rowsPerSecond": 1500000,
-      "fractionOfClosureTree": 0.82
+      "fractionOfClosureTree": 0.9
     }
   },
   "e2e": {

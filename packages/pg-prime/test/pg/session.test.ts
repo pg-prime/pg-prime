@@ -18,7 +18,7 @@ import { pgDriver } from '../../src/driver/index.js'
 import {
   DeadlockDetectedError,
   IndeterminateCommitError,
-  OperatorInterventionError,
+  ConnectionTerminatedError,
   QueryCanceledError,
   QueryTimeoutError,
   SerializationFailureError,
@@ -242,7 +242,7 @@ describe('IndeterminateCommitError (07 §3.4, §4.2)', () => {
    * **classification** of the real `57P01` that a terminated backend produces.
    */
   requiresConcurrency()(
-    'a terminated backend classifies as 57P01 / OperatorInterventionError',
+    'a terminated backend classifies as 57P01 / ConnectionTerminatedError',
     async () => {
       const own = pgDriver({ pool: makePool(1) as unknown as PgLikePool })
       try {
@@ -264,7 +264,7 @@ describe('IndeterminateCommitError (07 §3.4, §4.2)', () => {
           // no COMMIT had been written.
           expect(err).not.toBeInstanceOf(IndeterminateCommitError)
           const state = sqlState(err)
-          if (state === '57P01') expect(err).toBeInstanceOf(OperatorInterventionError)
+          if (state === '57P01') expect(err).toBeInstanceOf(ConnectionTerminatedError)
           else
             announce(
               `[pg] the terminated backend surfaced as ${String((err as Error).name)}, not 57P01`,
@@ -279,7 +279,7 @@ describe('IndeterminateCommitError (07 §3.4, §4.2)', () => {
     60_000,
   )
 
-  it('a 57P01 that arrives as seam data classifies as OperatorInterventionError', () => {
+  it('a fatal 57P01 that arrives as seam data classifies as ConnectionTerminatedError', () => {
     const raw = new Error('terminating connection due to administrator command') as Error & {
       pgPrime: Record<string, unknown>
     }
@@ -294,7 +294,7 @@ describe('IndeterminateCommitError (07 §3.4, §4.2)', () => {
       context: { handle: 'tx' },
       errors: resolveErrorOptions(undefined, false),
     })
-    expect(e).toBeInstanceOf(OperatorInterventionError)
+    expect(e).toBeInstanceOf(ConnectionTerminatedError)
   })
 })
 

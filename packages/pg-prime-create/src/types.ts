@@ -17,6 +17,8 @@ export interface Versions {
   readonly kit: string
   readonly testing: string
   readonly pg: string
+  /** `test/setup.ts` imports `pg` directly; pnpm does not hoist the kit's copy of the types. */
+  readonly typesPg: string
   readonly typescript: string
   readonly typesNode: string
   readonly vitest: string

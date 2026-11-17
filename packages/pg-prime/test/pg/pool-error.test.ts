@@ -22,7 +22,7 @@
 import { afterAll, describe, expect } from 'vitest'
 import pg from 'pg'
 import type { InternalEvent } from '../../src/observe/index.js'
-import { OperatorInterventionError } from '../../src/errors/index.js'
+import { ConnectionTerminatedError } from '../../src/errors/index.js'
 import { pgPrime } from '../../src/query/run.js'
 import { defineSchema, pgTable } from '../../src/schema/index.js'
 import { liveTarget, requiresConcurrency, sqlState } from '../live/_harness.js'
@@ -130,9 +130,9 @@ describe('an idle pooled connection the server kills (07 §1.2)', () => {
           .catch((e: unknown) => e)
 
         expect(err).toBeInstanceOf(Error)
-        // 57P01 admin_shutdown when the ErrorResponse wins the race with the socket close; either
-        // way it is a rejection the caller sees, which is the property under test.
-        if (sqlState(err) === '57P01') expect(err).toBeInstanceOf(OperatorInterventionError)
+        // pg_terminate_backend's 57P01 is FATAL, so when the ErrorResponse wins the race with the
+        // socket close it is a connection loss (reference/errors.mdx).
+        if (sqlState(err) === '57P01') expect(err).toBeInstanceOf(ConnectionTerminatedError)
       } finally {
         await other.end()
       }

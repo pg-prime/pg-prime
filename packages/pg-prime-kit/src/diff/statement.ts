@@ -75,6 +75,8 @@ export const PHASE = {
   createTable: 30,
   addColumn: 35,
   alterTable: 38,
+  /** a DEFAULT a retype cannot cast through, or that an ADD IDENTITY would refuse beside */
+  dropDefault: 39,
   alterColumn: 40,
   setDefault: 41,
   alterSequence: 42,

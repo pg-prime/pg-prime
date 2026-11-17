@@ -47,6 +47,7 @@ const entries = {
   kit: caret(kit.version),
   testing: caret(testingVersion),
   pg: kit.dependencies['pg'],
+  typesPg: kit.dependencies['@types/pg'],
   typescript: `^${typescriptFloor}`,
   typesNode: root.devDependencies['@types/node'],
   vitest: root.devDependencies['vitest'],
