@@ -16,6 +16,11 @@ import type { ConnInfo } from "../../src/db/pg.js";
 
 const T = 180_000;
 const dbs: string[] = [];
+const version = (await serverAvailable())
+  ? await withAdmin(async (c) =>
+      Number((await c.query("SELECT current_setting('server_version_num') AS v")).rows[0]?.["v"]),
+    )
+  : 0;
 
 interface Pair {
   readonly target: ConnInfo;
@@ -45,43 +50,46 @@ async function pair(name: string, current: string, desired: string): Promise<Pai
 
 const at = (sql: string[], re: RegExp): number => sql.findIndex((s) => re.test(s));
 
-const serverVersion = (): Promise<number> =>
-  withAdmin(async (c) =>
-    Number((await c.query("SELECT current_setting('server_version_num') AS v")).rows[0]?.["v"]),
-  ).catch(() => 0);
+/** Apply the plan to the target for real, then run `fn` against the migrated database. */
+const applied = async <R>(p: Pair, fn: (c: ConnInfo) => Promise<R>): Promise<R> => {
+  const report = await withClient(p.target, (c) => applySegments(c, p.result.plan.statements, p.result.plan.segments));
+  expect(report.error).toBeUndefined();
+  return fn(p.target);
+};
+
+beforeAll(async () => {
+  expect(await serverAvailable(), `no PostgreSQL at ${ADMIN.host}:${ADMIN.port}`).toBe(true);
+}, T);
+afterAll(async () => {
+  for (const db of dbs) await destroyDatabase(db).catch(() => undefined);
+}, T);
 
 describe("a retype sheds its DEFAULT first and sets it again after", () => {
-  beforeAll(async () => {
-    expect(await serverAvailable(), `no PostgreSQL at ${ADMIN.host}:${ADMIN.port}`).toBe(true);
-  }, T);
-  afterAll(async () => {
-    for (const db of dbs) await destroyDatabase(db).catch(() => undefined);
-  }, T);
-
   it(
     "text -> enum with a literal default: DROP DEFAULT, ALTER TYPE, SET DEFAULT",
     async () => {
-      const { target, result, sql } = await pair(
+      const p = await pair(
         "retype",
         `CREATE TABLE public.jobs (id int PRIMARY KEY, status text NOT NULL DEFAULT 'new');
          INSERT INTO public.jobs VALUES (1, 'new'), (2, 'done');`,
         `CREATE TYPE public.job_status AS ENUM ('new', 'done');
          CREATE TABLE public.jobs (id int PRIMARY KEY, status public.job_status NOT NULL DEFAULT 'new');`,
       );
+      const { sql } = p;
       const drop = at(sql, /ALTER COLUMN "status" DROP DEFAULT/);
       const retype = at(sql, /ALTER COLUMN "status" TYPE public\.job_status USING "status"::public\.job_status/);
       const set = at(sql, /ALTER COLUMN "status" SET DEFAULT 'new'::public\.job_status/);
       expect([drop, retype, set].every((i) => i >= 0)).toBe(true);
       expect(drop).toBeLessThan(retype);
       expect(retype).toBeLessThan(set);
-      expect(result.plan.proof.status).toBe("passed");
+      expect(p.result.plan.proof.status).toBe("passed");
 
-      const report = await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
-      expect(report.error).toBeUndefined();
-      const rows = await withClient(target, async (c) => {
-        await c.query("INSERT INTO public.jobs (id) VALUES (3)");
-        return (await c.query("SELECT status::text AS s FROM public.jobs ORDER BY id")).rows.map((r) => r["s"]);
-      });
+      const rows = await applied(p, (t) =>
+        withClient(t, async (c) => {
+          await c.query("INSERT INTO public.jobs (id) VALUES (3)");
+          return (await c.query("SELECT status::text AS s FROM public.jobs ORDER BY id")).rows.map((r) => r["s"]);
+        }),
+      );
       expect(rows).toEqual(["new", "done", "new"]);
     },
     T,
@@ -122,20 +130,54 @@ describe("a retype sheds its DEFAULT first and sets it again after", () => {
   );
 });
 
-describe("serial -> identity keeps the numbering", () => {
-  beforeAll(async () => {
-    expect(await serverAvailable(), `no PostgreSQL at ${ADMIN.host}:${ADMIN.port}`).toBe(true);
-  }, T);
-
-  it(
-    "DROP DEFAULT, DROP SEQUENCE, ADD IDENTITY, then setval from the rows; the next id follows the old max",
+describe("a generation expression change is SET EXPRESSION", () => {
+  it.skipIf(version < 170000)(
+    "on a STORED column it rewrites (LK108)",
     async () => {
-      const { target, result, sql } = await pair(
+      const p = await pair(
+        "stored_expr",
+        `CREATE TABLE public.m (a int NOT NULL, b int NOT NULL, s int GENERATED ALWAYS AS (a + b) STORED);
+         INSERT INTO public.m VALUES (2, 3);`,
+        `CREATE TABLE public.m (a int NOT NULL, b int NOT NULL, s int GENERATED ALWAYS AS (a * b) STORED);`,
+      );
+      expect(p.sql).toEqual(['ALTER TABLE "public"."m" ALTER COLUMN "s" SET EXPRESSION AS ((a * b))']);
+      expect(p.result.plan.statements[0]?.hazards).toEqual(["LK108"]);
+      expect(p.result.plan.proof.status).toBe("passed");
+      const s = await applied(p, (t) =>
+        withClient(t, async (c) => (await c.query("SELECT s FROM public.m")).rows[0]?.["s"]),
+      );
+      expect(s).toBe(6);
+    },
+    T,
+  );
+
+  it.skipIf(version < 180000)(
+    "on a VIRTUAL column it is catalog-only",
+    async () => {
+      const p = await pair(
+        "virtual_expr",
+        `CREATE TABLE public.m (a int NOT NULL, b int NOT NULL, v int GENERATED ALWAYS AS (a + b) VIRTUAL);`,
+        `CREATE TABLE public.m (a int NOT NULL, b int NOT NULL, v int GENERATED ALWAYS AS (a * b) VIRTUAL);`,
+      );
+      expect(p.sql).toEqual(['ALTER TABLE "public"."m" ALTER COLUMN "v" SET EXPRESSION AS ((a * b))']);
+      expect(p.result.plan.statements[0]?.hazards).toEqual([]);
+      expect(p.result.plan.proof.status).toBe("passed");
+    },
+    T,
+  );
+});
+
+describe("adding an identity continues the numbering from the rows", () => {
+  it(
+    "serial: DROP DEFAULT, DROP SEQUENCE, ADD IDENTITY, then setval; the next id follows the old max",
+    async () => {
+      const p = await pair(
         "identity",
         `CREATE TABLE public.tickets (id serial PRIMARY KEY, code text NOT NULL);
          INSERT INTO public.tickets (code) VALUES ('a'), ('b'), ('c');`,
         `CREATE TABLE public.tickets (id integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, code text NOT NULL);`,
       );
+      const { sql } = p;
       const order = [
         at(sql, /ALTER COLUMN "id" DROP DEFAULT/),
         at(sql, /DROP SEQUENCE IF EXISTS "public"."tickets_id_seq"/),
@@ -145,30 +187,48 @@ describe("serial -> identity keeps the numbering", () => {
       expect(order.every((i) => i >= 0)).toBe(true);
       expect([...order].sort((a, b) => a - b)).toEqual(order);
       // the counter is carried over, so the sequence drop is not a data loss
-      expect(result.plan.hazards.filter((h) => h.code === "DS107")).toEqual([]);
-      expect(result.plan.proof.status).toBe("passed");
+      expect(p.result.plan.hazards.filter((h) => h.code === "DS107")).toEqual([]);
+      expect(p.result.plan.proof.status).toBe("passed");
 
-      const report = await withClient(target, (c) => applySegments(c, result.plan.statements, result.plan.segments));
-      expect(report.error).toBeUndefined();
-      const after = await withClient(target, async (c) => ({
-        next: (await c.query("INSERT INTO public.tickets (code) VALUES ('d') RETURNING id")).rows[0]?.["id"],
-        seq: (await c.query("SELECT pg_get_serial_sequence('public.tickets', 'id') AS s")).rows[0]?.["s"],
-      }));
+      const after = await applied(p, (t) =>
+        withClient(t, async (c) => ({
+          next: (await c.query("INSERT INTO public.tickets (code) VALUES ('d') RETURNING id")).rows[0]?.["id"],
+          seq: (await c.query("SELECT pg_get_serial_sequence('public.tickets', 'id') AS s")).rows[0]?.["s"],
+        })),
+      );
       expect(after).toEqual({ next: 4, seq: "public.tickets_id_seq" });
+    },
+    T,
+  );
+
+  it(
+    "a plain populated column with no default gets the setval too",
+    async () => {
+      const p = await pair(
+        "identity_plain",
+        `CREATE TABLE public.tickets (id integer PRIMARY KEY, code text NOT NULL);
+         INSERT INTO public.tickets VALUES (10, 'a'), (20, 'b');`,
+        `CREATE TABLE public.tickets (id integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, code text NOT NULL);`,
+      );
+      expect(at(p.sql, /ADD GENERATED BY DEFAULT AS IDENTITY/)).toBeLessThan(at(p.sql, /setval\(/));
+      expect(p.sql.filter((s) => /DROP DEFAULT|DROP SEQUENCE/.test(s))).toEqual([]);
+      expect(p.result.plan.proof.status).toBe("passed");
+      const next = await applied(p, (t) =>
+        withClient(
+          t,
+          async (c) => (await c.query("INSERT INTO public.tickets (code) VALUES ('c') RETURNING id")).rows[0]?.["id"],
+        ),
+      );
+      expect(next).toBe(21);
     },
     T,
   );
 });
 
 describe("PostgreSQL 18 virtual generated columns", () => {
-  beforeAll(async () => {
-    expect(await serverAvailable(), `no PostgreSQL at ${ADMIN.host}:${ADMIN.port}`).toBe(true);
-  }, T);
-
-  it(
+  it.skipIf(version < 180000)(
     "are emitted as GENERATED ALWAYS AS (…) VIRTUAL in CREATE TABLE and ADD COLUMN",
     async () => {
-      if ((await serverVersion()) < 180000) return;
       const { result, sql } = await pair(
         "virtual",
         `CREATE TABLE public.tags (id bigint PRIMARY KEY, name text NOT NULL);`,

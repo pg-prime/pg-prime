@@ -16,8 +16,8 @@ export interface RenameApplication {
 const asId = (v: StableId | string): StableId => (typeof v === "string" ? parseId(v) : v);
 
 /**
- * Rewrite an identifier under a rename. Schema and table renames cascade to the ids
- * below them — hierarchy is a view, so the cascade is a pure id rewrite with no
+ * Rewrite an identifier under a rename. Schema, table and type renames cascade to the
+ * ids below them — hierarchy is a view, so the cascade is a pure id rewrite with no
  * structural surgery.
  */
 export function remapId(id: StableId, from: StableId, to: StableId): StableId {
@@ -32,6 +32,11 @@ export function remapId(id: StableId, from: StableId, to: StableId): StableId {
   if (from.kind === "table" && to.kind === "table") {
     if ("table" in id && id.schema === from.schema && id.table === from.name) {
       return { ...id, schema: to.schema, table: to.name };
+    }
+  }
+  if (from.kind === "type" && to.kind === "type") {
+    if ("type" in id && id.schema === from.schema && id.type === from.name) {
+      return { ...id, schema: to.schema, type: to.name };
     }
   }
   return id;
@@ -183,21 +188,23 @@ const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
  * out: a plain `note <> 'user'` on a text column has no cast, is not touched, and stays a real
  * difference.
  */
-function substituteLabel(text: string, r: LabelRename): string {
+function substituteLabel(text: string, r: LabelRename, renames: RenameMap): string {
   const lit = escapeRe(r.from.replaceAll("'", "''"));
   const part = (name: string): string => `(?:"${escapeRe(name.replaceAll('"', '""'))}"|${escapeRe(name)})`;
-  const cast = `::(?:${part(r.schema)}\\.)?${part(r.type)}(?![\\w$])`;
+  // the type may be renamed in the same batch, so the current text still casts to its old name
+  const types = [r.type, ...[...renames].filter(([, to]) => to === r.type).map(([from]) => from)];
+  const cast = `::(?:${part(r.schema)}\\.)?(?:${types.map(part).join("|")})(?![\\w$])`;
   return text.replace(new RegExp(`'${lit}'(?=${cast})`, "g"), `'${r.to.replaceAll("'", "''")}'`);
 }
 
 /**
  * Adopt the desired side's rendering of a fact whose ONLY difference is a renamed label.
  *
- * The adoption is conditional on landing **exactly** on PostgreSQL's own desired text, so this
- * can never hide a difference: if the substitution does not reproduce the desired string, the
- * original stays and the differ plans the change it really is.
+ * The adoption is conditional on landing on PostgreSQL's own desired text (up to the identifier
+ * renames of the same batch), so this can never hide a difference: if the substitution does not
+ * reproduce the desired string, the original stays and the differ plans the change it really is.
  */
-function adoptRenamedLabels(f: Fact, desired: SchemaIR, labels: readonly LabelRename[]): Fact {
+function adoptRenamedLabels(f: Fact, desired: SchemaIR, labels: readonly LabelRename[], renames: RenameMap): Fact {
   const target = desired.get(f.id);
   if (!target) return f;
   let payload = f.payload;
@@ -205,7 +212,8 @@ function adoptRenamedLabels(f: Fact, desired: SchemaIR, labels: readonly LabelRe
     const have = payload[key];
     const want = target.payload[key];
     if (typeof have !== "string" || typeof want !== "string" || have === want) continue;
-    if (labels.reduce((text, r) => substituteLabel(text, r), have) !== want) continue;
+    const substituted = labels.reduce((text, r) => substituteLabel(text, r, renames), have);
+    if (!definitionsAgreeUnderRename(substituted, want, renames)) continue;
     payload = { ...payload, [key]: want };
   }
   return payload === f.payload ? f : { ...f, payload };
@@ -355,7 +363,7 @@ export function applyRenameHints(
   });
 
   /* ---- 1b. an enum LABEL lives inside a literal, not in an identifier ---- */
-  if (labelRenames.length > 0) facts = facts.map((f) => adoptRenamedLabels(f, desired, labelRenames));
+  if (labelRenames.length > 0) facts = facts.map((f) => adoptRenamedLabels(f, desired, labelRenames, renames));
 
   /* ---- 2. auto-named dependents: RENAME, not drop + add ---- */
   const cascade = cascadeRenames(facts, desired, renames, affectedTables);

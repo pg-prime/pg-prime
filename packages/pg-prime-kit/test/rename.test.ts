@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { extractCatalog } from "../src/catalog/extract.js";
 import { runSqlScript, withClient } from "../src/db/pg.js";
 import { applyRenameHints, definitionsAgreeUnderRename, tokenizeDefinition } from "../src/diff/rename.js";
-import { acceptHints, generateFromDatabases as generate } from "../src/generate.js";
+import { acceptHints, conflictingHints, generateFromDatabases as generate } from "../src/generate.js";
 import type { SchemaIR } from "../src/ir/fact.js";
 import type { ConnInfo } from "../src/db/pg.js";
 import { applySegments } from "../src/runner/apply.js";
@@ -472,6 +472,72 @@ describe("a rename carries everything the server re-renders", () => {
         "column:public.orgs.legacy_ref",
         "table:public.orgs",
       ]);
+
+      // the same rename as an annotation AND a hints-file entry is one rename; a disagreement is an error
+      const twice = acceptHints([...hints, ...hints], p.current, p.desired);
+      expect(twice.length).toBe(2);
+      expect(applyRenameHints(p.current, p.desired, twice).rejected).toEqual([]);
+      expect(conflictingHints([...hints, ...hints])).toEqual([]);
+      expect(
+        conflictingHints([...hints, { from: "column:public.orgs.id", to: "column:public.orgs.legacy_ref" }]).map(
+          (d) => [d.code, d.subject],
+        ),
+      ).toEqual([["conflicting_hints", "column:public.orgs.legacy_ref"]]);
+    },
+    T,
+  );
+
+  it(
+    "schema + table + column renamed together resolve newest-first",
+    async () => {
+      const p = await pair(
+        "chain",
+        "CREATE SCHEMA app; CREATE TABLE app.t1 (id int PRIMARY KEY, c1 text);",
+        "CREATE SCHEMA core; CREATE TABLE core.t2 (id int PRIMARY KEY, c2 text);",
+        ["app", "core"],
+      );
+      const result = await plan(p, [
+        { from: "schema:app", to: "schema:core" },
+        { from: "table:core.t1", to: "table:core.t2" },
+        { from: "column:core.t2.c1", to: "column:core.t2.c2" },
+      ]);
+      expect(result.diff.rejectedHints).toEqual([]);
+      expect(result.plan.statements.map((s) => s.sql).filter((s) => !/_not_null"/.test(s))).toEqual([
+        'ALTER SCHEMA "app" RENAME TO "core"',
+        'ALTER TABLE "core"."t1" RENAME TO "t2"',
+        'ALTER TABLE "core"."t2" RENAME COLUMN "c1" TO "c2"',
+        'ALTER TABLE "core"."t2" RENAME CONSTRAINT "t1_pkey" TO "t2_pkey"',
+      ]);
+      expect(result.plan.proof.status).toBe("passed");
+    },
+    T,
+  );
+
+  it(
+    "a type rename carries its labels and attributes: renamedValues on a renamed enum, a renamed composite",
+    async () => {
+      const p = await pair(
+        "typechildren",
+        `CREATE TYPE public.status_old AS ENUM ('active', 'inactive');
+         CREATE TYPE public.addr AS (street text, city text);
+         CREATE TABLE public.t (id int PRIMARY KEY, s public.status_old DEFAULT 'inactive', home public.addr);`,
+        `CREATE TYPE public.status_new AS ENUM ('active', 'archived');
+         CREATE TYPE public.address AS (street text, city text);
+         CREATE TABLE public.t (id int PRIMARY KEY, s public.status_new DEFAULT 'archived', home public.address);`,
+      );
+      const result = await plan(p, [
+        { from: "type:public.status_old", to: "type:public.status_new" },
+        { from: "enumLabel:public.status_new.inactive", to: "enumLabel:public.status_new.archived" },
+        { from: "type:public.addr", to: "type:public.address" },
+      ]);
+      expect(result.diff.rejectedHints).toEqual([]);
+      expect(result.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+      expect(result.plan.statements.map((s) => s.sql).sort()).toEqual([
+        'ALTER TYPE "public"."addr" RENAME TO "address"',
+        `ALTER TYPE "public"."status_new" RENAME VALUE 'inactive' TO 'archived'`,
+        'ALTER TYPE "public"."status_old" RENAME TO "status_new"',
+      ]);
+      expect(result.plan.proof.status).toBe("passed");
     },
     T,
   );

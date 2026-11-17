@@ -857,7 +857,9 @@ export function buildStatements(diff: DiffResult, desired: SchemaIR, options: Bu
         const { before, after } = d;
         switch (after.id.kind) {
           case "column":
-            statements.push(...alterColumn(before, after, current, desired, diagnostics, emptyTables));
+            statements.push(
+              ...alterColumn(before, after, current, desired, diagnostics, emptyTables, options.pgVersionNum),
+            );
             break;
           case "index": {
             // PostgreSQL cannot ALTER an index's structure: drop and rebuild.
@@ -1707,7 +1709,8 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
   // MF106 rides on the ADD half, not the VALIDATE: the ADD is where the plan commits to
   // a predicate the existing rows may violate, and it is the statement a reviewer has to
   // acknowledge. LK105/LK106 are what the rewrite ITSELF prevents, so they are recorded
-  // only when `--no-safe-rewrite` puts the literal form back (see the fall-through).
+  // only when the literal form comes back: `--no-safe-rewrite`, or an FK on a partitioned
+  // table below PG 18 (see the fall-through).
   // A table this plan creates is empty and unseen, so the literal ADD below is already safe.
   // Before 18 a partitioned table refuses `ADD … FOREIGN KEY … NOT VALID` outright.
   const notValidRefused =
@@ -1826,8 +1829,8 @@ function addConstraint(f: Fact, desired: SchemaIR, ctx: AddConstraintContext): S
     if (p.contype === "p" || p.contype === "u") hazards.push("LK104");
     if (p.contype === "x") hazards.push("LK104");
     if (mayFail && (p.contype === "p" || p.contype === "u")) hazards.push("MF101");
-    // Only reachable with `--no-safe-rewrite`; the default path above never gets here
-    // with `validated` set, which is exactly the point of these two codes.
+    // Only `--no-safe-rewrite` or an FK on a partitioned table below PG 18 gets here with
+    // `validated` set, which is exactly the point of these two codes.
     if (p.validated && p.contype === "f") hazards.push("LK105");
     if (p.validated && p.contype === "c") hazards.push("LK106");
     if (mayFail && p.validated && (p.contype === "f" || p.contype === "c")) hazards.push("MF106");
@@ -2031,6 +2034,7 @@ function alterColumn(
   desired: SchemaIR,
   diagnostics: Diagnostic[],
   emptyTables: ReadonlySet<string>,
+  pgVersionNum?: number,
 ): Statement[] {
   const b = before.payload as unknown as ColumnPayload;
   const a = after.payload as unknown as ColumnPayload;
@@ -2122,6 +2126,23 @@ function alterColumn(
         `${a.generated ?? "none"} cannot be altered in place`,
       subject: id(after.id),
     });
+  } else if (a.generated && b.generationExpr !== a.generationExpr) {
+    // `SET EXPRESSION` arrived in PG 17 (stored) and covers VIRTUAL in 18; a stored one rewrites.
+    if ((pgVersionNum ?? 0) >= 170000) {
+      out.push(
+        mk(`ALTER TABLE ${table} ALTER COLUMN ${col} SET EXPRESSION AS (${a.generationExpr})`, {
+          rewrite: a.generated === "s",
+          hazards: a.generated === "s" ? ["LK108"] : [],
+        }),
+      );
+    } else {
+      diagnostics.push({
+        code: "unsupported_alter",
+        severity: "error",
+        message: `column ${c.schema}.${c.table}.${c.name}: the generation expression cannot be changed before PostgreSQL 17`,
+        subject: id(after.id),
+      });
+    }
   }
   if (b.identity !== a.identity) {
     out.push(
@@ -2138,7 +2159,7 @@ function alterColumn(
             ),
     );
   }
-  if (addIdentity && had !== null) {
+  if (addIdentity) {
     // The new sequence starts at 1; continue from the rows instead (no-op on an empty table).
     out.push(
       mk(

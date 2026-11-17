@@ -151,7 +151,7 @@ FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_type t ON t.oid = a.atttypid
-LEFT JOIN pg_type ut ON ut.oid = CASE WHEN t.typcategory = 'A' THEN t.typelem ELSE t.oid END
+LEFT JOIN pg_type ut ON ut.oid = CASE WHEN t.typcategory = 'A' AND t.typelem <> 0 THEN t.typelem ELSE t.oid END
 LEFT JOIN pg_namespace un ON un.oid = ut.typnamespace
 LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
 LEFT JOIN pg_namespace cn ON cn.oid = coll.collnamespace
@@ -230,7 +230,7 @@ SELECT n.nspname AS schema, t.typname AS name, t.typtype,
 FROM pg_type t
 JOIN pg_namespace n ON n.oid = t.typnamespace
 LEFT JOIN pg_type bt ON bt.oid = t.typbasetype AND t.typtype = 'd'
-LEFT JOIN pg_type be ON be.oid = CASE WHEN bt.typcategory = 'A' THEN bt.typelem ELSE bt.oid END
+LEFT JOIN pg_type be ON be.oid = CASE WHEN bt.typcategory = 'A' AND bt.typelem <> 0 THEN bt.typelem ELSE bt.oid END
 LEFT JOIN pg_namespace bn ON bn.oid = be.typnamespace
 WHERE n.nspname = ANY($1)
   AND (t.typtype IN ('e','d')
@@ -276,7 +276,7 @@ JOIN pg_namespace n ON n.oid = t.typnamespace
 JOIN pg_class rc ON rc.oid = t.typrelid AND rc.relkind = 'c'
 JOIN pg_attribute a ON a.attrelid = rc.oid AND a.attnum > 0 AND NOT a.attisdropped
 JOIN pg_type at ON at.oid = a.atttypid
-LEFT JOIN pg_type ae ON ae.oid = CASE WHEN at.typcategory = 'A' THEN at.typelem ELSE at.oid END
+LEFT JOIN pg_type ae ON ae.oid = CASE WHEN at.typcategory = 'A' AND at.typelem <> 0 THEN at.typelem ELSE at.oid END
 LEFT JOIN pg_namespace en ON en.oid = ae.typnamespace
 LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
 WHERE t.typtype = 'c' AND n.nspname = ANY($1)

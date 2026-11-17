@@ -730,8 +730,8 @@ Escape hatch: `-- pg-orm:nolint LK101 "index is on a 200-row lookup table"` — 
 > | LK102 `DROP INDEX` without CONCURRENTLY | ✅ | `ddl.ts` `dropIndex` |
 > | LK103 CONCURRENTLY inside a transaction | ✅ | `lint/rules.ts`, from `plan.segments` |
 > | LK104 `ADD PRIMARY KEY`/`UNIQUE` builds under ACCESS EXCLUSIVE | ✅ | `ddl.ts` `addConstraint` (`p`/`u`/`x`) |
-> | LK105 `ADD FOREIGN KEY` without NOT VALID | ✅ | `ddl.ts` `addConstraint`; reachable only under `--no-safe-rewrite`, because the default path removes the hazard rather than reporting it |
-> | LK106 `ADD CHECK` without NOT VALID | ✅ | as LK105 |
+> | LK105 `ADD FOREIGN KEY` without NOT VALID | ✅ | `ddl.ts` `addConstraint`; reachable under `--no-safe-rewrite`, or for an FK on a partitioned table below PG 18 (which refuses `NOT VALID`), because the default path removes the hazard rather than reporting it |
+> | LK106 `ADD CHECK` without NOT VALID | ✅ | as LK105, `--no-safe-rewrite` only |
 > | LK107 `SET NOT NULL` full scan | ✅ | `ddl.ts` — domain `SET NOT NULL` and `ATTACH PARTITION` (the bound scan). The column case no longer emits it: §3.5 row 4/5 removed the scan |
 > | LK108 `ALTER COLUMN TYPE` rewrite | ✅ | `ddl.ts` `alterColumn` |
 > | LK109 `ADD COLUMN` with a volatile default | ✅ | `ddl.ts` create `column`. The `provolatile <> 'i'` question is asked of the catalog by `Q_VOLATILE_DEFAULTS` and travels as a `volatile_default` diagnostic; `mentionsVolatileFunction` is the fallback when a caller does not thread it in |
@@ -785,7 +785,7 @@ a failed CIC retryable instead of permanently wedged. Disable the whole layer wi
 > | Desired | Built | Where |
 > |---|---|---|
 > | `CREATE INDEX` → `DROP INDEX CONCURRENTLY IF EXISTS` + CIC in a `txmode none` file | ✅ | `ddl.ts` `createIndex(…, concurrent)`, `BuildOptions.multiFile`. Both statements carry `stage: "concurrent"` and `generate` writes them to `NNNN_name_concurrently.sql` |
-> | `ADD FOREIGN KEY` → `ADD … NOT VALID` + `VALIDATE CONSTRAINT` | ✅ | `ddl.ts` `addConstraint`, `contype = 'f'` |
+> | `ADD FOREIGN KEY` → `ADD … NOT VALID` + `VALIDATE CONSTRAINT` | ✅ | `ddl.ts` `addConstraint`, `contype = 'f'`; an FK on a partitioned table below PG 18 falls back to the literal ADD with LK105, because those servers refuse `NOT VALID` there |
 > | `ADD CHECK` → same split | ✅ | `ddl.ts` `addConstraint`, `contype = 'c'` |
 > | `SET NOT NULL` (PG ≥ 18) → `ADD CONSTRAINT … NOT NULL … NOT VALID` + `VALIDATE` | ✅ | `ddl.ts` `notNullTransition`, taken when the DESIRED column's `notNullConstraint` is non-null — a catalog gate, not a version gate |
 > | `SET NOT NULL` (PG 15–17) → `ADD CHECK (c IS NOT NULL) NOT VALID` → `VALIDATE` → `SET NOT NULL` → `DROP CONSTRAINT` | ✅ | same function, the other branch. The temporary constraint is named through `chooseConstraintName`, so a schema that already holds `<table>_<column>_not_null` gets `…_not_null1` instead of a duplicate-name error |

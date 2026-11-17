@@ -265,8 +265,8 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
     const laneResult = lane === null ? null : laneHazardsOf(input, lane, before, after, emptyTables);
 
     /* ---- renames: annotation first, then the hints file, then candidates ---- */
-    const annotations = annotationHints(input.schema);
-    const hints = acceptHints([...annotations, ...(input.hints ?? [])], current.ir, desired.ir);
+    const rawHints = [...annotationHints(input.schema), ...(input.hints ?? [])];
+    const hints = acceptHints(rawHints, current.ir, desired.ir);
 
     const extractorDiagnostics = [
       ...censusWithout(current.diagnostics, { ...currentViews, ...lane?.currentCensus }),
@@ -325,7 +325,6 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       if (errors.length > 0) throw new LaneRefusedError(errors, []);
     };
 
-    const encoded = (v: StableId | string): string => (typeof v === "string" ? v : encodeId(v));
     const diagnostics: Diagnostic[] = [
       ...extractorDiagnostics,
       ...(lane?.diagnostics ?? []),
@@ -333,6 +332,7 @@ export async function generate(input: GenerateInput): Promise<GenerateResult> {
       ...built.diagnostics,
       ...staged.diagnostics,
       ...declineNotes,
+      ...conflictingHints(rawHints),
       // A hint `acceptHints` let through and the differ still refused is a plan that silently
       // drops and re-adds what the annotation said to rename.
       ...diff.rejectedHints.map((r): Diagnostic => ({
@@ -929,23 +929,51 @@ export function annotationHints(schema: SchemaLike, defaultSchema = "public"): R
  *
  * A hint is spelled in the DESIRED namespace (`renamedFrom` on a column of a renamed table
  * names the new table), so it is read back into the current one through the container
- * renames accepted before it: schemas first, then tables, then the rest.
+ * renames accepted before it: schemas, then tables, then types, then the rest. The same
+ * rename given twice (annotation and hints file) is one rename.
  */
 export function acceptHints(hints: readonly RenameHint[], current: SchemaIR, desired: SchemaIR): RenameHint[] {
   const asId = (v: StableId | string): StableId => (typeof v === "string" ? parseId(v) : v);
-  const rank = (k: StableId["kind"]): number => (k === "schema" ? 0 : k === "table" ? 1 : 2);
+  const rank = (k: StableId["kind"]): number => (k === "schema" ? 0 : k === "table" ? 1 : k === "type" ? 2 : 3);
   const accepted: { from: StableId; to: StableId }[] = [];
 
-  for (const pass of [0, 1, 2]) {
+  for (const pass of [0, 1, 2, 3]) {
     for (const hint of hints) {
       const to = asId(hint.to);
       if (rank(to.kind) !== pass || asId(hint.from).kind !== to.kind) continue;
-      const from = accepted.reduce((id, r) => remapId(id, r.to, r.from), asId(hint.from));
+      // undone newest-first: a column hint under a table rename under a schema rename
+      const from = accepted.reduceRight((id, r) => remapId(id, r.to, r.from), asId(hint.from));
       if (!current.has(from) || current.has(to) || !desired.has(to)) continue;
+      if (accepted.some((r) => encodeId(r.to) === encodeId(to))) continue;
       accepted.push({ from, to });
     }
   }
   return accepted;
+}
+
+const encoded = (v: StableId | string): string => (typeof v === "string" ? v : encodeId(v));
+
+/** Two hints that disagree about one object are an error, never a guess. */
+export function conflictingHints(hints: readonly RenameHint[]): Diagnostic[] {
+  const pairs = new Map(
+    hints.map((h) => [`${encoded(h.from)} -> ${encoded(h.to)}`, { from: encoded(h.from), to: encoded(h.to) }]),
+  );
+  const out: Diagnostic[] = [];
+  for (const side of ["from", "to"] as const) {
+    const seen = new Map<string, string>();
+    for (const [pair, p] of pairs) {
+      const first = seen.get(p[side]);
+      if (first === undefined) seen.set(p[side], pair);
+      else
+        out.push({
+          code: "conflicting_hints",
+          severity: "error",
+          subject: p[side],
+          message: `rename hints disagree: ${first} and ${pair}`,
+        });
+    }
+  }
+  return out;
 }
 
 /**

@@ -18,7 +18,9 @@ CREATE TYPE public.z_status AS ENUM ('on', 'off');
 CREATE DOMAIN public.a_status AS public.z_status;
 CREATE DOMAIN public.a_statuses AS public.z_status[];
 CREATE TYPE public.a_pair AS (first public.z_status, second public.a_status);
-CREATE TABLE public.things (id int PRIMARY KEY, s public.a_status, p public.a_pair);`;
+CREATE DOMAIN public.z_tags AS text[];
+CREATE TYPE public.a_rec AS (tags public.z_tags);
+CREATE TABLE public.things (id int PRIMARY KEY, s public.a_status, p public.a_pair, r public.a_rec);`;
 
 const at = (sql: string[], re: RegExp): number => sql.findIndex((s) => re.test(s));
 
@@ -54,6 +56,8 @@ describe("user types are ordered by their dependencies, not by name", () => {
       ]) {
         expect(at(sql, re)).toBeGreaterThan(enumAt);
       }
+      // a domain over an array has `typelem = 0`: the composite using it still waits for it
+      expect(at(sql, /CREATE TYPE "public"."a_rec"/)).toBeGreaterThan(at(sql, /CREATE DOMAIN "public"."z_tags"/));
       expect(result.plan.proof.status).toBe("passed");
     },
     T,
@@ -84,6 +88,9 @@ describe("user types are ordered by their dependencies, not by name", () => {
       ]) {
         expect(at(sql, re)).toBeLessThan(enumAt);
       }
+      expect(at(sql, /DROP TYPE IF EXISTS "public"."a_rec"/)).toBeLessThan(
+        at(sql, /DROP TYPE IF EXISTS "public"."z_tags"/),
+      );
       expect(result.plan.proof.status).toBe("passed");
     },
     T,
