@@ -1,5 +1,29 @@
 # @pg-prime/kit
 
+## 0.2.5
+
+### Patch Changes
+
+- [#20](https://github.com/pg-prime/pg-prime/pull/20) [`02c0b28`](https://github.com/pg-prime/pg-prime/commit/02c0b285bcb43800ed492753fb0a65dca1592bb0) Thanks [@YohoCX](https://github.com/YohoCX)! - Diff and rewrite fixes in `migrate generate`:
+  
+  - A table rename and a column rename on the same table in one migration are both applied; the column hint was silently rejected and the plan degraded to `DROP COLUMN` + `ADD COLUMN`. A hint the differ rejects is now a `rejected_hint` error instead of a silent drop.
+  - Renaming an enum, domain or schema no longer plans `ALTER COLUMN … TYPE` (MF105) for every column of that type, renaming a partitioned parent no longer DETACHes and re-ATTACHes its partitions, and a renamed table's sequences, defaults and comments follow it. Schema renames now cascade to everything in the schema instead of dropping and recreating it.
+  - A column type change drops the column's DEFAULT before the `ALTER TYPE` and sets it again after, so a default PostgreSQL cannot cast on its own (`text` → enum) no longer fails at apply.
+  - `serial` → identity conversions apply: `DROP DEFAULT` and the old sequence go before `ADD GENERATED … AS IDENTITY`, and a `setval` continues the numbering from the rows instead of restarting at 1.
+  - `DROP SEQUENCE` is a destructive change (new hazard `DS107`, error) and needs acknowledging; a renamed sequence is a rename candidate (`missing_hints`) instead of a silent drop + create.
+  - `ADD CONSTRAINT … FOREIGN KEY … NOT VALID` on a partitioned table, which PostgreSQL < 18 refuses, falls back to the literal `ADD CONSTRAINT` (with LK105/MF106) on those servers.
+  - Retyping a STORED generated column no longer emits `USING`, which PostgreSQL rejects.
+  - Domains over user types and composites with user-typed attributes are ordered by their dependencies instead of by name.
+  - PostgreSQL 18 virtual generated columns are emitted as `GENERATED ALWAYS AS (…) VIRTUAL`.
+
+- [#16](https://github.com/pg-prime/pg-prime/pull/16) [`4a2279b`](https://github.com/pg-prime/pg-prime/commit/4a2279b536d12029000025f23bb48f4bac1945a9) Thanks [@YohoCX](https://github.com/YohoCX)! - - `--shadow <url>` / `shadow:` naming the target (or admin) database is refused before any statement runs (`ShadowIsTargetError`, `refused`, exit 1); it used to `DROP SCHEMA … CASCADE` the live managed schemas.
+  - A multi-segment migration no longer replays its committed segments on an in-run retry or on a rerun: progress is recorded per segment (`statements_applied`, `segment_applied`), inside each segment's own transaction, so a lock timeout in segment 1 retries segment 1 alone, and a failed or crashed run resumes at the first uncommitted segment instead of failing with 42P07 forever. Hand-written `-- pg-prime:segment` markers must be numbered 0, 1, 2… in file order; other orders are refused as `plan_invalid`. A file edited after a run of it committed part of it is refused as checksum drift (exit 4) instead of being resumed by position.
+  - A repeatable that fails after the migrations committed is reported as `failed` with a `sql_error` naming the `sql/` file and statement, with `applied`, `lock` and `fingerprint` filled in, instead of an `internal` crash with nothing.
+  - Connection URLs in config and shadow refusals are echoed without their password (rebuilt from the parsed URL; `<redacted>` whenever the string cannot be parsed, carries `password=`, or an unencoded password cut the URL short), and a shadow URL is compared to the target with the same host normalisation the config parser uses (`postgres:///app`, `[::1]`, a missing port).
+  - History rows are read in the files' code-unit order (`COLLATE "C"`), so a server collation that sorts `_` differently cannot pick the wrong last-applied row for the fingerprint gate.
+- Updated dependencies [[`2993a2b`](https://github.com/pg-prime/pg-prime/commit/2993a2b2552aba0837d23f731a231a364f1254bc), [`680ae09`](https://github.com/pg-prime/pg-prime/commit/680ae0944dc001e12d5779bfb8f03edd71e9db62), [`577fca6`](https://github.com/pg-prime/pg-prime/commit/577fca6c5706c01b43e4ea7dfa0912fe0a2ded08), [`c5aa0c4`](https://github.com/pg-prime/pg-prime/commit/c5aa0c43043cb995cf528ae6028f26b00c4b000a)]:
+  - pg-prime@0.2.5
+
 ## 0.2.4
 
 ### Patch Changes

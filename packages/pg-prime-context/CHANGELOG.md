@@ -1,5 +1,12 @@
 # @pg-prime/context
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [[`2993a2b`](https://github.com/pg-prime/pg-prime/commit/2993a2b2552aba0837d23f731a231a364f1254bc), [`680ae09`](https://github.com/pg-prime/pg-prime/commit/680ae0944dc001e12d5779bfb8f03edd71e9db62), [`577fca6`](https://github.com/pg-prime/pg-prime/commit/577fca6c5706c01b43e4ea7dfa0912fe0a2ded08), [`c5aa0c4`](https://github.com/pg-prime/pg-prime/commit/c5aa0c43043cb995cf528ae6028f26b00c4b000a)]:
+  - pg-prime@0.2.5
+
 ## 0.2.4
 
 ### Patch Changes

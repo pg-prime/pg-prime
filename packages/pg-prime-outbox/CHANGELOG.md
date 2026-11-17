@@ -1,5 +1,20 @@
 # @pg-prime/outbox
 
+## 0.2.5
+
+### Patch Changes
+
+- [#17](https://github.com/pg-prime/pg-prime/pull/17) [`4d88f26`](https://github.com/pg-prime/pg-prime/commit/4d88f2638b320c33d1c91044ee79d08e67efd851) Thanks [@YohoCX](https://github.com/YohoCX)! - - mq: the lease-expiry scan no longer aborts on a `maxAttempts` past `int4` or on a message past 1023 attempts (`2 ^ n` overflowed float8); the SQL backoff saturates at `maxDelayMs` exactly like `backoffMs`, which now clamps its exponent too (events' copy as well).
+  - mq: `worker.close({ graceMs })` clears its grace timers instead of keeping the process alive for up to 2 × `graceMs`.
+  - mq, events: `queue.drop()` and `subscription.remove()` stop this instance's workers, bindings and readers of that definition first, without waiting for in-flight handlers (`force` aborts their signals), so a handler may drop or remove its own definition; a loop left running re-created the row on its next iteration (queue unpaused, subscription re-seeded at 'now').
+  - events: readers are matched and `ready()` is memoised by (topic, name) tuples, not joined strings, so `a/b` + `c` and `a` + `b/c` no longer share one row or one reader set.
+  - outbox, cron: `backoffMs` clamps its exponent like mq and events (`0 * 2 ** 1024` was NaN).
+  - create: the `--testing` scaffold pins `@types/pg`, which `test/setup.ts` needs and pnpm does not hoist from `@pg-prime/kit`.
+  - testing: the PGlite bridge no longer lets a refused cross-transaction socket's pipelined `Sync` run or take over the transaction owner.
+  - testing: `scratchDatabase().drop()` is marked done only after the drop succeeds, so a failed drop is retried by the next call.
+- Updated dependencies [[`2993a2b`](https://github.com/pg-prime/pg-prime/commit/2993a2b2552aba0837d23f731a231a364f1254bc), [`680ae09`](https://github.com/pg-prime/pg-prime/commit/680ae0944dc001e12d5779bfb8f03edd71e9db62), [`577fca6`](https://github.com/pg-prime/pg-prime/commit/577fca6c5706c01b43e4ea7dfa0912fe0a2ded08), [`c5aa0c4`](https://github.com/pg-prime/pg-prime/commit/c5aa0c43043cb995cf528ae6028f26b00c4b000a)]:
+  - pg-prime@0.2.5
+
 ## 0.2.4
 
 ### Patch Changes
