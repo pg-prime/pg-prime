@@ -11,7 +11,7 @@ Finds, imports and validates `pg-prime.config.*`, imports the user's TypeScript 
 - `loadConfig(path?, cwd?)` — `{ file, config }`; `{ file: null, config: {} }` when none is found. Throws `ConfigError` on a missing explicit path, a non-object default export, or a mistyped key.
 - `tsSpecifierAdvice(file, err, hooksInstalled)` — turns a Node 22.12–22.14 `ERR_MODULE_NOT_FOUND` for a `.js` with a `.ts` sibling into a `ConfigError`, else `null`. Not in the package entry.
 - `loadSchema(paths, base)` — imports schema module(s) and returns `LoadedSchema` (`tables` keyed `schema.name`, plus `enums`, `domains`, `sequences`, `extensions`, `schemas`, `views`, `policies`, and `files`).
-- `parseDatabaseUrl(url)` — `{ conn, warnings }`; throws `ConfigError` on a non-URL or non-postgres scheme.
+- `parseDatabaseUrl(url)` — `{ conn, warnings }`; throws `ConfigError` on a non-URL or non-postgres scheme, echoing the URL without its password (`redactUrl`).
 - `resolveConfig(input: ResolveInput)` — `ResolvedConfig` with connection, absolute dirs, schemas, parsed replicas, env tag, production flag and warnings.
 - Types: `LoadedConfig`, `LoadedSchema`, `ParsedUrl`, `ResolveInput` (config + `--url`/`--migrations`/`--schema`, `cwd`, `env`, `requireConnection?`), `ResolvedConfig`.
 

@@ -328,6 +328,9 @@ type PgPrimeErrorCode =
   | 'CONFIG'
   | 'USAGE'
   | 'VERSION_CONFLICT'
+  | 'TIMEOUT'
+  | 'ABORT'
+  | 'INDETERMINATE_COMMIT'
 ```
 
 The stable vocabulary for the errors that have no SQLSTATE because they never reached the server.

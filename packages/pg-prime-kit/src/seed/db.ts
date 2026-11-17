@@ -22,7 +22,7 @@
 import pg from "pg";
 import { ConfigError, tsSpecifierAdvice } from "../config/load.js";
 import { enableTsSpecifiers } from "../config/ts-specifiers.js";
-import { connectionString, type ConnInfo } from "../db/pg.js";
+import { connectionString, redactUrl, type ConnInfo } from "../db/pg.js";
 
 /**
  * The peer's runtime surface as this file uses it, declared structurally.
@@ -146,5 +146,5 @@ function pathHref(path: string): string {
 
 /** For the report: what the seed connected to, without the password. */
 export function describeConnection(conn: ConnInfo): string {
-  return connectionString({ ...conn, password: "" }).replace("//:@", "//");
+  return redactUrl(connectionString(conn));
 }

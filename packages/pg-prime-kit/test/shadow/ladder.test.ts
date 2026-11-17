@@ -15,6 +15,7 @@ import {
   parseShadowStrategy,
   parseShadowUrl,
   provisionShadow,
+  ShadowIsTargetError,
   ShadowNameTooLongError,
   ShadowStrategyError,
 } from "../../src/shadow/ladder.js";
@@ -22,6 +23,7 @@ import { connectionString, withClient, type ConnInfo } from "../../src/db/pg.js"
 import { encodeId } from "../../src/ir/stable-id.js";
 import { ADMIN, dbConn, destroyDatabase, makeDatabase, serverAvailable, withAdmin } from "../support/db.js";
 import { schema as corpus, SCHEMAS } from "../schema-emit/fixture.js";
+import { PASSWORDS, SECRET_URLS, thrown } from "../cli/config.test.js";
 
 const T = 120_000;
 
@@ -194,6 +196,50 @@ describe("tier selection", () => {
     expect(() => parseShadowStrategy("postgres://u@h:5432/")).toThrow(/names no database/);
   });
 
+  it("a refusal echoes the url without its password, whatever the password contains", () => {
+    expect(() => parseShadowStrategy("mysql://u:hunter2@h/d")).toThrow(/^"mysql:\/\/u@h\/d" is not a shadow strategy/);
+    expect(() => parseShadowStrategy("postgres://u:hunter2@h:5432/")).toThrow(
+      /^shadow url "postgres:\/\/u@h:5432\/" names/,
+    );
+    const refused = (url: string, secret: string): void => {
+      const message = thrown(() => parseShadowStrategy(url));
+      expect(message, url).toMatch(/is not a shadow strategy|names no database/);
+      expect(message, url).not.toContain(secret);
+      expect(message, url).not.toContain(decodeURIComponent(secret));
+    };
+    for (const pw of PASSWORDS) {
+      for (const url of [`mysql://u:${pw}@h/d`, `postgres://u:${pw}@`, `postgres://u:${pw}@h:5432/`]) refused(url, pw);
+    }
+    for (const [url, secret] of SECRET_URLS) refused(url, secret);
+  });
+
+  it(
+    "refuses a tier-1 url that names the target or the admin database, before touching either",
+    async () => {
+      const shadow = (url: string, t: ConnInfo = target) =>
+        provisionShadow(ADMIN, t, { schemas: ["public"], shadow: { url } });
+      await expect(shadow(connectionString(target))).rejects.toBeInstanceOf(ShadowIsTargetError);
+      await expect(shadow(connectionString(target))).rejects.toMatchObject({ role: "target" });
+      await expect(shadow(connectionString(ADMIN))).rejects.toMatchObject({ role: "admin" });
+      // loopback spellings name one server
+      await expect(
+        shadow(connectionString({ ...target, host: "localhost" }), { ...target, host: "127.0.0.1" }),
+      ).rejects.toMatchObject({
+        role: "target",
+      });
+      // one server, however the host and port are spelled
+      const at = (host: string): ConnInfo => ({ ...target, host, port: 5432, database: "app" });
+      await expect(shadow("postgres:///app", at("localhost"))).rejects.toMatchObject({ role: "target" });
+      await expect(shadow("postgres://[::1]:5432/app", at("::1"))).rejects.toMatchObject({ role: "target" });
+      await expect(shadow("postgres://LOCALHOST/app", at("127.0.0.1"))).rejects.toMatchObject({ role: "target" });
+      // a different database on the same server is a shadow
+      await expect(shadow(connectionString(dbConn(URL_SHADOW)))).resolves.toMatchObject({ tier: 1 });
+      const left = await withClient(target, (c) => c.query("SELECT 1 FROM pg_namespace WHERE nspname = 'public'"));
+      expect(left.rows).toHaveLength(1);
+    },
+    T,
+  );
+
   it("refuses tier 4 with a typed error naming the alternatives", async () => {
     await expect(provisionShadow(ADMIN, ADMIN, { schemas: ["public"], shadow: "offline" })).rejects.toBeInstanceOf(
       OfflineShadowError,
@@ -209,6 +255,8 @@ describe("tier selection", () => {
       database: "db",
     });
     expect(() => parseShadowUrl("postgres://u@h:5432/")).toThrow(/names no database/);
+    expect(parseShadowUrl("postgres://[::1]/db").host).toBe("::1");
+    expect(parseShadowUrl("postgres:///db").host).toBe("127.0.0.1");
   });
 
   it(

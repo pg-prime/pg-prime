@@ -2,6 +2,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EXIT } from "../../src/cli/exit.js";
+import { withClient } from "../../src/db/pg.js";
 import { envelopeOf, runCli, urlOf } from "../support/cli.js";
 import { dbConn, destroyDatabase, makeDatabase, serverAvailable } from "../support/db.js";
 import { BASE_SCHEMA, makeProject, type Project } from "./_project.js";
@@ -32,6 +33,23 @@ describe("verify with `shadow` set to a database url", () => {
     await destroyDatabase(TARGET).catch(() => undefined);
     await destroyDatabase(SHADOW).catch(() => undefined);
   }, T);
+
+  it(
+    "refuses --shadow pointing at the target, and leaves its schemas alone",
+    async () => {
+      const r = await cli("verify", "--shadow", urlOf(dbConn(TARGET)));
+      expect(r.code, r.stdout + r.stderr).toBe(EXIT.error);
+      expect(envelopeOf(r)).toMatchObject({
+        status: "refused",
+        error: { message: expect.stringContaining("target database") },
+      });
+      const left = await withClient(dbConn(TARGET), (c) =>
+        c.query("SELECT 1 FROM pg_namespace WHERE nspname = 'public'"),
+      );
+      expect(left.rows).toHaveLength(1);
+    },
+    T,
+  );
 
   it(
     "replays there, twice",

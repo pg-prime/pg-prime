@@ -7,7 +7,7 @@
     "clean": "pnpm -r --if-present clean",
     "test": "pnpm -r --if-present test",
     "test:live": "pnpm -r --if-present test:live",
-    "test:pg": "pnpm -r --if-present test:pg",
+    "test:pg": "pnpm -r --workspace-concurrency=1 --if-present test:pg",
     "typecheck": "pnpm -r --if-present typecheck",
     "lint": "pnpm lint:oxlint && pnpm typecheck && pnpm lint:deps && pnpm lint:knip",
     "lint:oxlint": "oxlint --type-aware packages bench tools",

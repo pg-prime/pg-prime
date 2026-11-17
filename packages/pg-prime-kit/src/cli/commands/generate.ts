@@ -33,7 +33,7 @@ import type { RenameHint } from "../../diff/delta.js";
 import type { DumpOracleMode } from "../../prove/pg-dump.js";
 import type { SchemaLike } from "../../schema/types.js";
 import type { ShadowStrategy } from "../../shadow/ladder.js";
-import { OfflineShadowError, parseShadowStrategy } from "../../shadow/ladder.js";
+import { OfflineShadowError, parseShadowStrategy, ShadowIsTargetError } from "../../shadow/ladder.js";
 import { bool, str, type OptionSpec, type ParseResult } from "../args.js";
 import { EXIT, type ExitCode } from "../exit.js";
 import { agrees, bullets, nowIso, pairs, plural, type CommandOutput } from "../output.js";
@@ -262,7 +262,12 @@ export async function runGenerate(config: ResolvedConfig, argv: ParseResult): Pr
         `migrate generate\n\nREFUSED: ${err.message}\nNothing was written.`,
       );
     }
-    if (err instanceof OfflineShadowError || err instanceof GenerateRefusedError || err instanceof ConfigError) {
+    if (
+      err instanceof OfflineShadowError ||
+      err instanceof ShadowIsTargetError ||
+      err instanceof GenerateRefusedError ||
+      err instanceof ConfigError
+    ) {
       return refusal(started, "refused", err.message);
     }
     // The desired state did not load into the shadow. That is design/06 §3.8's whole

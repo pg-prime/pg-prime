@@ -17,13 +17,17 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 export type Jitter = 'full' | 'equal' | 'none'
 
+/** Past this `2 ** n` is only ever capped by `maxDelayMs`; `0 * 2 ** 1024` would be NaN. */
+export const MAX_EXPONENT = 62
+
 /** The family backoff (design/15 §0.2): `baseDelayMs × 2^(attempt−1)`, capped, then jittered. */
 export function backoffMs(
   p: { baseDelayMs: number; maxDelayMs: number; jitter: Jitter },
   attempt: number,
   random: () => number = Math.random,
 ): number {
-  const ceiling = Math.min(p.maxDelayMs, p.baseDelayMs * 2 ** Math.max(0, attempt - 1))
+  const exponent = Math.min(MAX_EXPONENT, Math.max(0, attempt - 1))
+  const ceiling = Math.min(p.maxDelayMs, p.baseDelayMs * 2 ** exponent)
   if (p.jitter === 'none') return ceiling
   return p.jitter === 'equal' ? ceiling / 2 + random() * (ceiling / 2) : random() * ceiling
 }

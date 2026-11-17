@@ -154,6 +154,26 @@ describe("loadConfig", () => {
   // report it as Node's. It is covered below, through the binary.
 });
 
+/** Passwords with the characters that cut a URL at the wrong place. */
+export const PASSWORDS = ["s3:cret", "p@ss", "pa/ss", "p%40ss"];
+
+/** Strings every url parser refuses, each with the secret its message must not echo. */
+export const SECRET_URLS: readonly (readonly [string, string])[] = [
+  ["host=db password=s3cret dbname=app", "s3cret"],
+  ["postgres://db:bad/app?password=s3cret", "s3cret"],
+  ["mysql://app:/s3cret@db.prod/app", "s3cret"],
+  ["mysql://admin:2024#Sec@db/app", "2024#Sec"],
+];
+
+export const thrown = (fn: () => unknown): string => {
+  try {
+    fn();
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  return "";
+};
+
 describe("parseDatabaseUrl", () => {
   it("maps a URL onto ConnInfo and decodes percent-escapes", () => {
     const { conn } = parseDatabaseUrl("postgres://us%40er:p%3Ass@db.example:6000/my%20db");
@@ -180,6 +200,18 @@ describe("parseDatabaseUrl", () => {
   it("refuses a non-postgres scheme and a non-URL", () => {
     expect(() => parseDatabaseUrl("mysql://u@h/d")).toThrow(/postgres: or postgresql: scheme/);
     expect(() => parseDatabaseUrl("not a url")).toThrow(/is not a URL/);
+  });
+
+  it("echoes a refused url without its password, whatever the password contains", () => {
+    expect(() => parseDatabaseUrl("mysql://u:hunter2@h/d")).toThrow(/^"mysql:\/\/u@h\/d" must use the postgres/);
+    const refused = (url: string, secret: string): void => {
+      const message = thrown(() => parseDatabaseUrl(url));
+      expect(message, url).toMatch(/is not a URL|must use the postgres/);
+      expect(message, url).not.toContain(secret);
+      expect(message, url).not.toContain(decodeURIComponent(secret));
+    };
+    for (const pw of PASSWORDS) for (const url of [`mysql://u:${pw}@h/d`, `postgres://u:${pw}@`]) refused(url, pw);
+    for (const [url, secret] of SECRET_URLS) refused(url, secret);
   });
 });
 
@@ -337,6 +369,26 @@ describe("the sub-22.15 message (design/13 §5, E's F3)", () => {
 });
 
 describe("the binary reads the config file", () => {
+  it("never echoes a secret from a refused --url, on stdout or stderr", async () => {
+    const dir = await project("cli-redact", { "pg-prime.config.mjs": "export default { migrations: 'migrations' }\n" });
+    for (const [url, secret] of SECRET_URLS) {
+      const r = await runCli([
+        "migrate",
+        "status",
+        "--output",
+        "json",
+        "--url",
+        url,
+        "--config",
+        join(dir, "pg-prime.config.mjs"),
+      ]);
+      expect(r.code, url).toBe(EXIT.error);
+      const envelope = JSON.parse(r.stdout) as { status: string; error: { code: string } };
+      expect(envelope, url).toMatchObject({ status: "error", error: { code: "config" } });
+      expect(r.stdout + r.stderr, url).not.toContain(secret);
+    }
+  });
+
   it("finds pg-prime.config.mjs beside the cwd and uses its url", async () => {
     const dir = await project("cli", {
       "pg-prime.config.mjs":

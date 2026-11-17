@@ -24,6 +24,25 @@ export function connectionString(c: ConnInfo): string {
   return `postgresql://${encodeURIComponent(c.user)}:${encodeURIComponent(c.password)}@${host}:${c.port}/${encodeURIComponent(c.database)}`;
 }
 
+/** `hostname` as `pg` wants it: no IPv6 brackets; empty means the local server. */
+export const hostOf = (u: URL): string => u.hostname.replace(/^\[|\]$/g, "") || "127.0.0.1";
+
+/**
+ * A URL for a message, rebuilt from parts so no password can reach it. Anything that does not parse,
+ * carries `password=`, or parsed its authority into the path (an unencoded `/`, `?` or `#` in the
+ * password) is hidden whole.
+ */
+export function redactUrl(url: string): string {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return "<redacted>";
+  }
+  if (/password=/i.test(url) || /[@:]/.test(u.pathname + u.search + u.hash)) return "<redacted>";
+  return `${u.protocol}//${u.username ? `${u.username}@` : ""}${u.host}${u.pathname}`;
+}
+
 export async function withClient<T>(c: ConnInfo, fn: (client: pg.Client & CatalogClient) => Promise<T>): Promise<T> {
   const client = new pg.Client({ ...c });
   await client.connect();
