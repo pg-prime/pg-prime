@@ -187,6 +187,21 @@ describe('a dotted nest() alias that would exceed 63 bytes falls back to a short
     })
   })
 
+  it('a top-level key past 63 bytes gets the same generated alias', () => {
+    const key = long(70, 'displayName')
+    const c = compile(select({ projection: [projection(key, u('name'))], from: usersFrom }))
+    expect(c.sql).toBe('select "users"."name" as "_g0"\nfrom "public"."users" as "users"')
+    expect(c.shape).toEqual({
+      k: 'row',
+      fields: [{ key, k: 'col', idx: 0, codec: textCodec }],
+    })
+    // NEGATIVE CONTROL — at the limit the key is its own alias.
+    const fits = long(63, 'displayName')
+    expect(
+      compile(select({ projection: [projection(fits, u('name'))], from: usersFrom })).sql,
+    ).toContain(` as "${fits}"`)
+  })
+
   it('a multi-byte name is measured in UTF-8 bytes, as PostgreSQL measures it', () => {
     // 30 emoji × 4 bytes = 120 bytes in 60 UTF-16 code units: a length check on `.length` would
     // have let this through and then failed in `quoteIdentPart`.

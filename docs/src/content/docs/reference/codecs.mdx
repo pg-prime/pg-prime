@@ -79,9 +79,9 @@ usually accepts a wider set.
 
 | Codec | PostgreSQL type | OID | Decodes to | Notes |
 |---|---|---|---|---|
-| <a id="bitCodec"/> `bitCodec` | `bit` | 1560 | `string` | The digit string, e.g. `101`. `null::bit` is `bit(1)`. |
+| <a id="bitCodec"/> `bitCodec` | `bit` | 1560 | `string` | The digit string, e.g. `101`. `::bit` means `bit(1)`, so a bulk insert (`valuesMany`, `unnest`) into a `bit(n > 1)` column is refused by PostgreSQL (22026); single-row inserts bind without a cast and are fine. Prefer `varbit` for such columns. |
 | <a id="boolCodec"/> `boolCodec` | `boolean` | 16 | `boolean` | Only `t` and `f` are accepted; anything else is a decode error rather than a silent `false`. |
-| <a id="bpcharCodec"/> `bpcharCodec` | `char` | 1042 | `string` | `char(n)`. PostgreSQL **space-pads** it — measured, `"ab   "` — and this codec does not trim. |
+| <a id="bpcharCodec"/> `bpcharCodec` | `bpchar` | 1042 | `string` | `char(n)` / `character(n)`, which `t.raw()` routes here. PostgreSQL **space-pads** it — measured, `"ab   "` — and this codec does not trim. Casts as `bpchar`, because `::char` means `char(1)`. |
 | <a id="byteaCodec"/> `byteaCodec` | `bytea` | 17 | `Uint8Array` | Not `Buffer`: that would leak a Node-only type. Encodes in binary format, which avoids the 2× size of `\x` hex. |
 | <a id="charCodec"/> `charCodec` | `"char"` | 18 | `string` | The one-byte internal type. **Not** `char(n)`, which is `bpchar`. |
 | <a id="cidrCodec"/> `cidrCodec` | `cidr` | 650 | `string` | |

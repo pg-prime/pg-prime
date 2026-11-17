@@ -24,6 +24,7 @@ import type { AnyCodec } from '../codec/index.js'
 import {
   arrayCodecOf,
   boolCodec,
+  int4Codec,
   int8Codec,
   jsonbCodec,
   textCodec,
@@ -351,14 +352,19 @@ export function inQuery(e: Expr, query: SelectNode | SetOpNode, negated = false)
 // class is deleted rather than patched. A key of `')-- ` or `"].sibling["` is just a string
 // in a bind slot; PostgreSQL plans `->` on a parameter identically to a literal.
 
-/** `jsonb -> $n` — key or array index lookup, returning json. */
-export function jsonGet(e: Expr, key: string | number): Expr {
-  return bin('->', e, param(key, textCodec), jsonbCodec)
+/** `->`/`->>` have a text (key) and an int4 (array index) overload; the bind must pick one. */
+function keyCodec(key: string | number): AnyCodec {
+  return typeof key === 'number' ? int4Codec : textCodec
 }
 
-/** `jsonb ->> $n` — key lookup returning text. */
+/** `jsonb -> $n` — key or array index lookup, returning json. */
+export function jsonGet(e: Expr, key: string | number): Expr {
+  return bin('->', e, param(key, keyCodec(key)), jsonbCodec)
+}
+
+/** `jsonb ->> $n` — key or array index lookup, returning text. */
 export function jsonGetText(e: Expr, key: string | number): Expr {
-  return bin('->>', e, param(key, textCodec), textCodec)
+  return bin('->>', e, param(key, keyCodec(key)), textCodec)
 }
 
 /** `jsonb #> $n` — path lookup returning json. The path is a `text[]` parameter. */

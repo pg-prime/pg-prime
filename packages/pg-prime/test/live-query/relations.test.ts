@@ -23,7 +23,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { expectTypeOf } from 'expect-type'
-import { textCodec } from '../../src/codec/index.js'
+import { jsonCodecJson, textCodec } from '../../src/codec/index.js'
 import * as q from '../../src/query/types.js'
 import { pgMajor, sqlState } from '../live/_harness.js'
 import { FIRST_POST_ID } from '../live/fixture.js'
@@ -60,6 +60,35 @@ async function userIds(): Promise<Record<string, bigint>> {
 // ─────────────────────────────────────────────────────────────────────────────
 // The per-parent LIMIT oracle
 // ─────────────────────────────────────────────────────────────────────────────
+
+describe('a relation projecting more than 50 members', () => {
+  it('executes (PostgreSQL allows 100 function arguments) and decodes every key', async () => {
+    const keys = Array.from({ length: 50 }, (_, i) => `k${i}`)
+    // An embedded json value: key order, a duplicate key and \u0000 all survive — jsonb would
+    // reorder, dedupe and refuse the escape (22P05).
+    const j = q.sql`'{"b":1,"a":2,"a":3,"z":"\\u0000"}'::json`.as(jsonCodecJson)
+    const built = live.db
+      .from(h().users, 'u')
+      .select((t) => ({
+        id: t.u.id,
+        posts: t.u.posts.many((sub) =>
+          sub.select((p) => ({ ...Object.fromEntries(keys.map((k) => [k, p.id])), j })).limit(1),
+        ),
+      }))
+      .orderBy((t) => q.asc(t.u.id))
+    expect(built.compile().sql).toContain(
+      `::text, -1), 2) || ',' || substr(left(json_build_object(`,
+    )
+    expect(built.compile().sql).not.toContain('jsonb')
+    const rows = await built.execute()
+    const post = rows.find((r) => r.posts.length > 0)?.posts[0] as Record<string, unknown>
+    expect(Object.keys(post)).toEqual([...keys, 'j'])
+    expect(typeof post['k49']).toBe('bigint')
+    expect(post['k49']).toBe(post['k0'])
+    expect(Object.keys(post['j'] as object)).toEqual(['b', 'a', 'z'])
+    expect(post['j']).toEqual({ b: 1, a: 3, z: '\u0000' })
+  })
+})
 
 describe('per-parent pagination', () => {
   it('matches a hand-written row_number() window, pair for pair and in order', async () => {

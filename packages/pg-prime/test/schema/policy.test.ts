@@ -44,6 +44,24 @@ describe('definePolicy $.ddl()', () => {
     )
   })
 
+  it('resolves a t.raw column through the same spelling and typmod rules as a query', () => {
+    // `registry.byName('char')` is the one-byte "char"; the policy used to cast the bind to it.
+    const legacy = pgTable('legacy', (t) => ({
+      code: t.raw('char(3)').$type<string>(),
+      kind: t.raw('character varying(8)').$type<string>(),
+      at: t.raw('timestamp(3) with time zone').$type<Date>(),
+    }))
+    const p = definePolicy('legacy_code', {
+      on: legacy,
+      to: ['app_user'],
+      using: (t) => and(eq(t.code, 'abc'), eq(t.kind, 'k'), lt(t.at, new Date(0))),
+    })
+    expect(p.$.ddl(pub)).toContain(
+      `("legacy"."code" = 'abc'::bpchar and "legacy"."kind" = 'k'::varchar and ` +
+        `"legacy"."at" < '1970-01-01 00:00:00.000Z'::timestamptz)`,
+    )
+  })
+
   it('inlines a bind as the codec-encoded literal with its cast', () => {
     const p = definePolicy('archived_read_only', {
       on: documents,

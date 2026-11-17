@@ -191,6 +191,16 @@ function assertTemplateObject(strings: TemplateStringsArray, valueCount: number)
 
 function tag(strings: TemplateStringsArray, ...values: readonly unknown[]): Fragment<unknown> {
   assertTemplateObject(strings, values.length)
+  for (let i = 0; i < strings.length; i++) {
+    // An invalid escape (`'\xZZ'`) cooks to undefined; copied into the node it rendered as ''.
+    if (strings[i] === undefined) {
+      throw new InvalidFragmentError(
+        `sql\`\`: the template text ${i === 0 ? 'before hole 0' : `after hole ${i - 1}`} has an ` +
+          `invalid escape sequence in ${JSON.stringify(strings.raw[i]?.slice(0, 60))}. ` +
+          'Double the backslash.',
+      )
+    }
+  }
 
   const parts: RawPart[] = []
   for (let i = 0; i < values.length; i++) {

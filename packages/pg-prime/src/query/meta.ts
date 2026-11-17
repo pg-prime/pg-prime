@@ -195,9 +195,8 @@ export function codecFor(
     return ddl.arrayDim > 0 ? arrayCodecOf(element, registry) : element
   }
 
-  const base = ddl.pgType.replace(/(\[\])+$/, '')
-  const element = registry.byName(base) ?? registry.byName(withoutTypeModifier(base))
-  if (element === undefined) {
+  const codec = codecByTypeName(ddl.pgType, registry)
+  if (codec === undefined) {
     throw new NoCodecError(
       table,
       column,
@@ -209,7 +208,7 @@ export function codecFor(
         `('citext', 'vector').`,
     )
   }
-  return ddl.arrayDim > 0 ? arrayCodecOf(element, registry) : element
+  return codec
 }
 
 function arrayName(name: string, dim: number): string {
@@ -217,20 +216,44 @@ function arrayName(name: string, dim: number): string {
 }
 
 /**
- * `'vector(1536)'` → `'vector'`, `'varchar(50)'` → `'varchar'`.
- *
- * A **typmod is not a type**. PostgreSQL has one `varchar` (OID 1043) and the length rides in
- * `atttypmod`; pgvector has one `vector` and the dimension rides there too. So a column declared
- * `vector(1536)` decodes through the `vector` codec, and the parenthesised part is DDL — which is
- * why it stays on `ddl.pgType` verbatim (the kit emits that string) and is stripped only here.
- *
- * Tried second, never first: a type whose real name contains parentheses would otherwise lose to
- * a same-prefixed one, and `t.raw('numeric(10,2)')` must reach `numeric` and not `numeric(10`.
- * This is also what makes design/05 §5.3's escape hatch queryable — `t.raw('varchar(50)')` used
- * to declare a column `metaOf` then refused to build a codec for.
+ * The registry codec for a declared type name (`'char(10)'`, `'text[]'`, `'timestamp(3) with time
+ * zone'`), or undefined. Every `[]` is stripped and the element wrapped once: `text[]` and
+ * `text[][]` are one OID, dimensionality is a property of the value.
+ */
+export function codecByTypeName(pgType: string, registry: CodecRegistry): AnyCodec | undefined {
+  const base = pgType.replace(/(\[\])+$/, '')
+  const element =
+    registry.byName(registryName(base)) ?? registry.byName(registryName(withoutTypeModifier(base)))
+  if (element === undefined || base === pgType) return element
+  return arrayCodecOf(element, registry)
+}
+
+/** SQL-standard spellings → registry names. `char`/`char(n)` are `bpchar`; only `"char"` is OID 18. */
+const SQL_SPELLINGS: Record<string, string> = {
+  char: 'bpchar',
+  character: 'bpchar',
+  'character varying': 'varchar',
+  'bit varying': 'varbit',
+  '"char"': 'char',
+  'double precision': 'float8',
+  'timestamp with time zone': 'timestamptz',
+  'timestamp without time zone': 'timestamp',
+  'time with time zone': 'timetz',
+  'time without time zone': 'time',
+}
+
+function registryName(pgType: string): string {
+  return SQL_SPELLINGS[pgType] ?? pgType
+}
+
+/**
+ * `'vector(1536)'` → `'vector'`, `'timestamp(3) with time zone'` → `'timestamp with time zone'`.
+ * A typmod is not a type: `varchar` and `varchar(50)` are one OID, so the parenthesised part stays
+ * on `ddl.pgType` for the DDL and is stripped only here. Tried second, never first, so a real name
+ * containing parentheses cannot lose to a same-prefixed one.
  */
 function withoutTypeModifier(pgType: string): string {
-  return pgType.replace(/\s*\([^()]*\)$/, '')
+  return pgType.replace(/\s*\([^()]*\)/, '')
 }
 
 /**

@@ -960,27 +960,23 @@ interface FlatOut {
   /** The statement compares whole rows, so a relation column must be `jsonb`. {@link jsonVariant} */
   rowEquality: boolean
   seq: Seq
-  /** Numbers the fallback aliases of {@link dottedAlias}. Separate from `seq` so a long key
+  /** Numbers the fallback aliases of {@link aliasFor}. Separate from `seq` so a long key
    *  cannot renumber the laterals and move every golden. */
   colSeq: Seq
 }
 
 /**
- * The alias a nested key is emitted under: the dotted spelling (`"author.city.name"`) while it
- * fits, and a generated `_gN` when it would not.
+ * The alias a key is emitted under: the key itself (dotted under a `nest()`, `"author.city.name"`)
+ * while it fits, and a generated `_gN` when it would not.
  *
  * The alias is cosmetic — the decoder is positional and never reads it (see {@link flatten}) —
  * but it is still an *identifier*, so `quoteIdentPart` rejects it past 63 UTF-8 bytes. Letting
- * that through meant a deeply nested `nest()` of ordinary column names failed with
- * "identifier part 0 rejected (too-long)" from inside `compile()`, naming an identifier the
- * caller never wrote. Legibility is worth having; it is not worth failing a valid query for.
+ * that through meant a long key failed with "identifier part 0 rejected (too-long)" from inside
+ * `compile()`, naming an identifier the caller never wrote.
  */
-function dottedAlias(prefix: string, key: string, out: FlatOut): string {
-  const dotted = `${prefix}.${key}`
-  // UTF-8 bytes, as PostgreSQL counts them — never `.length`, which under-counts every non-ASCII
-  // name. A UTF-16 code unit is at least one byte, so a too-long `.length` is a sound fast reject.
-  if (dotted.length <= MAX_IDENT_BYTES && utf8ByteLength(dotted) <= MAX_IDENT_BYTES) return dotted
-  return `_g${out.colSeq.n++}`
+function aliasFor(prefix: string, key: string, out: FlatOut): string {
+  const alias = prefix === '' ? key : `${prefix}.${key}`
+  return fitsIdent(alias) ? alias : `_g${out.colSeq.n++}`
 }
 
 /**
@@ -1004,7 +1000,7 @@ function flatten(
   let idx = start
 
   for (const item of items) {
-    const alias = prefix === '' ? item.key : dottedAlias(prefix, item.key, out)
+    const alias = aliasFor(prefix, item.key, out)
 
     if (item.group !== undefined) {
       const inner = flatten(item.group.items, alias, idx, out)
@@ -1042,7 +1038,7 @@ function flatten(
 
     // Reuse the caller's node when the alias is unchanged, so a projection with no groups and no
     // relations comes out of here `toStrictEqual` to what went in (the WS4 AST-equivalence oracle).
-    out.items.push(prefix === '' ? item : projection(alias, item.expr))
+    out.items.push(alias === item.key ? item : projection(alias, item.expr))
     fields.push({ key: item.key, k: 'col', idx, codec: codecOf(item.expr) })
     out.origins[idx] = originOf(item.expr)
     idx += 1
@@ -1084,9 +1080,14 @@ function witnessRows(
 /** True iff the projection needs any rewriting at all — the identity fast path. */
 function isFlat(items: readonly ProjectionItem[]): boolean {
   for (const item of items) {
-    if (item.nested !== undefined || item.group !== undefined) return false
+    if (item.nested !== undefined || item.group !== undefined || !fitsIdent(item.key)) return false
   }
   return true
+}
+
+/** UTF-8 bytes, as PostgreSQL counts them; `.length` under-counts non-ASCII but is a sound fast reject. */
+function fitsIdent(s: string): boolean {
+  return s.length <= MAX_IDENT_BYTES && utf8ByteLength(s) <= MAX_IDENT_BYTES
 }
 
 function leafFields(items: readonly ProjectionItem[]): {
