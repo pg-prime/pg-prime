@@ -1,5 +1,13 @@
 # @pg-prime/context
 
+## 0.2.6
+
+### Patch Changes
+
+- [#22](https://github.com/pg-prime/pg-prime/pull/22) [`30bd5eb`](https://github.com/pg-prime/pg-prime/commit/30bd5eb6f0d896990438c5f236a3ac0cf3d59f2c) Thanks [@YohoCX](https://github.com/YohoCX)! - A `propagation: 'savepoint'` transaction with `localSettings` or timeouts makes two fewer round trips: `pg-prime` 0.2.5's `savepoint()` already puts those settings back after `RELEASE`, so the host no longer snapshots and restores them a second time.
+- Updated dependencies []:
+  - pg-prime@0.2.6
+
 ## 0.2.5
 
 ### Patch Changes
